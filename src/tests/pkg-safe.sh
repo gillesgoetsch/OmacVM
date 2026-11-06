@@ -538,10 +538,12 @@ grep -q '"$R/guest/gbm-guard" begin && GBM_GUARD=1' src/guest/install.sh &&
   fail "guest/install.sh does not run the GBM guard"
 bad=$(git grep -nE 'pacman +(-S[a-zA-Z]*|--sync)( |$)' -- 'src/**' ':!src/tests/**' ':!src/guest/pkg-add' ':!src/vm/**' \
   ':!**/*.md' ':!src/bench/**' | grep -vE '^[^:]+:[0-9]+:\s*#' |
-  grep -vE '^src/guest/omarchy-move\.sh:[0-9]+:.*pacman -Syy --noconfirm|pacman -(Syu|Sy?y?uuw?|Scc|Si|Slq|Sddp) |\(pacman -S [a-z0-9 -]*\)|pacman -Q openssh [^|]*\|\| pacman -S |"\$k-headers"' || true)
+  grep -vE '^src/guest/omarchy-move\.sh:[0-9]+:.*pacman -Syy --noconfirm|^src/guest/omarchy-move\.sh:[0-9]+:.*cmd_pacman -S --noconfirm --ask 4 .*commit-plan|pacman -(Syu|Sy?y?uuw?|Scc|Si|Slq|Sddp) |\(pacman -S [a-z0-9 -]*\)|pacman -Q openssh [^|]*\|\| pacman -S |"\$k-headers"' || true)
 # Allowed above: a full update (also -uu: the move to Omarchy 4.5 and its
 # install take the snapshot's versions; omarchy-move.sh's lists again before
-# one more try of the same transaction, and its download list), cache
+# one more try of the same transaction, and its download list; after a
+# switch cut off once pacman wrote it, the same packages at the same
+# versions again from the cache, for their hooks), cache
 # cleaning and reads (-Si, -Slq, -Sddp --print); "(pacman -S x)" in a
 # message; openssh only when missing; the kernel's own headers version (dkms.sh).
 [[ -z $bad ]] && pass "no pacman -S/-Sy in guest code outside guest/pkg-add" || { fail "pacman -S outside guest/pkg-add:"; echo "$bad"; }

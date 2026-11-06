@@ -10,7 +10,10 @@
 # rename, a merge, a file moved between packages, a new package with no
 # counterpart, a package built in the VM that needs a split-off one (with and
 # without a snapshot package that provides it), a file no package owns, and
-# a move cut off between taking a record out and the switch.
+# a move cut off between taking a record out and the switch; the keep set
+# (OmacVM's packages and all they need, new ones from the switch too) after
+# the move and Omarchy's orphan step; a switch cut off before pacman changed
+# anything, after it wrote all of it, and half way.
 # Needs pacman, repo-add and bsdtar (CI's guest job installs Debian's
 # pacman-package-manager); skipped without them. As root, or under fakeroot.
 #   src/tests/omarchy-move-pacman.sh
@@ -74,9 +77,13 @@ cat > "$B/pacman" <<EOF
 #!/bin/bash
 c=$T/live.conf
 grep -q 'pkgs.omarchy.org/stable/' "\$OMACVM_PACMAN_CONF" 2>/dev/null && c=$T/snap.conf
+# The switch cut off (kill -9 of the move) before pacman begins.
+if [[ -e $T/kill-before-switch && " \$* " == *" -Suu "* && " \$* " != *" --print "* ]]; then rm -f "$T/kill-before-switch"; kill -9 \$PPID; exit 1; fi
 "$REAL" --config "\$c" --root "\$RT" --dbpath "\$RT/var/lib/pacman" --cachedir "$T/cache" --gpgdir "$T/pgp" \\
   --hookdir "$T/hooks" --logfile "$T/pacman.log" "\$@"
 rc=\$?
+# ... or right after pacman wrote the whole switch (its hooks, the journal not yet).
+if [[ -e $T/kill-after-switch && " \$* " == *" -Suu "* && " \$* " != *" --print "* ]]; then rm -f "$T/kill-after-switch"; kill -9 \$PPID; fi
 # Cut off right after the records were taken out (the next step is the switch).
 if [[ -e $T/kill-after-dbonly && " \$* " == *" --dbonly "* && \$rc == 0 ]]; then rm -f "$T/kill-after-dbonly"; kill -9 \$PPID; fi
 exit \$rc
@@ -282,4 +289,58 @@ expect "cut off after clang-libs's record left: interrupted, resumable, no switc
 rc=$(run)
 expect "... Resume: done, as the split case" "0 done 1-1 ok" "$rc $(cat "$(J)/state" 2>/dev/null) $(has clang) $(consistent)"
 expect "... clang-libs gone for good" "" "$(has clang-libs)"
+# ---------- the keep set: OmacVM's packages and all they need, after the move ----------
+# opencl-mesa and clang are on OmacVM's keep list; libclc, spirv-llvm-translator
+# and libelf are not installed on purpose; the snapshot's opencl-mesa needs
+# spirv-llvm-translator (new in the switch), libclc needs zz-libdep (on no list).
+keep_repos() {
+  mkpkg "$T/live/core/x" opencl-mesa 2-1 depends=libclc,clang -- usr/lib/libRusticl.so
+  mkpkg "$T/live/core/x" clang 2-1 depends=libelf -- usr/bin/clang
+  mkpkg "$T/live/core/x" libclc 2-1 -- usr/share/clc/x.bc
+  mkpkg "$T/live/core/x" libelf 1-1 -- usr/lib/libelf.so
+  mkpkg "$T/snap/core/x" opencl-mesa 1-1 depends=libclc,clang,spirv-llvm-translator -- usr/lib/libRusticl.so
+  mkpkg "$T/snap/core/x" clang 1-1 depends=libelf -- usr/bin/clang
+  mkpkg "$T/snap/core/x" libclc 1-1 depends=zz-libdep -- usr/share/clc/x.bc
+  mkpkg "$T/snap/core/x" libelf 1-1 -- usr/lib/libelf.so
+  mkpkg "$T/snap/core/x" spirv-llvm-translator 1-1 -- usr/lib/libLLVMSPIRVLib.so
+  mkpkg "$T/snap/core/x" zz-libdep 1-1 -- usr/lib/libzz.so
+}
+newcase keep opencl-mesa
+p -D --asdeps clang >/dev/null 2>&1
+rc=$(run)
+expect "keep set: done; libclc, spirv-llvm-translator (new in the switch), clang, its libelf and libclc's zz-libdep installed on purpose" \
+  "0 done Explicitly Explicitly Explicitly Explicitly Explicitly" \
+  "$rc $(cat "$(J)/state" 2>/dev/null) $(reason libclc) $(reason spirv-llvm-translator) $(reason clang) $(reason libelf) $(reason zz-libdep)"
+# Omarchy's orphan step (omarchy-update-orphan-pkgs: pacman -Qdtq, removed
+# until none are left), after OmacVM's opencl-mesa went.
+p -Rdd --noconfirm opencl-mesa >/dev/null 2>&1
+for _ in 1 2 3 4 5; do o_=$(p -Qdtq 2>/dev/null); [[ -n $o_ ]] || break; p -Rns --noconfirm $o_ >/dev/null 2>&1; done
+expect "... Omarchy's orphan step after that removes none of them" "1-1 1-1 1-1 1-1 1-1" \
+  "$(has libclc) $(has spirv-llvm-translator) $(has clang) $(has libelf) $(has zz-libdep)"
+
+# ---------- the switch cut off: the guest's own word, from pacman's database ----------
+cutafter_repos() { split_repos; }; cuthalf_repos() { split_repos; }; cutbefore_repos() { split_repos; }
+newcase cutafter clang
+: > "$T/kill-after-switch"; o run > "$T/run.out" 2>&1
+expect "cut off right after pacman wrote the switch: interrupted, cut-done, resumable" "interrupted cut-done True True" \
+  "$(status '" ".join(str(x) for x in [d["state"], d["switch"], d["resumable"], d["commit_started"]])')"
+rc=$(run)
+expect "... Resume: the same packages again from the cache (their hooks), done, as the split case" "0 done 1-1 - ok" \
+  "$rc $(cat "$(J)/state" 2>/dev/null) $(has clang) $([[ -z $(has clang-libs) ]] && echo -) $(consistent)"
+expect "... the switch's packages installed again once, pacman's log says" yes \
+  "$(grep -q 'reinstalled clang (1-1)' "$T/pacman.log" && echo yes)"
+newcase cuthalf clang
+: > "$T/kill-after-switch"; o run > "$T/run.out" 2>&1
+rm -rf "$RT/var/lib/pacman/local/omarchy-settings-4.5.0-3"   # its entry gone: pacman was cut off inside that package
+expect "cut off half way (a package of the plan missing): half, Undo only" "interrupted half False" \
+  "$(status '" ".join(str(x) for x in [d["state"], d["switch"], d["resumable"]])')"
+rc=$(run)
+expect "... run: refused, Undo only (exit 1, failed commit)" "1 failed commit False" "$rc $(status '" ".join(str(x) for x in [d["state"], d["code"], d["resumable"]])')"
+newcase cutbefore clang
+: > "$T/kill-before-switch"; o run > "$T/run.out" 2>&1
+expect "cut off before pacman began: cut-before, resumable" "interrupted cut-before True" \
+  "$(status '" ".join(str(x) for x in [d["state"], d["switch"], d["resumable"]])')"
+rc=$(run)
+expect "... Resume: the switch runs, done, as the split case" "0 done 1-1 - ok" \
+  "$rc $(cat "$(J)/state" 2>/dev/null) $(has clang) $([[ -z $(has clang-libs) ]] && echo -) $(consistent)"
 exit $fail

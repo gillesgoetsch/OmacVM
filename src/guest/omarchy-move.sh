@@ -581,7 +581,7 @@ overwrite_args() {   # -> OW: --overwrite for exactly the paths the switch may w
   while read -r x _; do
     while IFS= read -r p; do OW+=(--overwrite "$p"); n=$((n + 1)); done < <(globq < "$J/replaced-files/$x")
   done < <(cat "$J/replace" 2>/dev/null)
-  while IFS= read -r p; do OW+=(--overwrite "$p"); n=$((n + 1)); done < <(globq < "$J/overwritten" 2>/dev/null)
+  [[ -s $J/overwritten ]] && while IFS= read -r p; do OW+=(--overwrite "$p"); n=$((n + 1)); done < <(globq < "$J/overwritten")
   (( n <= 20000 )) || { REASON="the switch would write over $n files of other packages; OmacVM does not do that many"; return 1; }
 }
 # pacman's own answer when the plan missed something: a file of a package in
@@ -619,6 +619,21 @@ step_commit() {
   local before after more=() try off x
   targets
   if [[ -e $J/commit-done ]]; then after_switch; return; fi   # cut off after the switch
+  if [[ -e $J/commit-started ]]; then
+    # Cut off inside the switch (cmd_run lets only these two through).
+    case $(switch_cut) in
+      cut-done)
+        say "the switch was cut off after pacman wrote all of it: its packages again from the cache (their hooks)"
+        rm -rf "$J/replaced-db"
+        # shellcheck disable=SC2046 # one package per word
+        OMARCHY_UPDATE_PACMAN=1 cmd_pacman -S --noconfirm --ask 4 $(awk '{ print $1 }' "$J/commit-plan") >> "$LOG" 2>&1 ||
+          { (( NETFAIL )) && return 4; REASON="pacman could not install the switch's packages again (see $LOG)"; return 1; }
+        jset commit-done 1; sync
+        after_switch; return ;;
+      cut-before) say "the switch was cut off before pacman changed anything: it runs again"; rm -f "$J/commit-started"; sync ;;
+      *) REASON="The package switch was cut off; Undo puts the VM back as it was before the move."; return 1 ;;
+    esac
+  fi
   # 4.5's omarchy-settings owns /etc/mpv/mpv.conf (hwdec=auto-safe), which
   # OmacVM wrote before (app/guest/venus/mpv.sh): the package's file replaces
   # it (--overwrite), and the mpv step puts OmacVM's block back into it.
@@ -630,8 +645,17 @@ step_commit() {
   for try in 1 2; do
     more=(); while IFS= read -r x; do more+=("$x"); done < <(plan_targets)
     overwrite_args || return 1
+    # pacman's own check of its database before (a cut-off switch is
+    # compared with it; the records below are out then).
+    pacman -Dk 2>&1 | grep -v '^No database errors' | sort -u > "$J/commit-dk"
     replaced_out || { replaced_back; return 1; }
+    # What the switch installs and pacman's database before it: after a
+    # cut-off the guest tells a switch that never began from one pacman
+    # wrote to the end and from one half done (switch_cut).
+    OMARCHY_UPDATE_PACMAN=1 pacman -Suu --print --print-format '%n %v' --noconfirm --ask 4 "${OW[@]}" \
+      "${TARGETS[@]}" ${more[@]+"${more[@]}"} 2>/dev/null | grep -E '^[^ :]+ [^ ]+$' > "$J/commit-plan"
     before=$(pacman -Q | sha256sum)
+    echo "$before" > "$J/commit-before"
     jset commit-started 1; sync
     say "the switch: ${TARGETS[*]}${more[*]:+ ${more[*]}} with the whole system, from the downloads"
     off=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 ))
@@ -654,9 +678,37 @@ step_commit() {
   done
 }
 
-# After the switch (again after a cut-off): omarchy-mac's keyring out, what
-# the replaced packages left that no package has now (never in /etc), install
-# reasons, the keep list again (the switch can bring new ones as dependencies).
+# A switch cut off (the VM lost power, the move was killed) with no pacman
+# running now, from pacman's database as it is:
+#   cut-before  nothing changed yet (the database as before): the switch runs again
+#   cut-done    every package of the switch's plan is installed at its
+#               version and pacman's check finds nothing new: pacman wrote
+#               it to the end (only its hooks may be missing: Resume
+#               installs the same packages again from the cache)
+#   half        anything else: Undo only
+switch_cut() {
+  local now
+  now=$(pacman -Q 2>/dev/null | sha256sum)
+  if [[ -s $J/commit-before && $now == "$(cat "$J/commit-before")" ]]; then echo cut-before; return; fi
+  if [[ -s $J/commit-plan && -z $(comm -23 <(sort -u "$J/commit-plan") <(pacman -Q 2>/dev/null | sort -u)) ]] &&
+     [[ -z $(comm -13 <(sort -u "$J/commit-dk" 2>/dev/null) <(pacman -Dk 2>&1 | grep -v '^No database errors' | sort -u)) ]]; then
+    echo cut-done; return
+  fi
+  echo half
+}
+# The switch now: none (not begun), running, done, or how it was cut off.
+switch_now() {
+  [[ -e $J/commit-done ]] && { echo done; return; }
+  [[ -e $J/commit-started ]] || { echo none; return; }
+  pgrep -x pacman >/dev/null 2>&1 && { echo running; return; }
+  [[ -z ${HOLD:-} && $(jget state) == running ]] && alive && { echo running; return; }
+  switch_cut
+}
+
+# After the switch (again after a cut-off): omarchy-mac's keyring out, 4.0's
+# factory snapshot out, what the replaced packages left that no package has
+# now (never in /etc), install reasons, the keep list again (the switch can
+# bring new ones as dependencies).
 after_switch() {
   local x r by b p
   if pacman -Q omarchy-mac-keyring >/dev/null 2>&1; then
@@ -892,14 +944,15 @@ finish() {   # STATE CODE REASON EXIT
   [[ -n $3 ]] && say "$3"
   exit "$4"
 }
-resumable() {   # 1 unless cut off inside the package switch
-  if [[ -e $J/commit-started && ! -e $J/commit-done ]]; then echo 0; else echo 1; fi
+resumable() {   # 1 unless inside the package switch now, or cut off half way through it
+  case $(switch_now) in running|half) echo 0 ;; *) echo 1 ;; esac
 }
 cmd_run() {
   local i p done_p start=1 rc h
   mkdir -p "$J" || die "could not make $J"
   exec 9>"$J/lock"
   flock -n 9 || { say "a move runs already"; exit 3; }
+  HOLD=1
   [[ $(jget state) == done ]] && { say "the move is done (Omarchy $(version))"; exit 0; }
   if [[ $(resumable) == 0 ]]; then
     finish failed commit "The package switch was cut off; Undo puts the VM back as it was before the move." 1
@@ -918,6 +971,11 @@ cmd_run() {
     if [[ -n $PF_CODE ]]; then finish failed "$PF_CODE" "$PF_REASON" "$PF_EXIT"; fi
   fi
   rm -f "$J/stop"
+  # Stopped by its unit (the VM shuts down, systemctl stop): the move stops
+  # after the step it is in, as with `stop`. Only this script gets the
+  # signal (KillMode=mixed), so pacman is never cut off inside the switch;
+  # the unit waits for it (TimeoutStopSec).
+  trap ': > "$J/stop"; say "asked to stop: after the step $(jget phase)"' INT TERM
   sync   # what ran before the move (Update VM's GRUB menu, an initramfs) is on the disk first
   jset state running; jset code ""; jset reason ""; jset finished ""
   [[ -s $J/started ]] || jset started "$(now)"
@@ -970,7 +1028,7 @@ cmd_start() {
   if (( rc )); then echo "$out"; return "$rc"; fi
   systemctl reset-failed "$UNIT" >/dev/null 2>&1 || true
   systemd-run --quiet --collect --unit="$UNIT" -p StandardInput=null \
-    -p "StandardOutput=append:$LOG" -p "StandardError=append:$LOG" -p KillSignal=SIGINT -p TimeoutStopSec=900 \
+    -p "StandardOutput=append:$LOG" -p "StandardError=append:$LOG" -p KillSignal=SIGINT -p KillMode=mixed -p TimeoutStopSec=900 \
     -E PATH=/usr/local/sbin:/usr/local/bin:/usr/bin -E LANG=C.UTF-8 "$SELF" run ||
     die "could not start the move's unit"
   # Its state is "running" once it holds the lock.
@@ -995,8 +1053,10 @@ cmd_status() {
   local idx=0 i p; p=$(jget phase)
   for i in "${!PHASES[@]}"; do [[ ${PHASES[$i]} == "$p" ]] && idx=$((i + 1)); done
   printf '{"format": 1, "state": %s, "phase": %s, "phase_index": %s, "phases": %s, ' "$(js "$st")" "$(js "$p")" "$idx" "$(jarr "${PHASES[@]}")"
-  printf '"commit_started": %s, "resumable": %s, "started": %s, "finished": %s, "code": %s, "reason": %s, ' \
-    "$(jbool "$([[ -e $J/commit-started ]] && echo 1)")" "$(jbool "$(resumable)")" "$(js "$(jget started)")" \
+  local sw; sw=$(switch_now)
+  printf '"commit_started": %s, "switch": %s, "resumable": %s, "started": %s, "finished": %s, "code": %s, "reason": %s, ' \
+    "$(jbool "$([[ -e $J/commit-started || -e $J/commit-done ]] && echo 1)")" "$(js "$sw")" \
+    "$(jbool "$([[ $sw != running && $sw != half ]] && echo 1)")" "$(js "$(jget started)")" \
     "$(js "$(jget finished)")" "$(js "$(jget code)")" "$(js "$(jget reason)")"
   printf '"omarchy": %s, "lane": %s, "channel": %s, "log": %s, "result": %s}\n' \
     "$(js "$(version | sed 's/-[^-]*$//')")" "$(js "$(lane)")" "$(js "$(lane_channel)")" "$(js "$LOG")" "$res"

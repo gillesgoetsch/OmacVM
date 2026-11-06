@@ -57,8 +57,12 @@ cat > "$B/pacman" <<'EOF'
 db=$P/db
 names() { awk '{ print $1 }' "$db"; }
 ver() { awk -v n="$1" '$1 == n { print $2 }' "$db"; }
-# --print (the repo and file of each download): the file the 404 case names.
-[[ " $* " == *" --print "* ]] && { echo "extra $(cat "$P/fail404" 2>/dev/null)"; exit 0; }
+# --print: the switch's plan (name version), or the repo and file of each
+# download (the file the 404 case names).
+if [[ " $* " == *" --print "* ]]; then
+  [[ " $* " == *" %n %v "* ]] && { awk '$1 != "omarchy-mac-keyring" { print $1, $2 }' "$P/after"; exit 0; }
+  echo "extra $(cat "$P/fail404" 2>/dev/null)"; exit 0
+fi
 case $1 in
   -Q) if (( $# == 1 )); then awk '{ print $1, $2 }' "$db"; exit 0; fi
       rc=0; for n in "${@:2}"; do v=$(ver "$n"); [[ -n $v ]] && echo "$n $v" || rc=1; done; exit $rc ;;
@@ -88,7 +92,16 @@ case $1 in
   -Suu) echo "pacman $*" >> "$P/calls"
       [[ -e $P/commit-refused ]] && { echo "error: failed to prepare transaction (conflicting dependencies)"; exit 1; }
       [[ -e $P/commit-breaks ]] && { head -2 "$db" > "$db.n"; mv "$db.n" "$db"; exit 1; }
-      cp "$P/after" "$db" ;;
+      # The VM cut off (kill -9 of the move) before pacman changed anything,
+      # after it wrote the whole switch, or half way (a package's entry gone).
+      [[ -e $P/cut-before ]] && { rm -f "$P/cut-before"; kill -9 $PPID; exit 1; }
+      [[ -e $P/slow-switch ]] && { echo $PPID > "$P/runpid"; sleep 3; }
+      cp "$P/after" "$db"
+      [[ -e $P/cut-after ]] && { rm -f "$P/cut-after"; [[ -e $P/dk-new ]] && mv "$P/dk-new" "$P/dk"; kill -9 $PPID; exit 1; }
+      [[ -e $P/cut-half ]] && { rm -f "$P/cut-half"; grep -v '^omarchy-settings ' "$db" > "$db.n"; mv "$db.n" "$db"; kill -9 $PPID; exit 1; }
+      exit 0 ;;
+  -S) echo "pacman $*" >> "$P/calls" ;;
+  -Dk) cat "$P/dk" 2>/dev/null || echo "No database errors have been found!" ;;
   -Rdd) echo "pacman $*" >> "$P/calls"; grep -v "^$3 " "$db" > "$db.n"; mv "$db.n" "$db" ;;
   *) echo "pacman stand-in: $*" >&2; exit 1 ;;
 esac
@@ -345,13 +358,43 @@ expect "omarchy update fails only in its AUR step: done, with a warning" "0 done
   "$rc $(cat "$J/state") $(o status --json | json 'sum("AUR packages not updated" in w for w in d["result"]["warnings"])')"
 rm -f "$P/aur-fails" "$T/su.log"
 
-# Cut off inside the switch: Undo only.
-fresh; o run >/dev/null 2>&1; rm -f "$J/commit-done" "$J/state"; echo download > "$J/phase-done"; : > "$J/commit-started"
+# Cut off inside the switch (the VM lost power, the move was killed): the
+# guest's own word, from pacman's database as it is.
+st() { o status --json | json '" ".join(str(x) for x in [d["state"], d["switch"], d["resumable"]])'; }
+fresh; : > "$P/cut-half"; o run >/dev/null 2>&1
+expect "cut off half way through the switch: interrupted, half, Undo only" "interrupted half False" "$(st)"
 o run >/dev/null 2>&1; rc=$?
-expect "cut off inside the switch: refused (exit 1), Undo only" "1 failed commit False" \
+expect "... run: refused (exit 1), Undo only" "1 failed commit False" \
   "$rc $(o status --json | json '" ".join(str(x) for x in [d["state"], d["code"], d["resumable"]])')"
 expect "start: refused too (exit 3), no unit" "3 0" "$(o start >/dev/null 2>&1; echo $?) $(calls systemd-run)"
 expect "preflight then: undo-only (exit 3)" "undo-only 3" "$(o preflight --json | json 'd["code"]') $(o preflight >/dev/null 2>&1; echo $?)"
+fresh; echo "error: missing 'x' dependency for 'y'" > "$P/dk-new"; : > "$P/cut-after"; o run >/dev/null 2>&1
+expect "cut off after pacman wrote the switch, but pacman's check finds a new problem: half, Undo only" "interrupted half False" "$(st)"
+fresh; : > "$P/cut-after"; o run >/dev/null 2>&1
+expect "cut off after pacman wrote the whole switch (every planned package, its check clean): resumable" "interrupted cut-done True" "$(st)"
+expect "... preflight: ok to go on (resume)" "True True download" "$(o preflight --json | json '" ".join(str(x) for x in [d["ok"], d["resume"], d["phase_done"]])')"
+o run >/dev/null 2>&1; rc=$?
+expect "... Resume: done; the switch's packages again from the cache (hooks), the switch itself not again" \
+  "0 done 1 1 pacman -S --noconfirm --ask 4 omarchy omarchy-settings snapper iwd jq obsidian vi gliff libclc" \
+  "$rc $(cat "$J/state") $(calls 'pacman -Suu ') $(calls 'pacman -S ') $(grep '^pacman -S ' "$P/calls")"
+expect "... then as a move that was not cut: omarchy-mac-keyring out, keep list marked, report" "0 e done" \
+  "$(grep -c '^omarchy-mac-keyring ' "$P/db") $(awk '$1 == "libclc" { print $3 }' "$P/db") $(o status --json | json 'd["state"]')"
+fresh; : > "$P/cut-before"; o run >/dev/null 2>&1
+expect "cut off before pacman changed anything: resumable" "interrupted cut-before True" "$(st)"
+o run >/dev/null 2>&1; rc=$?
+expect "... Resume: the switch runs again, done" "0 done 2 0" "$rc $(cat "$J/state") $(calls 'pacman -Suu ') $(calls 'pacman -S ')"
+# Stopped by its unit inside the switch (the VM shuts down): only the move
+# gets the signal (KillMode=mixed); pacman ends the switch, the move stops after it.
+# (Job control on: a background job of a script would ignore SIGINT.)
+fresh; : > "$P/slow-switch"; set -m; ( o run >/dev/null 2>&1; echo $? > "$T/rc" ) & set +m
+for _ in $(seq 1 50); do [[ -s $P/runpid ]] && break; sleep 0.1; done
+kill -INT "$(cat "$P/runpid")"; wait
+expect "SIGINT to the move inside the switch: the switch ends, then stopped (exit 4), resumable" "4 stopped commit done True" \
+  "$(cat "$T/rc") $(cat "$J/state") $(cat "$J/phase-done") $(o status --json | json '" ".join(str(x) for x in [d["switch"], d["resumable"]])')"
+expect "... pacman's database is the switch's (omarchy-mac-keyring out after it)" same \
+  "$(diff <(awk '{ print $1, $2 }' "$P/db") <(awk '$1 != "omarchy-mac-keyring" { print $1, $2 }' "$P/after") >/dev/null && echo same)"
+rm -f "$P/slow-switch"; o run >/dev/null 2>&1
+expect "... Resume: done" "0 done" "$? $(cat "$J/state")"
 
 # pacman refuses the switch before it changes anything: Resume is fine.
 fresh; : > "$P/commit-refused"; o run >/dev/null 2>&1; rc=$?
@@ -416,6 +459,8 @@ expect "status: running in the journal, nobody holds the lock: interrupted, resu
   "$(o status --json | json '" ".join(str(x) for x in [d["state"], d["phase"], d["resumable"]])')"
 fresh; o start >/dev/null 2>&1
 expect "start: the move in its own unit" 1 "$(calls 'systemd-run --quiet --collect --unit=omacvm-move-45')"
+expect "... a stop of it signals the move only (pacman finishes the switch), waits up to 15 minutes" 1 \
+  "$(calls 'systemd-run .*-p KillSignal=SIGINT -p KillMode=mixed -p TimeoutStopSec=900')"
 
 # ---------- pkg-add marks OmacVM's packages; the keep list ----------
 K=$T/pkgadd; mkdir -p "$K"
