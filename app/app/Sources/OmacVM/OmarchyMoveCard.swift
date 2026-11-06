@@ -174,13 +174,13 @@ struct OmarchyMoveCard: View {
         var card = OmarchyMove.Card.hidden
         var problem: String?
         var backup: (bytes: Int64, exact: Bool)?
-        /// Keep This Disk: only once Omarchy's packages began to change (before
-        /// that the disk is Omarchy 4.0 as it was: Resume or Undo).
-        var canKeep = true
+        /// Keep This Disk: only once the VM said its package switch is done
+        /// (OmarchyMove.canKeep; before that: Resume or Undo).
+        var canKeep = false
     }
 
     private var now: Now {
-        if let p = preview { return Now(card: p.card, problem: p.problem, backup: p.backup) }
+        if let p = preview { return Now(card: p.card, problem: p.problem, backup: p.backup, canKeep: true) }
         _ = state.tick
         let c = state.config
         var n = Now(card: MoveFiles.card(c, settling: settling))
@@ -188,7 +188,7 @@ struct OmarchyMoveCard: View {
         case .offer: n.problem = MoveFiles.problem(c)
         case .failed, .interrupted:
             n.problem = MoveFiles.problem(c)
-            n.canKeep = MoveFiles.journal(c)?.commitStarted == true
+            n.canKeep = MoveFiles.journal(c).map(OmarchyMove.canKeep) ?? false
         case .done: n.backup = OmarchyMove.backupBytes(MoveFiles.backupURL(c))
         default: break
         }
@@ -514,7 +514,7 @@ struct MoveKeepSheet: View {
 
     var body: some View {
         DestructiveSheet(symbol: "externaldrive", title: "Keep this disk as it is?",
-                         text: "\(vm) starts as the move left it, partly moved. The backup stays, so Undo is still possible until you delete it.",
+                         text: "\(vm) has Omarchy 4.5's packages, but the move's last steps did not finish. It starts as the move left it. The backup stays, so Undo is still possible until you delete it.",
                          action: "Keep This Disk", probe: "move-keep-confirm", done: done, red: false)
     }
 }

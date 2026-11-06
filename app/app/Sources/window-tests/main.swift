@@ -1115,6 +1115,21 @@ do {
            "card: kept, backup gone by hand, still 4.0: offered again")
     expect(M.card(recordText: "4.5.0 aarch64 stable", journal: jr("state=kept\n"), backupExists: false, alive: false) == .hidden,
            "card: kept, backup gone, on 4.5 (record): hidden")
+    // Keep This Disk: only once the VM said its package switch is done (guest_switch), never on a pending one.
+    for (t, want, what) in [
+        ("state=failed\nstep=7\ncommit_started=1\nresumable=1\nguest_switch=done\n", true, "failed after the switch"),
+        ("state=interrupted\nstep=5\ncommit_started=1\nresumable=1\nguest_switch=done\n", true, "stopped after the switch"),
+        ("state=failed\nstep=5\ncommit_started=1\nresumable=1\nguest_switch=cut-before\n", false, "switch cut off before pacman began"),
+        ("state=interrupted\nstep=5\ncommit_started=1\nresumable=1\nguest_switch=cut-done\n", false, "switch cut off once written (hooks not run)"),
+        ("state=failed\nstep=5\ncommit_started=1\nresumable=0\nguest_switch=half\n", false, "switch cut half way"),
+        ("state=interrupted\nstep=5\ncommit_started=1\nresumable=0\nask_guest=1\nguest_switch=running\n", false, "stopped inside the switch, not asked yet"),
+        ("state=failed\nstep=5\ncommit_started=1\nresumable=1\n", false, "switch began, no word from the VM on it"),
+        ("state=failed\nstep=5\ncommit_started=0\nresumable=1\nguest_switch=none\n", false, "stopped before the switch"),
+        ("state=undoing\nstep=5\nguest_switch=done\n", false, "an Undo cut off"),
+        ("state=done\nguest_switch=done\n", false, "moved (Undo and Delete, no Keep)"),
+    ] {
+        expect(M.canKeep(jr(t)!) == want, "Keep This Disk \(want ? "offered" : "not offered"): \(what)")
+    }
     // An app crash: the script gone, its QEMU running on (settle shuts it down first).
     let crashed = jr("state=running\nstep=5\npid=4242\nqemu_pid=4343\nsettle_pid=0\nboot=1793501514\n")!
     expect(crashed.qemuPid == 4343 && crashed.settlePid == 0 && crashed.boot == "1793501514", "journal: the move's QEMU, settle and boot read")

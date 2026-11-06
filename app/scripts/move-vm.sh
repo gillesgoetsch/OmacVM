@@ -6,7 +6,7 @@
 #   move-vm.sh VM_DIR run            the move, or its resume (the VM off)
 #   move-vm.sh VM_DIR undo           the backup's disk back (the VM off); the moved disk goes
 #   move-vm.sh VM_DIR delete-backup  the backup goes (after a move); Undo is no longer possible
-#   move-vm.sh VM_DIR keep           a stopped move: keep this disk as it is (the backup stays)
+#   move-vm.sh VM_DIR keep           a stopped move past its package switch: keep this disk as it is (the backup stays)
 #   move-vm.sh VM_DIR settle         the VM a killed move left running (an app crash): shut down
 #   move-vm.sh VM_DIR status         the journal and the backup's size
 # The journal is VM_DIR/move-4.5 (key=value, format=1); the backup is
@@ -180,7 +180,7 @@ guest_word() {   # FILE
   local c=0 r=0
   [[ $(jv commit_started "$1") == true ]] && c=1
   [[ $(jv resumable "$1") == true ]] && r=1
-  jset commit_started "$c" resumable "$r" ask_guest 0
+  jset commit_started "$c" resumable "$r" ask_guest 0 guest_switch "$(jv switch "$1" | tr -cd 'a-z-' | cut -c1-20)"
 }
 # After a cut-off (the VM stopped or went silent: no last word from the
 # guest): the guest's last polled answer. Inside the switch that is "not
@@ -377,9 +377,12 @@ keep)
   take_lock || { echo "the move or its stop runs" >&2; exit 3; }
   trap drop_lock EXIT
   settle
-  # Before Omarchy's packages began to change the disk is Omarchy 4.0 as it
-  # was: nothing to keep (a kept 4.0 disk would hide the move): Resume or Undo.
-  [[ $(jget commit_started) == 1 ]] || { echo "nothing of Omarchy changed yet: resume or undo the move" >&2; exit 3; }
+  # Only once the guest said its package switch is done (its last word:
+  # guest_switch): Omarchy 4.5's packages are in, the steps after it did not
+  # all run. Before (not begun, cut off, half) the VM is between 4.0 and 4.5:
+  # a kept disk there would get a partial update from OmacVM (the VM refuses
+  # it: omarchy-move.sh pending): Resume finishes the move, or Undo.
+  [[ $(jget guest_switch) == done ]] || { echo "Omarchy's package switch is not done in the VM: resume or undo the move" >&2; exit 3; }
   jset state kept finished "$(now_iso)"
   echo "KEPT $NAME"; exit 0 ;;
 delete-backup)
@@ -667,6 +670,7 @@ if [[ $(jget commit_started) == 1 ]]; then
   guest_status "$ST" || ssh_lost 5 "asking how far its move got"
   if [[ $(jv state "$ST") == done ]]; then
     moved_already=1
+    jset guest_switch done
     log "the move in $NAME is done already"
   fi
 fi
@@ -721,7 +725,7 @@ if (( ! moved_already )); then
     [[ $(jv commit_started "$ST") == true ]] && jset commit_started 1
     # The guest's last word, for a settle after a crash (may_switch).
     r=1; [[ $(jv resumable "$ST") == false ]] && r=0
-    jset resumable "$r" guest_state "$gs" guest_phase "$ph"
+    jset resumable "$r" guest_state "$gs" guest_phase "$ph" guest_switch "$(jv switch "$ST" | tr -cd 'a-z-' | cut -c1-20)"
     if [[ $ph != "$last" && -n $ph ]]; then
       log "$(phase_text "$ph") (part ${pi:-?} of 13)"
       last=$ph since=$(date +%s)

@@ -229,6 +229,15 @@ public enum OmarchyMove {
         !j.commitStarted || j.resumable || j.askGuest || j.state == .running
     }
 
+    /// Keep This Disk: only once the guest said its package switch is done
+    /// (move-vm.sh's `guest_switch`, the guest's last word): Omarchy 4.5's
+    /// packages are in, only steps after the switch did not all run. Before
+    /// that (not begun, cut off, half) the VM is between 4.0 and 4.5: Resume
+    /// or Undo (move-vm.sh keep refuses it too).
+    public static func canKeep(_ j: Journal) -> Bool {
+        (j.state == .failed || j.state == .interrupted) && j.value("guest_switch") == "done"
+    }
+
     /// Why the app's own update waits (Updater.busyNow), and the text for it.
     public static let updateWaits = "The move to Omarchy 4.5 runs"
 

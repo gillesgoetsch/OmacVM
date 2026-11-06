@@ -153,6 +153,17 @@ if omacvm_downgrade apply "$( (( NAMED )) && echo "'$VM'" || echo "$VM")" "$had"
   failed_part "" "'$VM' has a newer OmacVM than this omacvm ($now): nothing was changed" mac
   exit 3
 fi
+# An OmacVM.app VM whose move to Omarchy 4.5 began and whose package switch
+# is not done (guest/omarchy-move.sh pending; also when the Mac's journal
+# says it is over: a disk kept by an older app): only the move's own apply
+# (OMACVM_MOVE_RUN=1) goes on; stop before anything changes.
+MOVE_G=/usr/local/share/omacvm/guest/omarchy-move.sh
+if [[ $TYPE == app && -z ${OMACVM_MOVE_RUN:-} ]] && why=$(gssh "$IP" "[ -x $MOVE_G ] && $MOVE_G pending" < /dev/null 2>/dev/null); then
+  why=$(printf '%s' "$why" | head -1 | LC_ALL=C tr -cd '[:print:]' | cut -c1-240)
+  [[ -z $why ]] || info "the VM says: $why"
+  failed_part "" "$(move_open_text "$VM"); nothing was changed" vm
+  exit 3
+fi
 
 # ---------- the features it gets ----------
 features_read_env "$probe"
@@ -445,6 +456,11 @@ COPYFILE_DISABLE=1 tar --no-xattrs -C "$R/src" --exclude build --exclude __pycac
               tar --no-same-owner -C $S.new -xzf - 2>/dev/null
               if [ -d $S ]; then mv $S $S.old; fi; mv $S.new $S" ||
   die "OmacVM did not get into the VM (see above): nothing changed there"
+# A disk the person kept in OmacVM.app after its move stopped (Keep This
+# Disk): the VM learns it, so its move is over there too (check, status).
+if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM" 2>/dev/null) && move_kept "$d"; then
+  gssh "$IP" "$MOVE_G keep" < /dev/null > /dev/null 2>&1 || info "the VM did not take the kept move (omarchy-move.sh keep)"
+fi
 # A VM fresh from a prebuilt image: its whole system up to date, once, before
 # any feature installs a package (prebuilt/guest/first-update says why), and
 # restarted when that brought a new kernel. Not updated: the apply goes on,

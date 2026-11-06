@@ -52,6 +52,38 @@ expect "move_record: empty: refused" "refused" "$(move_record '' || echo refused
 expect "apply refuses a VM in the middle of its move (exit 3)" "yes" \
   "$(grep -q 'move_open "$md"' "$R/src/cmd/apply.sh" && grep -A2 'move_open "$md"' "$R/src/cmd/apply.sh" | grep -q 'exit 3' && echo yes)"
 expect "update refuses it with --vm and skips it otherwise" "2" "$(grep -c 'move_open "$d"' "$R/src/cmd/update.sh")"
+# A disk the person kept (Keep This Disk, or its backup deleted after it): apply tells the VM.
+for s in kept done-final done failed running undone; do
+  printf 'format=1\nstate=%s\n' "$s" > "$T/lib/move-4.5"
+  case $s in kept|done-final) want=kept ;; *) want=no ;; esac
+  expect "move_kept: $s is $want" "$want" "$(move_kept "$T/lib" && echo kept || echo no)"
+done
+expect "move_kept: no journal" "no" "$(move_kept "$T/none" && echo kept || echo no)"
+# apply and a move whose switch is not done in the VM (guest omarchy-move.sh pending), whatever
+# the Mac's journal says (a disk kept by an older app): exit 3 before anything changes; the
+# move's own apply goes on. And a kept disk: the VM is told (omarchy-move.sh keep) once its copy is in.
+ap=$R/src/cmd/apply.sh
+pblk=$(awk '/^# An OmacVM.app VM whose move to Omarchy 4.5 began/ { on = 1 } on { print } on && /^fi$/ { exit }' "$ap")
+kblk=$(awk '/^# A disk the person kept in OmacVM.app after its move stopped/ { on = 1 } on { print } on && /^fi$/ { exit }' "$ap")
+ga() {   # PENDING(0|1) STATE [VAR=VALUE]: what apply's two checks do (stand-in gssh, the VM's answer)
+  mkdir -p "$T/ap"; printf 'format=1\nstate=%s\n' "$2" > "$T/ap/move-4.5"; : > "$T/ap/calls"
+  env "${@:3}" bash -c 'source "$1"; TYPE=app NAMED=1 VM=Old IP=127.0.0.1:52998 T=$2 PEND=$3
+    gssh() { echo "gssh ${*: -1}" >> "$T/ap/calls"; [[ ${*: -1} == *pending ]] && { echo "the move to Omarchy 4.5 is not finished in this VM"; return $PEND; }; return 0; }
+    info() { echo "info $*" >> "$T/ap/calls"; }; failed_part() { echo "failed $2" >> "$T/ap/calls"; }
+    app_dir() { echo "$T/ap"; }'$'\n'"$pblk"$'\n'"$kblk"$'\n''echo "went on" >> "$T/ap/calls"' ga "$R/src/lib/omarchy-move.sh" "$T" "$1"
+  echo "rc=$? $(grep -c 'went on' "$T/ap/calls") $(grep -c ' keep$' "$T/ap/calls")"
+}
+expect "apply on a VM whose move's switch is not done: exit 3 at once, says so, the VM not told to keep" "rc=3 0 0 1" \
+  "$(ga 0 failed) $(grep -c "^failed 'Old' is in the middle of its move to Omarchy 4.5: resume or undo it in OmacVM.app first; nothing was changed" "$T/ap/calls")"
+expect "... also when the Mac's journal says kept (an older app kept it)" "rc=3 0 0" "$(ga 0 kept)"
+expect "... the move's own apply (OMACVM_MOVE_RUN=1) goes on, never asks" "rc=0 1 0 0" "$(ga 0 running OMACVM_MOVE_RUN=1) $(grep -c pending "$T/ap/calls")"
+expect "apply on a kept disk past its switch: goes on, the VM told (omarchy-move.sh keep)" "rc=0 1 1" "$(ga 1 kept)"
+expect "... the backup deleted after it (done-final): told too" "rc=0 1 1" "$(ga 1 done-final)"
+expect "apply after a finished move, or with no move: goes on, nothing to tell" "rc=0 1 0 | rc=0 1 0" "$(ga 1 done) | $(ga 1 undone)"
+cl=$(grep -n '^step copy ' "$ap" | cut -d: -f1); pl=$(grep -n '^# An OmacVM.app VM whose move to Omarchy 4.5 began' "$ap" | cut -d: -f1)
+kl=$(grep -n '^# A disk the person kept in OmacVM.app after its move stopped' "$ap" | cut -d: -f1); ml=$(grep -n '^# ---------- the Mac side ----------' "$ap" | cut -d: -f1)
+expect "apply: the pending check comes before the Mac side and the copy, the keep after the copy" "yes yes" \
+  "$( (( pl > 0 && pl < cl && pl < ${ml:-99999} )) && echo yes) $( (( kl > cl )) && echo yes)"
 # The app (Swift; OmarchyMove's rules are in window-tests): a disk change and the disk jobs at a start
 # wait while the move is not over; the app's own update waits while one runs (also between its VM starts).
 dv=$R/app/app/Sources/OmacVM/DiskView.swift
@@ -109,8 +141,9 @@ if [[ -n ${FAKE_FLAKY:-} && ! -e $G/rebooting && $cmd != "systemctl poweroff" ]]
   fi
 fi
 phases=(preflight protect initramfs keyring repos download commit platform mpv vulkan kernel update report)
-json() {   # state phase index commit resumable code reason
-  printf '{"format":1,"state":"%s","phase":"%s","phase_index":%s,"phases":[],"commit_started":%s,"resumable":%s,"started":"","finished":"","code":"%s","reason":"%s","omarchy":"4.0.3rc4","lane":"omarchy-mac","channel":"rc","log":"/var/log/omacvm-move-45.log","result":null}\n' "$@"
+json() {   # state phase index commit resumable code reason (switch: $SW, contract v5)
+  printf '{"format":1,"state":"%s","phase":"%s","phase_index":%s,"phases":[],"commit_started":%s,"switch":"%s","resumable":%s,"started":"","finished":"","code":"%s","reason":"%s","omarchy":"4.0.3rc4","lane":"omarchy-mac","channel":"rc","log":"/var/log/omacvm-move-45.log","result":null}\n' \
+    "$1" "$2" "$3" "$4" "${SW:-none}" "$5" "$6" "$7"
 }
 case $cmd in
   true)
@@ -138,6 +171,7 @@ case $cmd in
     case $FAKE_MODE in
       net) printf '{"format":1,"ok":false,"code":"repos-unreachable","reason":"pkgs.omarchy.org did not answer."}\n'; exit 4 ;;
       busy) printf '{"format":1,"ok":false,"code":"pacman-busy","reason":"Another pacman runs in the VM."}\n'; exit 4 ;;
+      busy-first) printf '{"format":1,"ok":false,"code":"pacman-busy","reason":"Another pacman runs in the VM."}\n'; exit 3 ;;
       refuse) printf '{"format":1,"ok":false,"code":"apple-platform","reason":"This VM says it is an Apple machine."}\n'; exit 3 ;;
       moved) printf '{"format":1,"ok":false,"code":"already-moved","reason":"On 4.5 already."}\n'; exit 3 ;;
     esac
@@ -146,6 +180,7 @@ case $cmd in
   *"omarchy-move.sh start")
     [[ -f $G/state ]] && [[ $(cat "$G/state") == done ]] && exit 0
     [[ $FAKE_MODE == busy-start ]] && { printf '{"format":1,"ok":false,"code":"pacman-busy","reason":"Another pacman runs in the VM."}\n'; exit 4; }
+    [[ $FAKE_MODE == busy-start-first ]] && { printf '{"format":1,"ok":false,"code":"pacman-busy","reason":"Another pacman runs in the VM."}\n'; exit 3; }
     if [[ -e $G/inswitch ]]; then
       printf '{"format":1,"ok":false,"code":"undo-only","reason":"The package switch was cut off; Undo puts the VM back as it was before the move."}\n'; exit 3
     fi
@@ -157,6 +192,10 @@ case $cmd in
   *"omarchy-move.sh status --json")
     st=$(cat "$G/state" 2>/dev/null || echo none); i=$(cat "$G/i" 2>/dev/null || echo 0)
     c=false; (( i >= 6 )) && c=true
+    # The switch (commit is phase 7, index 6): running in it, done after it; failed or cut off in it: half.
+    SW=none; (( i == 6 )) && SW=running; (( i > 6 )) && SW=done
+    [[ $FAKE_MODE == fail-commit ]] && (( i == 6 )) && SW=half
+    [[ -e $G/inswitch ]] && SW=half
     if [[ $st == running ]]; then
       ph=${phases[$i]}
       if [[ $ph == commit && $FAKE_MODE == slow-commit ]]; then
@@ -327,18 +366,31 @@ expect "... run again is refused (no half transaction resumed)" "yes" "$(grep -q
 mv_run ok delete-backup; rc=$?
 expect "... Delete the backup is refused while it is not undone or kept" "1 there" "$rc $([[ -d $V/before-omarchy-4.5 ]] && echo there)"
 mv_run ok keep; rc=$?
+expect "Keep This Disk after a switch that failed half way: refused (exit 3: Undo), the move still open" "3 failed half" "$rc $(jget state) $(jget guest_switch)"
+# Keep only once the guest said its switch is done (v340-fix4 review: a kept switch not done stayed
+# pending in the VM for good). A failure after the switch: Keep, then Delete the backup.
+fresh
+mv_run apply6-fail run; rc=$?
+expect "failed after the switch (the apply after it): Resume, the guest said its switch is done" "1 failed 6 1 done" \
+  "$rc $(jget state) $(jget failed_step) $(jget resumable) $(jget guest_switch)"
+mv_run ok keep; rc=$?
 expect "Keep This Disk: kept, the backup stays" "0 kept there" "$rc $(jget state) $([[ -d $V/before-omarchy-4.5 ]] && echo there)"
 mv_run ok delete-backup; rc=$?
 expect "... then Delete the backup" "0 done-final" "$rc $(jget state)"
-
-# After Keep and Delete the VM is not on 4.5 (the switch failed): the move is offered and runs again.
+# After Keep and Delete the Mac's record still says 4.0 (step 7 did not run): the card offers the
+# move again, and it goes on to the end (the guest says it is done: steps 6 and 7).
 mv_run ok run; rc=$?
-expect "kept, backup deleted, still on 4.0: a new move runs to the end" "0 done" "$rc $(jget state)"
+expect "kept, backup deleted, the record still 4.0: the move runs again to the end" "0 done 4.5.0 aarch64 stable" "$rc $(jget state) $(cat "$V/omarchy")"
 # Keep before Omarchy's packages began to change: refused (the disk is 4.0 as it was; Resume or Undo).
 fresh
 mv_run net run
 mv_run ok keep; rc=$?
 expect "Keep before the switch began: refused (exit 3), the move still open" "3 failed" "$rc $(jget state)"
+# The VM cut off inside the switch (the last word: running in it): Keep refused; Resume asks the VM.
+fresh
+mv_run cut-in-switch run
+mv_run ok keep; rc=$?
+expect "Keep after a cut-off inside the switch: refused, Resume asks the VM" "3 1 running" "$rc $(jget ask_guest) $(jget guest_switch)"
 
 # ---------- Undo cut off, then Undo again; Undo after a backup cut short ----------
 fresh
@@ -479,8 +531,13 @@ expect "crash, then Undo: the old VM stopped first, undone, the disk from before
   "$rc $(jget state) $(kill -0 "$oq" 2>/dev/null && echo runs || echo gone) $(shasum "$V/disk.img" | cut -c1-40)"
 
 crash_mid
+mv_run slow keep; rc=$?
+expect "crash in the download, then Keep This Disk: the old VM stopped first (in the download), Keep refused (no switch yet)" "3 interrupted gone" \
+  "$rc $(jget state) $(kill -0 "$oq" 2>/dev/null && echo runs || echo gone)"
+crash_mid
 mv_run ok keep; rc=$?
-expect "crash, then Keep This Disk: the old VM stopped first, kept" "0 kept gone" "$rc $(jget state) $(kill -0 "$oq" 2>/dev/null && echo runs || echo gone)"
+expect "crash, then Keep This Disk: the old VM went on past its switch before it stopped (settle): kept" "0 kept gone done" \
+  "$rc $(jget state) $(kill -0 "$oq" 2>/dev/null && echo runs || echo gone) $(jget guest_switch)"
 
 crash_mid
 mv_run ok settle FAKE_STUBBORN=1 OMACVM_MOVE_SETTLE_SECONDS=2; rc=$?

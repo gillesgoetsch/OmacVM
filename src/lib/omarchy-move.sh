@@ -11,6 +11,15 @@ move_open() {
   return 1
 }
 
+# move_kept DIR: 0 when the person kept the disk a stopped move left
+# (Keep This Disk: kept; the backup deleted after it or after a move:
+# done-final). apply tells the VM (guest/omarchy-move.sh keep).
+move_kept() {
+  [[ -f $1/move-4.5 ]] || return 1
+  case $(sed -n 's/^state=//p' "$1/move-4.5" | head -1) in kept|done-final) return 0 ;; esac
+  return 1
+}
+
 move_open_text() { printf "'%s' is in the middle of its move to Omarchy 4.5: resume or undo it in OmacVM.app first" "$1"; }
 
 # move_record LINE: the guest's `omarchy-move.sh record` answer as the VM
