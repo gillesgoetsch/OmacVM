@@ -256,4 +256,16 @@ expect "publish: says which part" 1 "$(grep -c "$B.tar.zst.part-aa" "$T/rel.out"
 expect "publish: no digests on GitHub: the parts are downloaded and checked, then the app" "0 1" "$(pub GHS_NODIGEST=1; echo $?) $(app_out)"
 expect "publish: no digests and other bytes for a part: refused" "1 0" "$(pub GHS_NODIGEST=1 GHS_BAD=$B.tar.zst.part-aa; echo $?) $(app_out)"
 
+# ---- the kit's held point (app-guards): the app itself must defer, not hand over to update-swap.sh ----
+printf '%s\n' "2026-11-06T09:11:17Z app 3.3.1: install 3.3.2: copying and checking" \
+  "2026-11-06T09:11:18Z app 3.3.1: install: handing over to update-swap.sh, quitting" \
+  "2026-11-06T09:11:29Z swap: result: aborted a VM runs from OmacVM Test.app: the update waits until it is shut down" > "$T/ul-swap"
+printf '%s\n' "2026-11-06T09:12:25Z app 3.3.1: --update-now: ready(\"3.3.2\")" \
+  "2026-11-06T09:12:25Z app 3.3.1: install 3.3.2 deferred: the move to Omarchy 4.5 runs" > "$T/ul-def"
+cat "$T/ul-def" "$T/ul-swap" > "$T/ul-both"; : > "$T/ul-none"
+dv() { "$R/src/tests/e2e/move-45.sh" --deferred "$1" >/dev/null 2>&1; echo $?; }
+expect "held point: handed over to update-swap.sh (09:11 on the mini) does not count" 1 "$(dv "$T/ul-swap")"
+expect "held point: the app deferred it" 0 "$(dv "$T/ul-def")"
+expect "held point: deferred, then handed over anyway: does not count" 1 "$(dv "$T/ul-both")"
+expect "held point: nothing in update.log: does not count" 1 "$(dv "$T/ul-none")"
 exit $fail

@@ -12,6 +12,9 @@
 #   move-45.sh --paths            the files a result is tied to (release gate)
 #   move-45.sh --summary DIR      DIR/rows/*.json -> DIR/result.json (the gate reads it)
 #   move-45.sh --onscreen         exit 0 when the rows with the app's window may run now
+#   move-45.sh --deferred LOG     exit 0 when LOG (the part of the app's update.log written while
+#                                 it decided) says the app deferred the update itself, not handed
+#                                 it to update-swap.sh (app-guards' held point)
 #
 # APP: a test identity build (org.omacvm.app.test) of the commit under test;
 # its Contents/Resources/scripts run the move as the app does. BASE: a test VM
@@ -47,7 +50,7 @@ power-backup move-vm.sh killed (-9) while it makes the backup: interrupted, Undo
 app-crash    the app crashes mid-download (move-vm.sh killed -9, its headless QEMU runs on): Resume and Undo still work
 disk-pending a disk change not finished (a shrink's journal, a grow): refused before anything changes, plan says why
 busy         while the move runs: Update VM (omacvm apply / update), a second move, Undo and Delete are refused; the move goes on
-app-guards   the app (hidden): opened after a crash nothing starts; an app update offered while the move runs (between its VM starts too) waits, and goes in after it
+app-guards   the app (hidden): opened after a crash nothing starts; an app update offered while the move runs waits (between its VM starts the app itself defers it), and goes in after it
 disk-lock    the app's window (on screen, no input): a move not finished locks Disk › Change… and shows Resume
 guest-full   the VM's own disk nearly full: refused before the switch, Undo restores the disk exactly
 mac-full     the Mac's drive nearly full (the VM on a small APFS disk image): refused before anything changes, plan says why
@@ -61,16 +64,20 @@ src/cmd/apply.sh src/lib/omarchy-move.sh app/app/Sources/OmacVMWindow/OmarchyMov
 app/app/Sources/OmacVM/OmarchyMoveCard.swift app/app/Sources/OmacVM/DiskView.swift app/app/Sources/OmacVM/Updater.swift
 src/tests/e2e/move-45.sh src/tests/e2e/move-45-result.py"
 
-usage() { sed -n '2,35s/^# \{0,1\}//p' "$0"; exit 2; }
+usage() { sed -n '2,34s/^# \{0,1\}//p' "$0"; exit 2; }
 # On screen (MACS-1030d): nobody at the Mac for 5 minutes and the screen unlocked.
 hid_idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'; }
 screen_locked() { [[ $(ioreg -n Root -d1 -a | plutil -extract IOConsoleUsers.0.CGSSessionScreenIsLocked raw - 2>/dev/null) == true ]]; }
 onscreen_ok() { (( $(hid_idle) > 300 )) && ! screen_locked; }
+# The app's own decision (Updater.swift): "install V deferred: why" when it waits; "handing over to
+# update-swap.sh, quitting" when it goes ahead and only the swap's process check could stop it.
+held_deferred() { [[ $1 == *" deferred"* && $1 != *"handing over"* ]]; }
 case ${1:-} in
   --rows) printf '%s\n' "$ROWS"; exit 0 ;;
   --paths) printf '%s\n' $PATHS; exit 0 ;;
   --summary) exec python3 -I "$HERE/move-45-result.py" summary "${2:?usage}" "$R" ;;
   --onscreen) onscreen_ok; exit ;;
+  --deferred) [[ -f ${2:-} ]] || usage; held_deferred "$(cat "$2")"; exit ;;
 esac
 
 APP="" BASE="" ROW="" OUT=""
@@ -133,6 +140,12 @@ clone_to() {   # DIR [stand-in]: BASE's folder as a fresh VM at DIR (cp -c); sta
   sed -i '' -e "s/^SSH_PORT=.*/SSH_PORT=$port/" -e "s/^NAME=.*/NAME='$(basename "$d")'/" "$d/vm.env"
 }
 cleanup() {
+  # A move-vm.sh held at app-guards' point (SIGSTOP) or still running: never left behind.
+  [[ -n ${HELD:-} ]] && kill -CONT $HELD 2>/dev/null
+  if [[ -n ${MV_PID:-} ]] && kill -0 "$MV_PID" 2>/dev/null; then
+    local t; t="$MV_PID $(descendants "$MV_PID")"; kill -CONT $t 2>/dev/null; kill -TERM $t 2>/dev/null
+    for ((t = 0; t < 30; t++)); do kill -0 "$MV_PID" 2>/dev/null || break; sleep 1; done
+  fi
   app_clean 2>/dev/null
   # The guest's own logs, then the VM folder's (the clone goes after the row).
   if [[ -n $(qemu_pid) ]]; then
@@ -612,6 +625,33 @@ disk_locked() {   # WHEN: the Disk row's Change… is there and disabled (AX on 
   check "$1: Disk › Change… locked in the window" $([[ $rc == 1 && $out == *disabled* ]] && echo 1 || echo 0) "ax rc $rc: $out"
 }
 upd_log() { local f; f=$(ls -t "$HOME/Library/Application Support/OmacVM/Updates/org.omacvm.app.test"/*/update.log 2>/dev/null | head -1); [[ -n $f ]] && tail -c 4000 "$f"; }
+upd_mark() {   # the newest update.log and its size now ("PATH<TAB>SIZE")
+  local f; f=$(ls -t "$HOME/Library/Application Support/OmacVM/Updates/org.omacvm.app.test"/*/update.log 2>/dev/null | head -1)
+  printf '%s\t%s\n' "$f" "$([[ -n $f ]] && stat -f %z "$f" || echo 0)"
+}
+upd_since() {   # MARK: what the app wrote to update.log after MARK (all of a newer log)
+  local f n; f=$(ls -t "$HOME/Library/Application Support/OmacVM/Updates/org.omacvm.app.test"/*/update.log 2>/dev/null | head -1)
+  [[ -n $f ]] || return 0
+  if [[ $f == "${1%%$'\t'*}" ]]; then n=${1##*$'\t'}; tail -c +$((n + 1)) "$f"; else cat "$f"; fi
+}
+app_qemu() { LC_ALL=C pgrep -f "$UA/Contents/Resources/runtime/bin/" | tr '\n' ' ' | sed 's/ $//'; }   # what update-swap.sh counts
+HELD=""
+held_point() {   # move-vm.sh's whole tree stopped (SIGSTOP, HELD) between two VM starts, no VM of the app running
+  local end=$(( $(date +%s) + 900 )) more
+  while (( $(date +%s) < end )) && kill -0 "$MV_PID" 2>/dev/null; do   # a settle first can take minutes
+    if [[ $(J state) == running && -z $(app_qemu) ]]; then
+      HELD="$MV_PID $(descendants "$MV_PID")"; kill -STOP $HELD 2>/dev/null
+      # A child forked (or a QEMU started) between the look and the stop: stop those too, look again.
+      sleep 2; more=$(descendants "$MV_PID"); [[ -n $more ]] && kill -STOP $more 2>/dev/null; HELD="$HELD $more"
+      sleep 1
+      [[ -z $(app_qemu) ]] && return 0
+      kill -CONT $HELD 2>/dev/null; HELD=""
+      while (( $(date +%s) < end )) && [[ -n $(app_qemu) ]]; do sleep 0.5; done   # the next gap
+    fi
+    sleep 0.05
+  done
+  return 1
+}
 app_prepare() {   # WINDOW(0|1): the lock, no other launcher, the copy, the update on offer; "" or why it cannot run here
   local why=""
   if (( $1 )) && ! onscreen_ok; then why="someone may be at this Mac or it is locked (HID idle $(hid_idle) s$(screen_locked && echo ', screen locked'))"; fi
@@ -665,24 +705,28 @@ row_app_guards() {
   check "app opened after the crash: the journal as it was" $([[ $(shasum -a 256 "$VD/move-4.5" | cut -c1-16) == "$j0" ]] && echo 1 || echo 0) "state=$(J state)"
   app_quit
   # 3. Resume (from the copy, as its window would). Between two VM starts nothing but move-vm.sh (bash) runs
-  #    from the app: held there (SIGSTOP), the app opens with an update on offer; it must wait for the move too.
-  mvm_bg run
-  local i k=0 tree end=$(( $(date +%s) + 900 ))
-  while (( $(date +%s) < end )) && kill -0 "$MV_PID" 2>/dev/null; do   # a settle first can take minutes
-    [[ $(J state) == running && -z $(qemu_pid) ]] && { tree="$MV_PID $(descendants "$MV_PID")"; kill -STOP $tree 2>/dev/null; k=1; break; }
-    sleep 0.05
-  done
-  local q; q=$(qemu_pid)
-  if (( k )) && [[ -z $q ]]; then
-    log "app-guards: move-vm.sh held at step $(J step), no VM running"
-    app_open --update-now || { kill -CONT $tree 2>/dev/null; check "the app opens with --update-now" 0 ""; app_clean; return; }
-    for ((i = 0; i < 40; i++)); do kill -0 "$UPID" 2>/dev/null || break; sleep 3; done
+  #    from the app: held there (SIGSTOP), the app opens with an update on offer. The app itself must see
+  #    the move and defer ("deferred" in update.log); handing over to update-swap.sh does not count (only the
+  #    swap's process check would stop it then). Fails until the app counts an open move (v340 F2).
+  local i; mvm_bg run
+  if held_point; then
+    log "app-guards: move-vm.sh held at step $(J step), no VM of the app running"
+    local mark seen=""; mark=$(upd_mark)
+    app_open --update-now || { kill -CONT $HELD 2>/dev/null; check "the app opens with --update-now" 0 ""; app_clean; return; }
+    for ((i = 0; i < 40; i++)); do   # it quits once it decided; no VM of the app may start meanwhile
+      [[ -z $seen ]] && seen=$(app_qemu)
+      kill -0 "$UPID" 2>/dev/null || break; sleep 3
+    done
+    [[ -z $seen ]] && seen=$(app_qemu)
     UPID=""
-    check "update on offer between the move's VM starts: not installed (the move itself counts)" $([[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist") == "$pv" ]] && echo 1 || echo 0) "$(upd_log | grep -E 'deferred|install|swap' | tail -2 | tr '\n' ' ' | cut -c1-240)"
-    kill -CONT $tree 2>/dev/null
+    local ul; ul=$(upd_since "$mark")
+    check "held point: no VM of the app ran while it decided (the kit's hold)" $([[ -z $seen ]] && echo 1 || echo 0) "pids '$seen'"
+    check "update on offer between the move's VM starts: the app defers it itself (update.log)" \
+      $(held_deferred "$ul" && echo 1 || echo 0) "$(grep -E 'deferred|handing over|swap: result' <<<"$ul" | tail -3 | tr '\n' ' ' | cut -c1-300)"
+    check "update on offer between the move's VM starts: not installed" $([[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist") == "$pv" ]] && echo 1 || echo 0) ""
+    kill -CONT $HELD 2>/dev/null; HELD=""
   else
-    (( k )) && kill -CONT $tree 2>/dev/null
-    check "update on offer between the move's VM starts (held move-vm.sh)" 0 "kit: the gap was not caught (held $k, state $(J state), step $(J step), QEMU '$(qemu_pid)')"
+    check "update on offer between the move's VM starts (held move-vm.sh)" 0 "kit: no gap without a VM caught in 15 min (state $(J state), step $(J step), QEMU '$(app_qemu)')"
   fi
   # While it downloads (its VM runs from the app), the app opens with the update on offer again.
   wait_until 2400 in_phase download || { check "Resume reached download" 0 "phase $(gstat phase)"; mvm_wait; app_clean; return; }
