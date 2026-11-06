@@ -108,7 +108,14 @@ mini with the switch off: guest saying `inhibit`, nothing held.
 - The agent now owns `org.freedesktop.ScreenSaver` in the session. Only
   Chromium-based callers get an answer other than an error; an app that
   only ever tries that name (and not Wayland) keeps its behaviour, as it
-  got an error before too.
+  got an error before too. A program installed later that wants the name
+  (hypridle, a power manager) cannot take it while the agent serves it.
+- A player that hangs while it holds its inhibit, in a window that can be
+  seen, keeps the Mac's display on until the window is hidden or minimised,
+  the Mac locks or the VM stops, as a hung Mac player does. "Stuck" in the
+  user's rule is read as the agent or the VM being stuck (the lease and
+  powerd's timeout cover those), not the app. Holding only while that
+  output draws frames would cover it too (not built).
 - Battery: while nothing plays one Hyprland request every 10 s in the agent
   (its loop already wakes then) and nothing on the Mac.
 - Old guest with the new app: nothing sent, nothing held. New guest with an

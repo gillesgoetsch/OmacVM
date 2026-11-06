@@ -1836,7 +1836,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   (`OMACVM_VENUS_HOST_MB`) ends it first. The 2816 MB is the account's
   estimate: QEMU had grown only about 300 MB by then. Fix: leave
   `LIBGL_KOPPER_DISABLE` unset (with kopper, Zink waits for each frame:
-  glxgears runs at 60 FPS and takes 26 MB). This is a Mesa (Zink) problem,
+  glxgears runs at 60 FPS and its account peaks at 26 MB). This is a Mesa (Zink) problem,
   not fixed in OmacVM.
 - **Where:** `app/runtime/patches/virgl-venus-*-limits.patch`,
   `virgl-venus-host-memory.patch` (the `host memory` line),
@@ -1866,6 +1866,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   [0070](adr/0070-display-awake-for-video.md)). It lets go when the video
   pauses or ends, the window is minimised, covered or on another Space, the
   screen locks, the VM stops, or the VM says nothing for 30 s.
+- **Stays on?** A player in the VM that hangs while it plays, in a window
+  that can be seen, keeps asking Omarchy not to idle, so the Mac's display
+  stays on until the window is hidden or minimised, the Mac locks or the VM
+  stops, as with a Mac player that hangs.
 - **Still dark?**
   - Chromium (Omarchy's browser and web apps, Chrome, Brave, Electron apps)
     counts only while it holds its display wake lock: Chromium takes it for
@@ -1876,7 +1880,9 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
     `org.freedesktop.ScreenSaver`, which the VM's display agent serves for
     this (`busctl --user status org.freedesktop.ScreenSaver` names
     `omacvm-displays`). If another program serves that name, a video in
-    Chromium before 157 does not count (the agent's log says so).
+    Chromium before 157 does not count (the agent's log says so). While the
+    agent serves it, a program installed later that wants the name (hypridle,
+    a power manager) cannot take it.
   - It stays on, as on a Mac, for a music video with sound (YouTube,
     YouTube Music with its video shown) and for a large muted video that
     plays by itself in a visible tab: Chromium takes its display wake lock
