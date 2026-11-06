@@ -102,6 +102,7 @@ COMMON = [
     "    function notchSettle() {\n",                                         # 9. one glide per change
     "    property bool notchHold: false\n",                                  # 8. a list made again
     "  function notchTraySpans(onNotch) {\n",                                # 1. Omarchy's tray (#662)
+    "  function notchParkedX(x) {\n",                                        # 1. clicks to the item's twin
     "    function onNotchParkedChanged() { root.notchTraySet(false, \"\", \"\") }\n",  # 2. its drawer closes
 ]
 PIECES = COMMON + [
@@ -687,7 +688,43 @@ def main():
     root.setCenterSectionHovered(!t)
     return t ? "widget" : "free"
   }
+  // The strip shows NOTCH's copy and presses the parked one. Each copy's
+  // widgets keep their own state (Omarchy's update icon asks at its start,
+  // then every 6 hours), so for a while one copy can show an item the other
+  // does not, and the items after it sit elsewhere. A strip x goes to the
+  // same place in the parked copy's twin of the item shown there (same
+  // section, id and count); NaN when the parked copy does not show it.
+  function notchShownSlots(onNotch) {
+    var out = []
+    for (var i = 0; i < moduleSlots.length; i++) {
+      var s = moduleSlots[i]
+      if (!s || !(s.width > 0) || s.visible === false || s.notchShiftGone === true) continue
+      var w = slotWindow(s), n = w && w.screen && w.contentItem ? String(w.screen.name) : ""
+      if (onNotch ? n.indexOf("NOTCH") !== 0 : n !== notchParkedScreen) continue
+      out.push([s, s.mapToItem(w.contentItem, 0, 0).x])
+    }
+    out.sort(function(a, b) { return a[1] - b[1] })
+    return out
+  }
+  function notchParkedX(x) {
+    var shown = notchShownSlots(true), at = -1
+    for (var i = 0; i < shown.length; i++)
+      if (x >= shown[i][1] && x < shown[i][1] + shown[i][0].width) at = i
+    if (at < 0) return x
+    var s = shown[at][0], n = 0
+    for (var j = 0; j < at; j++)
+      if (shown[j][0].region === s.region && shown[j][0].moduleName === s.moduleName) n++
+    var parked = notchShownSlots(false)
+    for (var k = 0; k < parked.length; k++) {
+      var p = parked[k][0]
+      if (p.region !== s.region || p.moduleName !== s.moduleName) continue
+      if (n-- === 0) return x - shown[at][1] + parked[k][1]
+    }
+    return NaN
+  }
   function notchTargetAt(x, y) {
+    x = notchParkedX(x)
+    if (isNaN(x)) return null
     for (var i = clickTargets.length - 1; i >= 0; i--) {
       var t = clickTargets[i]
       // Not enabled: hidden by Skip the notch (both sides full).
@@ -1074,6 +1111,20 @@ def main():
     }
     function targets(): string {
       return JSON.stringify(root.barHidden || root.notchFullscreen ? [] : root.notchTargetRects())
+    }
+    // What a click at x would press: [screen, item id], or "miss" (rows, logs).
+    function pick(x: real): string {
+      var t = root.barHidden || root.notchFullscreen ? null : root.notchTargetAt(x, 0)
+      if (!t) return "miss"
+      for (var i = 0; i < root.moduleSlots.length; i++) {
+        var s = root.moduleSlots[i]
+        for (var p = t; s && p; p = p.parent) {
+          if (p !== s && p !== s.activeItem) continue
+          var w = root.slotWindow(s)
+          return JSON.stringify([w && w.screen ? String(w.screen.name) : "", String(s.moduleName)])
+        }
+      }
+      return JSON.stringify(["", ""])
     }
     function state(): string {
       return JSON.stringify({ parked: root.notchParked, screen: root.notchParkedScreen,

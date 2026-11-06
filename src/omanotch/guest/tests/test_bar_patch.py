@@ -1604,7 +1604,8 @@ console.log(JSON.stringify(out));
 # The functions the tray needs from the patch, and its IPC calls.
 TRAY_FUNCS = ["notchTargetAt", "notchTargetRects", "notchHover", "notchIsTray", "notchTrayOf", "notchIsTrayIcon",
               "notchTrayIconsIn", "notchTrayDx", "notchSpan", "notchTraySpans", "notchTrayTarget", "notchTraySet",
-              "notchTrayToggle", "notchIsChevron", "notchPeekEdge", "click", "wheel", "targets", "trays"]
+              "notchTrayToggle", "notchIsChevron", "notchPeekEdge", "notchParkedX", "notchShownSlots",
+              "click", "wheel", "targets", "trays", "pick"]
 
 
 def tray_js(text, steps):
@@ -1720,6 +1721,127 @@ step("unparked", function() { root.notchTraySet(false, "", ""); return null });
             shutil.rmtree(d)
         self.assertEqual(r["pinned"], {"r": "miss", "log": [], "open": [False] * 3})
         self.assertEqual(r["chevron"], {"r": "ok", "log": ["Virtual-1 chevron press 1"], "open": [False] * 3})
+
+
+# The strip shows NOTCH's copy of the bar and presses the parked one. Each
+# copy's widgets keep their own state: Omarchy's update icon (SystemUpdate.qml,
+# 4.0 and 4.5) asks at its start and then every 6 hours, so a NOTCH output
+# made after an update came out shows the icon and the parked bar, older, not
+# (M1 2026-11-06: weather 1610.3 on NOTCH, 1631.3 on the parked bar). Right
+# section: weather, [update], indicators, clock; a click target fills each.
+TWINS = r"""
+var log = [];
+var Qt = { LeftButton: 1, RightButton: 2, MiddleButton: 4 };
+function Item(o, kids) {
+  var it = { x: 0, width: 0, height: 26, visible: true, enabled: true, opacity: 1, clip: false, parent: null };
+  for (var k in o) it[k] = o[k];
+  it.children = kids || [];
+  it.children.forEach(function(c) { c.parent = it });
+  it.mapToItem = function(to, px, py) {
+    var ax = 0;
+    for (var p = this; p && p !== to; p = p.parent) ax += p.x;
+    return { x: ax + px, y: py };
+  };
+  return it;
+}
+var windows = {}, clickTargets = [], moduleSlots = [];
+function Bar(screen, ids) {
+  var x = 1580, slots = [];
+  ids.forEach(function(id) {
+    var shown = id.charAt(0) !== "-", name = shown ? id : id.slice(1), w = shown ? 21 : 0;
+    var t = Item({ width: w, visible: shown, triggerPress: function(b) { log.push(screen + " " + name + " " + b) },
+                   wheelMoved: function(d) { log.push(screen + " " + name + " wheel " + d) } });
+    var s = Item({ x: x, width: w, region: "right", moduleName: name, activeItem: t }, [t]);
+    slots.push(s); clickTargets.push(t); moduleSlots.push(s); x += w;
+  });
+  windows[screen] = { screen: { name: screen }, contentItem: Item({ width: 1920 }, slots) };
+}
+var root = {
+  notchParkedScreen: "Virtual-1", barHidden: false, notchFullscreen: false, notchHovering: false,
+  clickTargets: clickTargets, moduleSlots: moduleSlots,
+  moduleTargetClickable: function(t) {
+    return t && t.visible !== false && t.opacity !== 0 && t.interactive !== false && t.pressable !== false &&
+      t.concealed !== true && typeof t.triggerPress === "function";
+  },
+  targetWindow: function(t) {
+    var p = t; while (p && p.parent) p = p.parent;
+    for (var n in windows) if (windows[n].contentItem === p) return windows[n];
+    return null;
+  },
+  slotWindow: function(s) { return root.targetWindow(s) },
+  setCenterSectionHovered: function() {}, setBarHovered: function() {},
+};
+FUNCS
+BARS
+var out = {};
+function step(name, f) { log = []; var r; try { r = f() } catch (e) { r = String(e) } out[name] = { r: r, log: log } }
+STEPS
+console.log(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class Twins(unittest.TestCase):
+    """A click on the strip presses the parked bar's twin of the item shown
+    under it, also while the two copies differ (v37 and older pressed what
+    the parked bar had at that x: the update icon's place pressed the
+    weather, the weather's place nothing)."""
+
+    STEPS = r"""
+step("weather", function() { return root.click(1590, 10, 1) });
+step("update", function() { return root.click(1610, 10, 1) });
+step("indicators", function() { return root.click(1632, 10, 2) });
+step("clock", function() { return root.click(1660, 10, 1) });
+step("clock wheel", function() { return root.wheel(1660, 10, 120) });
+step("free", function() { return root.click(1000, 10, 1) });
+step("hover update", function() { return root.notchHover(1610) });
+step("pick weather", function() { return root.pick(1590) });
+step("pick update", function() { return root.pick(1610) });
+"""
+
+    def run_twins(self, text, notch, parked):
+        funcs = []
+        for name in TRAY_FUNCS:
+            m = re.search(r"function %s\(([^)]*)\)" % name, text)
+            if not m:
+                continue
+            args = ", ".join(a.split(":")[0].strip() for a in m.group(1).split(",") if a.strip())
+            funcs.append("with (root) { root.%s = function(%s) { %s } }" % (name, args, function(text, name)))
+        bars = 'Bar("Virtual-1", %s); Bar("NOTCH", %s);' % (json.dumps(parked), json.dumps(notch))
+        js = TWINS.replace("FUNCS", "\n".join(funcs)).replace("BARS", bars).replace("STEPS", self.STEPS)
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def test_the_same_copies_press_what_shows(self):
+        ids = ["omarchy.weather", "omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        r = self.run_twins(patched(), ids, ids)
+        self.assertEqual(r["weather"], {"r": "ok", "log": ["Virtual-1 omarchy.weather 1"]})
+        self.assertEqual(r["update"], {"r": "ok", "log": ["Virtual-1 omarchy.system-update 1"]})
+        self.assertEqual(r["indicators"]["log"], ["Virtual-1 omarchy.indicators 2"])
+        self.assertEqual(r["clock"]["log"], ["Virtual-1 omarchy.clock 1"])
+        self.assertEqual(r["free"]["r"], "miss")
+
+    def test_an_item_only_notch_shows_is_not_pressed_and_moves_nothing(self):
+        notch = ["omarchy.weather", "omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        parked = ["omarchy.weather", "-omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        r = self.run_twins(patched(), notch, parked)
+        self.assertEqual(r["weather"], {"r": "ok", "log": ["Virtual-1 omarchy.weather 1"]})
+        self.assertEqual(r["update"], {"r": "miss", "log": []})
+        self.assertEqual(r["indicators"], {"r": "ok", "log": ["Virtual-1 omarchy.indicators 2"]})
+        self.assertEqual(r["clock"], {"r": "ok", "log": ["Virtual-1 omarchy.clock 1"]})
+        self.assertEqual(r["clock wheel"], {"r": "ok", "log": ["Virtual-1 omarchy.clock wheel 120"]})
+        self.assertEqual(r["free"]["r"], "miss")
+        self.assertEqual(r["hover update"]["r"], "free")
+        self.assertEqual(r["pick weather"]["r"], '["Virtual-1","omarchy.weather"]')
+        self.assertEqual(r["pick update"]["r"], "miss")
+
+    def test_an_item_only_the_parked_bar_shows_is_skipped(self):
+        notch = ["omarchy.weather", "-omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        parked = ["omarchy.weather", "omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        r = self.run_twins(patched(), notch, parked)
+        self.assertEqual(r["weather"]["log"], ["Virtual-1 omarchy.weather 1"])
+        # NOTCH's indicators sit where the parked bar's update icon is.
+        self.assertEqual(r["update"], {"r": "ok", "log": ["Virtual-1 omarchy.indicators 1"]})
+        self.assertEqual(r["clock"]["log"], ["Virtual-1 omarchy.clock 1"])
 
 
 TRAYS = sorted((ROOT / "src/tests/omarchy-shell").glob("*/shell/plugins/bar/widgets/Tray.qml"))
