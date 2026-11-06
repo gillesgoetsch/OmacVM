@@ -119,6 +119,16 @@ printf '#!/bin/bash\necho "${FSTYPE:-btrfs}"\n' > "$B/findmnt"
 printf '#!/bin/bash\necho Avail; echo "${AVAIL:-42949672960}"\n' > "$B/df"
 printf '#!/bin/bash\n[[ -e "%s/pacman-runs" ]]\n' "$P" > "$B/pgrep"
 printf '#!/bin/bash\nexit 0\n' > "$B/dkms"
+# btrfs: the disk's top level is the folder $TOP (OMACVM_MOVE_TOPLEVEL);
+# subvolume list -o names $TOP/nested; delete removes the folder.
+cat > "$B/btrfs" <<'EOF'
+#!/bin/bash
+echo "btrfs $*" >> "$P/calls"
+case "$1 $2" in
+  "subvolume list") [[ -e $TOP/nested ]] && echo "ID 300 gen 9 top level 299 path $(cat "$TOP/nested")"; exit 0 ;;
+  "subvolume delete") [[ -e $P/btrfs-fails ]] && exit 1; rm -rf "${!#}" ;;
+esac
+EOF
 printf '#!/bin/bash\necho "systemctl $*" >> "%s/calls"\n' "$P" > "$B/systemctl"
 printf '#!/bin/bash\necho "systemd-run $*" >> "%s/calls"\n' "$P" > "$B/systemd-run"
 # curl: Omarchy's db (a tar with omarchy-4.5.0-3/), the mirror, Arch Linux ARM's file.
@@ -162,7 +172,8 @@ chmod 755 "$B"/* "$GD/system-update" "$TR/app/guest/venus/"*.sh "$T"/compat/* 2>
 
 RT=$T/root
 fresh() {   # a 4.0 VM from omarchy-mac: packages, files, journal gone
-  rm -rf "$RT" "$T/j" "$T/cache" "$P"/*; mkdir -p "$RT/sys/class/dmi/id" "$RT/boot/grub" "$RT/etc/default" \
+  rm -rf "$RT" "$T/j" "$T/cache" "$P"/* "$TOP"; mkdir -p "$TOP/@factory/var/lib/pacman/local/omarchy-4.0.3rc4-2" "$TOP/@"
+  mkdir -p "$RT/sys/class/dmi/id" "$RT/boot/grub" "$RT/etc/default" \
     "$RT/usr/share/pacman/keyrings" "$RT/var/lib/pacman" "$RT/etc/mpv" "$T/cache" "$T/gnupg"
   echo QEMU > "$RT/sys/class/dmi/id/sys_vendor"; echo "menu 4.0" > "$RT/boot/grub/grub.cfg"; echo 'GRUB_TIMEOUT=2' > "$RT/etc/default/grub"
   : > "$RT/usr/share/pacman/keyrings/archlinuxarm.gpg"; : > "$RT/usr/share/pacman/keyrings/omarchy-mac.gpg"
@@ -177,11 +188,12 @@ fresh() {   # a 4.0 VM from omarchy-mac: packages, files, journal gone
   printf 'Server = https://de3.mirror.archlinuxarm.org/$arch/$repo\n' > "$T/mirrorlist"
   cp "$T/pacman.conf" "$T/c40"; cp "$T/mirrorlist" "$T/m40"
 }
-export P DB=$T/omarchy.db J=$T/j CACHE=$T/cache GNUPG=$T/gnupg
+export P DB=$T/omarchy.db J=$T/j CACHE=$T/cache GNUPG=$T/gnupg TOP=$T/top
 o() {
   PATH="$B:$T/compat:$PATH" OMACVM_MOVE_ROOT=$RT OMACVM_MOVE_MACHINE=aarch64 OMACVM_PACMAN_CONF=$T/pacman.conf \
     OMACVM_PACMAN_MIRRORS=$T/mirrorlist OMACVM_PACMAN_GNUPG=$GNUPG OMACVM_MOVE_DIR=$J OMACVM_MOVE_LOG=$T/move.log \
-    OMACVM_PACMAN_CACHE=$CACHE OMACVM_MOVE_WAIT404=0 OMACVM_SYSTEM_UPDATE_LOG=$T/su.log OMARCHY_PATH=$T/omarchy "$M" "$@"
+    OMACVM_PACMAN_CACHE=$CACHE OMACVM_MOVE_WAIT404=0 OMACVM_SYSTEM_UPDATE_LOG=$T/su.log OMARCHY_PATH=$T/omarchy \
+    OMACVM_MOVE_TOPLEVEL=$TOP "$M" "$@"
 }
 calls() { grep -c -e "$1" "$P/calls" 2>/dev/null; }
 
@@ -273,6 +285,32 @@ expect "nobody logged in: the user's systemd runs for omarchy update (its migrat
 expect "mpv.conf kept, mpv and omarchy update ran, GRUB's menu built" "hwdec=auto 1 1 1" \
   "$(cat "$RT/etc/mpv/mpv.conf.omacvm-40") $(calls '^mpv$') $(calls '^update$') $(calls grub-mkconfig)"
 out=$(o run 2>&1); expect "run again: done, nothing again" "0 1" "$? $(calls 'pacman -Suu ')"
+
+# omarchy-mac 4.0's factory snapshot (D14): Omarchy 4.5's Factory Reset would
+# put / back to it (4.0 on omarchy-mac's repos). The switch done, it goes.
+expect "4.0's @factory removed after the switch (the top level's other subvolumes stay), the result says so" \
+  "no yes removed 1" "$([[ -d $TOP/@factory ]] && echo yes || echo no) $([[ -d $TOP/@ ]] && echo yes || echo no) \
+$(json 'd["result"]["factory_snapshot"]' <<<"$res") $(calls "btrfs subvolume delete -c $TOP/@factory")"
+expect "... after the switch, not before (a refused switch keeps it: Undo is not even needed)" "commit" \
+  "$(awk '/^pacman -Suu / { s = 1 } /^btrfs subvolume delete/ && s { print "commit"; exit }' "$P/calls")"
+fresh; : > "$P/commit-refused"; o run >/dev/null 2>&1
+expect "the switch refused: @factory still there" yes "$([[ -d $TOP/@factory ]] && echo yes || echo no)"
+fresh; echo "@factory/var/lib/portables" > "$TOP/nested"; mkdir -p "$TOP/@factory/var/lib/portables"; o run >/dev/null 2>&1
+expect "a subvolume inside @factory goes first" "btrfs subvolume delete $TOP/@factory/var/lib/portables|btrfs subvolume delete -c $TOP/@factory|no" \
+  "$(grep '^btrfs subvolume delete' "$P/calls" | tr '\n' '|')$([[ -d $TOP/@factory ]] && echo yes || echo no)"
+fresh; : > "$P/btrfs-fails"; o run >/dev/null 2>&1; rc=$?
+expect "@factory not removed: the commit step fails, resumable (the switch is done)" "1 failed commit True yes" \
+  "$rc $(o status --json | json '" ".join(str(x) for x in [d["state"], d["code"], d["resumable"]])') $([[ -e $J/commit-done ]] && echo yes)"
+rm -f "$P/btrfs-fails"; o run >/dev/null 2>&1
+expect "... Resume: removed, done, the switch not again" "0 done no removed 1" \
+  "$? $(cat "$J/state") $([[ -d $TOP/@factory ]] && echo yes || echo no) $(cat "$J/factory") $(calls 'pacman -Suu ')"
+fresh; : > "$P/update-fails"; o run >/dev/null 2>&1; n=$(calls 'btrfs subvolume delete'); rm -f "$P/update-fails"; o run >/dev/null 2>&1
+expect "a Resume after it was removed: not again" "$n done removed" "$(calls 'btrfs subvolume delete') $(cat "$J/state") $(cat "$J/factory")"
+fresh; rm -rf "$TOP/@factory"; o run >/dev/null 2>&1
+expect "no @factory (a VM not from omarchy-mac's install): none" "done none 0" \
+  "$(cat "$J/state") $(o status --json | json 'd["result"]["factory_snapshot"]') $(calls 'btrfs subvolume delete')"
+fresh; rm -rf "$TOP/@factory"; mkdir -p "$TOP/@factory/var/lib/pacman/local/omarchy-4.5.0-3"; o run >/dev/null 2>&1
+expect "a 4.5 @factory (not omarchy-mac's): kept" "done yes none" "$(cat "$J/state") $([[ -d $TOP/@factory ]] && echo yes || echo no) $(cat "$J/factory")"
 
 # A step fails after the switch: Resume goes on there, nothing before it again.
 fresh; : > "$P/update-fails"; o run >/dev/null 2>&1; rc=$?

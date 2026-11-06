@@ -136,6 +136,15 @@ elif [[ $om_v =~ ^([0-9]+)\.([0-9]+) ]] && (( BASH_REMATCH[1] > 4 || (BASH_REMAT
     bad "Omarchy" "$om_v, but pacman.conf names Apple's or omarchy-mac's repos (Update VM)"
   elif [[ $om_p != aarch64 ]]; then bad "Omarchy" "$om_v, platform '${om_p:-unknown}', not aarch64"
   else ok "Omarchy" "$om_v, Omarchy's aarch64 repos (${om_c:-?}), platform aarch64"; fi
+  # omarchy-mac 4.0's factory snapshot: the move removes it (Omarchy 4.5's
+  # Factory Reset would put 4.0 back); the 4.5 route makes none.
+  if om_sv=$(btrfs subvolume list / 2>/dev/null); then
+    if awk '{ print $NF }' <<<"$om_sv" | sed 's|^<FS_TREE>/||' | grep -qx '@factory'; then
+      warn "factory reset" "a factory snapshot from before Omarchy 4.5 (@factory) is still there: Omarchy's Factory Reset would go back to it"
+    else
+      ok "factory reset" "no factory snapshot: Omarchy's Factory Reset has nothing to go back to and changes nothing"
+    fi
+  fi
 elif grep -q '^\[omarchy-aarch64\]' /etc/pacman.conf 2>/dev/null; then
   om_l=$(awk '/^\[omarchy-aarch64\]/ { s = 1; next } /^\[/ { s = 0 } s && /^Server/ { n = split($0, p, "/"); print p[n]; exit }' /etc/pacman.conf)
   if [[ $TYPE == app ]]; then warn "Omarchy" "${om_v:-?} from omarchy-mac (${om_l:-?}): Move to Omarchy 4.5 in OmacVM.app"

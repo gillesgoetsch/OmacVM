@@ -662,6 +662,7 @@ after_switch() {
   if pacman -Q omarchy-mac-keyring >/dev/null 2>&1; then
     pacman -Rdd --noconfirm omarchy-mac-keyring >> "$LOG" 2>&1 || say "omarchy-mac-keyring not removed (listed)"
   fi
+  factory_out || return 1
   if [[ -s $J/replace && ! -e $J/replace.done ]]; then
     pacman -Qlq 2>/dev/null | sort -u > "$J/owned"
     while read -r x r by; do
@@ -681,6 +682,48 @@ after_switch() {
   fi
   keep_marked || return 1
   at45 "$(version)" || { REASON="omarchy is $(version) after the switch"; return 1; }
+  sync
+}
+
+# omarchy-mac 4.0's factory snapshot (@factory at the top of the btrfs disk,
+# from its install and OmacVM's prebuilt images): Omarchy 4.5's Factory Reset
+# puts / back to it, which would be omarchy-mac 4.0 on its old repos. It goes
+# once the switch is final; Undo brings back the whole disk, @factory with it.
+# A new 4.5 VM has none: 4.5's Factory Reset then says so and changes
+# nothing. A 4.5 one (not OmacVM's) stays. Journal: factory (removed | none).
+factory_out() {
+  local dev top="" m="" v s
+  [[ $(jget factory) == removed ]] && return 0
+  if [[ -n ${OMACVM_MOVE_TOPLEVEL:-} ]]; then top=$OMACVM_MOVE_TOPLEVEL   # tests
+  else
+    dev=$(findmnt -no SOURCE / 2>/dev/null); dev=${dev%%\[*}
+    m=$(mktemp -d /run/omacvm-move-top.XXXXXX) || return 1
+    if [[ ! -b $dev ]] || ! mount -o subvolid=5 "$dev" "$m" 2>>"$LOG"; then
+      rmdir "$m"; REASON="the top of the VM's btrfs disk could not be mounted (to remove omarchy-mac 4.0's factory snapshot)"; return 1
+    fi
+    top=$m
+  fi
+  if [[ -d $top/@factory ]]; then
+    v=$(ls "$top/@factory/var/lib/pacman/local" 2>/dev/null | sed -n 's/^omarchy-\([0-9][^-]*\)-[^-]*$/\1/p' | head -1)
+    if at45 "$v"; then
+      say "factory snapshot: Omarchy $v, kept"; jset factory none
+    else
+      # Subvolumes inside it first (deepest first), then @factory.
+      for s in $(btrfs subvolume list -o "$top/@factory" 2>/dev/null | awk '{ print $NF }' | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-); do
+        btrfs subvolume delete "$top/${s#<FS_TREE>/}" >> "$LOG" 2>&1
+      done
+      if btrfs subvolume delete -c "$top/@factory" >> "$LOG" 2>&1 && [[ ! -d $top/@factory ]]; then
+        say "omarchy-mac's factory snapshot (Omarchy ${v:-?}) removed: Omarchy 4.5's Factory Reset cannot go back to 4.0"
+        jset factory removed
+      else
+        [[ -z $m ]] || { umount "$m"; rmdir "$m"; }
+        REASON="omarchy-mac 4.0's factory snapshot (@factory) could not be removed (see $LOG)"; return 1
+      fi
+    fi
+  else
+    [[ -n $(jget factory) ]] || jset factory none
+  fi
+  [[ -z $m ]] || { umount "$m"; rmdir "$m"; }
   sync
 }
 
@@ -829,6 +872,7 @@ step_report() {
     printf ' "removed": %s,\n "foreign": %s,\n' "$(jlines <<<"$removed")" "$(jlines <<<"$foreign")"
     printf ' "pacman_conf_lines": %s,\n "pacman_conf_backup": %s,\n' "$(user_conf_lines | jlines)" "$(js "$CONF.omacvm-40")"
     printf ' "obsidian": %s,\n "keep_marked": %s,\n' "$(js "$obs")" "$(jlines <<<"$keep")"
+    printf ' "factory_snapshot": %s,\n' "$(js "$(jget factory)")"
     printf ' "vulkan": %s,\n "kernel_thp": %s,\n' \
       "$(js "$(pacman -Qq omacvm-vulkan-virtio vulkan-virtio 2>/dev/null | head -1)")" "$(js "$(jget kernel-thp)")"
     printf ' "single_file_fetches": %s,\n' "$(jlines <<<"$fetched")"

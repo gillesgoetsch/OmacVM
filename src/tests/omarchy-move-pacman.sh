@@ -109,7 +109,7 @@ case \$url in
 esac
 EOF
 chmod 755 "$B"/* "$GD/system-update" "$TR/app/guest/venus/mpv.sh"
-mkdir -p "$T/hooks" "$T/cache" "$T/pgp"
+mkdir -p "$T/hooks" "$T/cache" "$T/pgp" "$T/top"
 for side in live snap; do
   printf '[options]\nArchitecture = auto\nSigLevel = Never\nLocalFileSigLevel = Never\nNoProgressBar\n' > "$T/$side.conf"
 done
@@ -121,6 +121,7 @@ o() {
   PATH="$B:$PATH" OMACVM_MOVE_ROOT=$RT OMACVM_MOVE_MACHINE=aarch64 OMACVM_PACMAN_CONF=$RT/etc/pacman.conf \
     OMACVM_PACMAN_MIRRORS=$RT/etc/pacman.d/mirrorlist OMACVM_PACMAN_GNUPG=$GNUPG OMACVM_MOVE_DIR=$RT/var/lib/omacvm/move-4.5 \
     OMACVM_MOVE_LOG=$T/move.log OMACVM_PACMAN_CACHE=$T/cache OMACVM_MOVE_WAIT404=0 OMARCHY_PATH=$T/omarchy RT=$RT \
+    OMACVM_MOVE_TOPLEVEL=$T/top \
     "$GD/omarchy-move.sh" "$@"
 }
 p() { PATH="$B:$PATH" OMACVM_PACMAN_CONF=$RT/etc/pacman.conf RT=$RT pacman "$@"; }
