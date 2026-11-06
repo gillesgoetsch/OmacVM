@@ -107,7 +107,13 @@ clone_to() {   # DIR [stand-in]: BASE's folder as a fresh VM at DIR (cp -c); sta
   sed -i '' -e "s/^SSH_PORT=.*/SSH_PORT=$port/" -e "s/^NAME=.*/NAME='$(basename "$d")'/" "$d/vm.env"
 }
 cleanup() {
+  # The guest's own logs, then the VM folder's (the clone goes after the row).
+  if [[ -n $(qemu_pid) ]]; then
+    g "tail -c 200000 /var/log/omacvm-system-update.log" > "$OUT/logs/$TAG.guest-system-update.log" 2>/dev/null
+    g "cat /var/log/omacvm-move-45.log" > "$OUT/logs/$TAG.guest-move.log" 2>/dev/null
+  fi
   vm_off || true
+  [[ -d ${VD:-}/logs ]] && { rm -rf "$OUT/logs/$TAG.vm-logs"; cp -R "$VD/logs" "$OUT/logs/$TAG.vm-logs" 2>/dev/null; }
   [[ -n ${MNT:-} ]] && { hdiutil detach -quiet "$MNT" 2>/dev/null || hdiutil detach -force -quiet "$MNT" 2>/dev/null; }
   if [[ ${KEEP:-0} != 1 && -n ${VD:-} && $VD == *" mv-$ROW" && -f $VD/vm.env ]]; then rm -rf "$VD"; fi
   [[ -n ${IMG:-} ]] && rm -f "$IMG"
