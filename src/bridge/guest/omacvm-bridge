@@ -1,6 +1,6 @@
 #!/bin/bash
 # omacvm-bridge (guest side): small client for the OmacVM Bridge on the Mac.
-#   omacvm-bridge state | scan [--cached] | audio | display | bluetooth | battery | timezone | events [--external] [--direct]
+#   omacvm-bridge state | scan [--cached] | audio | display | bluetooth | timezone | events [--external] [--direct]
 #     (--external: osd events also for brightness changed on the Mac itself;
 #      events come from the session's omacvm-bridge-events when it runs,
 #      --direct: straight from the Mac)
@@ -43,13 +43,13 @@ default_gateway() {
 if [[ ${OMACVM_VM_TYPE:-} == app && -z ${OMACVM_BRIDGE_URL:-} && $(default_gateway) == 192.168.77.1 ]]; then
   OMACVM_HOST=192.168.77.1
 fi
-URL=${OMACVM_BRIDGE_URL:-http://${OMACVM_HOST:-10.211.55.2}:47831}
+URL=${OMACVM_BRIDGE_URL:-http://${OMACVM_HOST:-10.0.2.2}:47831}
 TOKEN_FILE=${OMACVM_BRIDGE_TOKEN_FILE:-$HOME/.config/omacvm-bridge/token}
 
 # The token only to a Bridge that first proved it knows it (HMAC-SHA256 of a
 # fresh nonce and the Mac address it answered on): on 127.0.0.1 (OmacVM.app)
 # any Mac program could listen in its place, and pass on a proof from the
-# Bridge on 10.211.55.2 but for the address. Bridges from before /proof get no
+# Bridge on 192.168.77.1 but for the address. Bridges from before /proof get no
 # token: omacvm update.
 MAC_ADDR=${URL#*://}; MAC_ADDR=${MAC_ADDR%%[:/]*}
 [[ ${OMACVM_VM_TYPE:-} == app && $MAC_ADDR != 192.168.77.1 ]] && MAC_ADDR=127.0.0.1   # OmacVM.app's 10.0.2.2 is the Mac's 127.0.0.1
@@ -87,7 +87,6 @@ case ${1:-} in
   scan) [[ ${2:-} == --cached ]] && req "$URL/scan?cached=1" || req "$URL/scan" ;;
   audio) req "$URL/audio" ;;
   display) req "$URL/display" ;;
-  battery) req "$URL/battery" ;;
   timezone) req "$URL/timezone" ;;
   bluetooth)
     case ${2:-} in

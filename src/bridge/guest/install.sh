@@ -47,7 +47,7 @@ systemctl restart omacvm-timezone.service || true
 
 # Audio (PipeWire's parts come from ../../guest/install.sh): the Mac owns
 # loudness (the bridge sets the Mac's volume), so the VM's own levels stay at full.
-# Microphone likewise: Parallels hands the Mac's input over at the Mac's level,
+# Microphone likewise: the VM app hands the Mac's input over at the Mac's level,
 # so the VM's source stays at 100 % (it starts out far lower).
 amixer -q -c0 sset Master 0dB unmute 2>/dev/null || true
 amixer -q -c0 sset Capture 0dB cap 2>/dev/null || true

@@ -2,7 +2,7 @@
 // Copyright (c) David Heinemeier Hansson. MIT License, see LICENSE.
 //
 // Shows the Mac's Wi-Fi (via the omacvm-bridge helper) instead of the VM's own
-// NetworkManager devices: a Parallels guest only ever sees a virtual Ethernet
+// NetworkManager devices: the VM only ever sees a virtual Ethernet
 // link. Layout, components and keyboard model follow the native widget; the
 // parts that need a local radio (band pinning, DNS, QR sharing, forget) are
 // left out, and join/power stay disabled until the helper implements them.

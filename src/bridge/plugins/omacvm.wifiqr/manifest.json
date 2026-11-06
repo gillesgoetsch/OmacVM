@@ -4,7 +4,7 @@
   "name": "Wi-Fi QR (Mac)",
   "version": "1.0.0",
   "author": "OmacVM (based on Omarchy's Wi-Fi QR card)",
-  "description": "Share the connected Wi-Fi network, the Mac's in a Parallels VM, as a scannable QR code",
+  "description": "Share the connected Wi-Fi network, the Mac's in an OmacVM.app VM, as a scannable QR code",
   "kinds": [
     "panel"
   ],
