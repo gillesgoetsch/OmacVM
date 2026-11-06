@@ -179,6 +179,12 @@ boots_40() {
 journal_state() { check "journal: state $1" $([[ $(J state) == "$1" ]] && echo 1 || echo 0) "state=$(J state) step=$(J step) resumable=$(J resumable) reason=$(J reason)"; }
 
 # ---------- the checks after a move (VM on) ----------
+guest_fails() { g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env); bash /usr/local/share/omacvm/guest/check.sh --user \"\$u\" --tsv 2>/dev/null | awk -F'\t' '\$1 == \"fail\" { print \$2 }'" | sort -u; }
+pre_fails() {   # the guest check's FAIL lines on 4.0, headless (once per row that compares)
+  vm_on || { PRE_FAILS=""; return; }
+  PRE_FAILS=$(guest_fails); vm_off
+  log "4.0 headless guest check FAILs: $(echo $PRE_FAILS | tr '\n' ';' | head -c 200)"
+}
 moved_ok() {   # WHEN
   local w=$1 v pc pf fail
   v=$(g "pacman -Q omarchy" | awk '{ print $2 }')
@@ -195,7 +201,7 @@ moved_ok() {   # WHEN
     G=/etc/pacman.d/gnupg; m() { gpg --homedir "$1" --no-permission-warning --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: "\$1 == \"fpr\" { print \$10; exit }"; }
     [[ -d $G.omacvm-40 && $(m $G) != "$(m $G.omacvm-40)" ]] || echo "no new master key"
     ok=$( { for k in /usr/share/pacman/keyrings/{archlinuxarm,archlinux,omarchy}.gpg; do [[ -f $k ]] && gpg --batch --with-colons --show-keys "$k" 2>/dev/null; done; } |
-      awk -F: "\$1 == \"fpr\" { print \$10 }" | sort -u; echo 40DFB630FF42BCFFB047046CF0134EE680CAC571)
+      awk -F: "\$1 == \"fpr\" { print \$10 }" | sort -u; echo 40DFB630FF42BCFFB047046CF0134EE680CAC571; m $G)
     gpg --homedir $G --no-permission-warning --batch --with-colons --list-keys 2>/dev/null | awk -F: "\$1 == \"pub\" { p = 1; next } \$1 == \"fpr\" && p { print \$10; p = 0 }" |
       while read -r f; do grep -qx "$f" <<<"$ok" || echo "key $f from elsewhere"; done' 2>&1 | head -5)
   check "$w: a new pacman keyring, only Arch Linux ARM's, Arch's and Omarchy's keys" $([[ -z $pc ]] && echo 1 || echo 0) "$(echo $pc | head -c 300)"
@@ -205,8 +211,9 @@ moved_ok() {   # WHEN
   check "$w: snapper and iwd there, root config, snapshots in GRUB" $([[ $pc != *"not found"* && $pc == *grub-btrfs.cfg* ]] && echo 1 || echo 0) "$(echo $pc)"
   fail=$(g "systemctl --failed --no-legend --plain | awk '{ print \$1 }'")
   check "$w: no failed units" $([[ -z $fail ]] && echo 1 || echo 0) "$(echo $fail)"
-  pc=$(g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env); bash /usr/local/share/omacvm/guest/check.sh --user \"\$u\" --tsv 2>/dev/null | awk -F'\t' '\$1 == \"fail\" { print \$2 }'")
-  check "$w: OmacVM's guest check has no FAIL" $([[ -z $pc ]] && echo 1 || echo 0) "$(echo $pc | head -c 300)"
+  # Headless nobody is logged in, so the desktop's lines fail before the move too: only new FAILs count.
+  pc=$(guest_fails | grep -vxF -f <(printf '%s\n' "${PRE_FAILS:-}") | tr '\n' ';')
+  check "$w: OmacVM's guest check: no FAIL that was not there on 4.0" $([[ -z $pc ]] && echo 1 || echo 0) "${pc:0:300}"
   pc=$(g "cat /usr/local/share/omacvm/VERSION")
   check "$w: OmacVM in the VM is the app's" $([[ $pc == "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" ]] && echo 1 || echo 0) "$pc"
   if grep -q 'vulkan=on' "$VD/features" 2>/dev/null; then
@@ -217,6 +224,7 @@ moved_ok() {   # WHEN
 
 # ---------- rows ----------
 row_clean() {
+  pre_fails
   pre_hash
   mvm run; local rc=$?
   check "move-vm.sh run" $((rc == 0)) "exit $rc"
