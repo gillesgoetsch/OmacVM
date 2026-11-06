@@ -268,4 +268,6 @@ expect "held point: handed over to update-swap.sh (09:11 on the mini) does not c
 expect "held point: the app deferred it" 0 "$(dv "$T/ul-def")"
 expect "held point: deferred, then handed over anyway: does not count" 1 "$(dv "$T/ul-both")"
 expect "held point: nothing in update.log: does not count" 1 "$(dv "$T/ul-none")"
+expect "the kit: disk-lock has a disk job refused while a move runs" 1 "$("$R/src/tests/e2e/move-45.sh" --rows | grep -c '^disk-lock .*while a move runs')"
+
 exit $fail

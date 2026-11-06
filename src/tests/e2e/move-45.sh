@@ -51,7 +51,7 @@ app-crash    the app crashes mid-download (move-vm.sh killed -9, its headless QE
 disk-pending a disk change not finished (a shrink's journal, a grow): refused before anything changes, plan says why
 busy         while the move runs: Update VM (omacvm apply / update), a second move, Undo and Delete are refused; the move goes on
 app-guards   the app (hidden): opened after a crash nothing starts; an app update offered while the move runs waits (between its VM starts the app itself defers it), and goes in after it
-disk-lock    the app's window (on screen, no input): a move not finished locks Disk › Change… and shows Resume
+disk-lock    the app's window (on screen, no input): a disk job refused while a move runs (Disk › Change… locked, no Resume), and while a move not finished waits (locked, Resume and Undo)
 guest-full   the VM's own disk nearly full: refused before the switch, Undo restores the disk exactly
 mac-full     the Mac's drive nearly full (the VM on a small APFS disk image): refused before anything changes, plan says why
 non-apfs     the VM on a Mac OS Extended (HFS+) disk image: refused before anything changes, plan says why"
@@ -755,13 +755,30 @@ row_app_guards() {
   check "no QEMU after all of it" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
   app_clean
 }
-row_disk_lock() {   # a move not finished (stopped at the backup, no VM started): the window locks Disk and offers Resume
+row_disk_lock() {   # the window locks Disk while a move runs, and while a move not finished waits (Resume, Undo)
   PRE_FAILS=""
   app_prepare 1 || return
   pre_hash
+  UHIDE=()   # this row's point is the window
+  # 1. A move runs (its VM downloads): a disk job is refused (Change… locked), nothing to resume.
+  mvm_bg run
+  wait_until 2400 in_phase download || { check "the move reached download" 0 "phase $(gstat phase)"; mvm_wait; app_clean; return; }
+  app_open || { check "the app opens while the move runs" 0 ""; app_clean; return; }
+  sleep 20
+  disk_locked "while a move runs"
+  local out rc; out=$("$OUT/ax" "$UPID" has "Resume" 2>&1); rc=$?
+  check "while a move runs: no Resume in the window" $((rc != 0)) "ax rc $rc: $out"
+  check "while a move runs: it goes on (journal running, QEMU)" $([[ $(J state) == running && -n $(qemu_pid) ]] && echo 1 || echo 0) "state=$(J state)"
+  app_quit
+  # Stopped as the app's quit stops it (SIGTERM, at a step boundary), then Undo: the VM as before.
+  kill -TERM "$(mv_script_pid)" 2>/dev/null; mvm_wait
+  check "the running move stops when asked (journal open)" $([[ $(J state) =~ ^(interrupted|failed)$ ]] && echo 1 || echo 0) "state=$(J state)"
+  wait_until 180 eval '[[ -z $(qemu_pid) ]]' || check "the stopped move's VM is gone" 0 "QEMU $(qemu_pid)"
+  mvm undo; check "Undo after the running case" $(( $? == 0 )) ""
+  same_as_before
+  # 2. A move not finished (stopped at the backup, no VM started): locked, Resume and Undo offered.
   OMACVM_TEST_MOVE_STOP=backup mvm run
   check "a move stopped before the VM started (journal open)" $([[ $(J state) =~ ^(interrupted|failed)$ ]] && echo 1 || echo 0) "state=$(J state)"
-  UHIDE=()   # this row's point is the window
   app_open || { check "the app opens" 0 ""; app_clean; return; }
   sleep 20
   disk_locked "a move not finished"
