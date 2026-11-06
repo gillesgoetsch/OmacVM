@@ -51,8 +51,10 @@
 # at M on a Mac without the keys, and its build.log: checked against M and
 # signed here, not built; step image then runs the image VM on that app's own
 # runtime; docs/releasing.md says what is checked and what is trusted),
-# OMACVM_RELEASE_IMAGE_FROM (a folder with a signed image of this version:
-# used instead of building one), OMACVM_RELEASE_UNNOTARIZED=1 (release
+# OMACVM_RELEASE_IMAGE_FROM (a folder with an image of this version: used
+# instead of building one; one made before the run comes unsigned, its parts
+# are checked against its manifest and the key signs it here),
+# OMACVM_RELEASE_UNNOTARIZED=1 (release
 # without notarization, as 2.x), OMACVM_RELEASE_FROM (dry run only: the
 # commit to start from instead of the PR's head). The e2e gate:
 # OMACVM_RELEASE_E2E_RESULT (a result.json of cc-switches.sh, default
@@ -437,6 +439,28 @@ step_image() {
   if [[ -n ${OMACVM_RELEASE_IMAGE_FROM:-} ]]; then
     mkdir -p "$img"; cp -c "$OMACVM_RELEASE_IMAGE_FROM"/* "$img/"
     note "image from $OMACVM_RELEASE_IMAGE_FROM"
+    if [[ ! -f $img/$base.json.sig ]]; then
+      # Made before this run (the release key signs only inside one): its parts must be the
+      # manifest's and its values this release's, then the key signs it here (in the worktree at M).
+      python3 -I - "$img" "$base" "$VERSION" <<'PY' || die "the staged image does not match its manifest or $VERSION"
+import hashlib, json, os, sys
+d, base, v = sys.argv[1:]
+m = json.load(open(os.path.join(d, base + ".json")))
+assert m.get("kind") == "prebuilt-manifest" and m.get("route") == "app" and m.get("omacvm") == v, "kind/route/version"
+names = sorted(x for x in os.listdir(d) if x.startswith(base + ".tar.zst.part-"))
+assert names == sorted(p["name"] for p in m["parts"]), "parts"
+for p in m["parts"]:
+    f = os.path.join(d, p["name"]); h = hashlib.sha256()
+    with open(f, "rb") as fh:
+        for b in iter(lambda: fh.read(1 << 20), b""):
+            h.update(b)
+    assert os.path.getsize(f) == p["size"] and h.hexdigest() == p["sha256"], p["name"]
+print("    staged image: %d parts match the manifest" % len(names))
+PY
+      "$WT/src/release/release-key.sh" sign "$img/$base.json" || die "the release key did not sign the staged image's manifest"
+      (cd "$img" && shasum -a 256 "$base".tar.zst.part-* "$base.json" "$base.json.sig" > "$base.sha256")
+      note "staged image signed in this release run"
+    fi
   else
     [[ -e $HOME/.omacvm-user-testing ]] && die "$HOME/.omacvm-user-testing is set: no VM now (or OMACVM_RELEASE_IMAGE_FROM)"
     # An app from another Mac (step build with OMACVM_RELEASE_APP_FROM) leaves
