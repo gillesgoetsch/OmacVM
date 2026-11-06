@@ -170,7 +170,7 @@ wait_until() {   # SECONDS CMD...: poll CMD every 3 s
 }
 in_phase() { [[ $(gstat phase) == "$1" ]]; }
 committing() { [[ $(gstat commit_started) == true ]]; }
-pre_hash() { PRE_DISK=$(sha "$VD/disk.img"); PRE_EFI=$(sha "$VD/efi-vars.fd"); PRE_REC=$(records); log "before: disk $PRE_DISK"; }
+pre_hash() { [[ -n ${PRE_FAILS+x} ]] || pre_fails; PRE_DISK=$(sha "$VD/disk.img"); PRE_EFI=$(sha "$VD/efi-vars.fd"); PRE_REC=$(records); log "before: disk $PRE_DISK"; }
 same_as_before() {   # after Undo: disk, NVRAM and records exactly as before
   local d e r
   d=$(sha "$VD/disk.img"); e=$(sha "$VD/efi-vars.fd"); r=$(records)
@@ -189,9 +189,13 @@ journal_state() { check "journal: state $1" $([[ $(J state) == "$1" ]] && echo 1
 
 # ---------- the checks after a move (VM on) ----------
 guest_fails() { g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env); bash /usr/local/share/omacvm/guest/check.sh --user \"\$u\" --tsv 2>/dev/null | awk -F'\t' '\$1 == \"fail\" { print \$2 }'" | sort -u; }
-pre_fails() {   # the guest check's FAIL lines on 4.0, headless (once per row that compares)
-  vm_on || { PRE_FAILS=""; return; }
-  PRE_FAILS=$(guest_fails); vm_off
+pre_fails() {   # the guest check's FAIL lines on 4.0, headless: once per base (kept in OUT), before a move
+  local c="$OUT/base-fails-${BN// /_}.txt"
+  if [[ ! -f $c ]]; then
+    vm_on || { PRE_FAILS=""; return; }
+    guest_fails > "$c.new" && mv -f "$c.new" "$c"; vm_off
+  fi
+  PRE_FAILS=$(cat "$c" 2>/dev/null)
   log "4.0 headless guest check FAILs: $(echo $PRE_FAILS | tr '\n' ';' | head -c 200)"
 }
 moved_ok() {   # WHEN
@@ -233,7 +237,6 @@ moved_ok() {   # WHEN
 
 # ---------- rows ----------
 row_clean() {
-  pre_fails
   pre_hash
   mvm run; local rc=$?
   check "move-vm.sh run" $((rc == 0)) "exit $rc"
