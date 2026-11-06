@@ -569,7 +569,7 @@ row_busy() {   # while the move runs, whatever else could touch the VM is refuse
   out=$("$cli" apply --vm "$name" --no-mac --yes 2>&1 < /dev/null); rc=$?
   check "omacvm apply refused (exit 3), nothing changed" $((rc == 3)) "exit $rc: $(tail -1 <<<"$out" | cut -c1-200)"
   out=$("$S/move-vm.sh" "$VD" run 2>&1 3< /dev/null); rc=$?
-  check "a second move refused (exit 3)" $((rc == 3)) "exit $rc: $(tail -1 <<<"$out" | cut -c1-200)"
+  check "a second move refused" $([[ $rc != 0 && $out == *"being moved"* ]] && echo 1 || echo 0) "exit $rc: $(tail -1 <<<"$out" | cut -c1-200)"
   out=$("$S/move-vm.sh" "$VD" undo 2>&1 3< /dev/null); rc=$?
   check "Undo refused while the move runs" $((rc != 0)) "exit $rc: $(tail -1 <<<"$out" | cut -c1-200)"
   out=$("$S/move-vm.sh" "$VD" delete-backup 2>&1 3< /dev/null); rc=$?
