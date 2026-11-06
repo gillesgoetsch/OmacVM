@@ -33,6 +33,7 @@ kill-commit  QEMU killed (-9) inside the package switch: Undo only, and Undo res
 app-quit     the app quits mid-move (SIGTERM to move-vm.sh): it stops at a step boundary, Resume finishes it
 power-loss   move-vm.sh and QEMU killed (-9) together in the package switch (the Mac loses power): interrupted, Undo exact
 power-backup move-vm.sh killed (-9) while it makes the backup: interrupted, Undo (or Resume) leaves the VM as before
+app-crash    the app crashes mid-download (move-vm.sh killed -9, its headless QEMU runs on): Resume and Undo still work
 guest-full   the VM's own disk nearly full: refused before the switch, Undo restores the disk exactly
 mac-full     the Mac's drive nearly full (the VM on a small APFS disk image): refused before anything changes, plan says why
 non-apfs     the VM on a Mac OS Extended (HFS+) disk image: refused before anything changes, plan says why"
@@ -153,6 +154,8 @@ power_off_all() {   # everything of this move at once, no traps (the Mac loses p
   local all; all="$MV_PID $(descendants "$MV_PID") $(qemu_pid)"
   kill -STOP $all 2>/dev/null; kill -9 $all 2>/dev/null
   wait "$MV_PID" 2>/dev/null; MV_PID=""
+  # The power comes back: nothing of it runs any more (a killed process can take a moment to go).
+  local i; for ((i = 0; i < 50; i++)); do [[ -z $(qemu_pid) ]] && ! kill -0 $all 2>/dev/null && break; sleep 0.2; done
 }
 mv_script_pid() { pgrep -P "$MV_PID" -f move-vm.sh | head -1; }   # move-vm.sh itself (MV_PID is its subshell)
 wait_until() {   # SECONDS CMD...: poll CMD every 3 s
@@ -394,6 +397,27 @@ row_power_backup() {
   mvm undo; local rc=$?
   check "Undo" $((rc == 0)) "exit $rc"
   same_as_before
+}
+row_app_crash() {
+  pre_hash
+  mvm_bg run
+  wait_until 2400 in_phase download || { check "reached download" 0 "phase $(gstat phase)"; mvm_wait; return; }
+  local q; q=$(qemu_pid)
+  # The app and its script die; QEMU (a separate process) and the guest's move go on.
+  local all; all="$MV_PID $(descendants "$MV_PID" | grep -vx "$q")"
+  kill -9 $all 2>/dev/null; wait "$MV_PID" 2>/dev/null; MV_PID=""
+  log "app crash: move-vm.sh tree killed, QEMU $q left running ($(kill -0 "$q" 2>/dev/null && echo alive || echo gone))"
+  check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && echo 1 || echo 0) "state=$(J state)"
+  # The app opens again: Resume. It must find its own move VM and carry on (or stop it and resume), never ask the person to shut down a VM they cannot see.
+  mvm run; local rc=$?
+  check "Resume after the crash" $((rc == 0)) "exit $rc: $(J reason)"
+  journal_state done
+  [[ -z $(qemu_pid) ]] || vm_off
+  if (( rc != 0 )); then
+    mvm undo; rc=$?
+    check "Undo after the crash" $((rc == 0)) "exit $rc: $(tail -1 "$OUT/logs/$TAG.move.log")"
+    same_as_before
+  fi
 }
 row_guest_full() {
   pre_hash
