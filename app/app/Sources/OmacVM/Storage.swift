@@ -68,14 +68,22 @@ enum Storage {
         return Int64(st.f_bavail) * Int64(st.f_bsize)
     }
 
-    /// What a folder takes on its drive (a sparse disk counts what it holds).
+    /// What a folder takes on its drive (a sparse disk counts what it holds,
+    /// the move's backup what it does not share with the disk).
     static func allocatedSize(of url: URL) -> Int64 {
         let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isRegularFileKey]
         guard let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) else { return 0 }
         var total: Int64 = 0
         for case let f as URL in e {
             if let v = try? f.resourceValues(forKeys: Set(keys)), v.isRegularFile == true {
-                total += Int64(v.totalFileAllocatedSize ?? 0)
+                // The move's backup shares its blocks with the disk (APFS
+                // clones): only what it holds alone counts.
+                if f.deletingLastPathComponent().lastPathComponent == OmarchyMove.backupName,
+                   let own = OmarchyMove.privateBytes(f.path) {
+                    total += own
+                } else {
+                    total += Int64(v.totalFileAllocatedSize ?? 0)
+                }
             }
         }
         return total
