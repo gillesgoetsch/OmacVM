@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.3.1 (unreleased)
+## 3.3.1
 
 Zed and other wgpu apps run on Vulkan again in OmacVM.app: this needs only the app update and counts
 from the VM's next start. The Mac's display now stays on while a video plays in the VM (OmacVM.app):
