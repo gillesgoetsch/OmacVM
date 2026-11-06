@@ -123,8 +123,11 @@ into the VM; twice quickly opens Mission Control
 
 OmacVM 3.4.0 retired those three routes: OmacVM.app is the only one now.
 Your VM keeps running as it is, with its OmacVM 3.3.x; nothing in it is
-changed or deleted, but it gets no more OmacVM updates, and from 3.4.0 the
-Mac helpers (Bridge, Gestures, Omanotch) no longer serve it. To move:
+changed or deleted, but it gets no more OmacVM updates. From 3.4.0 the Mac's
+helpers no longer serve it: no Mac Wi-Fi, Bluetooth or audio in its bar, no
+media keys, wallpaper or time zone from the Mac, no gestures, no Omanotch, no
+camera or battery; Touch ID asks for the password, and its control centre
+shows how to move. The VM app's own features keep working. To move:
 `omacvm build` makes a new VM in OmacVM.app, then copy your files over (from
 the old VM through its app's shared folder or `scp` to the Mac; in the new VM
 turn on the Mac folder and find them in `~/Mac`). The routes may come back if
