@@ -14,9 +14,6 @@ Status words used below:
   The branch is named.
 - **planned**: designed, not written, or blocked.
 
-The other routes (Parallels, UTM, Fusion) use their vendor's graphics stack;
-this page is only about OmacVM.app's own QEMU.
-
 ## 1. The chain
 
 ### Today (shipped)
