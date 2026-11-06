@@ -264,19 +264,23 @@ printf '#!/bin/bash\n[[ -e $T/pacman-running ]] || exit 1\n[[ $1 != -ax ]] || ec
 # The unit is a background job; its -p and -E names go to $T/units.
 cat > "$T/bin/systemd-run" <<'EOF2'
 #!/bin/bash
-envs=() post="" out=/dev/null
+# The session held for the update: noted, and the user's bus appears.
+if [[ " $* " == *" --unit=omacvm-system-update-session "* ]]; then
+  echo "session: $*" >> "$T/units"; mkdir -p "$T/run/user/$(id -u)"; : > "$T/run/user/$(id -u)/bus"; exit 0
+fi
+envs=() posts=() out=/dev/null
 while (( $# )); do
   case $1 in
     --quiet|--unit=*|--uid=*|--gid=*) shift ;;
     -p) echo "-p $2" >> "$T/units"
-        case $2 in ExecStopPost=*) post=${2#ExecStopPost=+} ;; StandardOutput=append:*) out=${2#StandardOutput=append:} ;; esac
+        case $2 in ExecStopPost=*) p=${2#ExecStopPost=+}; posts+=("${p//\/usr\/bin\/systemctl/systemctl}") ;; StandardOutput=append:*) out=${2#StandardOutput=append:} ;; esac
         shift 2 ;;
     -E) echo "-E ${2%%=*}" >> "$T/units"; [[ $2 == PATH=* ]] && envs+=("$2:/bin") || envs+=("$2"); shift 2 ;;
     *) break ;;
   esac
 done
 # shellcheck disable=SC2086 # the stop command and its words
-( env "${envs[@]}" "$@" >>"$out" 2>&1 & echo $! > "$T/unit.cmd"; wait $!; $post ) >/dev/null 2>&1 </dev/null 9>&- &
+( env "${envs[@]}" "$@" >>"$out" 2>&1 & echo $! > "$T/unit.cmd"; wait $!; for c in "${posts[@]}"; do $c; done ) >/dev/null 2>&1 </dev/null 9>&- &
 echo $! > "$T/unit.pid"
 EOF2
 cat > "$T/bin/systemctl" <<'EOF2'
@@ -290,7 +294,8 @@ fi
 case $1 in
   is-active) alive; exit ;;
   show) if alive; then echo active; else echo inactive; fi ;;
-  stop) if alive; then c=$(cat "$T/unit.cmd"); kill $c $(/usr/bin/pgrep -P "$c"); while alive; do sleep 0.1; done; fi ;;
+  stop) [[ $2 == omacvm-system-update ]] || exit 0   # the session held for it: nothing runs here
+        if alive; then c=$(cat "$T/unit.cmd"); kill $c $(/usr/bin/pgrep -P "$c"); while alive; do sleep 0.1; done; fi ;;
 esac
 exit 0
 EOF2
@@ -309,6 +314,14 @@ out=$(unit); rc=$?; rm -f "$T/sudoers-seen" "$T/orphans"
    $out == *"up to date"* ]] &&
   pass "system-update unit: sudo only while it runs, a time limit, the session's Hyprland, its exit status" ||
   fail "system-update unit: rc $rc, calls '$(tr '\n' ' ' < "$T/calls")', left '$(left)', units '$(tr '\n' ' ' < "$T/units")', said '$out'"
+# The user's systemd for the whole update: a login session held while it runs (Omarchy 4.5's migrations and its
+# update state need it; one that had just ended went away in the middle), the update gets its bus, the session ends.
+[[ $(grep -c '^session: .*--uid=.*-p PAMName=login .*sleep infinity' "$T/units") == 1 &&
+   $(grep -c -e '^-E XDG_RUNTIME_DIR' -e '^-E DBUS_SESSION_BUS_ADDRESS' "$T/units") == 2 &&
+   $(grep -c '^systemctl stop omacvm-system-update-session' "$T/units") -ge 1 &&
+   $(grep -c '^-p ExecStopPost=+/usr/bin/systemctl stop --no-block omacvm-system-update-session' "$T/units") == 1 ]] &&
+  pass "system-update unit: a session of the user's held while omarchy update runs (its bus, its runtime folder), ended after" ||
+  fail "system-update unit, the user's session: units '$(tr '\n' ' ' < "$T/units")'"
 
 vm; : > "$T/bus-away"; : > "$T/update-slow"
 out=$(unit); rc=$?; rm -f "$T/update-slow"
