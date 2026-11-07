@@ -329,7 +329,17 @@ move's VM starts the app itself must defer it, "deferred" in update.log, not
 hand it to update-swap.sh), and Disk › Change… is locked in the window while
 a move runs and while one not finished waits for Resume or Undo (`disk-lock`). After every fault nothing may start by itself until Resume or Undo.
 Resume must finish a move that stopped resumable; Undo must give back
-exactly the VM from before. After a move OmacVM's guest check runs with the
+exactly the VM from before. The cuts inside the switch (`kill-commit`,
+`power-loss`) wait for the guest's marker (pacman's database changed,
+synced to the VM's disk) and must leave it half switched: Resume refused
+(the guest says `half`, or nothing at all when the cut left the VM unable
+to come up or answer), Undo exact. A cut the guest still calls
+`cut-before` or `cut-done` (Resume rightly goes on) is a retry of the
+timing: Undo, the move again, at most 3 times (a Resume that fails after
+such an answer is a FAIL); a row whose only failed
+check is "kit timing: ..." is RETRY, never PASS or FAIL. A power cut
+(`power-loss`, `power-backup`) stops move-vm.sh first, then every process
+under it and the VM's QEMU, then kills them all. After a move OmacVM's guest check runs with the
 desktop up (the test app starts the VM without a window, SDDM logs the user
 in for that start, the test identity's own Bridge and Gestures run) and may fail no line that did not fail on the same 4.0
 VM, checked the same way before the move; the Venus driver meant for the VM
@@ -354,4 +364,6 @@ tested commit whose move files (`move-45.sh --paths`) are the same in the
 release commit (`move-45-result.py gate`; `src/tests/move-45-gate.sh` tests the gate).
 Each row also names the kit it ran with (`move-45.sh` and
 `move-45-result.py`): all rows one kit, and M's, so a row run with older
-checks does not count.
+checks does not count. No row of an older kit is carried over: the kit's
+files are among the `--paths`, so after a kit change the whole matrix runs
+again on the new commit.
