@@ -42,12 +42,29 @@
 #              the built-in's mode unchanged. Skipped on a Mac without a
 #              notched built-in display; not in the default list (--only
 #              fullpanel-builtin).
+#   fullpanel-clamshell  #716: "Full screen including notch" started with the
+#              built-in display off (the lid closed with another display on):
+#              the test app measures the notch with the built-in on
+#              (OmacVM --notch: "notch ..."), the built-in goes off for up to
+#              60 s (app/scripts/dev/builtin-display.m), the app then says
+#              "remembered ..." with the same numbers, the VM starts in full
+#              screen on a virtual display (the only one on), its notch area
+#              line says the built-in display is off and QEMU arms it late;
+#              the built-in comes back, the virtual display is unplugged: the
+#              last FullPanel line check reads is "strip covered", no "strip
+#              not back" or "strip lost", the main window covers the whole
+#              built-in display, the guest got the remembered notch
+#              (host.env OMACVM_FULLPANEL), the built-in's mode unchanged.
+#              The test app's remembered notch is put back. Skipped on a Mac
+#              without a notched built-in display; not in the default list
+#              (--only fullpanel-clamshell). Not a real lid: the person row
+#              (lid shut, start, lid opened) stays the proof.
 # After each unplug: the same QEMU still runs 8 s later, the VM answers over
 # SSH, and no new crash report of the app's QEMU.
 #
 #   src/tests/e2e/display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only LIST] [--sleep] [--builtin-off] [--out DIR]
-#     --only LIST   cases (comma list): full,fullpanel,window,head,fullpanel-builtin
-#                   (default: all but fullpanel-builtin)
+#     --only LIST   cases (comma list): full,fullpanel,window,head,fullpanel-builtin,fullpanel-clamshell
+#                   (default: all but fullpanel-builtin and fullpanel-clamshell)
 #     --sleep       fullpanel-builtin also puts the displays to sleep and wakes them
 #     --builtin-off fullpanel-builtin also switches the built-in display off for 10 s
 #     --out DIR     summary.tsv and the logs (default ~/omacvm-e2e/unplug-<time>)
@@ -76,7 +93,7 @@ while (( $# )); do
     --flap-rounds) FLAPS=$2; shift 2 ;;
     --only) ONLY=",$2,"; shift 2 ;;
     --out) OUT=$2; shift 2 ;;
-    *) echo "usage: display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only full,fullpanel,window,head,fullpanel-builtin] [--sleep] [--builtin-off] [--out DIR]" >&2; exit 2 ;;
+    *) echo "usage: display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only full,fullpanel,window,head,fullpanel-builtin,fullpanel-clamshell] [--sleep] [--builtin-off] [--out DIR]" >&2; exit 2 ;;
   esac
 done
 [[ -n $VM ]] || { echo "display-unplug: --vm NAME (a test VM)" >&2; exit 2; }
@@ -154,9 +171,9 @@ LOCKTOOL="$OUT/test-lock"
 clang -fobjc-arc -framework Foundation "$R/app/scripts/dev/test-lock.m" -o "$LOCKTOOL" >> "$OUT/build-tool.log" 2>&1 ||
   { echo "display-unplug: could not build the lock tool ($OUT/build-tool.log)" >&2; exit 3; }
 lockhook() { "$LOCKTOOL" "$1"; }
-# The built-in display off and back (fullpanel-builtin --builtin-off).
+# The built-in display off and back (fullpanel-builtin --builtin-off, fullpanel-clamshell).
 BDISP="$OUT/builtin-display"
-if (( BOFF )); then
+if (( BOFF )) || [[ $ONLY == *",fullpanel-clamshell,"* ]]; then
   clang -fobjc-arc -framework AppKit -framework CoreGraphics "$R/app/scripts/dev/builtin-display.m" -o "$BDISP" \
     >> "$OUT/build-tool.log" 2>&1 || { echo "display-unplug: could not build the built-in display tool ($OUT/build-tool.log)" >&2; exit 3; }
 fi
@@ -166,8 +183,11 @@ session_locked() { person_locked; }
 # Put back what this changes, also on Ctrl-C.
 FS_BEFORE=$(defaults read "$APPID" startFullScreen 2>/dev/null || echo unset)
 NOTCH_BEFORE=$(cat "$VMD/notch-mode" 2>/dev/null || echo none)
+REMEMBERED_BEFORE=$(defaults read "$APPID" builtinNotch 2>/dev/null || echo unset)
+BOFF_PID=""
 restore() {
   person_watch_stop
+  [[ -n $BOFF_PID ]] && { kill "$BOFF_PID" 2>/dev/null; wait "$BOFF_PID" 2>/dev/null; }
   unplug
   local p; p=$(qemu_pid)
   if [[ -n $p ]]; then
@@ -177,10 +197,12 @@ restore() {
   if [[ $FS_BEFORE == unset ]]; then defaults delete "$APPID" startFullScreen 2>/dev/null
   else defaults write "$APPID" startFullScreen -bool "$( [[ $FS_BEFORE == 1 ]] && echo true || echo false)"; fi
   if [[ $NOTCH_BEFORE == none ]]; then rm -f "$VMD/notch-mode"; else echo "$NOTCH_BEFORE" > "$VMD/notch-mode"; fi
+  if [[ $REMEMBERED_BEFORE == unset ]]; then defaults delete "$APPID" builtinNotch 2>/dev/null
+  else defaults write "$APPID" builtinNotch "$REMEMBERED_BEFORE"; fi
 }
 trap restore EXIT
 
-start() {   # window|full|fullpanel, on the virtual display; head: full on the other one; fullpanel-builtin
+start() {   # window|full|fullpanel|fullpanel-clamshell, on the virtual display; head: full on the other one; fullpanel-builtin
   local mode=$1 i env=(--env "OMACVM_TEST_MAIN_DISPLAY=$VD_ID" --env OMACVM_TEST_PASTEBOARD=org.omacvm.test.e2e)
   rm -f "$VMD/notch-mode"
   case $mode in
@@ -194,6 +216,8 @@ start() {   # window|full|fullpanel, on the virtual display; head: full on the o
     fullpanel-builtin) defaults write "$APPID" startFullScreen -bool true; echo fullpanel > "$VMD/notch-mode"
                env=(--env "OMACVM_TEST_MAIN_DISPLAY=$BUILTIN_ID" --env OMACVM_TEST_PASTEBOARD=org.omacvm.test.e2e
                     --env OMACVM_TEST_LOCK_HOOK=1) ;;
+    fullpanel-clamshell) defaults write "$APPID" startFullScreen -bool true; echo fullpanel > "$VMD/notch-mode"
+               env+=(--env OMACVM_TEST_LOCK_HOOK=1) ;;
   esac
   (source "$HERE/test-vms.sh" && e2e_vm_guard "$APPID" "$VM") >/dev/null || return 1
   # A QEMU that crashed (an earlier round) left the run marker: the start would ask "Start Anyway".
@@ -201,6 +225,8 @@ start() {   # window|full|fullpanel, on the virtual display; head: full on the o
   open -n "${env[@]}" --env OMACVM_TEST_HELPERS_ANSWER=later "$APP" --args --start --vm "$VM"
   for ((i = 0; i < 40; i++)); do [[ -n $(qemu_pid) ]] && break; sleep 1; done
   [[ -n $(qemu_pid) ]] || return 1
+  # fullpanel-clamshell watches QEMU's way into full screen itself (the built-in display is off meanwhile).
+  [[ $mode == fullpanel-clamshell ]] && return 0
   # The desktop up (its display agent moves the outputs), then a moment for full screen.
   for ((i = 0; i < 90; i++)); do gssh "test -d /run/user/\$(id -u \$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env))/hypr" 2>/dev/null && { sleep 25; return 0; }; sleep 2; done
   return 1
@@ -459,11 +485,71 @@ case_fullpanel_builtin() {
   sleep 3
 }
 
+# fullpanel-clamshell (#716): started with the built-in display off, the strip once the Space is on it.
+case_fullpanel_clamshell() {
+  local r a m0 m1 n0 n1 area late l0 env_line want_env
+  BUILTIN_ID=$("$CENSUS" | awk '$1 == "builtin" {print $2; exit}')
+  if [[ -z $BUILTIN_ID || $("$APP/Contents/Resources/tools/mac-notch" 2>/dev/null) != notch ]]; then
+    res fullpanel-clamshell skip "this Mac has no built-in display with a notch"; return
+  fi
+  BUILTIN_ORIGIN=$("$CENSUS" | awk -v id="$BUILTIN_ID" '$1 == "display" && $2 == id {print $(NF - 1); exit}')
+  n0=$("$APP/Contents/MacOS/OmacVM" --notch 2>/dev/null)
+  [[ $n0 == "notch "* ]] || { res fullpanel-clamshell FAIL "the app measures no notch with the built-in on: ${n0:-nothing}"; return; }
+  log "fullpanel-clamshell: notch ${n0#notch }; the built-in display off, the VM on a virtual one"
+  plug || { res fullpanel-clamshell FAIL "no virtual display"; return; }
+  m0=$("$BDISP" mode)
+  "$BDISP" off 60 > "$OUT/fullpanel-clamshell-off.tool" 2>&1 &
+  BOFF_PID=$!
+  for ((r = 0; r < 20; r++)); do [[ $("$BDISP" mode) == *"builtin=none"* ]] && break; sleep 0.5; done
+  if [[ $("$BDISP" mode) != *"builtin=none"* ]]; then
+    res fullpanel-clamshell FAIL "the built-in display did not go off: $(tail -1 "$OUT/fullpanel-clamshell-off.tool")"
+    kill "$BOFF_PID" 2>/dev/null; BOFF_PID=""; unplug; return
+  fi
+  n1=$("$APP/Contents/MacOS/OmacVM" --notch 2>/dev/null)
+  if [[ $n1 != "remembered ${n0#notch }" ]]; then
+    res fullpanel-clamshell FAIL "with the built-in off the app says '${n1:-nothing}', want 'remembered ${n0#notch }'"
+    kill "$BOFF_PID" 2>/dev/null; BOFF_PID=""; unplug; return
+  fi
+  res fullpanel-clamshell-remembered ok "built-in off: $n1"
+  l0=$(wc -l < "$VMD/logs/qemu.log" 2>/dev/null || echo 0)
+  start fullpanel-clamshell || { res fullpanel-clamshell FAIL "the VM did not start"; kill "$BOFF_PID" 2>/dev/null; BOFF_PID=""; unplug; return; }
+  # QEMU's way into full screen while the built-in is off (it says so at once); then the built-in back.
+  for ((r = 0; r < 40; r++)); do
+    late=$(tail -n +$((l0 + 1)) "$VMD/logs/qemu.log" 2>/dev/null | grep -m1 'full panel: in full screen on a display without a camera housing')
+    [[ -n $late ]] && break; sleep 1
+  done
+  kill "$BOFF_PID" 2>/dev/null; wait "$BOFF_PID" 2>/dev/null; BOFF_PID=""
+  area=$(tail -n +$((l0 + 1)) "$VMD/logs/qemu.log" | grep -h 'OmacVM: notch area:' | tail -1)
+  if [[ $area != *"notch area: fullpanel (Omanotch off for this start; the built-in display is off"* ]]; then
+    res fullpanel-clamshell FAIL "not a FullPanel start with the remembered notch: ${area:-no notch area line}"; unplug; stop; return
+  fi
+  [[ -n $late ]] || { res fullpanel-clamshell FAIL "QEMU did not arm the full screen late: $(fp_line)"; unplug; stop; return; }
+  res fullpanel-clamshell-start ok "$(cut -c1-110 <<<"$area")"
+  for ((r = 0; r < 90; r++)); do gssh "test -d /run/user/\$(id -u \$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env))/hypr" 2>/dev/null && break; sleep 2; done
+  sleep 20
+  HPID=$(qemu_pid); C0=$(crashes)
+  a=$(census); echo "$a" > "$OUT/fullpanel-clamshell-before.census"
+  # The virtual display (the main window's) unplugged: its Space goes to the built-in.
+  F0=$(( $(fullspaces "$a") )); S0=""
+  l0=$(wc -l < "$VMD/logs/qemu.log"); unplug; sleep 15
+  S0=$(builtin_space "$(census)")
+  fp_check fullpanel-clamshell "$l0" "$F0"
+  want_env="OMACVM_FULLPANEL=${n0#notch }"
+  env_line=$(gssh "grep '^OMACVM_FULLPANEL=' /run/omacvm/host.env" 2>/dev/null)
+  [[ $env_line == "$want_env" ]] && res fullpanel-clamshell-guest ok "$env_line" ||
+    res fullpanel-clamshell-guest FAIL "the guest has '${env_line:-nothing}', want '$want_env'"
+  m1=$("$BDISP" mode)
+  [[ $m1 == "$m0" ]] || res fullpanel-clamshell-mode FAIL "the built-in's mode changed ($m0 -> $m1): left as it is, tell the person"
+  stop || res fullpanel-clamshell-stop FAIL "the VM did not shut down"
+  sleep 3
+}
+
 person_watch_start
 want full && gate full && case_run full full "$ROUNDS"
 want fullpanel && gate fullpanel && case_run fullpanel fullpanel 2
 want window && gate window && case_run window window 1
 [[ -n $ONLY && $ONLY == *",fullpanel-builtin,"* ]] && gate fullpanel-builtin && case_fullpanel_builtin
+[[ -n $ONLY && $ONLY == *",fullpanel-clamshell,"* ]] && gate fullpanel-clamshell && case_fullpanel_clamshell
 if { want head || want head-unplug || want head-flap || want head-tiny || want head-locked; } && gate head; then
   [[ -n $ONLY && $ONLY != *",head,"* ]] || ONLY=",head-unplug,head-flap,head-tiny,head-locked,"
   OTHER_ID=$("$CENSUS" | awk '$1 == "display" && $4 == "active" {print $2; exit}')

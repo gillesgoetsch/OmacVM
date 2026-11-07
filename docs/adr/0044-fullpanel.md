@@ -336,3 +336,114 @@ run there; it stays covered by the replay rows. A Split View made from the
 full screen in Mission Control (macOS 27 greys out Window > Full Screen
 Tile for a window already in full screen) stays `strip lost: frame (766 0
 746x982)`, and a display change after it tries nothing.
+
+## A start with the lid closed (#716)
+
+Status: proposed for 3.4.1 (PR after #728);
+`omacvm-cocoa-fullpanel-late-arm*.patch`, applied after the retake pair.
+Reported by @hadiskeini.
+
+**What happened.** A VM set to "Full screen including notch" was started
+with the MacBook's lid closed (an external display only). After the lid
+was opened and the external display unplugged, the strip beside the notch
+stayed black until the VM was started again (the guest 3456x2160 instead of
+3456x2234 on a 16-inch MacBook Pro). Two halves, both read at rc-3.4.0:
+
+- The app measured the camera housing once per start, from a built-in
+  `NSScreen`. With the lid closed there is none, so `NotchArea.start` gave
+  native for the whole run: no `OMACVM_FULLPANEL=1`, no geometry for the
+  guest. This section no longer says "a notch now" and "measured from the
+  built-in screen at that start" alone.
+- QEMU armed a full screen only when it was entered on a display with a
+  housing (`-willEnterFullScreen` returned before `armed`). The claim, the
+  resume after a display without a housing and the retake all need an armed
+  full screen, so a full screen entered on the external display never took
+  the strip after its Space moved to the MacBook's display, even with
+  `OMACVM_FULLPANEL=1`. "Only a window on a display with a camera housing"
+  now holds for the strip itself, not for the way in. An app-only fix (the
+  issue's suggestion) would not have covered the strip.
+
+**The remembered notch (app).** Whenever the app measures a notch (its
+launch, a display change while it runs, each VM start) it keeps it in its
+settings, key `builtinNotch`: "<mac> LxRxHxWxD", where <mac> is the first
+16 hex digits of the SHA-256 of the Mac's IOPlatformUUID (`NotchHousing`;
+the UUID itself is not stored). A start uses it only while no built-in
+display is online in CoreGraphics (`Mac.builtinOff`: the lid closed with
+external displays only, or a Mac without one) and only when the key is this
+Mac's: a settings file moved to another Mac or a VM folder copied there never
+uses another Mac's notch. A built-in display that is on but mirrored or at a
+resolution below the notch is not off: native, as before. The record says
+which: `fullpanel (Omanotch off for this start; the built-in display is off,
+its notch as last seen: notch L-R, strip H of WxD points)`. Nothing
+remembered (a first start ever with the lid closed): native, as before.
+`NotchStart` carries the geometry it chose, so the SMBIOS line is the
+decision's. `omacvm notch`/`fullscreen` and `check` say the same next start
+(`notch_mac_state`: `mac-notch builtin` says notch, none or off; the key is
+checked in `src/lib/notch.sh`; `mac-notch` without an argument still says
+notch or none). `defaults delete org.omacvm.app builtinNotch` forgets it.
+`OmacVM --notch` prints what a start would use now.
+
+Not chosen: FullPanel whenever the Mac's model has a notch. The guest needs
+the housing in points, which depends on the display's resolution, and the
+SMBIOS value and the bar's host.env are fixed for the whole boot. Sending
+the geometry to a running guest would change the bar patches of 4.0 and
+4.5 for a rare case.
+
+**The late arm (QEMU).** The main window's way into full screen on a display
+without a housing, with every other part there (the menu bar setting, the
+reservation, SkyLight; `omacvm_fp_entry`), is armed late: normal full
+screen there, as a full screen a display change moved there (released, a
+display change with its own 3 tries). It says so once with a line check does
+not read ("in full screen on a display without a camera housing (the
+MacBook's display is off): ..."; beside the open MacBook the old "a window on
+another display ..." line), so check skips it. didEnterFullScreen counts it
+as entered (`omacvm_fp_entered`): the retake and the sorting of later frame
+changes need that; it is accepted only once it covers a display with a
+housing. On the external display it stays quiet: no "display change:",
+"strip lost" or "strip not back" line and no try used, through settles,
+sleep, Mission Control. Once AppKit has its Space on the MacBook's display:
+"display change: the full screen is on a display with a camera housing
+again; ..." (any full screen coming back from a display without a housing
+now says this; check warns until "strip covered"), then the claim lays it
+out over the whole display ("strip covered"), or the retake does once the
+displays settle ("strip taken again", "strip covered"). Only the main window
+is armed late: the other displays' windows are made again per display. An
+entry missing another part stays normal full screen and its line now names
+that part. Also covered: the main window in full screen on an external
+display beside the open MacBook, then unplugged.
+
+A late full screen takes the strip only on a display of the size its notch
+was measured on (`OMACVM_FULLPANEL_PANEL`, "WxD" points from the app;
+`omacvm_fp_late_fits` in the claim): the guest's bar was given that notch
+for the whole boot and would sit unsplit under the housing on another size.
+Then: "the MacBook's display is WxH now, this start's notch was measured at
+WxD: normal full screen; start the VM again for the strip" (check warns).
+Once covered it is an ordinary FullPanel full screen.
+
+check: "the full screen is on a display without a camera housing: normal
+full screen there" is now a skip (the lid closed, or a FullPanel window on an
+external display: it covers the strip again on the MacBook's display), no
+longer a warn.
+
+**Tests.** `swift run features-tests` (the start decision with the built-in
+off, `MacNotch`, `NotchHousing`: this Mac's key, another Mac's, malformed
+values); `src/tests/notch-setting.sh` (the app and omacvm agree on 24 cases
+and read the remembered value the same, `notch_mac_state` with stand-ins);
+`app/runtime/Tests/display/test-fullpanel-late-arm.sh` (the rules; the
+wiring at build time; `--self-test` fails on the code before);
+`test-fullpanel-retake.c` (a late entry replayed: quiet on the external
+display, the whole display at once on arrival, AppKit keeping the band and
+one try, 3 tries and "strip not back" when it keeps it for good, Split View
+and a later display change after it, the lid shut again before the strip
+came back, another panel size, a head window, the menu bar always shown);
+`src/tests/fullpanel-check.sh`; `src/tests/e2e/display-unplug.sh --only
+fullpanel-clamshell` on a notched test Mac (the built-in display off with
+`builtin-display.m`, a start on a virtual display, the built-in back, the
+virtual display unplugged).
+
+**Not proven here.** A real lid closed and opened, or a real external
+display unplugged, on a notched MacBook: lanes cannot do either. AppKit may
+lay out a Space that arrives from a closed lid differently from the
+built-in-gone-and-back case the retake was proven on (M1 Max, 10-29); the
+fallback is today's behaviour with the retake's lines, and leaving and
+entering full screen covers the strip.
