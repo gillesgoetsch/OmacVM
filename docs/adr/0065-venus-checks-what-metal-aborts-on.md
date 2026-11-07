@@ -1438,7 +1438,17 @@ wgpu app with a struct or array local.
 and Private types at every SPIR-V version, as 1.4 does today. A guest could
 already send the same decorations in a 1.4 module and pass, so no new input
 reaches a driver. Mesa drops the layout for these storage classes
-(`spirv_to_nir.c`, `glsl_get_bare_type`); KosmicKrisp built all 9 of Zed's
+(`spirv_to_nir.c`, `glsl_get_bare_type`). SPIRV-Cross, MoltenVK's shader
+compiler, lays out only the structs it reaches from Uniform,
+UniformConstant, PushConstant and StorageBuffer blocks or from
+PhysicalStorageBuffer pointers (`CompilerMSL::mark_packable_structs`, then
+`align_struct`; SPIRV-Cross 6c09849f, MoltenVK 1.4.2's pin): a Function or
+Private struct gets no padding from its Offsets, and a Function array is a
+`spvUnsafeArray` at its element's own size. Measured on the CPU with
+MoltenVK's options: one module with a Function struct, a Function array and
+a Private struct gives the same MSL with an odd layout (Offset 48 and 80,
+ArrayStride 64) as with naga's (16), and without any layout only other
+struct names (see #718). KosmicKrisp built all 9 of Zed's
 pipelines from the 1.6 modules and MoltenVK 7 (its other 2 fail in
 SPIRV-Cross's MSL at SPIR-V 1.0 too: Zed on the MoltenVK route is a separate
 problem). Before the change VUID-10684 was the first error of none of the
@@ -1458,7 +1468,8 @@ error code would be lost.
 **The bar for relaxing a spirv-val rule** (all four):
 
 1. a real shader compiler emits it (named, with its version);
-2. both Mac drivers ignore what it forbids (cited from their source);
+2. both Mac drivers ignore what it forbids (cited from their source, and
+   measured where a compiler can be run on the CPU);
 3. it is legal in some SPIR-V version, so a guest can already send it;
 4. 0 changes in the crash, fuzz and refuse corpora with the change.
 
