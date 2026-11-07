@@ -70,7 +70,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 37
+VERSION = 38
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -104,6 +104,7 @@ COMMON = [
     "  function notchTraySpans(onNotch) {\n",                                # 1. Omarchy's tray (#662)
     "  function notchParkedX(x) {\n",                                        # 1. clicks to the item's twin
     "    function onNotchParkedChanged() { root.notchTraySet(false, \"\", \"\") }\n",  # 2. its drawer closes
+    "      function notchParkEnd() {\n",                                    # 3. mapped again after the park (#727)
 ]
 PIECES = COMMON + [
     "        Item { id: notchLeftEdge; ",                                     # 5. around the housing
@@ -1500,10 +1501,25 @@ EXCLUSION
         lastY = s.y
         if (moved) notchRemapSettle.restart()
       }
-      Component.onCompleted: note()
+      // When the notch park ends (the role leaves "parked"), unmap for a
+      // moment too (#727). The parked copy is 1 px tall and off screen; on a
+      // 4.0 VM its window could stay at that size after the unpark, so the
+      // bar stayed hidden. Mapping it again gives it the unparked size and
+      // margin. Only the end of the notch park: Omarchy's own bar toggle and
+      // the NOTCH or FullPanel bars keep their fast path (margins only).
+      property string roleWas: ""
+      function notchParkEnd() {
+        if (roleWas === "parked" && barWindow.notchRole !== "parked") remapping = true
+        roleWas = barWindow.notchRole
+      }
+      Component.onCompleted: { note(); notchParkEnd() }
       Connections {
         target: barWindow.screen
         function onGeometryChanged() { notchRemap.note(); root.notchPanelUpdate() }
+      }
+      Connections {
+        target: barWindow
+        function onNotchRoleChanged() { notchRemap.notchParkEnd() }
       }
       // Let a layout change settle, then unmap for a moment (long enough
       // that the compositor sees the unmap before the new map).
