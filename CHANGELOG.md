@@ -6,10 +6,12 @@ in more words.
 ## 3.4.1 (unreleased)
 
 - **Omanotch** on Omarchy 4.0 VMs: the bar on the built-in display could stay parked off screen
-  (1 px tall, nothing reserved at the top) after the notch strip went away, until Omarchy's bar
-  toggle was pressed twice (#727, seen on hidden test VMs of an M1 Max with HDR on). When the notch
-  park ends, the bar's window is now mapped again, so it comes back at its full size. Omarchy's own
-  bar toggle and the bars in the notch strip work as before. Update VM brings it (bar patch v38).
+  (1 px tall, nothing reserved at the top) after the notch strip went away, until something else
+  was drawn on that display or Omarchy's bar toggle was pressed twice (#727, seen on hidden test VMs
+  of an M1 Max, with HDR on and off). When the notch park ends, the bar's window is now mapped
+  again, so it comes back at its full size without waiting for a redraw (checked on those hidden
+  VMs). Omarchy's own bar toggle and the bars in the notch strip work as before. Update VM brings it
+  (bar patch v38).
 
 ## 3.4.0 (unreleased)
 
