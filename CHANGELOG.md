@@ -5,10 +5,12 @@ in more words.
 
 ## 3.4.1 (unreleased)
 
-- Omarchy 4.5: a pinch zoom (in Chrome and elsewhere) no longer starts with a right click. Omarchy
-  4.5 leaves tap-to-click on, and OmacVM's virtual trackpad took the two fingers at the start of a
-  pinch as a two-finger tap. Tap-to-click is now off for that trackpad only; taps and clicks on
-  the Mac's trackpad work as before.
+- Omarchy 4.5: a pinch zoom (in Chrome and elsewhere) no longer starts with a right click, a
+  quick two-finger touch no longer right-clicks (twice with the Mac's tap to click on), and a
+  three-finger tap no longer pastes. Omarchy 4.5 leaves tap-to-click on, and OmacVM's virtual
+  trackpad took its short still touches (the two fingers at the start of a pinch) as taps.
+  Tap-to-click is now off for that trackpad only (Update VM; `omacvm check` "trackpad taps"); the
+  Mac's taps and clicks reach the VM as the Mac's trackpad settings make them.
 
 ## 3.4.0
 
