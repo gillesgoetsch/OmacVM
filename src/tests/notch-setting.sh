@@ -2,8 +2,10 @@
 # OmacVM.app's notch setting (FullPanel, #339): the app
 # (app/app/Sources/OmacVMFeatures/NotchArea.swift) and the Mac side of omacvm
 # (src/lib/notch.sh) decide the same for every case (setting, the VM's side
-# ready, Start in Window or full screen, a notch on the Mac), and `omacvm notch` reads
-# and writes the VM folder's file the app reads. No VM, no notch needed.
+# ready, Start in Window or full screen, a notch on the Mac now, remembered for
+# the lid closed (#716) or none), read the remembered notch the same way (this
+# Mac's key, the numbers), and `omacvm notch` reads and writes the VM folder's
+# file the app reads. No VM, no notch needed.
 set -u
 R=$(cd "$(dirname "$0")/../.." && pwd)
 fail=0
@@ -15,8 +17,29 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 if command -v swiftc >/dev/null; then
   swiftc -O -o "$T/notch" "$R/app/app/Sources/OmacVMFeatures/NotchArea.swift" "$R/src/tests/notch-setting/main.swift" ||
     { echo "FAIL NotchArea.swift does not build on its own"; exit 1; }
-  "$T/notch" > "$T/swift.txt"
+  U=00000000-0000-0000-0000-000000000716
+  stored=("KEY 765.0x963.0x43.0x1728.0x1117.0" "KEY 765x963x43x1728x1117" "KEY 640.5x829.5x37x1470x956"
+          "0123456789abcdef 765x963x43x1728x1117" "KEY 765x963x4x1728x1117" "KEY 100x1400x37x1470x956"
+          "KEY  765x963x43x1728x1117" "KEY 765x963x43x1728" "KEY 765x963x43x1728x1117 x" "KEY" ""
+          "KEY 765x963x43x1728xabc" "KEY 765x963x43x1728x1117.")
+  "$T/notch" "$U" "${stored[@]}" > "$T/swift.out"
+  grep -v '^key \|^remembered ' "$T/swift.out" > "$T/swift.txt"
   source "$R/src/lib/notch.sh"
+  key=$(sed -n "s/^key $U //p" "$T/swift.out")
+  expect "this Mac's key: app and omacvm agree" "$key" "$(notch_mac_key "$U")"
+  [[ $key =~ ^[0-9a-f]{16}$ ]] && ok "  16 hex digits, not the UUID" || bad "  the key: '$key'"
+  saved=$(declare -f notch_mac_key)
+  notch_mac_key() { echo "$key"; }
+  rn=0; rdiff=0
+  while IFS='|' read -r st want; do
+    st=${st#remembered }
+    got=0; notch_remembered "${st//KEY/$key}" && got=1
+    rn=$((rn + 1))
+    [[ $got == "$want" ]] || { rdiff=$((rdiff + 1)); echo "  remembered differs: '$st': app $want, omacvm $got"; }
+  done < <(grep '^remembered ' "$T/swift.out")
+  (( rdiff == 0 && rn == ${#stored[@]} )) && ok "app and omacvm read the remembered notch the same ($rn values)" ||
+    bad "the remembered notch read differently in $rdiff of $rn values"
+  eval "$saved"
   n=0; diff=0
   while IFS='|' read -r left want; do
     read -r mode ready full mac <<<"$left"
@@ -29,7 +52,7 @@ if command -v swiftc >/dev/null; then
     n=$((n + 1))
     [[ $got == "$want" ]] || { diff=$((diff + 1)); echo "  differs: $left: app '$want', omacvm '$got'"; }
   done < "$T/swift.txt"
-  (( diff == 0 && n == 16 )) && ok "app and omacvm agree on $n cases" || bad "app and omacvm differ in $diff of $n cases"
+  (( diff == 0 && n == 24 )) && ok "app and omacvm agree on $n cases" || bad "app and omacvm differ in $diff of $n cases"
 else
   echo "skip app vs omacvm: no swiftc"
   source "$R/src/lib/notch.sh"
@@ -52,6 +75,29 @@ expect "Omanotch off in the VM: not ready" "native (including notch is set, but 
 echo "bridge=on omanotch=on" > "$d/features"
 expect "windowed: native" "native (including notch is set, but the app starts VMs in a window)" "$(notch_next_start "$d" notch 0)"
 expect "no notch: native" "native (including notch is set, but this Mac's built-in display has no notch now)" "$(notch_next_start "$d" none 1)"
+expect "lid closed, the notch remembered: fullpanel (#716)" fullpanel "$(notch_next_start "$d" remembered 1)"
+expect "lid closed, remembered, windowed: native" "native (including notch is set, but the app starts VMs in a window)" "$(notch_next_start "$d" remembered 0)"
+# This Mac's notch for the next start (notch_mac_state): mac-notch's built-in
+# state and the app's remembered value, through stand-ins (no display, no
+# real setting, no real key).
+(
+  mac_tool() { [[ $1 == mac-notch && $2 == builtin ]] || return 9; [[ $STATE == fail ]] && return 1; echo "$STATE"; }
+  defaults() { [[ $1 == read && $3 == builtinNotch && -n $STORED ]] || return 1; echo "$STORED"; }
+  notch_mac_key() { echo 6ca4e81e252be984; }
+  t() { STATE=$1 STORED=$2; expect "$3" "$4" "$(notch_mac_state)"; }
+  t notch "" "Mac: a notch now" notch
+  t notch "0123456789abcdef 765x963x43x1728x1117" "Mac: a notch now wins over a remembered one" notch
+  t off "6ca4e81e252be984 765x963x43x1728x1117" "Mac: built-in off, this Mac's notch remembered" remembered
+  t off "0123456789abcdef 765x963x43x1728x1117" "Mac: built-in off, another Mac's notch: none" none
+  t off "" "Mac: built-in off, nothing remembered: none" none
+  t off "6ca4e81e252be984 garbage" "Mac: built-in off, a broken value: none" none
+  t none "6ca4e81e252be984 765x963x43x1728x1117" "Mac: built-in on without a notch (below it, mirrored): none, never remembered" none
+  t fail "6ca4e81e252be984 765x963x43x1728x1117" "Mac: mac-notch fails: none" none
+)
+(
+  notch_mac_key() { return 1; }
+  notch_remembered "x 765x963x43x1728x1117" && bad "no key for this Mac: remembered" || ok "no key for this Mac (no hardware UUID): nothing remembered"
+)
 mkdir -p "$d/logs"
 printf '%s\n' "OmacVM: notch area: native" "OmacVM: notch area: fullpanel (Omanotch off for this start; notch 640.5-829.5, strip 37.0 of 1470x956 points)" > "$d/logs/qemu.log"
 notch_fullpanel_this_start "$d" && ok "this start: FullPanel (the last line)" || bad "this start not read as FullPanel"

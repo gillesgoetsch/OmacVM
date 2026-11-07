@@ -6,7 +6,11 @@
 # "display change: ..." warns until a later "strip covered" (the VM sits below
 # the notch meanwhile), "strip taken again" is not read, "strip not back" warns
 # with the remedy (the menu bar setting when the menu bar is always shown),
-# a later "strip covered" wins.
+# a later "strip covered" wins. A full screen on a display without a camera
+# housing is skipped (it takes the strip once on the MacBook's display), also
+# one armed late after a start with the lid closed (#716,
+# omacvm-cocoa-fullpanel-late-arm.patch): its line is not read, its way back
+# warns until "strip covered", another panel size warns.
 set -u
 R=$(cd "$(dirname "$0")/../.." && pwd)
 c="$R/src/cmd/check.sh"
@@ -44,12 +48,17 @@ tall='omacvm: full panel: strip not back after a display change (AppKit keeps a 
 lost='omacvm: full panel: strip lost: frame (0 0 864 1084) on display (0 0 1728x1117); normal full screen until the next one'
 lostband='omacvm: full panel: strip lost: frame (0 0 1728x1084) on display (0 0 1728x1117); normal full screen until the next one'
 went='omacvm: full panel: display change: the strip lost 0.4 s ago went with it; the strip comes back once the displays settle'
+late='omacvm: full panel: in full screen on a display without a camera housing (the MacBook'"'"'s display is off): the strip is taken once the window is on the MacBook'"'"'s display'
+again='omacvm: full panel: display change: the full screen is on a display with a camera housing again; the strip comes back once the displays settle'
+stale='omacvm: full panel: the MacBook'"'"'s display is 2056x1329 now, this start'"'"'s notch was measured at 1728x1117: normal full screen; start the VM again for the strip'
+head='omacvm: full panel: a window on another display than the built-in one: macOS'"'"'s own full screen there'
 
 t ok "strip covered" "the strip covered" "$covered"
 t warn "moved the window below the notch, the strip comes back" "a display change: warns until the strip is covered again" "$covered" "$moved"
-t warn "normal full screen there" "on a display without a housing: warns" "$covered" "$moved" "$released"
+t skip "on a display without a notch now: it covers the strip again once it is on the MacBook's display" \
+  "on a display without a housing (the lid closed): skipped, the strip comes back" "$covered" "$moved" "$released"
 t ok "strip covered" "taken again after a display change: covered (the same Space)" "$covered" "$moved" "$released" "$trying" "$taken" "$covered2"
-t warn "normal full screen there" "'taken again' alone is not read" "$covered" "$moved" "$released" "$trying" "$taken"
+t skip "on a display without a notch now" "'taken again' alone is not read" "$covered" "$moved" "$released" "$trying" "$taken"
 t warn "moved the window below the notch, the strip comes back" "'taken again' after a display change alone: still warns" "$covered" "$moved" "$trying" "$taken"
 t warn "leave full screen and enter it again" "strip not back: warns with the remedy" "$covered" "$moved" "$released" "$trying" "$notback"
 t warn "selector missing" "strip not back (selector missing): says why" "$covered" "$moved" "$released" "$missing"
@@ -63,6 +72,14 @@ t warn "macOS moved the window below the notch" "strip lost (Split View): as bef
 t warn "moved the window below the notch, the strip comes back" "a strip lost that went with a display change: warns until covered" "$covered" "$lostband" "$went"
 t ok "strip covered" "... then covered again" "$covered" "$lostband" "$went" "$covered2"
 t skip "not in full screen" "no line yet"
+t skip "not in full screen on the MacBook's display yet" "armed late (the lid closed at the start): its line is not read" "$late"
+t warn "moved the window below the notch, the strip comes back" "armed late, on the MacBook's display: warns until covered" "$late" "$again"
+t ok "strip covered" "... then covered" "$late" "$again" "$covered"
+t ok "strip covered" "... covered after a try" "$late" "$again" "$trying" "$taken" "$covered"
+t warn "leave full screen and enter it again" "... AppKit kept the band: warns with the remedy" "$late" "$again" "$trying" "$notback"
+t warn "start the VM again for the strip" "armed late, the MacBook's display at another size: warns" "$late" "$stale"
+t skip "on a display without a notch now" "covered, then the lid closed: skipped" "$late" "$again" "$covered" "$released"
+t ok "strip covered" "a head window's line is not read" "$covered" "$head"
 
 echo "fullpanel-check: $([[ $fail == 0 ]] && echo all ok || echo FAILED)"
 exit $fail

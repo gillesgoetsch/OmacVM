@@ -108,6 +108,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let name = note.object as? String ?? ""
             MainActor.assumeIsolated { self?.startRequested(name) }
         }
+        // The built-in display's notch, kept for VM starts with the lid closed
+        // (#716): now, and whenever the displays change (the lid opened while
+        // a VM runs that started without it).
+        Mac.rememberNotch()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { Mac.rememberNotch() }
+        }
         DistributedNotificationCenter.default().addObserver(
             forName: Self.updateRequest, object: nil, queue: .main) { _ in
             // From `--update-now` of a second launcher: this one stays open.
@@ -1003,6 +1011,17 @@ if CommandLine.arguments.dropFirst().first == "--key-access" {
 // `omacvm check` and the tests.
 if CommandLine.arguments.dropFirst().first == "--vms-folder" {
     print(Paths.vmsRoot.path)
+    exit(0)
+}
+
+// `OmacVM --notch`: the notch a VM start would use now (MacNotch: notch,
+// remembered or none, and its numbers), after keeping the one measured now
+// (#716; for the e2e rows and a look at a person's Mac). No window.
+if CommandLine.arguments.dropFirst().first == "--notch" {
+    MainActor.assumeIsolated {
+        let n = Mac.notch
+        print([n.word, n.geometry?.text].compactMap { $0 }.joined(separator: " "))
+    }
     exit(0)
 }
 

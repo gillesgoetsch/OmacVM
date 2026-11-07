@@ -92,16 +92,57 @@ notch_menu_bar_in_the_way() {
   [[ $(defaults read NSGlobalDomain AppleMenuBarVisibleInFullscreen 2>/dev/null) == 1 ]] && ! notch_keep_dock_away
 }
 
+# The built-in display's notch as last measured on this Mac, kept by the app
+# for starts with the lid closed (#716; NotchHousing in NotchArea.swift): the
+# app's `builtinNotch` setting, "<mac> LxRxHxWxD", <mac> = notch_mac_key.
+NOTCH_REMEMBERED_KEY=builtinNotch
+
+# This Mac's key (NotchHousing.macKey): the first 16 hex digits of the SHA-256
+# of its IOPlatformUUID (or of UUID).
+notch_mac_key() {   # [UUID]
+  local u=${1:-}
+  [[ -n $u ]] || u=$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null |
+    LC_ALL=C sed -n 's/.*"IOPlatformUUID" = "\([^"]*\)".*/\1/p' | head -1)
+  [[ -n $u ]] || return 1
+  printf '%s' "$u" | shasum -a 256 | cut -c1-16
+}
+
+# The app's remembered notch is this Mac's and one a MacBook can have
+# (NotchHousing.remembered, NotchGeometry.valid).
+notch_remembered() {   # [STORED]
+  local v k g
+  if (( $# )); then v=$1; else v=$(defaults read "${APP_ID:-org.omacvm.app}" "$NOTCH_REMEMBERED_KEY" 2>/dev/null) || v=""; fi
+  k=$(notch_mac_key) || return 1
+  [[ ${v%% *} == "$k" ]] || return 1
+  g=${v#* }
+  [[ $g =~ ^[0-9]+(\.[0-9]*)?(x[0-9]+(\.[0-9]*)?){4}$ ]] || return 1
+  printf '%s\n' "$g" | LC_ALL=C awk -F x '{ l = $1 + 0; r = $2 + 0; h = $3 + 0; w = $4 + 0; d = $5 + 0
+    exit !(l > 0 && r > l && r < w && r - l < w / 3 && h >= 10 && h <= 100 && w >= 800 && d > h * 5) }'
+}
+
+# This Mac's notch for the next start, as the app's Mac.notch (MacNotch):
+# notch (the built-in display has one now), remembered (that display is off,
+# the lid closed: the notch the app measured last on this Mac) or none (no
+# notch now: a Mac without one, the built-in display below the notch or
+# mirrored, or off with nothing remembered).
+notch_mac_state() {
+  case $(mac_tool mac-notch builtin 2>/dev/null) in
+    notch) echo notch ;;
+    off) notch_remembered && echo remembered || echo none ;;
+    *) echo none ;;
+  esac
+}
+
 # What the next start does, as the app's NotchArea.start says it, without the
-# geometry: "fullpanel" or "native" / "native (why)". MAC_NOTCH: notch|none
-# (mac_tool mac-notch), FULL: 1|0 (notch_app_full_screen).
+# geometry: "fullpanel" or "native" / "native (why)". MAC_NOTCH:
+# notch|remembered|none (notch_mac_state), FULL: 1|0 (notch_app_full_screen).
 notch_next_start() {   # DIR MAC_NOTCH FULL
   [[ $(notch_choice "$1") == fullpanel ]] || { echo native; return; }
   if ! notch_guest_ready "$1"; then
     echo "native (including notch is set, but the VM is not ready for it: Omanotch on, then Update VM or omacvm apply)"
   elif [[ $3 != 1 ]]; then
     echo "native (including notch is set, but the app starts VMs in a window)"
-  elif [[ $2 != notch ]]; then
+  elif [[ $2 != notch && $2 != remembered ]]; then
     echo "native (including notch is set, but this Mac's built-in display has no notch now)"
   else
     echo fullpanel

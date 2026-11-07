@@ -997,7 +997,10 @@ if [[ $TYPE == app ]]; then
   # the MacBook's display went and came back
   # (omacvm-cocoa-fullpanel-retake.patch; with "menu bar always shown" the
   # remedy is the menu bar setting, else leaving and entering full screen).
-  # "strip taken again" is not read.
+  # "strip taken again" is not read. A full screen on a display without a
+  # camera housing (the lid closed, an external display) is skipped: it
+  # takes the strip once it is on the MacBook's display (a start with the
+  # lid closed too: omacvm-cocoa-fullpanel-late-arm.patch, #716).
   nd=$(app_dir "$VM" 2>/dev/null) || nd=""
   nmode=native; [[ -n $nd ]] && nmode=$(notch_choice "$nd")
   nlast=""; [[ -n $nd ]] && nlast=$(notch_this_start "$nd")
@@ -1010,13 +1013,14 @@ if [[ $TYPE == app ]]; then
       "display change:"*) warn "full screen (app)" "including notch set; a display change moved the window below the notch, the strip comes back once the displays settle and the Mac is unlocked ($nq)" ;;
       "strip not back after a display change (menu bar always shown)"*) warn "full screen (app)" "including notch set, but after a display change macOS shows its menu bar over the strip, so the window stays below the notch ($nq): $MENU_HINT, or turn on Keep the Dock and hot corners away in OmacVM (from the next start); then leave full screen and enter it again" ;;
       "strip not back"*) warn "full screen (app)" "including notch set, but after a display change macOS kept the window below the notch ($nq); leave full screen and enter it again to cover the strip" ;;
+      "the full screen is on a display without a camera housing: normal full screen there"*) skip "full screen (app)" "including notch this start; the window is in full screen on a display without a notch now: it covers the strip again once it is on the MacBook's display" ;;
       "") skip "full screen (app)" "including notch this start, not in full screen on the MacBook's display yet" ;;
       *) warn "full screen (app)" "including notch set, but QEMU uses normal full screen: $nq" ;;
     esac
   elif [[ ${notch:=$(mac_tool mac-notch 2>/dev/null || echo none)} != notch && $nmode != fullpanel ]]; then skip "full screen (app)" "no notch on this Mac"
   elif [[ $nmode == fullpanel ]]; then
     full=0; notch_app_full_screen && full=1
-    skip "full screen (app)" "including notch is set; this start: ${nlast:-not known}; next start: $(notch_next_start "$nd" "$notch" "$full")"
+    skip "full screen (app)" "including notch is set; this start: ${nlast:-not known}; next start: $(notch_next_start "$nd" "$(notch_mac_state)" "$full")"
   elif [[ $(feat omanotch off) == on ]]; then skip "full screen (app)" "notch via Omanotch: full screen in its own Space, Omanotch fills the strip"
   else skip "full screen (app)" "notch via Omanotch: full screen in its own Space; the strip stays black (Omanotch is off for this VM: omacvm enable omanotch)"; fi
 fi
