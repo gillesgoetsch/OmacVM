@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.4.0 (unreleased)
+## 3.4.0
 
 - **New VMs get Omarchy 4.5** from Omarchy's own aarch64 repos, always the latest stable release
   (pkgs.omarchy.org and its snapshot of Arch Linux ARM). New VMs from a prebuilt image are Omarchy
