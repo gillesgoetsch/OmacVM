@@ -1,0 +1,120 @@
+virglrenderer: copy clip distances 4..7 the guest's Mesa leaves in a temp (#692)
+
+What: after a MOV OUT[clip 0..3], TEMP[X] with an identity swizzle and no
+modifiers, where TEMP[X] is a temp the shader indexes at run time without an
+ARRAY declaration (virgl-shader-indirect-temps.patch makes it an array), the
+GLSL also sets clip_dist_temp[1] from TEMP[X+1] (clip_dist_temp[1] =
+vec4(temp18[1]);). Only when the shader declares more than 4 clip distances,
+TEMP[X+1] is in the same array, and the shader never writes the second clip
+distance register itself, directly or with an index (the first pass notes
+that). Any other shader gets the same GLSL as before; every stage the same.
+Why: the guest's Mesa (virgl_tgsi.c, the same in Mesa 26.2.5, 26.2.6 and main)
+writes the two clip distance outputs through two temps, TEMP[18..19]. A write
+in a loop goes to TEMP[ADDR+18], and the copy after it is always MOV OUT[1],
+TEMP[18], so distances 4..7 never reached OUT[2] and gl_ClipDistance[4..7] was
+undefined: on the M4 a negative distance 5 did not clip (tcs-8loop-clip5,
+tcs-8wloop-clip5 on a new Omarchy 4.5 VM), on the M1 Max the looped forms drew
+nothing (tcs-8*loop-keep). OmacVM's guest Mesa fix (#694) also copies TEMP[19]
+but reaches no VM; this sends vrend the same copy for every 4.0 and 4.5 VM. A
+shader that copies OUT[2] itself (#694's Mesa, a fixed upstream Mesa) is left
+as it is.
+Upstream: not sent (works around a Mesa virgl driver bug; the fix belongs in
+Mesa's virgl_tgsi.c).
+Test: Tests/virgl/test-core-glsl-shaders.c: the guest's own TCS loop with 8
+distances and the loop forms with 5 to 8 distances (TCS, VS, GS, TES, whole and
+separable) have the copy and compile on the Mac's GL; 1 to 4 distances, the
+forms that copy OUT[2] themselves, a distance 5 written after the loop and
+clip outputs written as one indexed array have none. VM rows: tclip692 on
+Omarchy 4.5.
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -236,6 +236,10 @@
+     * (first pass), each once */
+    uint32_t num_indirect_temps;
+    int *indirect_temps;
++   /* OmacVM (#692): the output registers of clip distances 0..3 and 4..7 plus one (0: none),
++    * and whether the shader writes the second itself (first pass) */
++   int clip_out_reg1[2];
++   bool writes_clip_out1;
+ 
+    struct vrend_shader_sampler samplers[32];
+    uint32_t samplers_used;
+@@ -986,6 +990,35 @@
+    return NULL;
+ }
+ 
++/* OmacVM (#692): the guest's Mesa (virgl_tgsi.c) writes the clip distance outputs through
++ * two temps, TEMP[F] and TEMP[F+1]. A write with an index (a loop) goes to TEMP[ADDR+F], and
++ * the copy after it is always MOV OUT[clip 0..3], TEMP[F]: distances 4..7 never reached
++ * their output, so gl_ClipDistance[4..7] was undefined (the M4 did not clip with them, the
++ * M1 Max dropped the draw). When the shader never writes the second clip distance register
++ * itself and copies the first from a temp it indexes at run time, also copy the next temp to
++ * the second: what a guest Mesa that copied both temps sends. */
++static void emit_guest_clip_copyback(struct dump_ctx *ctx, const struct tgsi_full_instruction *inst)
++{
++   const struct tgsi_full_dst_register *dst = &inst->Dst[0];
++   const struct tgsi_full_src_register *src = &inst->Src[0];
++   if (ctx->num_out_clip_dist <= 4 || ctx->writes_clip_out1 || !ctx->clip_out_reg1[0] ||
++       !ctx->clip_out_reg1[1] || inst->Instruction.Saturate)
++      return;
++   if (dst->Register.File != TGSI_FILE_OUTPUT || dst->Register.Indirect ||
++       dst->Register.Index != ctx->clip_out_reg1[0] - 1 || dst->Register.WriteMask != TGSI_WRITEMASK_XYZW)
++      return;
++   if (src->Register.File != TGSI_FILE_TEMPORARY || src->Register.Indirect || src->Register.Dimension ||
++       src->Register.Negate || src->Register.Absolute || src->Register.SwizzleX != TGSI_SWIZZLE_X ||
++       src->Register.SwizzleY != TGSI_SWIZZLE_Y || src->Register.SwizzleZ != TGSI_SWIZZLE_Z ||
++       src->Register.SwizzleW != TGSI_SWIZZLE_W)
++      return;
++   const struct vrend_temp_range *range = find_temp_range(ctx, src->Register.Index);
++   if (!range || range->array_id != INDIRECT_TEMP_ARRAY_ID || src->Register.Index + 1 > range->last)
++      return;
++   emit_buff(&ctx->glsl_strbufs, "clip_dist_temp[1] = vec4(temp%d[%d]);\n", range->first,
++             src->Register.Index + 1 - range->first);
++}
++
+ static bool samplertype_is_shadow(int sampler_type)
+ {
+    switch (sampler_type) {
+@@ -1461,6 +1494,13 @@
+    case TGSI_FILE_OUTPUT:
+       if (decl->Semantic.Name == TGSI_SEMANTIC_FOG) {
+          ctx->fog_output_mask |= (1 << decl->Semantic.Index);
++      }
++      if (decl->Semantic.Name == TGSI_SEMANTIC_CLIPDIST) {
++         for (unsigned r = decl->Range.First; r <= decl->Range.Last; r++) {
++            unsigned sid = decl->Semantic.Index + r - decl->Range.First;
++            if (sid < 2)
++               ctx->clip_out_reg1[sid] = r + 1;
++         }
+       }
+       break;
+    case TGSI_FILE_BUFFER:
+@@ -6385,6 +6425,8 @@
+    case TGSI_OPCODE_FBFETCH:
+    case TGSI_OPCODE_MOV:
+       emit_buff(&ctx->glsl_strbufs, "%s = %s(%s(%s%s));\n", dsts[0], get_string(dinfo.dstconv), get_string(dinfo.dtypeprefix), srcs[0], sinfo.override_no_wm[0] ? "" : writemask);
++      if (inst->Instruction.Opcode == TGSI_OPCODE_MOV)
++         emit_guest_clip_copyback(ctx, inst);
+       break;
+    case TGSI_OPCODE_ADD:
+    case TGSI_OPCODE_DADD:
+@@ -8546,6 +8588,19 @@
+          return false;
+    }
+ 
++   /* OmacVM (#692): a write to the second clip distance register, direct or indexed from
++    * the first (emit_guest_clip_copyback() then adds nothing) */
++   if (ctx->clip_out_reg1[1]) {
++      int reg1 = ctx->clip_out_reg1[1] - 1;
++      int reg0 = ctx->clip_out_reg1[0] ? ctx->clip_out_reg1[0] - 1 : reg1;
++      for (int i = 0; i < inst->Instruction.NumDstRegs; ++i) {
++         const struct tgsi_dst_register *reg = &inst->Dst[i].Register;
++         if (reg->File == TGSI_FILE_OUTPUT &&
++             (reg->Index == reg1 || (reg->Indirect && reg->Index >= MIN2(reg0, reg1) && reg->Index <= reg1)))
++            ctx->writes_clip_out1 = true;
++      }
++   }
++
+    if (!ctx->fs_uses_clipdist_input && (ctx->prog_type == TGSI_PROCESSOR_FRAGMENT)) {
+       for (int i = 0; i < inst->Instruction.NumSrcRegs; ++i) {
+          if (inst->Src[i].Register.File == TGSI_FILE_INPUT) {
