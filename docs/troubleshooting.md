@@ -1574,15 +1574,13 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   into a control shader drew nothing on the M1 Max and M4 GPUs; 3.2.20 passes them as plain
   varyings too. One case is left in the VM's Mesa: a control shader that copies 5 to 8 distances
   in a loop gets only 0..3 back, and 4..7 are undefined. On the M4 they read 0 (a negative one
-  does not clip), on the M1 Max the draw is clipped away. The fix is a patch for OmacVM's own
-  guest Mesa build (`src/app/guest/mesa/`, #694), which the VM's Arch Mesa does not have. One
-  statement per distance avoids it: the VM's Mesa then passes them as plain varyings. Update the
-  app.
+  does not clip), on the M1 Max the draw is clipped away. 3.4.1 copies 4..7 on the Mac's side
+  (#692), so no guest Mesa build is needed for it. Update the app.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
   `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
   `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19),
   `virgl-shader-separable-patch-fill-writes.patch`, `virgl-shader-indirect-temps.patch`,
-  `virgl-shader-vs-tcs-clip-varyings.patch` (3.2.20); tests
+  `virgl-shader-vs-tcs-clip-varyings.patch` (3.2.20), `virgl-shader-clip-copyback.patch` (3.4.1); tests
   `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`,
   `test-separable-pervertex.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)

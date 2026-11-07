@@ -28,6 +28,12 @@ in more words.
   full screen is on an external display.
 - **Venus**: the line qemu.log writes for a refused Vulkan call stays one line when the app's or a
   shader's name holds control characters (each becomes a space; see #718).
+- **Clip distances 5 to 8 that a shader writes in a loop now reach the Mac's GPU (OmacVM.app, see
+  #692).** After such a loop (a tessellation control shader copying `gl_ClipDistance[i]` in a `for`
+  loop, or a vertex, geometry or evaluation shader writing them in one) the VM's Mesa copies only
+  distances 1 to 4 to the output, so 5 to 8 were undefined: on the M4 a negative one did not clip.
+  The app now copies the rest itself, for every VM; OmacVM's own guest Mesa build (#694) is no longer
+  needed for it. Needs the app update (from the VM's next start).
 
 ## 3.4.0
 
