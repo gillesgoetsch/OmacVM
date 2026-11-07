@@ -163,6 +163,10 @@ def gate(a):
     c = o.get("commit", "")
     assert c, "no commit in the result"
     paths = subprocess.run([os.path.join(repo, "src/tests/e2e/move-45.sh"), "--paths"], capture_output=True, text=True).stdout.split()
+    # The kit's own files are tied by the kit hash below (M's, or a kit M's carries for those rows), not by this
+    # diff: a kit-only change after the tested commit (D15) keeps the product files the rows tested.
+    paths = [f for f in paths if f not in KIT_FILES]
+    assert paths, "move-45.sh --paths gave no files"
     d = subprocess.run(["git", "-C", repo, "diff", "--name-only", c, m, "--"] + paths, capture_output=True, text=True)
     assert d.returncode == 0, "git diff %s %s failed: %s" % (c[:12], m[:12], d.stderr.strip()[:200])
     assert not d.stdout.strip(), "the move's files changed after the tested commit %s: %s" % (c[:12], " ".join(d.stdout.split()))

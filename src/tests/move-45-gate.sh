@@ -435,5 +435,15 @@ python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["carried"
 expect "a result with rows of a kit M's kit does not carry: gate refuses" 1 "$(gate "$D" "$M")"
 python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["carried"]={sys.argv[2]: ["kill-commit", "undo"]}; o["kits"]=sorted(set(o["kits"]) - {"0123456789abcdef"} | {sys.argv[2]}); json.dump(o, open(p,"w"))' "$D/result.json" "$CK"
 expect "a result counting a changed row (kill-commit) with the carried kit: gate refuses" 1 "$(gate "$D" "$M")"
+# D15: M differs from the tested commit only in the kit's files (a kit fix after the matrix): the product files are
+# the tested ones, the kit is tied by its hash (rows with M's kit, or carried by it): gate passes. A move file
+# (move-vm.sh) changed as well: refused, as before.
+echo v1 > "$G/app/scripts/move-vm.sh"; echo "# kit fix" >> "$G/src/tests/e2e/move-45.sh"; gi commit -qam kitfix; MK=$(gi rev-parse HEAD)   # move-vm.sh as at C
+KITM=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import importlib.util as u
+s = u.spec_from_file_location("r", sys.argv[1] + "/move-45-result.py"); m = u.module_from_spec(s); s.loader.exec_module(m); print(m.kit_here())' "$G/src/tests/e2e")
+D=$T/kitonly; full "$D"; for f in "$D"/rows/*.json; do case $(basename "$f") in kill-commit-*|power-loss-*|power-backup-*) setkit "$f" "$KITM" ;; *) setkit "$f" "$CK" ;; esac; done
+expect "M changed only the kit after the tested commit; changed rows with M's kit, the rest carried: gate passes" "0 0" "$(sumrc "$D") $(gate "$D" "$MK")"
+echo v3 > "$G/app/scripts/move-vm.sh"; gi commit -qam mv3; MK2=$(gi rev-parse HEAD)
+expect "the kit and move-vm.sh changed after the tested commit: gate refuses" 1 "$(gate "$D" "$MK2")"
 
 exit $fail
