@@ -2,21 +2,32 @@ virglrenderer: Venus logs a refusal's reason whole
 
 What: the reason buffers of vkCreateShaderModule, vkCreateGraphicsPipelines and
 vkCreateComputePipelines, and the line vkr_context_refuse formats, take 512 bytes (were
-192 and 256), and that line's newlines become spaces. Nothing else changes: the same
-checks, the same refusals.
+192 and 256), and every byte below 0x20 in that line's reason and context name becomes a
+space (the name on a copy of up to 127 bytes: other lines and the GPU guard keep
+ctx->debug_name as it is).
+Nothing else changes: the same checks, the same refusals.
 Why: spirv-val's message for one module runs to about 300 characters with the
 "spirv-val (SPIR-V 1.6 (under Vulkan 1.4 semantics)): " prefix and the instruction it
 names. 192 cut it in qemu.log (#710: "... the Function storage class has a ex"), so
 the reason a context ended was not readable. Whole, the message puts the instruction and
-"(word N)" on lines of their own; one refusal stays one line.
+"(word N)" on lines of their own; one refusal stays one line. The guest's names reach the
+line too: spirv-val quotes string literals (an entry point's name) as they are, vkr's own
+"no entry point" reason quotes the stage's pName, and the context name is the app's
+process name. A CR, ESC or newline there split the line or rewrote it on a terminal
+(#718). Compared as unsigned char: char is signed on arm64, so a plain compare would also
+blank UTF-8. DEL (0x7f) and C1 controls (0x80-0x9f, in UTF-8 C2 80-9F) are left as they
+are on purpose: the item is one line per refusal, and UTF-8 names keep their letters.
 Upstream: no (OmacVM's own checks).
-Tests: build-qemu-gpu-runtime.sh checks the four buffers after the patch; the long
-message in qemu.log was seen whole in a test VM (work/zed-710 row, #710).
+Tests: build-qemu-gpu-runtime.sh checks the four buffers and both loops after the patch;
+test-venus-commands.c's p-entry-name-ctl (a pName with CR, ESC, TAB) and p-ctx-name-ctl
+(a context name with them and a newline), and every refusal case checks its line has no
+byte below 0x20 but its own newline; the long message in qemu.log was seen whole in a
+test VM (#710).
 
 diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
 --- a/src/venus/vkr_context.c
 +++ b/src/venus/vkr_context.c
-@@ -600,11 +600,16 @@
+@@ -600,11 +600,23 @@
  
     /* the 1st, 2nd, 4th, 8th ... refusal: a guest in a loop cannot flood the log */
     if (!(n & (n - 1))) {
@@ -26,13 +37,21 @@ diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
        va_start(va, fmt);
        vsnprintf(why, sizeof(why), fmt, va);
        va_end(va);
-+      /* spirv-val names the instruction on lines of its own: one refusal, one line */
++      /* spirv-val's lines and the guest's names (the app's, a shader's entry point): one
++       * refusal, one line, no control bytes; unsigned, so UTF-8 stays (char is signed on arm64) */
++      char name[128];
++      snprintf(name, sizeof(name), "%s", ctx->debug_name ? ctx->debug_name : "?");
 +      for (char *c = why; *c; c++) {
-+         if (*c == '\n')
++         if ((unsigned char)*c < 0x20)
++            *c = ' ';
++      }
++      for (char *c = name; *c; c++) {
++         if ((unsigned char)*c < 0x20)
 +            *c = ' ';
 +      }
        vkr_log("%s: %s refused: %s%s (%" PRIu64 " refused so far)",
-               ctx->debug_name ? ctx->debug_name : "?", call, why,
+-              ctx->debug_name ? ctx->debug_name : "?", call, why,
++              name, call, why,
                fatal ? "; the app's Vulkan context ends" : "", n);
 diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
 --- a/src/venus/vkr_pipeline.c

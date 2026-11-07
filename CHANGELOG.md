@@ -26,6 +26,8 @@ in more words.
   built-in display; never another Mac's) and uses it while the built-in display is off; QEMU takes the
   strip once the full screen is on the MacBook's display. `omacvm check` no longer warns while such a
   full screen is on an external display.
+- **Venus**: the line qemu.log writes for a refused Vulkan call stays one line when the app's or a
+  shader's name holds control characters (each becomes a space; see #718).
 
 ## 3.4.0
 
