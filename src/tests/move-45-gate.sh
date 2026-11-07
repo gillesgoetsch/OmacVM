@@ -423,6 +423,15 @@ pwrun() {   # SECONDS_BEFORE_THE_CUT -> pids of the stand-ins still running 2 s 
 expect "power cut before the stand-in QEMU starts: nothing of the move runs after it" "" "$(pwrun 0.05 | tr -d ' ')"
 expect "power cut after the stand-in QEMU started: nothing of the move runs after it" "" "$(pwrun 0.5 | tr -d ' ')"
 for p in $(LC_ALL=C pgrep -f "$S/"); do kill -9 "$p" 2>/dev/null; done
+# power-backup takes move-vm.sh's pid up to 300 s before the cut: right before it, the pid must still be a child of
+# the move's subshell (MV_PID), else it is dropped (it may be another process's pid by then).
+eval "$(awk '/^mv_script_still\(\) \{/,/\}$/' "$R/src/tests/e2e/move-45.sh")"
+sleep 5 & KID=$!
+expect "mv_script_still: a child of MV_PID stays" "$KID" "$(MV_PID=$$ mv_script_still "$KID")"
+expect "mv_script_still: a pid that is not MV_PID's child is dropped" "" "$(MV_PID=$$ mv_script_still 1)"
+kill "$KID" 2>/dev/null; wait "$KID" 2>/dev/null
+expect "mv_script_still: a pid that is gone is dropped" "" "$(MV_PID=$$ mv_script_still "$KID")"
+expect "the kit: power-backup checks move-vm.sh's pid right before its power cut" 1 "$(grep -c '^    sp=$(mv_script_still "$sp"); power_off_all $sp$' "$R/src/tests/e2e/move-45.sh")"
 
 # ---- D15 withdrawn (3.4.0 D15c): no rows of an earlier kit count, and a kit changed after the tested commit is
 # refused (the kit's files are among the --paths): after a kit fix the whole matrix runs again ----

@@ -239,6 +239,9 @@ power_off_all() {   # everything of this move at once, no traps (the Mac loses p
   POWER_PIDS=$(echo $all)
 }
 mv_script_pid() { pgrep -P "$MV_PID" -f move-vm.sh | head -1; }   # move-vm.sh itself (MV_PID is its subshell)
+# PID, taken earlier, is still this move's move-vm.sh (a child of MV_PID): else "" (it ended: its pid may be another
+# process's now), and power_off_all finds the tree from MV_PID.
+mv_script_still() { [[ -n ${1:-} && -n $MV_PID && $(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ') == "$MV_PID" ]] && echo "$1"; }
 wait_until() {   # SECONDS CMD...: poll CMD every 3 s
   local end=$(( $(date +%s) + $1 )); shift
   while (( $(date +%s) < end )); do "$@" && return 0; sleep 3; done; return 1
@@ -815,7 +818,7 @@ row_power_backup() {
     mvm_bg run
     sp=""; for ((i = 0; i < 200; i++)); do sp=$(mv_script_pid); [[ -n $sp ]] && break; sleep 0.05; done
     for ((i = 0; i < 6000; i++)); do [[ -e $VD/before-omarchy-4.5 ]] && break; sleep 0.05; done
-    power_off_all $sp
+    sp=$(mv_script_still "$sp"); power_off_all $sp
     st=$(J step)
     log "try $try: power cut at step $st (backup_at '$(J backup_at)'): move-vm.sh $sp, its children and QEMU (pids $POWER_PIDS) killed (-9) at once"
     power_gone
