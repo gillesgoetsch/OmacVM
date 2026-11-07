@@ -291,6 +291,10 @@ static const uint32_t spv_comp16[] = {
 };
 
 static struct vkr_context *ctx;
+/* the guest's names: the context's (an app's process name) and a compute stage's entry point;
+ * the -ctl cases give them control bytes */
+static const char *ctx_name = "test";
+static const char *stage_name = "main";
 static struct vn_dispatch_context *D;
 static struct vkr_physical_device *pdev;
 static struct vkr_device *dev;
@@ -377,7 +381,7 @@ static void instance_and_physical_device(void)
    virgl_log_set_handler(log_cb, NULL, NULL);
    if (!vkr_renderer_init(VKR_RENDERER_THREAD_SYNC | VKR_RENDERER_ASYNC_FENCE_CB, &cbs))
       broken("vkr_renderer_init");
-   ctx = vkr_context_create(1, retire, 4, "test");
+   ctx = vkr_context_create(1, retire, strlen(ctx_name), ctx_name);
    if (!ctx)
       broken("no Venus context (no Vulkan loader beside the binary?)");
    D = &ctx->dispatch;
@@ -1014,7 +1018,7 @@ static void *compute_pipeline(void *layout, void *module, const VkShaderModuleCr
    VkComputePipelineCreateInfo info = {
       .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .pNext = next,
       .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = inline_code,
-                 .stage = stage, .module = (VkShaderModule)module, .pName = "main", .pSpecializationInfo = spec },
+                 .stage = stage, .module = (VkShaderModule)module, .pName = stage_name, .pSpecializationInfo = spec },
       .layout = (VkPipelineLayout)layout };
    struct vn_command_vkCreateComputePipelines c = { .device = DEVH, .createInfoCount = 1, .pCreateInfos = &info,
                                                     .pPipelines = &h };
@@ -1371,8 +1375,17 @@ static int spirv_case(const char *c, struct world *w)
                                        .codeSize = sizeof(spv_comp), .pCode = code };
       return created(compute_pipeline(w->layout, NULL, &inl, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
    }
-   if (IS("p-entry-missing")) {
-      /* the entry point's name "main" made "mbin": the stage's "main" is not in the module */
+   if (IS("p-entry-name-ctl")) {
+      /* the stage names an entry point with control bytes (vkr's reason quotes it) */
+      stage_name = "main\r\x1b[2K\tok";
+      void *mod = shader(code, sizeof(spv_comp));
+      if (!mod)
+         broken("module");
+      return created(compute_pipeline(w->layout, mod, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
+   }
+   if (IS("p-entry-missing") || IS("p-ctx-name-ctl")) {
+      /* the entry point's name "main" made "mbin": the stage's "main" is not in the module
+       * (p-ctx-name-ctl: in a context whose name has control bytes, run_case) */
       for (size_t at = 5; at < n && (code[at] >> 16); at += code[at] >> 16) {
          if ((code[at] & 0xffff) == 15) {
             code[at + 3] = 0x6e69626d;
@@ -1460,7 +1473,8 @@ static int case_pipeline(const char *c)
    make_world(&w, IS("p-ok") || IS("p-gfx-ok"));
    if (IS("p-ok") || IS("p-gfx-ok"))
       return WORKS;
-   if (!strncmp(c, "p-spirv-", 8) || IS("p-entry-missing") || IS("p-stage-mismatch") ||
+   if (!strncmp(c, "p-spirv-", 8) || IS("p-entry-missing") || IS("p-entry-name-ctl") || IS("p-ctx-name-ctl") ||
+       IS("p-stage-mismatch") ||
        !strncmp(c, "p-shader-layout-", 16) || !strncmp(c, "p-workgroup-", 12) || !strncmp(c, "p-unused-set", 12))
       return spirv_case(c, &w);
 
@@ -7916,6 +7930,9 @@ static const struct test_case cases[] = {
    { "p-spirv-garbage", E_REFUSE }, { "p-spirv-magic", E_REFUSE }, { "p-spirv-bound", E_REFUSE },
    { "p-spirv-truncated", E_REFUSE }, { "p-spirv-inline-garbage", E_REFUSE },
    { "p-entry-missing", E_REFUSE }, { "p-stage-mismatch", E_REFUSE },
+   /* guest names with control bytes: each becomes a space, the line stays whole */
+   { "p-entry-name-ctl", E_REFUSE, "no entry point \"main  [2K ok\"" },
+   { "p-ctx-name-ctl", E_REFUSE, "te [2K  st X: vkCreateComputePipelines refused: " },
    { "p-shader-layout-sets", E_REFUSE }, { "p-shader-layout-binding", E_REFUSE },
    { "p-unused-set-ok", E_WORKS }, { "p-unused-set-ok-16", E_WORKS }, { "p-unused-set-missing", E_REFUSE },
    { "p-workgroup-max", E_WORKS }, { "p-workgroup-over", E_REFUSE }, { "p-workgroup-huge", E_REFUSE },
@@ -8169,6 +8186,9 @@ static const struct test_case cases[] = {
 
 static int run_case(const char *c)
 {
+   /* a context name with control bytes, a newline too: the refusal line stays one line */
+   if (IS("p-ctx-name-ctl"))
+      ctx_name = "te\x1b[2K\r\tst\nX";
    if (IS("c-probe-descriptor-view")) {
       setup(0);
       struct world w;
@@ -8463,6 +8483,10 @@ int main(int argc, char **argv)
          want = log_has(log, "expect: refuse", NULL, 0) ? E_REFUSE : E_WORKS;
       char refusal[1024] = "";
       const bool refused_line = log_has(log, " refused: ", refusal, sizeof(refusal));
+      /* a refusal is one line: no byte below 0x20 but its own newline */
+      bool clean = true;
+      for (const char *r = refusal; *r; r++)
+         clean = clean && ((unsigned char)*r >= 0x20 || (*r == '\n' && !r[1]));
       bool ok;
       if (got == SKIP) {
          ok = true;
@@ -8471,14 +8495,16 @@ int main(int argc, char **argv)
          ok = true;
          printf("probe: %s: %s%s\n", tc->name, seen, refused_line ? " (a refusal line)" : "");
       } else if (want == E_REFUSE) {
-         ok = got == FATAL && refused_line && (!tc->line || strstr(refusal, tc->line));
+         ok = got == FATAL && refused_line && clean && (!tc->line || strstr(refusal, tc->line));
       } else if (want == E_WORKS) {
          ok = got == WORKS && !refused_line;
       } else {
          ok = (got == WORKS || got == ERROR) && !refused_line;
       }
       printf("%s: %s: %s%s\n", ok ? "ok" : "FAIL", tc->name, seen,
-             want == E_REFUSE ? "" : refused_line ? " (refused where it must work)" : "");
+             want != E_REFUSE ? (refused_line ? " (refused where it must work)" : "")
+             : !clean ? " (control bytes in the refusal line)"
+             : refused_line && tc->line && !strstr(refusal, tc->line) ? " (not the refusal line it must be)" : "");
       if (ok && want == E_REFUSE && got == FATAL) {
          const char *r = strstr(refusal, "vkr: ");
          printf("   %s", r ? r : refusal);
