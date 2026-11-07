@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.1 (unreleased)
+
+- Omanotch on Omarchy 4.5 with Skip the notch: the tray's hidden icons open next to the tray, clear
+  of the notch, and every one of them can be clicked. When the open drawer did not fit right of the
+  notch, the tray jumped over the notch while the drawer slid open, closed and came back in a loop,
+  so its icons showed only behind the notch. Items that move left of the notch also keep clear of
+  where Omarchy 4.5's hidden indicators open (bar patch v38).
+
 ## 3.4.0
 
 - **New VMs get Omarchy 4.5** from Omarchy's own aarch64 repos, always the latest stable release
