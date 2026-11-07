@@ -684,7 +684,8 @@ class RealOmarchy(unittest.TestCase):
             self.assertEqual(full.count("transform: Translate { x: slot.notchShift ? slot.notchShownX - (slot.notchEnd ? slot.width : 0) - slot.notchPlaceX : 0 }"), 1)
             # The housing's centre widths, and the after list named for them.
             if is_45(stock):
-                self.assertIn("? [beginList.notchRest, centerBox.width + endList.notchRest, beginList.notchPeekMore] : [0, 0]", full)
+                self.assertIn("? [beginList.notchRest, centerBox.notchRest + endList.notchRest, beginList.notchPeekMore] : [0, 0]", full)
+                self.assertEqual(full.count("    readonly property real notchRest: boxList.notchRest\n"), 1)
             else:
                 self.assertEqual(full.count("id: notchCentreAfter"), 1)
                 self.assertIn("? [notchCentreBefore.width, centerAnchorModule.width + notchCentreAfter.width]", full)
@@ -2052,6 +2053,112 @@ console.log(JSON.stringify((function () { WIDTHS })()));
 """.replace("NOTCHISTRAY", function(full, "notchIsTray")).replace("WIDTHS", widths)
         out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
         self.assertEqual(json.loads(out.stdout), [[54, 135], [94.5, 135], 135, 27, 27])
+
+    def patched_45(self):
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        f = d / "Bar.qml"
+        f.write_text(stock)
+        self.assertEqual(patch_file(f).returncode, 0)
+        return f.read_text()
+
+    def run_js(self, full, js, cases):
+        widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        rest = re.search(r"    readonly property real notchRest: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        js = (js.replace("NOTCHISTRAY", function(full, "notchIsTray")).replace("WIDTHS", widths).replace("REST", rest)
+              .replace("PLACE", function(full, "notchSkipPlace")).replace("CASES", json.dumps(cases)))
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def test_tray_in_the_left_list(self):
+        # The tray in the left list: fixed at its start, it grows right. Its
+        # start never moves while it slides, and it goes right of the housing
+        # from the start when it does not fit left of it open (closed it
+        # would; v37 kept it left and jumped it over part-way through).
+        js = r"""
+var root = { notchIsTray: function (item) { NOTCHISTRAY } };
+function widths(children) { WIDTHS }
+function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) { PLACE }
+console.log(JSON.stringify(CASES.map(function (c) {
+  var closed = c[0], drawer = c[1], before = c[2], right = c[3], beside = c[4], out = [];
+  for (var k = 0; k <= 10; k++) {
+    var r = k / 10, w = closed + drawer * r;
+    var tray = { expanded: r > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer,
+                 revealExtent: drawer * r, revealProgress: r };
+    var children = [];
+    for (var i = 0; i < before.length; i++) children.push({ notchSlotIndex: i, width: before[i], notchPeekFull: 0 });
+    children.push({ notchSlotIndex: before.length, width: w, notchPeekFull: 0, activeItem: tray });
+    var s = place(1512, 8, widths(children), right, [663.5, 848.5], beside, 6, 8, 24, null, 12).left[before.length];
+    out.push(s.hidden ? "hidden" : [s.n + s.x, s.n + s.x + w]);
+  }
+  return out;
+})));
+"""
+        beside = [21, 105.5, 105]
+        fits, jumps = self.run_js(self.patched_45(), js, [
+            [54, 135, [20] + [26] * 5, [90, 260], beside],
+            # Closed it ends at 602 (left of 636.5), open at 737.
+            [54, 135, [20] + [26] * 20, [90], beside]])
+        wall_l = self.HOUSING[0] - 6 - beside[0]
+        wall_r = self.HOUSING[1] + 6 + beside[1]
+        for steps, left in ((fits, True), (jumps, False)):
+            self.assertNotIn("hidden", steps)
+            self.assertEqual(len({round(s[0], 3) for s in steps}), 1, steps)
+            for a, b in steps:
+                self.assertTrue(b <= wall_l if left else a >= wall_r, steps)
+        self.assertEqual(fits[0][0], 158)
+        self.assertEqual(jumps[0][0], wall_r + 8)
+
+    def test_tray_in_the_centre(self):
+        # The tray in Omarchy 4.5's centre section: beside the notch, the
+        # centre box sits right of the housing and grows right as the drawer
+        # slides open. Where the right list's items end (centre + centerEnd)
+        # counts the tray open, so the right side is decided once: nothing
+        # moves while it slides (v38's first build took the centre's width of
+        # the moment, and the crowded right list glided across the housing
+        # mid-slide), and nothing kept right of the housing sits under the
+        # open drawer.
+        full = self.patched_45()
+        beside = re.search(r"readonly property var notchBeside: (notchLayout && active\n\s*\? \[[^\n]*\] : \[0, 0\])",
+                           full).group(1).replace("\n", " ")
+        rest_m = re.search(r"\n    readonly property real notchRest: (boxList\.notchRest)\n", full)
+        js = r"""
+var root = { notchIsTray: function (item) { NOTCHISTRAY } };
+function widths(children) { WIDTHS }
+function rest(notchWidths) { REST }
+function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) { PLACE }
+console.log(JSON.stringify(CASES.map(function (c) {
+  var closed = c[0], drawer = c[1], others = c[2], end = c[3], right = c[4], out = [];
+  for (var k = 0; k <= 10; k++) {
+    var r = k / 10, w = closed + drawer * r;
+    var tray = { expanded: r > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer,
+                 revealExtent: drawer * r, revealProgress: r };
+    var children = [{ notchSlotIndex: 0, width: w, notchPeekFull: 0, activeItem: tray }], live = w;
+    for (var i = 0; i < others.length; i++) {
+      children.push({ notchSlotIndex: i + 1, width: others[i], notchPeekFull: 0 });
+      live += others[i];
+    }
+    var boxList = { notchRest: rest(widths(children)) };
+    var centerBox = { width: live };
+    CENTRE_REST
+    var beginList = { notchRest: 21, notchPeekMore: 105 }, endList = { notchRest: end };
+    var notchLayout = true, active = true;
+    var p = place(1512, 8, [20, 26, 26, 26], right, [663.5, 848.5], BESIDE, 6, 8, 24, null, 12);
+    out.push(p.right.map(function (s) { return s.hidden ? "hidden" : s.n + s.x }));
+  }
+  return out;
+})));
+""".replace("BESIDE", beside).replace(
+            "CENTRE_REST", "centerBox.notchRest = %s;" % rest_m.group(1) if rest_m else "")
+        right = [27] * 10 + [90, 260]
+        steps = self.run_js(full, js, [[54, 135, [80], 27, right]])[0]
+        self.assertEqual(len({json.dumps(s) for s in steps}), 1, steps)
+        # Right of the housing: after the open centre (54 + 135 + 80) and
+        # centerEnd (27).
+        wall_r = self.HOUSING[1] + 6 + 54 + 135 + 80 + 27
+        shown = [(x, w) for x, w in zip(steps[0], right) if x != "hidden"]
+        self.assertTrue(all(x >= wall_r or x + w <= self.HOUSING[0] - 6 - 21 - 105 for x, w in shown), steps[0])
+        self.assertIn(1504 - 260, steps[0])
 
 
 # The notched Macs at their default resolution: strip height and display

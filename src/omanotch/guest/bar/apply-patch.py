@@ -121,7 +121,8 @@ PIECES_45 = COMMON + [
     "            notchSlotIndex: moduleListRoot.keys.indexOf(modelData.key)\n",  # 8. lists
     "    readonly property real notchRest: {\n",                              # 8.
     "          : more > 0 ? [c.width, c.width + more] : c.width\n",            # 8. a tray counts open
-    "      ? [beginList.notchRest, centerBox.width + endList.notchRest, beginList.notchPeekMore] : [0, 0]\n",  # 5. the peek's room
+    "      ? [beginList.notchRest, centerBox.notchRest + endList.notchRest, beginList.notchPeekMore] : [0, 0]\n",  # 5. the peek's room
+    "    readonly property real notchRest: boxList.notchRest\n",              # 5. the centre at rest
 ]
 
 
@@ -383,12 +384,19 @@ def centre_45(text):
     text = replace_once(text, '''    property bool besideRight: false
 ''', '''    property bool besideRight: false
     // omarchy-notch-bar: around the camera housing (bar coordinates: the
-    // sections fill the bar). The indicators' hidden ones count at rest; the
-    // third number is the room they open into on a peek, left of the housing
-    // (Omarchy's peek widens centerBegin towards the bar's start).
+    // sections fill the bar). The indicators' hidden ones count at rest, and
+    // a tray in the centre with its drawer open; the third number is the
+    // room they open into on a peek, left of the housing (Omarchy's peek
+    // widens centerBegin towards the bar's start).
     property bool notchLayout: false
     readonly property var notchBeside: notchLayout && active
-      ? [beginList.notchRest, centerBox.width + endList.notchRest, beginList.notchPeekMore] : [0, 0]
+      ? [beginList.notchRest, centerBox.notchRest + endList.notchRest, beginList.notchPeekMore] : [0, 0]
+''')
+    text = replace_once(text, '''    readonly property real extent: root.vertical ? boxList.height : boxList.width
+''', '''    readonly property real extent: root.vertical ? boxList.height : boxList.width
+    // omarchy-notch-bar: its width at rest for Skip the notch, a tray in it
+    // counted open (its width grows while the drawer slides open).
+    readonly property real notchRest: boxList.notchRest
 ''')
     text = replace_once(text, '''      x: root.vertical ? Math.round((sections.width - width) / 2) : centerBox.x - width
 ''', '''      x: root.vertical ? Math.round((sections.width - width) / 2)
