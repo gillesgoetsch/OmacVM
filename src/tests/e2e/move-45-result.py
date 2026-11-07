@@ -19,12 +19,9 @@ another kit had other checks and does not count. A row run again keeps its
 earlier files (ROW-BASE-MAC-TIME.json): the newest one per row, base and Mac
 counts. A row whose only failed checks are "kit timing: ..." is a RETRY (the
 kit's fault landed outside the moment the row tests): not passed, not a
-product failure.
-
-A newer kit may carry rows run with an earlier one (KIT_CARRY: that kit's
-hash -> the rows whose checks changed since). Those rows must run again with
-the newer kit; every other row run with the earlier kit still counts. The
-gate takes the table from M's own move-45-result.py.
+product failure. No row of another kit is carried over: after a kit change
+the whole matrix runs again (3.4.0 D15 withdrawn); the kit's own files are
+among the --paths, so a kit changed after the tested commit is refused too.
 """
 import json
 import os
@@ -38,12 +35,6 @@ MIN_MACS = 2    # the mini and the M1 Max
 CLEAN_IN_A_ROW = 2   # G6
 KIT_FILES = ("src/tests/e2e/move-45.sh", "src/tests/e2e/move-45-result.py")
 TIMING = "kit timing:"   # a check that says the kit's fault missed its moment (a retry, not a result)
-# Earlier kits whose rows still count, with the rows whose checks changed since (those run again with this kit).
-# D15 (3.4.0): 6956a2f5685b2e78 = the kit at rc-3.4.0 02e3a4e4; kill-commit and power-loss now cut after the
-# guest's half-switch marker, power-backup stops the move's whole process tree first; nothing else changed.
-KIT_CARRY = {
-    "6956a2f5685b2e78": ("kill-commit", "power-loss", "power-backup"),
-}
 
 
 def kit_hash(blobs):
@@ -107,22 +98,12 @@ def summary(a):
             r["mac"] = str(r.get("mac", "")).split(".")[0]
             every.append(r)
     every.sort(key=lambda r: r["ended"])
-    # Rows of an earlier kit this one carries (KIT_CARRY) count, but not the rows whose checks changed since.
-    kits_all = {r.get("kit", "") for r in every}
-    main = kits_all - set(KIT_CARRY)
-    carry = (kits_all & set(KIT_CARRY)) if main else set()
-    stale = ["%s/%s/%s" % (r["row"], r["base"], r["mac"]) for r in every
-             if r.get("kit") in carry and r["row"] in KIT_CARRY[r["kit"]]]
-    every = [r for r in every if not (r.get("kit") in carry and r["row"] in KIT_CARRY[r["kit"]])]
     latest = {}
     for r in every:   # the newest run of each row, base and Mac
         latest[(r["row"], r["base"], r["mac"])] = r
     rows = list(latest.values())
     commits = sorted({r.get("app_commit", "") for r in rows})
     kits = sorted({r.get("kit", "") for r in rows})
-    main_kits = sorted({r.get("kit", "") for r in rows} - carry)
-    carried = {k: sorted({r["row"] for r in rows if r.get("kit") == k}) for k in sorted(carry)}
-    carried = {k: v for k, v in carried.items() if v}
     want = rows_of(repo)
     bases = sorted({r["base"] for r in rows})
     macs = sorted({r["mac"] for r in rows})
@@ -137,15 +118,15 @@ def summary(a):
     g6_macs = sorted(m for m, ok in g6.items() if ok)
     ok = (not missing and not clean_missing and not failed and not retry and len(bases) >= MIN_BASES
           and len(macs) >= MIN_MACS and len(g6_macs) >= MIN_MACS and len(commits) == 1 and commits[0]
-          and len(main_kits) == 1 and main_kits[0])
+          and len(kits) == 1 and kits[0])
     o = {"kind": KIND, "format": 3, "commit": commits[0] if len(commits) == 1 else "", "pass": bool(ok),
-         "kit": main_kits[0] if len(main_kits) == 1 else "", "kits": kits, "carried": carried, "stale": stale,
+         "kit": kits[0] if len(kits) == 1 else "", "kits": kits,
          "rows": len(rows), "passed": sum(r["pass"] for r in rows), "failed": failed, "retry": retry,
          "missing_rows": missing, "bases": bases, "clean_missing": clean_missing, "macs": macs,
          "clean_moves": {m: "".join("P" if x else "F" for x in v) for m, v in clean_runs.items()},
          "g6_macs": g6_macs, "min_macs": MIN_MACS, "commits": commits}
     json.dump(o, open(os.path.join(d, "result.json"), "w"), indent=1)
-    print(json.dumps({k: o[k] for k in ("pass", "commit", "kits", "carried", "rows", "passed", "failed", "retry", "missing_rows", "bases",
+    print(json.dumps({k: o[k] for k in ("pass", "commit", "kits", "rows", "passed", "failed", "retry", "missing_rows", "bases",
                                         "macs", "clean_moves", "g6_macs")}))
     sys.exit(0 if ok else 1)
 
@@ -163,9 +144,6 @@ def gate(a):
     c = o.get("commit", "")
     assert c, "no commit in the result"
     paths = subprocess.run([os.path.join(repo, "src/tests/e2e/move-45.sh"), "--paths"], capture_output=True, text=True).stdout.split()
-    # The kit's own files are tied by the kit hash below (M's, or a kit M's carries for those rows), not by this
-    # diff: a kit-only change after the tested commit (D15) keeps the product files the rows tested.
-    paths = [f for f in paths if f not in KIT_FILES]
     assert paths, "move-45.sh --paths gave no files"
     d = subprocess.run(["git", "-C", repo, "diff", "--name-only", c, m, "--"] + paths, capture_output=True, text=True)
     assert d.returncode == 0, "git diff %s %s failed: %s" % (c[:12], m[:12], d.stderr.strip()[:200])
@@ -177,25 +155,10 @@ def gate(a):
         blobs.append(b.stdout)
     assert o.get("kit") == kit_hash(blobs), "the rows ran with another kit (%s) than M's (%s): run them again with M's move-45.sh" % (
         o.get("kits") or o.get("kit"), kit_hash(blobs))
-    # Rows of an earlier kit: only one M's own move-45-result.py carries, and none of the rows changed since.
-    mc = carry_of(blobs[1])
-    carried = o.get("carried") or {}
-    for k, names in carried.items():
-        assert k in mc, "rows ran with kit %s, which M's kit does not carry: %s" % (k, ", ".join(names))
-        changed = sorted(set(names) & set(mc[k]))
-        assert not changed, "rows of kit %s whose checks changed in M's kit: %s: run them again" % (k, ", ".join(changed))
-    assert set(o.get("kits", [])) <= {o["kit"]} | set(carried), "kits %s: not M's and not carried" % o.get("kits")
+    # One kit for every row, no rows of another kit beside M's (none is carried over: D15 withdrawn).
+    assert o.get("kits") == [o["kit"]], "rows of kits %s: every row runs again with M's kit %s" % (o.get("kits"), o["kit"])
     print("    moves: %d rows passed on %s (%d Macs: %s; two clean moves in a row on each), tested at %s" % (
         o["passed"], ", ".join(o["bases"]), len(macs), ", ".join(macs), c[:12]))
-
-
-def carry_of(src):
-    """KIT_CARRY as a kit's move-45-result.py (bytes) has it, read without running that file."""
-    import ast
-    for n in ast.parse(src).body:
-        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "KIT_CARRY" for t in n.targets):
-            return {k: tuple(v) for k, v in ast.literal_eval(n.value).items()}
-    return {}
 
 
 def digest(a):

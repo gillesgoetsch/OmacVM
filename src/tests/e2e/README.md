@@ -362,7 +362,6 @@ tested commit whose move files (`move-45.sh --paths`) are the same in the
 release commit (`move-45-result.py gate`; `src/tests/move-45-gate.sh` tests the gate).
 Each row also names the kit it ran with (`move-45.sh` and
 `move-45-result.py`): all rows one kit, and M's, so a row run with older
-checks does not count. A newer kit may carry an older kit's rows (`KIT_CARRY`
-in `move-45-result.py`: the older kit and the rows whose checks changed
-since): those rows run again with the newer kit, the others still count.
-The gate reads the table from M's own file.
+checks does not count. No row of an older kit is carried over: the kit's
+files are among the `--paths`, so after a kit change the whole matrix runs
+again on the new commit.

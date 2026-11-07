@@ -416,33 +416,26 @@ expect "power cut before the stand-in QEMU starts: nothing of the move runs afte
 expect "power cut after the stand-in QEMU started: nothing of the move runs after it" "" "$(pwrun 0.5 | tr -d ' ')"
 for p in $(LC_ALL=C pgrep -f "$S/"); do kill -9 "$p" 2>/dev/null; done
 
-# ---- D15: rows of an earlier kit this one carries (KIT_CARRY), not the rows whose checks changed since ----
-CK=$(sed -n 's/^    "\([0-9a-f]\{16\}\)": (.*/\1/p' "$PY" | head -1)
-CROWS=$(sed -n "s/^    \"$CK\": (\(.*\)),\$/\1/p" "$PY" | tr -d '", ')
-expect "the kit carries rc 02e3a4e4's kit (6956a2f5) except kill-commit, power-loss, power-backup" "6956a2f5685b2e78 kill-commitpower-losspower-backup" "$CK $CROWS"
-D=$T/carry; full "$D"
-for f in "$D"/rows/*.json; do case $(basename "$f") in kill-commit-*|power-loss-*|power-backup-*) ;; *) setkit "$f" "$CK" ;; esac; done
-expect "rows of the carried kit + the changed rows with this kit: summary passes, gate passes" "0 0" "$(sumrc "$D") $(gate "$D" "$M")"
-expect "the result names the carried kit and its rows" 1 "$(key "$D" carried | grep -c "\"$CK\": \[\"again\"")"
-setkit "$D/rows/power-backup-M-mv-a300-mini-100.json" "$CK"
-expect "a changed row (power-backup) only with the carried kit: it does not count, summary fails" "1 [\"power-backup\"]" "$(sumrc "$D") $(key "$D" missing_rows)"
-mkrow "$D" power-backup "M-mv-a300" 1 mini "" 50
-expect "the changed row run again with this kit (older than the carried run): counts, summary passes" 0 "$(sumrc "$D")"
-D=$T/carryall; full "$D"; for f in "$D"/rows/*.json; do setkit "$f" "$CK"; done
-expect "every row with the carried kit only (the old matrix): summary passes for that kit, gate refuses" "0 1" "$(sumrc "$D") $(gate "$D" "$M")"
+# ---- D15 withdrawn (3.4.0 D15c): no rows of an earlier kit count, and a kit changed after the tested commit is
+# refused (the kit's files are among the --paths): after a kit fix the whole matrix runs again ----
+OLDK=6956a2f5685b2e78   # the kit at rc-3.4.0 02e3a4e4
+expect "move-45-result.py carries no earlier kit's rows" 0 "$(grep -c 'KIT_CARRY' "$PY")"
+D=$T/oldrows; full "$D"
+for f in "$D"/rows/*.json; do case $(basename "$f") in kill-commit-*|power-loss-*|power-backup-*) ;; *) setkit "$f" "$OLDK" ;; esac; done
+expect "rows of rc 02e3a4e4's kit beside rows of this kit: summary fails (two kits), gate refuses" "1 1" "$(sumrc "$D") $(gate "$D" "$M")"
 D=$T/carrylie; full "$D"; sumrc "$D" >/dev/null
-python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["carried"]={"0123456789abcdef": ["undo"]}; o["kits"]=sorted(o["kits"]+["0123456789abcdef"]); json.dump(o, open(p,"w"))' "$D/result.json"
-expect "a result with rows of a kit M's kit does not carry: gate refuses" 1 "$(gate "$D" "$M")"
-python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["carried"]={sys.argv[2]: ["kill-commit", "undo"]}; o["kits"]=sorted(set(o["kits"]) - {"0123456789abcdef"} | {sys.argv[2]}); json.dump(o, open(p,"w"))' "$D/result.json" "$CK"
-expect "a result counting a changed row (kill-commit) with the carried kit: gate refuses" 1 "$(gate "$D" "$M")"
-# D15: M differs from the tested commit only in the kit's files (a kit fix after the matrix): the product files are
-# the tested ones, the kit is tied by its hash (rows with M's kit, or carried by it): gate passes. A move file
-# (move-vm.sh) changed as well: refused, as before.
+python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["carried"]={sys.argv[2]: ["undo"]}; o["kits"]=sorted(o["kits"]+[sys.argv[2]]); json.dump(o, open(p,"w"))' "$D/result.json" "$OLDK"
+expect "a result that names rows of another kit beside M's: gate refuses" 1 "$(gate "$D" "$M")"
+# M differs from the tested commit C only in the kit's files (a kit fix after the matrix): refused, with every row
+# run with M's kit too. A move file (move-vm.sh) changed as well: refused.
 echo v1 > "$G/app/scripts/move-vm.sh"; echo "# kit fix" >> "$G/src/tests/e2e/move-45.sh"; gi commit -qam kitfix; MK=$(gi rev-parse HEAD)   # move-vm.sh as at C
 KITM=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import importlib.util as u
 s = u.spec_from_file_location("r", sys.argv[1] + "/move-45-result.py"); m = u.module_from_spec(s); s.loader.exec_module(m); print(m.kit_here())' "$G/src/tests/e2e")
-D=$T/kitonly; full "$D"; for f in "$D"/rows/*.json; do case $(basename "$f") in kill-commit-*|power-loss-*|power-backup-*) setkit "$f" "$KITM" ;; *) setkit "$f" "$CK" ;; esac; done
-expect "M changed only the kit after the tested commit; changed rows with M's kit, the rest carried: gate passes" "0 0" "$(sumrc "$D") $(gate "$D" "$MK")"
+D=$T/kitonly; full "$D"; for f in "$D"/rows/*.json; do setkit "$f" "$KITM"; done
+expect "M changed only the kit after the tested commit (every row with M's kit): summary passes, gate refuses" "0 1" "$(sumrc "$D") $(gate "$D" "$MK")"
+expect "the refusal names the kit's file" 1 "$(python3 -I "$PY" gate "$D/result.json" "$MK" "$G" 2>&1 | grep -c "files changed after the tested commit.*src/tests/e2e/move-45.sh")"
+D=$T/kitmix; full "$D"; for f in "$D"/rows/*.json; do case $(basename "$f") in kill-commit-*|power-loss-*|power-backup-*) setkit "$f" "$KITM" ;; *) setkit "$f" "$OLDK" ;; esac; done
+expect "the old matrix's rows + the 3 kit rows run again with M's kit: summary fails, gate refuses" "1 1" "$(sumrc "$D") $(gate "$D" "$MK")"
 echo v3 > "$G/app/scripts/move-vm.sh"; gi commit -qam mv3; MK2=$(gi rev-parse HEAD)
 expect "the kit and move-vm.sh changed after the tested commit: gate refuses" 1 "$(gate "$D" "$MK2")"
 
