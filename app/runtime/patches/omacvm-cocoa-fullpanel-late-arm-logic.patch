@@ -1,0 +1,140 @@
+From: OmacVM
+Subject: [PATCH] ui: FullPanel armed late, its decisions, tested without a notched Mac
+
+What: a header with no AppKit in it: what a way into full screen does with
+the strip (now; late: the main window on a display without a camera
+housing while every other part is there; or normal full screen, with the
+reason a display with a housing would have); that a full screen armed late
+counts as entered at didEnterFullScreen; the panel size this start's notch
+was measured on (OMACVM_FULLPANEL_PANEL, "WxD" in points); and that a full
+screen armed late takes the strip only on a display of that size. Used by
+omacvm-cocoa-fullpanel-late-arm.patch (which explains the why).
+
+Why its own file: so the rules are tested without QEMU, a display or a
+notch (app/runtime/Tests/display/test-fullpanel-late-arm.sh applies this
+patch to an empty folder with the FullPanel, display-settle and retake
+logic patches; at build time and in CI), and replayed with the window's
+FullPanel state in test-fullpanel-retake.c.
+
+Upstream: not applicable (OmacVM's notch strip).
+Test: app/runtime/Tests/display/test-fullpanel-late-arm.c,
+app/runtime/Tests/display/test-fullpanel-retake.c.
+
+diff --git a/ui/omacvm-fullpanel-late.h b/ui/omacvm-fullpanel-late.h
+new file mode 100644
+--- /dev/null
++++ b/ui/omacvm-fullpanel-late.h
+@@ -0,0 +1,113 @@
++/*
++ * OmacVM: FullPanel for a full screen entered on a display without a
++ * camera housing (#716): the VM started with the MacBook's lid closed (an
++ * external display only), or its main window in full screen on an external
++ * display beside the open MacBook. Such a full screen is armed late: normal
++ * full screen there, nothing logged that omacvm check warns about, and the
++ * strip beside the notch once AppKit has its Space on a display with a
++ * housing (the lid opened, the external display unplugged), through the
++ * resume and the retake of a display change
++ * (omacvm-cocoa-fullpanel-retake.patch).
++ *
++ * The decisions only, no AppKit in here, so they are tested on their own
++ * (app/runtime/Tests/display/test-fullpanel-late-arm.c and the rows of
++ * test-fullpanel-retake.c); ui/cocoa.m feeds them
++ * (omacvm-cocoa-fullpanel-late-arm.patch).
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef OMACVM_FULLPANEL_LATE_H
++#define OMACVM_FULLPANEL_LATE_H
++
++#include <math.h>
++#include <stdbool.h>
++#include <stdlib.h>
++
++#include "omacvm-fullpanel.h"
++
++/* What a way into full screen does with the strip. */
++typedef enum {
++    OMACVM_FP_ENTRY_ARM,      /* its display has a housing, every part there: the strip now */
++    OMACVM_FP_ENTRY_LATE,     /* no housing there: armed, the strip once it is on a display with one */
++    OMACVM_FP_ENTRY_NORMAL,   /* normal full screen for this one (omacvm_fp_entry_why says why) */
++} OmacVMFPEntry;
++
++/*
++ * here: omacvm_fp_fallback for the window's display now; with_housing: the
++ * same for a display with a housing (the menu bar setting, the reservation,
++ * SkyLight). Only the main window is armed late: it is never made again,
++ * so its Space is what moves to the MacBook's display; the other displays'
++ * windows are made again for each display.
++ */
++static inline OmacVMFPEntry omacvm_fp_entry(OmacVMFPFallback here, OmacVMFPFallback with_housing,
++                                            bool main_window)
++{
++    if (here == OMACVM_FP_OK) {
++        return OMACVM_FP_ENTRY_ARM;
++    }
++    if (here == OMACVM_FP_NO_NOTCH && main_window && with_housing == OMACVM_FP_OK) {
++        return OMACVM_FP_ENTRY_LATE;
++    }
++    return OMACVM_FP_ENTRY_NORMAL;
++}
++
++/*
++ * Why an entry is normal full screen: for the main window on a display
++ * without a housing, the reason it would have on one (the line then names
++ * what really stops it).
++ */
++static inline OmacVMFPFallback omacvm_fp_entry_why(OmacVMFPFallback here, OmacVMFPFallback with_housing,
++                                                   bool main_window)
++{
++    return here == OMACVM_FP_NO_NOTCH && main_window && with_housing != OMACVM_FP_OK ? with_housing : here;
++}
++
++/*
++ * didEnterFullScreen counts the full screen as entered (the retake and the
++ * lost or displaced sorting of a frame change need it): with the strip, or
++ * armed late (its strip comes later, after the resume).
++ */
++static inline bool omacvm_fp_entered(bool armed, bool accepted, bool late)
++{
++    return armed && (accepted || late);
++}
++
++/*
++ * The panel this start's notch was measured on (OMACVM_FULLPANEL_PANEL,
++ * "WxD" in points, from OmacVM.app); false when not given or not a size.
++ */
++static inline bool omacvm_fp_panel(const char *env, double *w, double *h)
++{
++    char *end;
++    double a, b;
++
++    if (!env || !*env) {
++        return false;
++    }
++    a = strtod(env, &end);
++    if (end == env || *end != 'x') {
++        return false;
++    }
++    env = end + 1;
++    b = strtod(env, &end);
++    if (end == env || *end || !(a >= 100 && a <= 20000) || !(b >= 100 && b <= 20000)) {
++        return false;
++    }
++    *w = a;
++    *h = b;
++    return true;
++}
++
++/*
++ * A late full screen takes the strip only on a display of the panel's
++ * size: the guest's bar was given that notch for the whole boot (SMBIOS),
++ * and on another size it would sit unsplit under the housing. Anything
++ * else (not late, no panel given) fits.
++ */
++static inline bool omacvm_fp_late_fits(bool late, bool given, double want_w, double want_h,
++                                       double w, double h)
++{
++    return !late || !given || (fabs(w - want_w) < 0.5 && fabs(h - want_h) < 0.5);
++}
++
++#endif /* OMACVM_FULLPANEL_LATE_H */
