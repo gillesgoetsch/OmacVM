@@ -1639,6 +1639,13 @@ grep -q 'static int clip_varyings_in(const struct dump_ctx \*ctx, const char \*\
   grep -q 'return ctx->key->tcs_present ? "omacvm_vclip" : "omacvm_clip";' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q 'key->vs_clip_in = type == PIPE_SHADER_TESS_CTRL && prev->type == PIPE_SHADER_VERTEX &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vrend_shader.c: a vertex shader still passes clip distances to a control shader in gl_PerVertex on the Mac (vs-tcs-clip-varyings patch)"
+# OmacVM: the guest's Mesa copies clip distances written in a loop back from TEMP[18] only, so
+# distances 4..7 never reached the output (the M4 did not clip, the M1 Max drew nothing): the
+# GLSL copies the next temp too while the shader never writes that output itself (#692).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-clip-copyback.patch"
+grep -q 'static void emit_guest_clip_copyback(struct dump_ctx \*ctx, const struct tgsi_full_instruction \*inst)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'emit_buff(&ctx->glsl_strbufs, "clip_dist_temp\[1\] = vec4(temp%d\[%d\]);\\n", range->first,' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: clip distances 4..7 written in a loop still stay in the guest's temp (clip-copyback patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
