@@ -566,6 +566,11 @@ jobs:
           app/runtime/Tests/display/test-fullpanel-retake.sh
           app/runtime/Tests/display/test-fullpanel-retake.sh --self-test
 
+      - name: Full screen including notch after a start with the lid closed (issue 716; the checks catch the old code)
+        run: |
+          app/runtime/Tests/display/test-fullpanel-late-arm.sh
+          app/runtime/Tests/display/test-fullpanel-late-arm.sh --self-test
+
       - name: HDR's headroom for the guest (ADR 0049; the checks catch code without it)
         run: app/runtime/Tests/display/test-hdr-headroom.sh
 
