@@ -3,16 +3,13 @@
 # it fairly. No VM, no Mac needed:
 #   src/tests/bench-docs.sh
 # - chart.py turns docs/benchmarks/chart.json into the committed SVG, byte for byte
-# - a striped bar (a build that is not out, or not measured the same way) is
-#   never longer than a released bar of another app in its group
-# - the chart's alt texts in README.md and docs/compare.md give the app's
-#   numbers the SVG gives
-# - the speed chart shows one round only (one source for every test) and
-#   plain bars (no "unreleased" tags)
+# - the charts show OmacVM.app and macOS only (the other VM apps were retired
+#   in 3.4.0; never added back without the owner's consent)
+# - the speed chart's alt text in README.md gives the numbers the SVG gives
+# - the speed chart's browser tests come from one round (one source)
 # - the power chart (docs/images/power.svg) is chart.py --panel power's output, its
-#   hours are the battery over the watts, README.md's alt text gives every
-#   number in it, and it shows one round only (the README shows only the latest
-#   results; older rounds stay in docs/benchmarks)
+#   hours are the battery over the watts, and README.md's alt text gives every
+#   number in it
 # - the GPU progress chart (docs/images/gpu-progress.svg) is chart.py --panel
 #   progress's output, docs/benchmarks/README.md's alt text gives every number
 #   in it, its medians are the ones that page's table gives, and README.md
@@ -41,27 +38,21 @@ svg = read("docs/images/benchmarks.svg")
 data = json.loads(read("docs/benchmarks/chart.json"))
 
 # 1. The SVG is chart.py's output for chart.json (subtitle taken from the SVG).
-sub = re.search(r'font-size="13" fill="#908caa" text-anchor="middle">([^<]*)</text>', svg)
+# The subtitle: the header's right-aligned line (machine and date).
+SUB = r'<text x="\d+" y="\d+" font-size="12" class="soft" text-anchor="end">([^<]*)</text>'
+sub = re.search(SUB, svg)
 out = f"{tmp}/chart.svg"
 subprocess.run([sys.executable, f"{R}/src/bench/chart.py", f"{R}/docs/benchmarks/chart.json", out,
                 sub.group(1) if sub else ""], check=True)
 expect("chart.py gives the committed SVG", open(out, encoding="utf-8").read() == svg,
        "run src/bench/chart.py docs/benchmarks/chart.json docs/images/benchmarks.svg \"<subtitle>\"")
 
-# 2. A striped bar never outranks a released one of another app.
-med = data["medians"]
-mac = med.get("mac", {})
-for route, tests in data.get("unreleased", {}).items():
-    for test in tests:
-        v = med.get(route, {}).get(test)
-        if v is None or not mac.get(test):
-            continue
-        beaten = [r for r in med if r not in ("mac", route) and test in med[r]
-                  and test not in data.get("unreleased", {}).get(r, {}) and med[r][test] < v]
-        top = [r for r in med if r not in ("mac", route) and test in med[r]
-               and test not in data.get("unreleased", {}).get(r, {}) and med[r][test] >= v]
-        expect(f"striped {route} {test} is not above a released bar",
-               not (beaten and not top), f"{v} beats every released bar ({', '.join(beaten)})")
+# 2. OmacVM.app and macOS only.
+mac = data["medians"].get("mac", {})
+for part, routes in (("medians", data["medians"]), ("power watts", data["power"]["watts"])):
+    expect(f"chart.json {part}: OmacVM.app and macOS only", set(routes) <= {"app", "mac"}, sorted(routes))
+expect("chart.json: no numbers of retired VM apps (missing, unreleased)", not data.get("missing") and not data.get("unreleased"),
+       [k for k in ("missing", "unreleased") if data.get(k)])
 
 # 3. Alt texts give the app's numbers the SVG gives, group by group.
 desc = re.search(r'<desc id="d">(.*?)</desc>', svg, re.S).group(1)
@@ -74,7 +65,7 @@ def app_values(text, prefix):
         vals[bench] = int(n.group(1)) if n else None
     return vals
 want = app_values(desc, "OmacVM.app ")
-for page in ("README.md", "docs/compare.md"):
+for page in ("README.md",):
     alt = re.search(r'<img src="[^"]*benchmarks\.svg" alt="([^"]*)"', read(page))
     got = app_values(alt.group(1) if alt else "", "OmacVM.app ")
     diff = {b: (want[b], got.get(b)) for b in want if got.get(b) != want[b]}
@@ -91,7 +82,7 @@ expect("speed chart: plain bars, no version tags (no \"unreleased\")", not data.
 
 # 3b. The power chart: chart.py's output, hours that follow from the watts, every number in README's alt text.
 psvg = read("docs/images/power.svg")
-sub = re.search(r'font-size="13" fill="#908caa" text-anchor="middle">([^<]*)</text>', psvg)
+sub = re.search(SUB, psvg)
 out = f"{tmp}/power.svg"
 subprocess.run([sys.executable, f"{R}/src/bench/chart.py", "--panel", "power", f"{R}/docs/benchmarks/chart.json", out,
                 sub.group(1) if sub else ""], check=True)
@@ -101,11 +92,7 @@ pw = data["power"]
 dg = pw.get("digits", 1)
 gone = [f"{route} {load} {v} W" for route, loads in pw["watts"].items() for load, v in loads.items()
         if f"{v:.{dg}f} W · {pw['battery_wh'] / v:.1f} h" not in re.sub(r"</text>\s*<text[^>]*>", " · ", psvg)]
-for r in pw.get("round", {}).get("rows", []):
-    gone += [f"{r['mac']} {r['load']} {v} W" for v in (r["app"], r.get("macos"))
-             if v is not None and f"{v:.2f} W · {r['wh'] / v:.1f} h" not in re.sub(r"</text>\s*<text[^>]*>", " · ", psvg)]
 expect("power SVG shows every watt figure with its hours (battery over the draw)", not gone, ", ".join(gone))
-expect("power chart shows one round only, no second round of an older version", "round" not in pw)
 pdesc = re.search(r'<desc id="d">(.*?)</desc>', psvg, re.S).group(1)
 pairs = re.compile(r"(\d+\.\d+) W \((\d+\.\d+) h\)")
 want = pairs.findall(pdesc)
@@ -114,8 +101,7 @@ got = pairs.findall(alt.group(1) if alt else "")
 expect(f"README.md: power chart alt text gives the SVG's {len(want)} numbers in order", got == want and len(want) > 0,
        f"SVG {['/'.join(p) for p in want]}, alt {['/'.join(p) for p in got]}")
 expect("README.md: the battery line links to the power chart",
-       re.search(r"Optimized for battery\*\*<br>[^|]*\]\(#power-draw\)", read("README.md")) is not None
-       and '<a name="power-draw"></a>' in read("README.md"))
+       "](#power-draw)" in read("README.md") and '<a name="power-draw"></a>' in read("README.md"))
 
 # 3c. The GPU progress chart: chart.py's output, every number in its alt text, medians as the docs give them, not in README.md.
 gsvg = read("docs/images/gpu-progress.svg")
@@ -150,7 +136,7 @@ for t in gp["tests"]:
                    row.group(0) if row else "no row")
 
 # 4. "Not released yet" with a version in brackets is a promise the release may not keep.
-for page in ("README.md", "docs/compare.md", "docs/benchmarks/README.md"):
+for page in ("README.md", "docs/benchmarks/README.md"):
     bad = re.findall(r"not released yet \(\d+\.\d+[^)]*\)", read(page))
     expect(f"{page}: \"not released yet\" names no release", not bad, "; ".join(bad))
 

@@ -603,7 +603,7 @@ def test_step_n_of_m_while_running(world):
 
 
 @pytest.mark.parametrize("release,want", [("2.9.1", "u updates this VM"),
-                                           (None, "on the Mac, omacvm apply --vm NAME --vm-type parallels brings this VM up to it")])
+                                           (None, "on the Mac, omacvm apply --vm NAME brings this VM up to it")])
 def test_update_first_offers_u(world, release, want):
     world.refuse_jobs = (409, "update-first", "the Mac has OmacVM 2.9.1, this VM 2.7.0: update first")
     if release:
@@ -733,7 +733,7 @@ def test_failed_update_says_the_mac_kept_it_and_the_way_out(world, monkeypatch, 
             assert r.startswith("Update: camera was not set up. The Mac keeps OmacVM 2.9.1; "
                                 f"this VM went back to OmacVM {a.c.local.version} and its features."), r
             assert "Turn the Mac's camera off (space) or repair it (r)" in r
-            assert "omacvm apply --vm 'My Omarchy' --vm-type parallels" in r
+            assert "omacvm apply --vm 'My Omarchy'" in r
     asyncio.run(go())
 
 
@@ -883,7 +883,7 @@ def test_repair_that_went_back_on_an_older_vm(world):
             assert await settle(pilot, lambda: bool(a.last_result))
             assert a.last_result == ("Repair The Mac's camera: The Mac's camera was not set up. The Mac keeps OmacVM 2.9.1; "
                                      f"this VM went back to OmacVM {a.c.local.version} and its features. Turn the Mac's camera off (space) "
-                                     "to go on without it, or r tries again; on the Mac: omacvm apply --vm NAME --vm-type parallels. "
+                                     "to go on without it, or r tries again; on the Mac: omacvm apply --vm NAME. "
                                      "! reports the problem."), a.last_result
     asyncio.run(go())
 
@@ -1203,7 +1203,7 @@ def test_gpu_memory_row_live(tmp_path, monkeypatch):
 
 
 def test_gpu_memory_not_asked_on_other_routes(tmp_path, monkeypatch):
-    mac, checks = gpu_world(tmp_path, monkeypatch, vm_type="parallels")
+    mac, checks = gpu_world(tmp_path, monkeypatch, vm_type="other")
 
     async def go():
         a = app()

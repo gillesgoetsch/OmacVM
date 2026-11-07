@@ -1,10 +1,9 @@
 #!/bin/bash
 # The Mac's camera in Omarchy, guest side. Run as root inside the VM:
 #   ./install.sh <desktop-user> <vm-type> on|off
-# UTM, VMware Fusion and OmacVM.app: /dev/video42 "Mac Camera" (v4l2loopback,
-# built by DKMS for each kernel), fed by the user service omacvm-camera from
-# the Bridge (UTM, Fusion) or the app's virtio port, only while an app reads it.
-# Parallels passes the Mac's camera itself: nothing to install there.
+# /dev/video42 "Mac Camera" (v4l2loopback, built by DKMS for each kernel), fed
+# by the user service omacvm-camera from OmacVM.app's virtio port, only while
+# an app reads it.
 # off: the service, the module and our files go; the packages stay.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -13,7 +12,7 @@ user_ctl() { systemctl --user -M "$U@" "$@"; }
 FILES=(/etc/systemd/user/omacvm-camera.service /usr/local/bin/omacvm-camera /etc/modprobe.d/90-omacvm-camera.conf
        /etc/modules-load.d/90-omacvm-camera.conf /etc/udev/rules.d/70-omacvm-camera.rules)
 
-if [[ $ON != on || $TYPE == parallels ]]; then
+if [[ $ON != on || $TYPE != app ]]; then
   [[ -e /usr/local/bin/omacvm-camera || -e /etc/systemd/user/omacvm-camera.service ]] || exit 0
   systemctl --global disable omacvm-camera.service >/dev/null 2>&1 || true
   user_ctl stop omacvm-camera.service 2>/dev/null || true

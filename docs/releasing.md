@@ -71,7 +71,7 @@ src/release/release.sh X.Y.Z
 | verify | sha256; `keys.py app-feed`; the control manifest; `feed-check` (the app's own update code: signature, zip size and sha256, bundle id, version, Developer ID of the feed's team on the app and its QEMU); a changed feed is refused |
 | image | `make-image.sh app build generalize package clean` (about 15-20 min, a headless VM, on the worktree's runtime build, or on the app's own runtime for an app from another Mac), or `OMACVM_RELEASE_IMAGE_FROM` (a signed image of this version, e.g. from the dry run) |
 | e2e | the gate: `src/tests/e2e/cc-switches.sh` passed on the test Mac for a test identity build of M (every switch in the control centre, the fast network, Touch ID, Graphics, update checks, the app's window, the update from the release before; [src/tests/e2e/README.md](../src/tests/e2e/README.md)). Its `result.json` in `OUT/e2e/` (`OMACVM_RELEASE_E2E_RESULT`), or run it now with `OMACVM_E2E_SSH` + `OMACVM_E2E_ARGS`. `OMACVM_RELEASE_E2E_OVERRIDE="<why>"` goes without it and logs the reason; publish refuses otherwise |
-| publish | tag M, `gh release create` with the six files (latest), then the image to `prebuilt-X.Y.Z` |
+| publish | first the image (only one that passed step image for M, its parts still those of its signed manifest) to `prebuilt-X.Y.Z` made at M, checked on GitHub (manifest, signature and sums byte for byte, every part's size and SHA-256 digest, the release's target and tag at M); then tag M and `gh release create` with the six files (latest) |
 | after | downloads what GitHub serves and checks it again; `releases/latest` serves the new feed and manifest; the prebuilt lookup finds the image |
 
 `merge`, `publish` and `rollback` ask before they change GitHub; `--yes`

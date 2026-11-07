@@ -22,6 +22,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[4]
 GUEST = ROOT / "src/omanotch/guest"
 SHELLS = ROOT / "src/tests/omarchy-shell"
 MAC, UPSTREAM = "omarchy-mac-ba546a61", "omarchy-a06ec133"
+UP45 = "omarchy-ac2690cd"   # Omarchy 4.5.0
 USER = "tester"
 PIN = "import QtQuick 6.11 // omacvm #376: QtQuick's own Color (Qt 6.12) would hide Omarchy's"
 
@@ -46,7 +47,7 @@ class Copies(unittest.TestCase):
                           XDG_RUNTIME_DIR=str(self.tmp / "run"))
         # copies.py with its patchers, as installed (~/.local/lib/omanotch).
         self.lib = self.tmp / "lib"
-        for f in ("copies.py", "bar/apply-patch.py", "background/apply-patch.py"):
+        for f in ("copies.py", "bar/apply-patch.py", "bar/workspaces-patch.py", "background/apply-patch.py"):
             (self.lib / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(GUEST / f, self.lib / f)
         self.load()
@@ -160,7 +161,7 @@ class Copies(unittest.TestCase):
 
     # ---- tests ----
     def test_install_makes_and_patches_both_copies(self):
-        for which in (MAC, UPSTREAM):
+        for which in (MAC, UPSTREAM, UP45):
             with self.subTest(which):
                 for name in ("bar", "background"):
                     if self.copy(name).exists():
@@ -174,12 +175,18 @@ class Copies(unittest.TestCase):
                     self.assertEqual(backup.read_bytes(), (SHELLS / which / "shell/plugins" / name / self.entry(name).name).read_bytes())
                     self.assertEqual(self.state(name)["result"], "current")
                     self.assertEqual(self.check()[f"{name} copy"][0], "ok")
+                # 4.5's workspaces widget: the NOTCH copy shows the built-in display's.
+                ws = self.copy() / "widgets/Workspaces.qml"
+                self.assertEqual(ws.exists(), which == UP45)
+                if which == UP45:
+                    self.assertIn("// omarchy-notch-bar: the copy on Omanotch's hidden NOTCH output shows", ws.read_text())
                 n = self.restarts
                 self.assertEqual(self.follow(), 0)
                 self.assertEqual(self.restarts, n, "nothing changed: no restart")
 
     def test_unchanged_copy_follows_an_update(self):
-        for old, new in ((MAC, UPSTREAM), (UPSTREAM, MAC)):
+        # Also the move of a 4.0 VM to Omarchy 4.5 (OmacVM.app's Move to Omarchy 4.5).
+        for old, new in ((MAC, UPSTREAM), (UPSTREAM, MAC), (MAC, UP45), (UPSTREAM, UP45)):
             with self.subTest(f"{old} -> {new}"):
                 self.reset(old)
                 self.follow(install=True)
@@ -202,6 +209,21 @@ class Copies(unittest.TestCase):
                 shutil.rmtree(self.copy(name))
             self.shell(name, which)
         shutil.rmtree(self.home / ".local/state", ignore_errors=True)
+
+    def test_your_edits_stay_through_the_move_to_45(self):
+        # A 4.0 VM's copy with an edit in the patch's own part (the same in
+        # both forms): Omarchy 4.5's bar with the patch, and the edit.
+        self.follow(install=True)
+        mine = self.quiet_line(self.patched("bar", MAC), self.patched("bar", UP45))
+        self.edit(self.entry(), mine, mine + "  // mine: stays\n")
+        self.shell("bar", UP45)
+        self.shell("background", UP45)
+        self.assertEqual(self.follow(), 0)
+        text = self.entry().read_text()
+        self.assertEqual(text.replace(mine + "  // mine: stays\n", mine), self.patched("bar", UP45).decode())
+        self.assertEqual(self.check()["bar copy"][0], "ok")
+        self.assertEqual(self.entry("background").read_bytes(), self.patched("background", UP45))
+        self.assertIn("notchParkedScreen", (self.copy() / "widgets/Workspaces.qml").read_text())
 
     def test_your_edits_stay_when_they_merge(self):
         self.follow(install=True)

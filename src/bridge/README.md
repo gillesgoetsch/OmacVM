@@ -1,14 +1,15 @@
 # OmacVM Bridge
 
-The Mac's Wi-Fi, Bluetooth, audio, media keys, display, battery and camera, inside the Omarchy
-VM. The VM only has a virtual Ethernet card and a virtual sound card; the bridge is a
+The Mac's Wi-Fi, Bluetooth, audio, media keys and display, inside the Omarchy
+VM in OmacVM.app. The VM only has a virtual Ethernet card and a virtual sound card; the bridge is a
 small Mac menu-bar app that serves the real thing as JSON over the private
-VM network (Parallels, UTM or VMware Fusion) and pushes every change as Server-Sent Events.
+VM network and pushes every change as Server-Sent Events. (The battery and the
+camera come through OmacVM.app's own ports.)
 
 | Part | Where |
 |---|---|
 | Mac app | `mac/*.swift` → `~/Applications/OmacVMBridge.app` (agent app, keyboard icon in the menu bar), LaunchAgent `org.omacvm.bridge`, log `~/Library/Logs/omacvm-bridge.log` |
-| Listens on | port 47831 of the Mac's address on each VM network: `10.211.55.2` (Parallels' shared network), `192.168.64.1` (UTM's) and the `.1` of VMware Fusion's NAT network (`VNET_8_HOSTONLY_SUBNET` in `/Library/Preferences/VMware Fusion/networking`), and for OmacVM.app `127.0.0.1` and `192.168.77.1` (its fast network), never `0.0.0.0`. Waits for an address while its VM app is not running and re-binds after wake |
+| Listens on | port 47831 of `127.0.0.1` (an OmacVM.app VM's `10.0.2.2`) and `192.168.77.1` (its fast network), never `0.0.0.0`. Waits for an address while its network is not up and re-binds after wake. On the retired routes' addresses it answers only that they are retired (below) |
 | Token | Mac `~/Library/Application Support/omacvm-bridge/token` (0600, made on first start); VM `~/.config/omacvm-bridge/token` (copied by `omacvm apply`) |
 | Config | `~/Library/Application Support/omacvm-bridge/config.json`: `capture_keys`, `menu_bar_icon`, `keyboard_low_steps`, `external_brightness`, `brightness_steps` (read again within 2 s of a change; `omacvm apply` sets it from the feature) |
 | VM client | `guest/omacvm-bridge` (bash + curl; the token never shows in `ps`, and goes only to a Bridge that proved it knows it, see API) |
@@ -18,7 +19,7 @@ VM network (Parallels, UTM or VMware Fusion) and pushes every change as Server-S
 | Bar widgets | `plugins/omacvm.bluetooth`, `plugins/omacvm.wifi`, `plugins/omacvm.audio` (clones of Omarchy's Bluetooth, network and audio widgets; Super+Ctrl+B opens the Bluetooth one), `plugins/omacvm.nightshift` |
 
 Only Apple frameworks: CoreWLAN, CoreLocation, CoreAudio, IOBluetooth,
-CoreBluetooth (the permission), IOKit (the battery), AVFoundation (the camera), AppKit, Security, and the private
+CoreBluetooth (the permission), IOKit, AppKit, Security, and the private
 DisplayServices and CoreBrightness (brightness, Night Shift, True Tone,
 keyboard light), and IOKit's private IOAVService (DDC/CI to external
 displays, `external-brightness.swift`). Bluetooth power and forgetting a device use IOBluetooth's
@@ -33,11 +34,6 @@ private `IOBluetoothPreferenceSetControllerPowerState` and
 | Accessibility | the event tap that takes the media keys while a VM is in front (logged as `permissions: ...`, shown by `omacvm check`) | prompt on first start; Privacy & Security › Accessibility, or `tccutil reset Accessibility org.omacvm.bridge` |
 | Input Monitoring | the brightness keys read from the keyboard while an OmacVM.app VM is in front (`mac/hid-keys.swift`; on macOS 27 they reach no event tap) | Privacy & Security › Input Monitoring |
 | Bluetooth | connecting, disconnecting, forgetting and switching from the VM (without it the devices are listed read-only, from macOS's system report) | prompt on first start; Privacy & Security › Bluetooth |
-| Camera | the Mac's camera for UTM and VMware Fusion VMs (`GET /camera`) | prompt the first time a Linux app in such a VM uses the camera; Privacy & Security › Camera |
-
-A UTM or Fusion VM with the camera on gets the Bridge also with the Bridge
-feature off. Then only the camera needs a permission: the other prompts can
-be answered with no.
 | Keychain (per request) | the Wi-Fi password for QR sharing | macOS asks for an administrator's approval every time |
 
 The menu-bar icon shows both grants and links to the settings. Permissions
@@ -52,10 +48,10 @@ token: it answers `{"proof": HMAC-SHA256(token, "omacvm-bridge mac <addr> N")}`,
 (with its own Mac address: 127.0.0.1 for OmacVM.app) before every request, so
 a program listening in the Bridge's place (on 127.0.0.1 any Mac program could)
 never gets the token, not even by passing on a proof from the Bridge on
-10.211.55.2. The client wraps all of it:
+192.168.77.1. The client wraps all of it:
 
 ```bash
-omacvm-bridge state | scan [--cached] | audio | display | bluetooth | battery | events
+omacvm-bridge state | scan [--cached] | audio | display | bluetooth | timezone | events
 omacvm-bridge volume +5 | mute | mic-volume 60 | output <uid>
 omacvm-bridge brightness -5 | night-shift toggle | night-shift strength 70 | true-tone off
 omacvm-bridge external | external-brightness [--output Virtual-N] [+5 | -5 | 40]
@@ -64,7 +60,7 @@ omacvm-bridge bluetooth power toggle | connect AA:BB:CC:DD:EE:FF | disconnect �
 ```
 
 ```bash
-T=$(cat ~/.config/omacvm-bridge/token); B=http://10.211.55.2:47831   # UTM: http://192.168.64.1:47831
+T=$(cat ~/.config/omacvm-bridge/token); B=http://10.0.2.2:47831   # the fast network: http://192.168.77.1:47831
 curl -H "Authorization: Bearer $T" $B/state
 ```
 
@@ -212,28 +208,10 @@ curl "${H[@]}" -d '{}'                                    $B/bluetooth/settings 
 after about 15 s). Pairing a new device needs macOS's own dialog, so the
 panel's "Pair a new device…" opens the Mac's Bluetooth settings.
 
-### Battery
-
-`GET /battery`: the Mac's battery, for UTM and VMware Fusion VMs (their
-`omacvm-battery` agent shows it in Omarchy's bar, see `../battery/README.md`;
-OmacVM.app passes the same on its own port, Parallels gives the VM its own):
-
-```json
-{"type":"state","present":true,"percentage":57,"state":"discharging","acConnected":false,
- "timeToEmptySeconds":8100,"timeToFullSeconds":null,"chargeLimit":80,
- "chargeNowMicroAh":2832900,"chargeFullMicroAh":4970000,"chargeFullDesignMicroAh":6075000,
- "voltageMicroV":12537000,"cycleCount":213}
-```
-
-`state`: `charging`, `discharging`, `full`, `not-charging` (on the charger,
-held at the limit) or `unknown`. `chargeLimit`: the limit set in macOS
-(read from powerd's settings), else `null`. A Mac without a battery:
-`present: false`, `percentage: null`, `acConnected: true`. Read-only.
-
 ### Events
 
 `GET /events` (Server-Sent Events): on connect the current `wifi`, `audio`,
-`display`, `bluetooth` and `battery`; then
+`display`, `bluetooth` and `timezone`; then
 
 | event | when |
 |---|---|
@@ -242,7 +220,6 @@ held at the limit) or `unknown`. `chargeLimit`: the limit set in macOS
 | `display` | Night Shift (its own notification), True Tone, brightness |
 | `bluetooth` | power, devices connecting and disconnecting (IOBluetooth notifications), anything else within 5 s; battery re-read every minute while something is connected |
 | `scan` | an active scan finished, or macOS refreshed its scan cache (≤ every 10 s) |
-| `battery` | charge, charging, the charger (IOKit notifications); time left, voltage and charge in µAh alone at most every 30 s |
 | `osd` | `{"type":"osd","kind":"volume"\|"mute"\|"brightness"\|"keyboard","value":0-100,"muted":bool,"source":"keys"\|"api"\|"external","device":"…"}` |
 
 `source`: `keys` = a media key caught while the VM was full screen, `api` = a
@@ -264,43 +241,19 @@ after 3 s). Without the socket (an older install, the service failing)
 `omacvm-bridge events` goes straight to the Mac. Log: `journalctl --user -u
 omacvm-bridge-events`.
 
-### Camera
+### The retired routes' addresses
 
-UTM and VMware Fusion VMs get the Mac's camera from the Bridge
-(`camera.swift`; OmacVM.app uses the same code over a virtio port). The VM's
-`omacvm-camera` (`../camera/guest/`) opens a connection only while a Linux
-app reads `/dev/video42`:
-
-1. `GET /camera` with the token, after `/proof`. The Bridge answers `200` and
-   the connection is the camera's from then on (`503` with 8 VMs connected).
-2. The VM sends one JSON object per line: `{"type":"start"}`, `{"type":"stop"}`.
-3. The Bridge sends messages: a 16-byte header (`TOCM`, version 1, kind 1
-   status or 2 frame, two zero bytes, payload length and sequence as
-   little-endian UInt32) and the payload. Status is JSON:
-   `{"status":"idle"}`, `{"status":"streaming","name":"MacBook Pro Camera","width":1280,"height":720,"fps":30,"pixelFormat":"NV12"}`
-   or `{"status":"unavailable","reason":"permission"|"no-camera"|"capture"}`.
-   A frame is 1280×720 NV12, 1,382,400 bytes.
-
-The camera runs while at least one VM said start and has neither said stop
-nor closed the connection. Every VM gets the same frames; one that has not
-taken the last frame yet skips the next, so a slow VM holds up nobody. A VM
-that stops reading for 2 seconds is dropped. The first `start` ever makes
-macOS ask for the camera; until it is answered the VM shows black.
-When the camera fails while VMs still want it (another Mac app takes it, the
-permission is missing), they get `unavailable` and show black, and the Bridge
-tries again after 2 seconds, then up to every 30, until it works (they get
-`streaming` again) or no VM wants it.
-
-Both are only for VMs: from 127.0.0.1 or from one of the Mac's own
-addresses they answer `403`. The token is a plain file, so otherwise any
-program of yours on the Mac could read it and use the camera under the
-Bridge's permission, without macOS asking for it. OmacVM.app's VMs use their
-virtio port.
-
-`GET /camera/status`: `{"permission": "granted"|"not-determined"|"denied"|"restricted", "camera": "MacBook Pro Camera", "on": false, "readers": 0, "connections": 0}`.
-
-`OMACVM_CAMERA=test` in the Bridge's environment sends a moving test picture
-instead of the camera (no permission needed), to check the way into the VM.
+Parallels, UTM and VMware Fusion were retired in OmacVM 3.4.0 (AGENTS.md).
+On those networks' Mac addresses (`10.211.55.2`, `192.168.64.1`, the `.1` of
+the third app's NAT network) the Bridge serves nothing; an old VM's OmacVM 3.3
+asks there and gets one text instead (`mac/retired.swift`): `GET /proof` as
+always, `GET /events` a stream that stays open with the text as a comment and
+`: ping` every 15 s (the VM's event service then keeps one quiet stream), and
+anything else `410 {"error": "This VM runs on a retired route …",
+"code": "route-retired", "retired_in": "3.4.0"}`: its control centre shows the
+text, no job runs, Touch ID falls back to the password at once. Nothing there
+lists VMs or runs `omacvm`. Test: `mac/test-retired.sh` (the 3.3.0 guest
+clients against it).
 
 ### Wallpaper
 
@@ -429,7 +382,7 @@ signature along, and the signed answer back unchanged (`AuthRelay`). The
 Bridge takes such a request by that name when it has the VM's Touch ID
 key, without waiting for its VM list (`touchIDRelayVM`): the first request
 after the Bridge or the VM started used to get `409 unknown-vm`. Requests
-from an address (Parallels, UTM, Fusion) wait up to 10 s for a fresh list.
+from an address (a VM that asks over the network) wait up to 10 s for a fresh list.
 
 For OmacVM.app's VMs the Mac asks in a panel in the VM's Omarchy theme
 (from 3.0.2), shown by QEMU, the VM window's own process: macOS reads the
@@ -437,7 +390,7 @@ finger only for the app in front. The Bridge decides as always, then sends
 the panel's words and the VM's theme to the app in an interim
 `103 Touch ID Panel` answer on the relay connection and gets the panel's end
 back as one line (`touchIDAskAppPanel`); it signs the final answer.
-macOS's dialog stays for Parallels, UTM and Fusion, the password fallback,
+macOS's dialog stays for the password fallback,
 `"touch_id_panel": false` in `config.json`, and whenever the panel could not
 show. The VM sends its theme with `POST /omacvm/theme` (control key; only
 with Touch ID on; `#rrggbb` colours checked for contrast:
@@ -454,8 +407,7 @@ off from the VM keeps the API reachable (tested), so it can switch it back on.
 
 ## Media keys
 
-While **a VM is in front** (an OmacVM.app VM, full screen or in a window;
-Parallels, UTM or VMware Fusion with the VM covering a whole display), volume
+While **an OmacVM.app VM is in front** (full screen or in a window), volume
 up/down/mute, display brightness and keyboard-light keys are swallowed (no
 macOS popup), applied on the Mac in macOS's 1/16 steps (Shift+Option: 1/64),
 display brightness in 1/32 steps (see Brightness steps), and shown by Omarchy's
@@ -517,8 +469,7 @@ pass this tap; only the app's Now Playing reaches them
 (app/app/Sources/OmacVM/NowPlaying.swift, docs/adr/0058-now-playing.md).
 
 With the VM in front on an external display, the display brightness keys
-set that display instead (see External displays): OmacVM.app's VMs also in a
-window, Parallels, UTM and Fusion in full screen; 32 steps (Option: 64, see
+set that display instead (see External displays), also in a window; 32 steps (Option: 64, see
 Brightness steps), read from the display first, writes at most every 50 ms
 (the latest level; a jump of more than two steps ramps there), never waiting
 in the key path; Omarchy's popup shows the level (not the
@@ -575,7 +526,7 @@ draws it.
 
 ## Tested
 
-macOS 15.7.4, Parallels 27.0.2: Wi-Fi off/on (the event stream stayed up,
+macOS 15.7.4 (first in one of the retired VM apps, since 3.0 in OmacVM.app): Wi-Fi off/on (the event stream stayed up,
 `power:false` after 1 s, reconnected ~7 s after power on, API reachable
 throughout), media keys in full screen (exact 1/16 steps, no macOS popup),
 external volume/brightness changes as `external` OSD events, Night Shift and

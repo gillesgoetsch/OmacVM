@@ -3,6 +3,68 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.1 (unreleased)
+
+- **Clip distances 5 to 8 that a shader writes in a loop now reach the Mac's GPU (OmacVM.app, see
+  #692).** After such a loop (a tessellation control shader copying `gl_ClipDistance[i]` in a `for`
+  loop, or a vertex, geometry or evaluation shader writing them in one) the VM's Mesa copies only
+  distances 1 to 4 to the output, so 5 to 8 were undefined: on the M4 a negative one did not clip.
+  The app now copies the rest itself, for every VM; OmacVM's own guest Mesa build (#694) is no longer
+  needed for it. Needs the app update (from the VM's next start).
+
+## 3.4.0 (unreleased)
+
+- **New VMs get Omarchy 4.5** from Omarchy's own aarch64 repos, always the latest stable release
+  (pkgs.omarchy.org and its snapshot of Arch Linux ARM). New VMs from a prebuilt image are Omarchy
+  4.5 too; an app from 3.4.0 never takes an older 4.0 image (it builds the VM here instead). Each VM
+  from a prebuilt image makes its own pacman keyring at its first boot.
+- **Move to Omarchy 4.5**: a card at the top of an Omarchy 4.0 VM's settings moves it to Omarchy 4.5
+  on the official ARM packages, only when you click it. It keeps a backup of the disk first, shows
+  each step, can be resumed after a quit or a lost network, and Undo puts the old disk back. Keep
+  This Disk is offered once Omarchy 4.5's packages are in, if a later step of the move did not
+  finish. Delete Backup frees its space, only when you click it. If OmacVM crashed during a move, it
+  shuts the VM that was left running down at a safe point at the next start and offers Resume or
+  Undo; when the VM stopped while its packages were being switched, Resume first asks the VM whether
+  the move can go on.
+- The move in the VM, step by step: it checks first, keeps a journal, goes on after a stop, and
+  reports what changed. It takes VMs that updated after Omarchy's snapshot of Arch Linux ARM:
+  packages split, renamed or merged since (clang and clang-libs on 2026-11-06) are replaced by the
+  snapshot's own in the same switch. A VM that loses power during the move boots and goes on from its
+  last step (every step on the disk, GRUB's menu never half written). A move cut off inside the
+  package switch goes on when pacman had not begun it or had finished it; only a switch cut half way
+  needs Undo. Another pacman running in the VM (an update check, the user's own) never turns a move
+  that can go on into one that needs Undo.
+- A moved VM keeps no Omarchy 4.0 factory snapshot, so Omarchy 4.5's Factory Reset cannot bring 4.0
+  back. A factory snapshot the move cannot remove no longer blocks it: it stays, with a warning in
+  the move's report and in `omacvm check`.
+- Update VM, the system update and OmacVM's package installs change nothing while a move's package
+  switch is not finished, and Update VM says so instead of looking done. `omacvm update --vm` stops
+  on a VM whose move is not over; `omacvm update` skips it. A disk kept after the move's package
+  switch (Keep This Disk) counts as moved in the VM too: `omacvm check` no longer asks to resume it.
+- OmacVM's packages and everything they need stay when Omarchy 4.5 removes orphaned packages, on new
+  and moved VMs. OmacVM's Venus driver has a name of its own (omacvm-vulkan-virtio), so no update
+  replaces it.
+- Omarchy's own update without anyone logged in keeps a session of the user's for its whole run
+  (Omarchy 4.5's migrations and update state need it).
+- `omacvm check` says which Omarchy a VM has and where it updates from.
+- Omanotch on Omarchy 4.5. The bar in the notch strip, Skip the notch, FullPanel, the tray and toasts
+  under the strip work on 4.5's new bar, and the strip shows the built-in display's workspaces. 4.0
+  VMs keep working as before.
+- Omanotch's strip: a click presses the item it shows, also while the two copies of the bar differ
+  (e.g. an update icon only one of them shows yet).
+- **OmacVM.app only: Parallels, UTM and VMware Fusion are retired.** A VM on one of them keeps
+  running with its OmacVM 3.3.x; nothing in it is changed or deleted, and it gets no more OmacVM
+  updates. The Mac's helpers from 3.4.0 no longer serve it: no Bridge bar items, media keys,
+  wallpaper or time zone, no gestures, no Omanotch, no camera and battery (UTM, VMware Fusion);
+  Touch ID asks for the password and its control centre shows how to move. `omacvm vms` lists it as
+  retired; `apply`, `check` and the rest stop on it with exit 3 (`--json`: `"route-retired"`) and
+  change nothing in it; `update --vm` on it, also from its control centre, updates only the Mac's
+  helpers, so they stop serving it at once; `omacvm update` leaves it as it is. To move: `omacvm
+  build` makes a new VM in OmacVM.app, then copy your files over ([how](README.md#retired-routes),
+  ADR 0071). The code, builders, prebuilt images and tests for those apps are gone (a test keeps
+  them out), and the README, feature list, docs and benchmark charts are shorter: OmacVM.app against
+  the Mac itself.
+
 ## 3.3.1
 
 Zed and other wgpu apps run on Vulkan again in OmacVM.app: this needs only the app update and counts

@@ -335,6 +335,41 @@ wait_ssh() {
   return 1
 }
 
+# ssh_why FILE: why SSH did not get in, in plain words, from ssh's own
+# messages in FILE (never a second connection: each one counts against the
+# Mac in sshd's PerSourcePenalties).
+ssh_why() {
+  local e; e=$(tr -d '\r' < "$1" 2>/dev/null | printable | grep -v '^ *$' | tail -1 | cut -c1-160) || e=""
+  case $e in
+    *"Permission denied"*) echo "it turns this VM folder's SSH key down" ;;
+    *"Connection refused"*) echo "nothing takes SSH yet: the VM is starting, or its SSH stopped" ;;
+    *[Tt]imed\ out*|*[Tt]imeout*) echo "SSH did not answer in time: the VM is busy, or its network is down" ;;
+    ""|*[Rr]eset*|*[Cc]losed*|*kex_exchange*|*"Broken pipe"*)
+      echo "SSH closed the connection: the VM is busy or starting, or turns this Mac away for a while after many tries" ;;
+    *) echo "ssh says: $e" ;;
+  esac
+}
+# ssh_ready SECONDS: until the VM lets us in over SSH (0), for up to SECONDS
+# by the clock (0: one try); 2 at once at "Permission denied" (waiting does
+# not change that); 1 when not, with SSH_WHY (ssh_why). A VM that just came
+# up can let SSH in once and then not for a moment (its firewall or network
+# still starting, sshd turning the Mac away after many tries): v340-m2.
+SSH_WHY=""
+ssh_ready() {
+  local end e
+  end=$(( $(date +%s) + ${1:-0} ))
+  e=$(mktemp -t omacvm-ssh) || return 1
+  while :; do
+    if vssh true < /dev/null > /dev/null 2> "$e"; then rm -f "$e"; SSH_WHY=""; return 0; fi
+    SSH_WHY=$(ssh_why "$e")
+    grep -q 'Permission denied' "$e" && { rm -f "$e"; return 2; }
+    (( $(date +%s) < end )) || break
+    sleep "${OMACVM_SSH_PAUSE:-5}"
+  done
+  rm -f "$e"
+  return 1
+}
+
 # Text from the VM on its way to the app or a terminal: colour codes out, then
 # only printable ASCII and tabs (no other escape sequences: a guest could set
 # the window title or the Mac's clipboard), lines cut at 240 characters.
@@ -354,6 +389,15 @@ run_logged() {
   rc=${PIPESTATUS[0]}
   set -e
   return "$rc"
+}
+
+# Which Omarchy a new VM gets: "4.5", Omarchy 4.5 on Omarchy's own aarch64
+# repos (guest/omarchy-move.sh; always the latest stable release). Tests
+# only: OMACVM_TEST_OMARCHY=4.0 builds omarchy-mac 4.0 as before 3.4.0;
+# OMACVM_TEST_OMARCHY_CHANNEL another of 4.5's channels (rc, edge).
+omarchy_route() { [[ ${OMACVM_TEST_OMARCHY:-} == 4.0 ]] && echo 4.0 || echo 4.5; }
+omarchy45_channel() {
+  case ${OMACVM_TEST_OMARCHY_CHANNEL:-stable} in stable|rc|edge) echo "${OMACVM_TEST_OMARCHY_CHANNEL:-stable}" ;; *) echo stable ;; esac
 }
 
 # omarchy-mac's release lane: stable once published, else rc.

@@ -2,6 +2,7 @@
 //   cd app/app && swift run window-tests
 // Custom resources, the disk's size (slider bounds, smaller in steps), "omacvm in Terminal", the window's
 // height, the keyboard note, the SSH repair. Exit 0 when all pass. CI runs it on every pull request.
+import Darwin
 import Foundation
 import OmacVMIcon
 import OmacVMWindow
@@ -1029,6 +1030,179 @@ expect(ebRefused.allSatisfy { c in
 expect(ExtraBrightness.start(on: true, display: false, gpuSafeMode: false, layerPresent: false).why == "no display with extra brightness"
        && ExtraBrightness.start(on: true, display: true, gpuSafeMode: true, layerPresent: false).why == "GPU safe mode",
        "extra brightness: a start without it says why; the switch is not touched (the start only reads it)")
+
+// MARK: Move to Omarchy 4.5 (OmarchyMove: the journal, the card, the Mac's checks, the backup's size)
+
+do {
+    var j = OmarchyMove.Journal()
+    j.state = .failed; j.step = 5; j.failedStep = 5; j.reason = "Packages: 404 on core.db"; j.code = "repos-unreachable"
+    j.resumable = true; j.commitStarted = false; j.fromOmacVM = "3.3.0"; j.fromDiskGB = 64; j.backupAt = "2026-11-06T00:21:00Z"
+    j.other = [("future_key", "x=1")]
+    let back = OmarchyMove.Journal.parse(j.text)
+    expect(back == j, "journal: written and read back the same, unknown keys kept")
+    expect(back?.other.first?.1 == "x=1", "journal: a value with = is kept whole")
+    expect(OmarchyMove.Journal.parse("format=2\nstep=3\n") == nil, "journal without a state: not read")
+    expect(OmarchyMove.Journal.parse("format=1\nstate=exploded\n") == nil, "journal with an unknown state: not read")
+    var multi = OmarchyMove.Journal(); multi.reason = "one\ntwo"
+    expect(OmarchyMove.Journal.parse(multi.text)?.reason == "one two", "journal: a reason never breaks into two lines")
+    expect(OmarchyMove.Journal.parse("state=done-final\n")?.state == .final, "journal: done-final")
+    for (s, open) in [("running", true), ("failed", true), ("interrupted", true), ("undoing", true), ("done", false), ("kept", false), ("undone", false), ("done-final", false)] {
+        expect(OmarchyMove.Journal.parse("state=\(s)\n")?.open == open, "journal \(s): \(open ? "not over (Start waits)" : "over")")
+    }
+}
+
+do {
+    typealias M = OmarchyMove
+    func jr(_ t: String) -> M.Journal? { M.Journal.parse(t) }
+    expect(M.card(recordText: nil, journal: nil, backupExists: false, alive: false) == .offer, "card: no record (every VM before 3.4.0): offered (D4)")
+    expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc\n", journal: nil, backupExists: false, alive: false) == .offer, "card: 4.0 omarchy-mac: offered")
+    expect(M.card(recordText: "4.5.0 aarch64 stable\n", journal: nil, backupExists: false, alive: false) == .hidden, "card: 4.5 VM (new or moved, backup deleted): hidden")
+    expect(M.card(recordText: "4.6.1 aarch64 stable", journal: nil, backupExists: false, alive: false) == .hidden, "card: 4.6: hidden")
+    expect(M.card(recordText: "5.0.0 aarch64 stable", journal: nil, backupExists: false, alive: false) == .hidden, "card: 5.0: hidden")
+    expect(M.card(recordText: "4.10.0 aarch64 stable", journal: nil, backupExists: false, alive: false) == .hidden, "card: 4.10 counts as newer than 4.5")
+    expect(M.card(recordText: "none\n", journal: nil, backupExists: false, alive: false) == .hidden, "card: no Omarchy package: hidden")
+    expect(M.card(recordText: "4.0;rm -rf /", journal: nil, backupExists: false, alive: false) == .hidden, "card: a record that is not a version: hidden")
+    expect(M.card(recordText: nil, journal: jr("state=running\nstep=5\npid=1\n"), backupExists: true, alive: true) == .running(step: 5),
+           "card: a move another window runs: its step")
+    expect(M.card(recordText: nil, journal: jr("state=running\nstep=5\ncommit_started=0\nresumable=1\n"), backupExists: true, alive: false)
+           == .interrupted(step: 5, reason: "", resumable: true), "card: running but its process is gone (power cut) before the switch: Resume")
+    expect(M.card(recordText: nil, journal: jr("state=running\nstep=5\ncommit_started=1\nresumable=0\n"), backupExists: true, alive: false)
+           == .interrupted(step: 5, reason: "", resumable: true), "card: gone without a word inside the package switch: Resume (it asks the VM first)")
+    expect(M.card(recordText: nil, journal: jr("state=interrupted\nstep=5\ncommit_started=1\nresumable=0\n"), backupExists: true, alive: false)
+           == .interrupted(step: 5, reason: "", resumable: false), "card: the guest said its switch was cut off: Undo only")
+    expect(M.card(recordText: nil, journal: jr("state=interrupted\nstep=5\ncommit_started=1\nresumable=0\nask_guest=1\n"), backupExists: true, alive: false)
+           == .interrupted(step: 5, reason: "", resumable: true), "card: settled without the guest's last word inside the switch: Resume asks the VM")
+    expect(M.card(recordText: nil, journal: jr("state=failed\nstep=5\nfailed_step=5\ncommit_started=1\nresumable=0\nask_guest=1\n"), backupExists: true, alive: false)
+           == .failed(step: 5, reason: "", resumable: true), "card: the VM stopped, its last poll said inside the switch: Resume asks the VM")
+    expect(M.card(recordText: nil, journal: jr("state=failed\nstep=4\nfailed_step=4\ncommit_started=1\nresumable=0\nask_guest=0\ncode=undo-only\n"), backupExists: true, alive: false)
+           == .failed(step: 4, reason: "", resumable: false), "card: asked, the VM said its switch was cut off: Undo only")
+    expect(jr("state=failed\nask_guest=1\n")?.askGuest == true && jr("state=failed\n")?.askGuest == false, "journal: ask_guest read")
+    // An Undo cut off (move-vm.sh writes undoing before it puts anything back): Undo again, never Resume or Keep.
+    expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc", journal: jr("state=undoing\nstep=5\ncommit_started=1\nresumable=0\nreason=Undo did not finish.\n"), backupExists: true, alive: false)
+           == .undoing(reason: "Undo did not finish."), "card: an Undo cut off: Undo only")
+    expect(M.card(recordText: "4.5.0 aarch64 stable", journal: jr("state=undoing\nstep=8\nresumable=0\nask_guest=1\n"), backupExists: true, alive: false)
+           == .undoing(reason: ""), "card: an Undo after a move cut off: Undo only (not the moved card, not Resume)")
+    // The app's own update waits while a move runs (also between two of its VM starts); not for a stopped one.
+    let run = jr("state=running\nstep=1\npid=4242\n")!, stopped = jr("state=interrupted\nstep=5\n")!
+    expect(M.runs(run, scriptAlive: true, settleAlive: false, qemuAlive: false), "update waits: move-vm.sh runs (no VM yet)")
+    expect(M.runs(run, scriptAlive: false, settleAlive: false, qemuAlive: true), "update waits: the VM a crashed move left runs")
+    expect(M.runs(stopped, scriptAlive: false, settleAlive: true, qemuAlive: false), "update waits: a settle runs")
+    expect(!M.runs(stopped, scriptAlive: false, settleAlive: false, qemuAlive: false), "update goes in: a stopped move (Resume or Undo later)")
+    expect(!M.runs(jr("state=done\n")!, scriptAlive: true, settleAlive: false, qemuAlive: false), "update goes in: a finished move")
+    expect(M.updateWaits == "The move to Omarchy 4.5 runs", "update waits: the reason in plain words")
+    expect(M.card(recordText: nil, journal: jr("state=running\nstep=6\ncommit_started=1\nresumable=1\n"), backupExists: true, alive: false)
+           == .interrupted(step: 6, reason: "", resumable: true), "card: gone after the switch: Resume")
+    expect(M.card(recordText: nil, journal: jr("state=failed\nstep=5\nfailed_step=5\nreason=No network.\nresumable=1\n"), backupExists: true, alive: false)
+           == .failed(step: 5, reason: "No network.", resumable: true), "card: failed with network: Resume")
+    expect(M.card(recordText: nil, journal: jr("state=failed\nstep=5\nfailed_step=5\nreason=Apple platform.\nresumable=0\n"), backupExists: true, alive: false)
+           == .failed(step: 5, reason: "Apple platform.", resumable: false), "card: refused by the guest: Undo only")
+    expect(M.card(recordText: nil, journal: jr("state=interrupted\nstep=4\nreason=Stopped at step 4 of 8 (OmacVM quit).\n"), backupExists: true, alive: false)
+           == .interrupted(step: 4, reason: "Stopped at step 4 of 8 (OmacVM quit).", resumable: true), "card: Stop and Quit: Resume")
+    expect(M.card(recordText: "4.5.0 aarch64 stable", journal: jr("state=done\nfinished=2026-11-06T01:02:03Z\n"), backupExists: true, alive: false)
+           == .done(since: "2026-11-06T01:02:03Z", kept: false), "card: moved, backup kept: Undo and Delete")
+    expect(M.card(recordText: "4.5.0 aarch64 stable", journal: jr("state=done\n"), backupExists: false, alive: false) == .hidden,
+           "card: moved, backup gone by hand: hidden")
+    expect(M.card(recordText: nil, journal: jr("state=kept\nfinished=x\n"), backupExists: true, alive: false) == .done(since: "x", kept: true),
+           "card: kept after a stop: Undo and Delete")
+    expect(M.card(recordText: "4.5.0 aarch64 stable", journal: jr("state=done-final\n"), backupExists: false, alive: false) == .hidden,
+           "card: backup deleted: gone for good")
+    expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc", journal: jr("state=undone\n"), backupExists: false, alive: false) == .offer,
+           "card: after Undo: offered again")
+    // Keep, then Delete Backup (or the backup gone) on a VM still on 4.0: offered again, never a dead end.
+    expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc", journal: jr("state=done-final\n"), backupExists: false, alive: false) == .offer,
+           "card: kept, backup deleted, still 4.0: offered again")
+    expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc", journal: jr("state=kept\n"), backupExists: false, alive: false) == .offer,
+           "card: kept, backup gone by hand, still 4.0: offered again")
+    expect(M.card(recordText: "4.5.0 aarch64 stable", journal: jr("state=kept\n"), backupExists: false, alive: false) == .hidden,
+           "card: kept, backup gone, on 4.5 (record): hidden")
+    // Keep This Disk: only once the VM said its package switch is done (guest_switch), never on a pending one.
+    for (t, want, what) in [
+        ("state=failed\nstep=7\ncommit_started=1\nresumable=1\nguest_switch=done\n", true, "failed after the switch"),
+        ("state=interrupted\nstep=5\ncommit_started=1\nresumable=1\nguest_switch=done\n", true, "stopped after the switch"),
+        ("state=failed\nstep=5\ncommit_started=1\nresumable=1\nguest_switch=cut-before\n", false, "switch cut off before pacman began"),
+        ("state=interrupted\nstep=5\ncommit_started=1\nresumable=1\nguest_switch=cut-done\n", false, "switch cut off once written (hooks not run)"),
+        ("state=failed\nstep=5\ncommit_started=1\nresumable=0\nguest_switch=half\n", false, "switch cut half way"),
+        ("state=interrupted\nstep=5\ncommit_started=1\nresumable=0\nask_guest=1\nguest_switch=running\n", false, "stopped inside the switch, not asked yet"),
+        ("state=failed\nstep=5\ncommit_started=1\nresumable=1\n", false, "switch began, no word from the VM on it"),
+        ("state=failed\nstep=5\ncommit_started=0\nresumable=1\nguest_switch=none\n", false, "stopped before the switch"),
+        ("state=undoing\nstep=5\nguest_switch=done\n", false, "an Undo cut off"),
+        ("state=done\nguest_switch=done\n", false, "moved (Undo and Delete, no Keep)"),
+    ] {
+        expect(M.canKeep(jr(t)!) == want, "Keep This Disk \(want ? "offered" : "not offered"): \(what)")
+    }
+    // An app crash: the script gone, its QEMU running on (settle shuts it down first).
+    let crashed = jr("state=running\nstep=5\npid=4242\nqemu_pid=4343\nsettle_pid=0\nboot=1793501514\n")!
+    expect(crashed.qemuPid == 4343 && crashed.settlePid == 0 && crashed.boot == "1793501514", "journal: the move's QEMU, settle and boot read")
+    expect(M.needsSettle(crashed, scriptAlive: false, qemuAlive: true, settleAlive: false), "crash: script gone, its VM runs: settle it")
+    expect(!M.needsSettle(crashed, scriptAlive: true, qemuAlive: true, settleAlive: false), "a live move owns its VM: no settle")
+    expect(!M.needsSettle(crashed, scriptAlive: false, qemuAlive: true, settleAlive: true), "a settle runs already: not a second one")
+    expect(!M.needsSettle(crashed, scriptAlive: false, qemuAlive: false, settleAlive: false), "nothing left running: no settle")
+    expect(!M.needsSettle(jr("state=done\nqemu_pid=4343\n")!, scriptAlive: false, qemuAlive: true, settleAlive: false), "a finished move: no settle")
+    expect(M.stopping(crashed, scriptAlive: false, stopAsked: false, settleAlive: true), "settle runs: stopping")
+    expect(M.stopping(crashed, scriptAlive: true, stopAsked: true, settleAlive: false), "the app gone or Stop and Quit: stopping at a safe point")
+    expect(!M.stopping(crashed, scriptAlive: true, stopAsked: false, settleAlive: false), "a move that runs on: not stopping")
+    expect(M.card(recordText: nil, journal: crashed, backupExists: true, alive: false, stopping: true) == .stopping(step: 5),
+           "card: its VM on the way down: stopping, no buttons")
+    expect(M.card(recordText: nil, journal: crashed, backupExists: true, alive: false, stopping: false)
+           == .interrupted(step: 5, reason: "", resumable: true), "card: once it is off: Resume and Undo")
+    expect(M.card(recordText: nil, journal: jr("state=done\n"), backupExists: true, alive: false, stopping: true) == .done(since: "", kept: false),
+           "card: a finished move never shows stopping")
+    expect(M.Record.parse("4.5.0 aarch64 stable") == M.Record(version: "4.5.0", lane: "aarch64", channel: "stable"), "record: three words")
+    expect(M.Record.parse("4.0.3rc4 omarchy-mac rc")?.isMoved == false && M.Record.parse("4.5.0-3 aarch64 stable")?.isMoved == true,
+           "record: 4.0.3rc4 is not moved, 4.5.0-3 is")
+}
+
+do {
+    typealias M = OmarchyMove
+    let gb = DiskSize.gib
+    expect(M.need(allocated: 20 * gb) == 34 * gb, "need: allocated 20 GB + 10 GB reserve + 4 GB downloads = 34 GB (D1)")
+    expect(M.problem(apfs: true, freeBytes: 34 * gb, allocated: 20 * gb, diskJobPending: false, resizePending: false, otherCopy: nil) == nil,
+           "check: exactly enough free: ok")
+    expect(M.problem(apfs: true, freeBytes: 15 * gb, allocated: 20 * gb, diskJobPending: false, resizePending: false, otherCopy: nil,
+                     backupExists: true) == nil && M.need(allocated: 20 * gb, backupExists: true) == 14 * gb,
+           "check: Resume with the backup made: 10 GB reserve + 4 GB downloads are enough (as move-vm.sh's step 1)")
+    expect(M.problem(apfs: true, freeBytes: 13 * gb, allocated: 20 * gb, diskJobPending: false, resizePending: false, otherCopy: nil,
+                     backupExists: true) != nil, "check: Resume with the backup made, under 14 GB free: refused")
+    let low = M.problem(apfs: true, freeBytes: 33 * gb, allocated: 20 * gb, diskJobPending: false, resizePending: false, otherCopy: nil)
+    expect(low == "Not enough free space: the move needs 34 GB free on this drive, it has 33 GB.", "check: too little free: needed and free in the text")
+    expect(M.problem(apfs: false, freeBytes: 900 * gb, allocated: gb, diskJobPending: false, resizePending: false, otherCopy: nil)?.contains("APFS") == true,
+           "check: not APFS: refused, says how")
+    expect(M.problem(apfs: nil, freeBytes: nil, allocated: gb, diskJobPending: false, resizePending: false, otherCopy: nil) == nil,
+           "check: a volume that does not say: tried (move-vm.sh checks a clone itself)")
+    expect(M.problem(apfs: true, freeBytes: 900 * gb, allocated: gb, diskJobPending: true, resizePending: false, otherCopy: nil)?.contains("grows") == true,
+           "check: a disk grow not done yet: refused")
+    expect(M.problem(apfs: true, freeBytes: 900 * gb, allocated: gb, diskJobPending: false, resizePending: true, otherCopy: nil)?.contains("not finished") == true,
+           "check: a shrink not done: refused")
+    expect(M.problem(apfs: false, freeBytes: 0, allocated: gb, diskJobPending: true, resizePending: true, otherCopy: "a test build") == "a test build",
+           "check: a test build and a person's VM: that first")
+    expect(M.sizeText((12 * gb, true)) == "about 12 GB" && M.sizeText((30 * gb, false)) == "up to 30 GB" && M.sizeText((1 << 20, true)) == "less than 50 MB",
+           "backup size: about, up to, less than 50 MB")
+    expect(M.dateText("2026-11-06T01:02:03Z", locale: Locale(identifier: "en_GB")) == "6 November 2026" && M.dateText("bad") == "",
+           "done since: a date, nothing when unreadable")
+    expect(M.steps.count == 8 && M.stepTitle(5) == "Switch Omarchy's packages" && M.stepTitle(0) == "Preparing" && M.stepTitle(9) == "Preparing",
+           "steps: 8, as move-vm.sh numbers them")
+    // The backup's size on this Mac's volume: a clone shares its blocks until one changes.
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("omacvm-move-test-\(getpid())")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let a = dir.appendingPathComponent("disk.img"), b = dir.appendingPathComponent("backup")
+    try? FileManager.default.createDirectory(at: b, withIntermediateDirectories: true)
+    var bytes = [UInt8](repeating: 0, count: 8 << 20)
+    for i in stride(from: 0, to: bytes.count, by: 4096) { bytes[i] = UInt8(truncatingIfNeeded: i >> 12) | 1 }
+    FileManager.default.createFile(atPath: a.path, contents: Data(bytes))
+    if clonefile(a.path, b.appendingPathComponent("disk.img").path, 0) == 0 {
+        let shared = M.backupBytes(b)
+        expect(shared != nil && shared!.exact && shared!.bytes < (1 << 20), "backup size: a fresh clone frees (almost) nothing: \(shared?.bytes ?? -1) bytes")
+        if let h = try? FileHandle(forWritingTo: a) {
+            h.seek(toFileOffset: 0); h.write(Data(repeating: 0x5a, count: 4 << 20)); try? h.synchronize(); try? h.close()
+        }
+        let after = M.backupBytes(b)
+        expect(after.map { $0.bytes >= 4 << 20 && $0.bytes <= 5 << 20 } == true,
+               "backup size: 4 MiB of the live disk rewritten: the backup frees about 4 MiB (\(after?.bytes ?? -1))")
+    } else {
+        print("skip backup size: this volume makes no clones (\(dir.path))")
+    }
+}
 
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -33,8 +33,16 @@ while (( $# )); do
   esac
 done
 [[ -n $VM ]] || usage "which VM? --vm NAME (omacvm vms lists them)"
-[[ $TYPE == app ]] || usage "Graphics is OmacVM.app's setting (Parallels, UTM and VMware Fusion have their own)"
-d=$(app_dir "$VM") || usage "no OmacVM.app VM named '$VM' (omacvm vms lists them)"
+# A retired VM (src/lib/retired.sh): exit 3 with what to do.
+retired_check() {
+  local t
+  t=$(retired_list | awk -F'\t' -v n="$VM" -v t="$TYPE" '$1 == n && (t == "app" || $2 == t) { print $2; exit }')
+  [[ -n $t ]] && retired_stop "$VM" "$t"
+  return 0
+}
+route_retired "$TYPE" && retired_check
+[[ $TYPE == app ]] || usage "--vm-type app (the only one)"
+d=$(app_dir "$VM" 2>/dev/null) || { retired_check; usage "no OmacVM.app VM named '$VM' (omacvm vms lists them)"; }
 
 CHANGED=false; NOTE=""
 if [[ -n $SET && $SET != "$(graphics_choice "$d")" ]]; then

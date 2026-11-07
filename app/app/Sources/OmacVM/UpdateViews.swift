@@ -12,8 +12,14 @@ struct UpdateBanner: View {
     var running: Bool
     var whatsNew: () -> Void
 
+    /// The banner shows: an update is ready and not put off.
+    static func shows(_ updater: Updater) -> Bool {
+        guard let s = updater.staged else { return false }
+        return (updater.enabled || updater.lastOutcome != nil) && updater.later != s.version
+    }
+
     var body: some View {
-        if let s = updater.staged, updater.enabled || updater.lastOutcome != nil, updater.later != s.version {
+        if let s = updater.staged, Self.shows(updater) {
             let news = updater.whatsNew(s)
             HStack(spacing: 12) {
                 Image(systemName: "arrow.down.circle.fill")

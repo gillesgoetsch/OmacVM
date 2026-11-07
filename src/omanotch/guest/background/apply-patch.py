@@ -13,7 +13,7 @@ the built-in display the rest, so the image runs through behind the bar.
 
 The built-in display is the output with the NOTCH output's x and width that
 sits either at the NOTCH output's own place (it overlaps the display's top
-edge: Parallels, UTM, Fusion) or right below it (OmacVM.app puts NOTCH right
+edge: the retired VM apps) or right below it (OmacVM.app puts NOTCH right
 above the display, where the strip is on the Mac; notchcast/notch-place.h).
 v5 only knew the first place, so under OmacVM.app every output drew its own
 copy again: the display's centred for itself, the strip a zoomed crop of the
@@ -28,7 +28,7 @@ geometryChanged), so it never fires.
 
 The wallpaper is also decoded at the size it is shown at (the display's pixels),
 not at the image's own: Omarchy's 6016x3384 images made an 81 MB texture per
-display, and on a QEMU that limits a buffer's memory entries (UTM's; OmacVM.app
+display, and on a QEMU that limits a buffer's memory entries (OmacVM.app
 before 2.8.0) such an upload in fragmented memory failed and the shell lost its
 GPU context: black displays without bar. At the display's size this stays under
 that limit (16384 entries) up to about 4K (3840x2160: ~8100 pages); 5K

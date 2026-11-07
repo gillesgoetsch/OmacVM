@@ -2,6 +2,7 @@
 # OmacVM prebuilt VM, first boot (omacvm-firstboot.service, before the login
 # screen). Once:
 #  * grows the system partition and btrfs to the whole disk
+#  * makes this VM's own pacman keyring (pacman-keyring)
 #  * with a disk labelled OMACVM-SEED (omacvm build --prebuilt makes it):
 #    applies it: user, password hash, root's SSH key, hostname, keyboard,
 #    timezone, language, display mode, the Mac's network for SSH
@@ -34,8 +35,15 @@ grow_disk() {
 }
 grow_disk
 
+# ---------- pacman's keyring (generalize.sh took the image's out) ----------
+# Before anything installs a package; on failure the request stays and
+# first-update (omacvm apply) tries again.
+if [[ -e $P/keyring ]]; then
+  /usr/local/lib/omacvm/omacvm-pacman-keyring "$P/keyring" || log "pacman keyring: not made yet (first-update tries again)"
+fi
+
 # ---------- the answers ----------
-NAME=""; FULL=""; HASH=""; KEY=""; HOST=omarchy; KB=us; TZ=UTC; LANGV=en_US.UTF-8; MODE=""; NET=""
+NAME=""; FULL=""; HASH=""; KEY=""; HOST=omarchy; KB=us; TZ=UTC; LANGV=en_US.UTF-8; NET=""
 seed=""
 for _ in $(seq 20); do seed=$(blkid -L OMACVM-SEED 2>/dev/null || blkid -L OMACVM_SEED 2>/dev/null) && break; sleep 1; done
 if [[ -n $seed ]]; then
@@ -46,7 +54,7 @@ if [[ -n $seed ]]; then
   # KEY=base64 lines, nothing is executed
   val() { local v; v=$(sed -n "s/^$1=//p" "$f" | head -1); [[ -n $v ]] && base64 -d <<<"$v" 2>/dev/null; }
   NAME=$(val USER); FULL=$(val FULLNAME); HASH=$(val HASH); KEY=$(val ROOT_KEY)
-  HOST=$(val HOSTNAME); KB=$(val KEYBOARD); TZ=$(val TIMEZONE); LANGV=$(val LANG); MODE=$(val DISPLAY); NET=$(val NET)
+  HOST=$(val HOSTNAME); KB=$(val KEYBOARD); TZ=$(val TIMEZONE); LANGV=$(val LANG); NET=$(val NET)
   umount "$M"
   : "${HOST:=omarchy}" "${KB:=us}" "${TZ:=UTC}" "${LANGV:=en_US.UTF-8}"
 fi
@@ -175,13 +183,6 @@ if [[ -n $layout ]]; then
     '!/^#/ && $2 == l && ($4 == v || (v == "" && $4 == "-")) { print $1; exit }' /usr/share/systemd/kbd-model-map)
   echo "KEYMAP=${keymap:-us}" > /etc/vconsole.conf
   if [[ -x $S/keyboard/guest/install.sh ]]; then "$S/keyboard/guest/install.sh" "$NAME" "$layout" "${variant:-}" >/dev/null 2>&1 || true; fi
-fi
-
-# UTM and VMware Fusion: the display mode is fixed in monitors.lua (the Mac's).
-M=/home/$NAME/.config/hypr/monitors.lua
-if [[ $MODE =~ ^[0-9]+x[0-9]+(@[0-9.]+)?$ && -f $M ]]; then
-  log "display $MODE"
-  sed -i "s|^\(hl.monitor({ output = \"Virtual-1\", mode = \)\"[^\"]*\"|\1\"$MODE\"|" "$M"
 fi
 
 rm -rf "$P/home" "$P/pending"

@@ -9,7 +9,7 @@ R=$(cd "$(dirname "$0")/../.." && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/src/mac" "$T/src/lib" "$T/src/icon" "$T/home"
 cp "$R/src/mac/install.sh" "$T/src/mac/"; cp "$R/src/lib/mac.sh" "$R/src/lib/tools.sh" "$R/src/lib/sign.sh" "$R/src/lib/app.sh" "$R/src/lib/version.sh" "$R/src/lib/labels.sh" "$R/src/lib/helpers.sh" "$T/src/lib/"
-for h in bridge gestures clipboard omanotch; do
+for h in bridge gestures omanotch; do
   mkdir -p "$T/src/$h/mac"
   printf '#!/bin/bash\necho run >> "%s/ran-%s"\n[[ ! -e "%s/fail-%s" ]]\n' "$T" "$h" "$T" "$h" > "$T/src/$h/mac/install.sh"
   chmod +x "$T/src/$h/mac/install.sh"
@@ -26,7 +26,7 @@ inst() { rm -f "$T/failed"; "$T/src/mac/install.sh" --quiet "$@" > "$T/out" 2>&1
 touch "$T/fail-bridge"
 expect "a helper fails: exit 5" 5 "$(inst)"
 expect "it is named" "OmacVM Bridge" "$(cat "$T/failed" 2>/dev/null)"
-expect "the others go on" "1 1" "$(runs gestures) $(runs clipboard)"
+expect "the others go on" "1" "$(runs gestures)"
 expect "no stamp, a failed one" "no yes" "$([[ -e "$STAMPS/OmacVM Bridge" ]] && echo yes || echo no) $([[ -s "$STAMPS/OmacVM Bridge.failed" ]] && echo yes || echo no)"
 expect "says so" yes "$(grep -q "OmacVM Bridge did not build or install" "$T/out" && echo yes || cat "$T/out")"
 
@@ -63,12 +63,10 @@ expect "a helpers' sum is the same in any locale" "$(LC_ALL=en_US.UTF-8 bash -c 
 # One map for apply, check and the app (src/lib/mac-setup.sh).
 source "$R/src/lib/mac-setup.sh"
 eval "$(grep '^helper_of() {' "$R/src/cmd/apply.sh")"
-TYPE=parallels
+TYPE=app
 expect "helper of bridge" "OmacVM Bridge" "$(helper_of bridge)"
 expect "helper of control-centre" "OmacVM Bridge" "$(helper_of control-centre)"
-expect "helper of camera on Parallels: none" "" "$(helper_of camera)"
-TYPE=utm
-expect "helper of camera on UTM" "OmacVM Bridge" "$(helper_of camera)"
+expect "helper of camera: none (the app's own port)" "" "$(helper_of camera)"
 expect "helper of scroll-momentum" "OmacVM Gestures" "$(helper_of scroll-momentum)"
 # A repair forces its helper's build, but the control centre's does not force
 # the Bridge (it restarted the Bridge under the job, 2026-10-08): it is built
@@ -91,7 +89,7 @@ printf '#!/bin/bash\nwhile :; do sleep 1; done\n' > "$REAL/OmacVM Test Bridge.ap
 chmod +x "$REAL/OmacVM Test Bridge.app/Contents/MacOS/omacvm-bridge"
 "$REAL/OmacVM Test Bridge.app/Contents/MacOS/omacvm-bridge" & SP=$!
 printf '#!/bin/bash\necho "$*" >> "%s/opened"\n' "$T" > "$T/bin/open"; chmod +x "$T/bin/open"
-PATH=$T/bin:$PATH OMACVM_TEST_IDENTITY=1 "$T/src/mac/install.sh" --skip-clip --quiet > "$T/out" 2>&1
+PATH=$T/bin:$PATH OMACVM_TEST_IDENTITY=1 "$T/src/mac/install.sh" --quiet > "$T/out" 2>&1
 expect "test identity through a link: the running Bridge is not started again" 0 "$(grep -c "Test Bridge" "$T/opened")"
 expect "... Gestures (not running) is" 1 "$(grep -c "Test Gestures" "$T/opened")"
 kill "$SP" 2>/dev/null; wait "$SP" 2>/dev/null

@@ -68,18 +68,32 @@ PINNED = re.compile(r"^import QtQuick \d+\.\d+ // omacvm #376: QtQuick's own Col
 
 
 class Copy:
-    def __init__(self, name, source, entry, patcher, title, ipc):
+    def __init__(self, name, source, entry, patcher, title, ipc, extras=()):
         self.name, self.source, self.entry, self.title, self.ipc = name, source, entry, title, ipc
         self.patcher = os.path.join(HERE, patcher)
+        # Other files of the plugin with a patch of their own: [(file, patcher)].
+        # A patcher that has nothing to do leaves its file as Omarchy has it.
+        self.extras = [(rel, os.path.join(HERE, p)) for rel, p in extras]
         self.dir = os.path.join(PLUGINS, f"{USER}.{name}")
         self.state = os.path.join(STATE, name)
+
+    def patch_sum(self):
+        """What the copy's patch is: the patcher's sum, with its extras' too."""
+        if not self.extras:
+            return file_sum(self.patcher)
+        h = hashlib.sha256(file_sum(self.patcher).encode())
+        for rel, p in self.extras:
+            h.update(b"\0" + rel.encode() + b"\0" + file_sum(p).encode())
+        return h.hexdigest()[:16]
 
     def state_file(self, *parts):
         return os.path.join(self.state, *parts)
 
 
 COPIES = [
-    Copy("bar", "omarchy.bar", "Bar.qml", "bar/apply-patch.py", "bar copy", ipc=True),
+    # Omarchy 4.5's workspaces widget: the NOTCH copy shows the built-in display's.
+    Copy("bar", "omarchy.bar", "Bar.qml", "bar/apply-patch.py", "bar copy", ipc=True,
+         extras=[("widgets/Workspaces.qml", "bar/workspaces-patch.py")]),
     Copy("background", "omarchy.background", "Background.qml", "background/apply-patch.py", "background copy", ipc=False),
 ]
 
@@ -190,16 +204,18 @@ def dump(obj):
     return (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def patch_text(c, data):
-    """The entry file with OmacVM's patch (the patcher on a scratch copy)."""
+def patch_text(c, data, rel=None, patcher=None):
+    """A file with OmacVM's patch (the patcher on a scratch copy): the entry
+    file, or one of the copy's extras (rel, patcher)."""
+    rel, patcher = rel or c.entry, patcher or c.patcher
     with tempfile.TemporaryDirectory() as d:
-        p = os.path.join(d, c.entry)
+        p = os.path.join(d, os.path.basename(rel))
         with open(p, "wb") as f:
             f.write(data)
-        r = subprocess.run([sys.executable, c.patcher, p], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, patcher, p], capture_output=True, text=True)
         if r.returncode != 0:
             last = (r.stderr.strip().splitlines() or ["the patch stopped"])[0]
-            raise Stop("misfit", f"OmacVM's patch does not fit Omarchy's {c.entry} ({last})")
+            raise Stop("misfit", f"OmacVM's patch does not fit Omarchy's {rel} ({last})")
         with open(p, "rb") as f:
             return f.read()
 
@@ -211,6 +227,9 @@ def expected(c, stock):
     tree = dict(stock)
     tree["manifest.json"] = dump(clone_manifest(stock["manifest.json"], c.source, f"{USER}.{c.name}"))
     tree[c.entry] = patch_text(c, stock[c.entry])
+    for rel, patcher in c.extras:
+        if rel in stock:
+            tree[rel] = patch_text(c, stock[rel], rel, patcher)
     return tree
 
 
@@ -578,7 +597,7 @@ def plan(c, install):
     if sd is None:
         raise Stop("misfit", f"Omarchy's {c.source} plugin is not installed")
     stock = read_tree(sd)
-    stock_sum, patch_sum = tree_sum(stock), file_sum(c.patcher)
+    stock_sum, patch_sum = tree_sum(stock), c.patch_sum()
     fresh = False
     if not os.path.isfile(os.path.join(c.dir, c.entry)):
         if not install:
@@ -754,7 +773,7 @@ def needs_work():
         sd = stock_dir(c.source)
         if sd is None or not os.path.isdir(c.dir):
             continue
-        sums = (tree_sum(read_tree(sd)), file_sum(c.patcher))
+        sums = (tree_sum(read_tree(sd)), c.patch_sum())
         if s.get("result") == "current":
             if (s.get("stock"), s.get("patch")) != sums:
                 return True
@@ -793,7 +812,7 @@ def check_lines():
         res = s.get("result")
         if res == "current":
             sd = stock_dir(c.source)
-            if sd and (tree_sum(read_tree(sd)), file_sum(c.patcher)) != (s.get("stock"), s.get("patch")):
+            if sd and (tree_sum(read_tree(sd)), c.patch_sum()) != (s.get("stock"), s.get("patch")):
                 out.append(("ok", c.title, f"Omarchy's {c.name} changed: the copy follows when the session is unlocked, or at the next login"))
                 continue
             if backup_note(s):

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The guest check's "notch display" row: where may Omanotch's hidden NOTCH
-# output sit? On the built-in display's top edge (Parallels, UTM, Fusion, the
+# output sit? On the built-in display's top edge (the
 # app's fallback) or, under OmacVM.app, right above it (notch-place.h). Any
 # other place is still flagged. Offline: notch_spot from check.sh on fixtures.
 set -u
@@ -27,8 +27,8 @@ t() {  # want type json name
 
 t above app  "$(mons 492 1692)"           "OmacVM.app: NOTCH right above Virtual-1 (492,1692)"
 t over  app  "$(mons 492 1735)"           "OmacVM.app fallback: NOTCH on Virtual-1's top edge"
-t over  utm  "$(mons 492 1735)"           "UTM/Parallels: NOTCH on Virtual-1's top edge"
-t ""    utm  "$(mons 492 1692)"           "UTM/Parallels: NOTCH above Virtual-1 is a misplacement"
+t over  other "$(mons 492 1735)"           "another VM type: NOTCH on Virtual-1's top edge"
+t ""    other "$(mons 492 1692)"           "another VM type: NOTCH above Virtual-1 is a misplacement"
 t ""    app  "$(mons 0 0)"                "NOTCH on the 6K is a misplacement"
 t ""    app  "$(mons 492 1600)"           "NOTCH far above Virtual-1 (gap) is a misplacement"
 t ""    app  "$(mons 492 1720)"           "NOTCH half over Virtual-1's top edge is a misplacement"

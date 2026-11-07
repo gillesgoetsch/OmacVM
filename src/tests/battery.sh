@@ -1,8 +1,8 @@
 #!/bin/bash
 # The Mac's battery in the VM, offline: watts and time left need the Mac's
 # current (UPower guesses watts without it, and the guess is noise).
-#   - the snapshot from ioreg-like readings, both copies (the Bridge's
-#     battery.swift, OmacVM.app's HostBattery.swift): signed current, power
+#   - the snapshot from ioreg-like readings (OmacVM.app's HostBattery.swift):
+#     signed current, power
 #   - the agent (omacvm-battery): its line per module version
 #   - the module (omacvm-battery.c) on a stand-in for the kernel: parse,
 #     current_now's sign, power_now, the charge limit
@@ -19,14 +19,11 @@ fail=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
 
-swiftc -O -swift-version 5 -D BRIDGE -o "$T/snap-bridge" "$R/src/bridge/mac/battery.swift" \
-  "$B/snapshot/bridge-stubs.swift" "$B/snapshot/main.swift" || { echo "battery: Bridge snapshot build failed"; exit 1; }
 swiftc -O -swift-version 5 -o "$T/snap-app" "$R/app/app/Sources/OmacVM/HostBattery.swift" \
   "$B/snapshot/main.swift" || { echo "battery: app snapshot build failed"; exit 1; }
 cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Werror -I "$B" -o "$T/module" "$B/module-test.c" \
   || { echo "battery: module build failed"; exit 1; }
 
-echo "== snapshot (Bridge)"; "$T/snap-bridge" || fail=1
 echo "== snapshot (OmacVM.app)"; "$T/snap-app" || fail=1
 echo "== agent"; python3 -I "$B/agent-test.py" "$AGENT" || fail=1
 echo "== module"; "$T/module" || fail=1
@@ -36,8 +33,8 @@ dkms=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$R/src/battery/guest/module/dk
 mod=$(sed -n 's/^MODULE_VERSION("\(.*\)");/\1/p' "$R/src/battery/guest/module/omacvm-battery.c")
 if [[ $dkms == "$mod" ]]; then ok "DKMS and the module say the same version ($mod)"
 else bad "DKMS says $dkms, the module $mod (DKMS rebuilds only on a new version)"; fi
-for snap in "$T/snap-bridge" "$T/snap-app"; do
-  which=Bridge; [[ $snap == *app ]] && which=OmacVM.app
+snap=$T/snap-app which=OmacVM.app
+{
   json=$("$snap" -573)
   line=$(python3 -I "$B/agent-test.py" "$AGENT" line "$mod" <<<"$json")
   out=$("$T/module" "$line")
@@ -52,9 +49,9 @@ for snap in "$T/snap-bridge" "$T/snap-app"; do
   line=$(python3 -I "$B/agent-test.py" "$AGENT" line 1.0.0 <<<"$json")
   [[ $line != *current_now* && $line != *power_now* ]] && ok "$which, module 1.0.0: no current_now/power_now" \
     || bad "$which, module 1.0.0 gets: $line"
-done
+}
 # An older Mac side (no current): the module has none, UPower reads none.
-old=$("$T/snap-bridge" -573 | python3 -c 'import json, sys; d = json.load(sys.stdin); d.pop("currentMicroA"); d.pop("powerMicroW"); print(json.dumps(d))')
+old=$("$T/snap-app" -573 | python3 -c 'import json, sys; d = json.load(sys.stdin); d.pop("currentMicroA"); d.pop("powerMicroW"); print(json.dumps(d))')
 out=$("$T/module" "$(python3 -I "$B/agent-test.py" "$AGENT" line "$mod" <<<"$old")")
 grep -qx current_now=ENODATA <<<"$out" && grep -qx power_now=ENODATA <<<"$out" \
   && ok "an older Mac side: current_now and power_now not there (ENODATA)" || bad "an older Mac side: $(tr '\n' ' ' <<<"$out")"

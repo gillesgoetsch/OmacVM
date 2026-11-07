@@ -3,12 +3,11 @@
 # SSH, for an IP address, ...) and everything it started. ui_spin runs the
 # step as a background job, and a script's background jobs ignore Ctrl-C:
 # without the exit cleanup it went on after the build had stopped. The same
-# for the spinner line under a step's output (ui_follow), and for the check
-# whether this terminal may control UTM.
+# for the spinner line under a step's output (ui_follow).
 # Driven through a terminal (a pty: ^C typed, the terminal sends SIGINT to the
 # build's process group), with the spinner drawn and without (TERM=dumb).
-# The real src/cmd/build.sh (a route that needs the Command Line Tools, so
-# the Swift check runs) up to its first spinner step, whose command is a
+# The real src/cmd/build.sh (from a checkout, which needs the Command Line
+# Tools, so the Swift check runs) up to its first spinner step, whose command is a
 # stand-in that only sleeps; no VM, nothing of this Mac's setup touched (its
 # own HOME).
 #   src/tests/build-ctrlc.sh
@@ -44,18 +43,6 @@ R=$1
 source "$R/src/lib/ui.sh"
 echo "$$" >> "$OMACVM_TEST_PIDS"
 while :; do echo "a line"; sleep 0.2; done | ui_follow "Installing Omarchy"
-EOF
-
-# Before the build, "may this terminal control UTM?": osascript waits in the
-# background for macOS's question to be answered.
-mkdir -p "$T/osa"
-printf '#!/bin/bash\necho "$$" >> "$OMACVM_TEST_PIDS"\nexec sleep 600\n' > "$T/osa/osascript"
-chmod +x "$T/osa/osascript"
-cat > "$T/utm.sh" <<'EOF'
-R=$1
-source "$R/src/lib/ui.sh"; source "$R/src/lib/mac.sh"; source "$R/src/vm/utm.sh"
-unset SSH_CONNECTION
-why=$(utm_scripting) || echo "$why"
 EOF
 
 # drive.py WAIT_FOR TERM CMD...: runs CMD in a new terminal as a shell runs
@@ -138,16 +125,12 @@ PY
 for term in xterm-256color dumb; do
   rm -f "$T/pids"
   got=$(cd "$T" && HOME=$T/home PATH="$T/bin:$PATH" OMACVM_TEST_PIDS=$T/pids \
-    python3 "$T/drive.py" "Checking the Swift compiler" "$term" /bin/bash "$R/src/cmd/build.sh" --yes --no-mac --vm-type parallels)
+    python3 "$T/drive.py" "Checking the Swift compiler" "$term" /bin/bash "$R/src/cmd/build.sh" --yes --no-mac --vm-type app)
   expect "build: Ctrl-C during a spinner step (TERM=$term) stops it" "rc 130, exit in <5s, nothing left" "$got"
 done
 
 rm -f "$T/pids"
 got=$(OMACVM_TEST_PIDS=$T/pids python3 "$T/drive.py" "Installing Omarchy" xterm-256color /bin/bash "$T/follow.sh" "$R")
 expect "ui_follow: Ctrl-C stops the step and its spinner line" "rc 130, exit in <5s, nothing left" "$got"
-
-rm -f "$T/pids"
-got=$(PATH="$T/osa:$PATH" OMACVM_TEST_PIDS=$T/pids python3 "$T/drive.py" "click Allow" xterm-256color /bin/bash "$T/utm.sh" "$R")
-expect "UTM scripting check: Ctrl-C stops its osascript" "rc 130, exit in <5s, nothing left" "$got"
 
 exit $fail

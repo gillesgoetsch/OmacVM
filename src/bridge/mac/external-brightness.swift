@@ -487,7 +487,6 @@ final class ExternalBrightness {
 
 enum VMApp {
   case omacvm   // OmacVM.app's VM windows (its QEMU): also windowed
-  case other    // Parallels, UTM, VMware Fusion: full screen only, as the media keys
 
   /// The app's executable: OmacVM.app runs each VM as Contents/Resources/runtime/bin/OmacVM
   /// (a development build as qemu-system-aarch64); its launcher has no VM windows.
@@ -500,7 +499,7 @@ enum VMApp {
     if exe.hasSuffix("/runtime/bin/OmacVM") || name == "qemu-system-aarch64" {
       return VMOwner.ours(appID: appID(exe), testBridge: testBridge) ? .omacvm : nil
     }
-    return ["prl_client_app", "UTM", "VMware Fusion"].contains(name) ? .other : nil
+    return nil
   }
 
   private static let testBridge = Bundle.main.bundleIdentifier == VMOwner.testBridge
@@ -549,12 +548,11 @@ enum VMScreens {
 
   static func pointer() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
 
-  /// The display the VM app in front shows its VM on (keys: OmacVM.app also
-  /// windowed, the others full screen; guest: windowed too). nil: no VM app in front.
-  static func front(windowed guest: Bool, _ front: FrontWindows = FrontWindows()) -> (display: MacDisplay, fullScreen: Bool)? {
-    guard let app = front.app, let kind = VMApp.of(app) else { return nil }
-    return DisplayPick.focused(windows: front.windows, displays: displays(), pointer: pointer(),
-                               windowed: guest || kind == .omacvm)
+  /// The display the OmacVM.app VM in front shows its VM on (full screen or
+  /// in a window). nil: no OmacVM.app VM in front.
+  static func front(_ front: FrontWindows = FrontWindows()) -> (display: MacDisplay, fullScreen: Bool)? {
+    guard let app = front.app, VMApp.of(app) != nil else { return nil }
+    return DisplayPick.focused(windows: front.windows, displays: displays(), pointer: pointer(), windowed: true)
   }
 
   /// The display a guest output of an OmacVM.app VM is on (its layout box).

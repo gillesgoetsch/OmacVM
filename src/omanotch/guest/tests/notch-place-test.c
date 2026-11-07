@@ -42,7 +42,7 @@ int main(void) {
     CHECK(notch.y + notch.h == v1.y && notch.y == o[0].y + o[0].h, "user layout: NOTCH fills the 43 px gap exactly");
 
     up = notch_place(v1, 43, o, n, 0, &x, &y);
-    CHECK(up == 0 && x == 492 && y == 1735, "Parallels/UTM/Fusion: over the top edge as before (got %gx%g)", x, y);
+    CHECK(up == 0 && x == 492 && y == 1735, "the retired VM apps' place: over the top edge as before (got %gx%g)", x, y);
 
     NotchRect alone = {0, 0, 1728, 1085};
     up = notch_place(alone, 32, NULL, 0, 1, &x, &y);
@@ -78,7 +78,7 @@ int main(void) {
     CHECK(!notch_cursor_masked(strip, 700, -10, 5000), "cursor on NOTCH, hidden by notchcast: not masked");
     CHECK(notch_cursor_masked(strip, 700, -10, 100), "cursor just hidden: still masked (the next frame may still show it)");
     CHECK(!notch_cursor_masked(strip, 1470, -10, 0), "cursor beside NOTCH: not masked");
-    NotchRect over = {0, 0, 1470, 33};  // Parallels/UTM: NOTCH over the top edge
+    NotchRect over = {0, 0, 1470, 33};  // the old place (the retired VM apps): NOTCH over the top edge
     CHECK(notch_cursor_masked(over, 20, 5, 0), "overlap layout: cursor in the top rows masked as before");
 
     printf("%s\n", fails ? "notch-place: FAILED" : "notch-place: all ok");

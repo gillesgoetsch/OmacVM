@@ -18,26 +18,13 @@ body:
       placeholder: After waking the Mac, three-finger swipes stop switching workspaces until I restart the VM.
     validations:
       required: true
-  - type: dropdown
-    id: route
-    attributes:
-      label: Route
-      description: Which app runs the VM?
-      options:
-        - OmacVM.app
-        - UTM
-        - VMware Fusion
-        - Parallels Desktop
-        - Not sure
-    validations:
-      required: true
   - type: textarea
     id: versions
     attributes:
       label: Versions
       description: |
         OmacVM (`omacvm --version`; `omacvm vms` shows each VM's), the app's version, macOS, and your Mac model (Apple menu › About This Mac).
-      placeholder: OmacVM 2.7.0 (VM 2.7.0) · Parallels 27.0.2 · macOS 15.7.4 · MacBook Pro M4 Max, 48 GB
+      placeholder: OmacVM 2.7.0 (VM 2.7.0) · macOS 15.7.4 · MacBook Pro M4 Max, 48 GB
     validations:
       required: true
   - type: textarea
