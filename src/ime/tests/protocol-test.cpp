@@ -520,6 +520,73 @@ int main() {
                "4.5 row: ghostty's input context has no program name: the window's origin, as before");
     }
 
+    // ---------- Omarchy 4.0's real j/layers ----------
+    // A clone of a 4.0.3rc4 VM (mini, 2026-11-07, raw-C): Hyprland 0.56.2,
+    // three quickshell layers (pid 818), its notifications full-screen at
+    // level 3; no walker, and its menu reads keys (no input context). Every
+    // layer starts at the output's origin, so a quickshell caret lands at
+    // the caret itself whichever layer is taken; a window's app with no
+    // program name (ghostty) keeps the window's origin.
+    {
+        const char *layers = R"({
+"Virtual-1": {
+    "levels": {
+
+        "0": [
+                {
+                    "address": "0xaaaae1383410",
+                    "x": 0,
+                    "y": 0,
+                    "w": 1320,
+                    "h": 740,
+                    "alpha": 1,
+                    "namespace": "omarchy-background",
+                    "pid": 818
+                }
+        ],
+        "1": [
+],
+        "2": [
+                {
+                    "address": "0xaaaae13342c0",
+                    "x": 0,
+                    "y": 0,
+                    "w": 1320,
+                    "h": 26,
+                    "alpha": 1,
+                    "namespace": "omarchy-bar",
+                    "pid": 818
+                }
+        ],
+        "3": [
+                {
+                    "address": "0xaaaae1374270",
+                    "x": 0,
+                    "y": 0,
+                    "w": 1320,
+                    "h": 740,
+                    "alpha": 1,
+                    "namespace": "omarchy-notifications",
+                    "pid": 818
+                }
+        ]
+    }
+}
+}
+)";
+        NameOf names = [](long pid) { return pid == 818 ? ProcName{"quickshell", "quickshell"} : ProcName{}; };
+        auto ls = parseHyprLayers(layers);
+        EXPECT(ls && ls->size() == 3 && (*ls)[1].level == 2 && (*ls)[1].box.h == 26 && (*ls)[2].level == 3 &&
+                   (*ls)[2].box.w == 1320,
+               "4.0 row: its real answer parses (3 layers, notifications full-screen at level 3)");
+        HyprWindow g{Rect{12, 38, 1296, 690}, 900};
+        Caret c = caretOn(Rect{21, 18, 1, 16}, 1.0, true, "", g, ls, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 33 && c.rect->y == 56, "4.0 row: ghostty keeps the window's origin");
+        c = caretOn(Rect{100, 10, 1, 16}, 1.0, true, "quickshell", g, ls, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 100 && c.rect->y == 10,
+               "4.0 row: a quickshell caret at the output's origin + caret (rc: + the window's)");
+    }
+
     // ---------- fuzz: random and mutated input never crashes ----------
     {
         std::mt19937 rng(273);

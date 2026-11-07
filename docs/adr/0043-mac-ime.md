@@ -316,8 +316,12 @@ permission: AppKit's input context needs none.
 - Text fields in layer surfaces with a relative caret (Omarchy 4.5's menu,
   Qt in quickshell) are exact from 3.4.1 (before: off by the window below,
   none on an empty workspace). Hyprland's `j/layers` does not say which
-  layer has the keyboard: of two layers of one process at the same level
-  that both hold the caret, the later one in the list is taken.
+  layer has the keyboard: of the program's layers that hold the caret the
+  topmost is taken, so a field in a full-screen layer whose caret also
+  fits in the box of a smaller, higher layer of the same process gets that
+  one's origin (on Omarchy 4.5 the notifications column, 399 px wide at the
+  right of the output: a caret within 399 px of a lower layer's left edge;
+  4.0's layers all start at the output's origin).
 - macOS features that read the document (reconversion, context-aware
   prediction) do not work: the Mac never sees guest text.
 - Input-method shortcuts with Ctrl (Kotoeri's Ctrl+J/K/L) go to the VM,
