@@ -504,6 +504,9 @@ if [[ $GESTURES == on ]]; then
   check "virtual trackpad" "Magic Trackpad (OmacVM)" ev_device "Apple Inc. Magic Trackpad (OmacVM)"
   if grep -Erqs '^[[:space:]]*hl\.gesture\(.*action *= *"workspace"' "$H/.config/hypr/"; then ok "workspace swipes" "workspace gestures configured"
   else bad "workspace swipes" "no hl.gesture line for workspaces in ~/.config/hypr"; fi
+  if grep -Erqs 'magic-trackpad-\(omacvm\).*tap_to_click *= *false' "$H/.config/hypr/"; then ok "trackpad taps" "off on the virtual trackpad"
+  elif grep -Erqs 'magic-trackpad-\(omacvm\).*tap_to_click' "$H/.config/hypr/"; then warn "trackpad taps" "on for the virtual trackpad (your setting): a pinch can start with a right click"
+  else bad "trackpad taps" "on for the virtual trackpad (Omarchy 4.5): a pinch starts with a right click: omacvm apply"; fi
 else skip "trackpad gestures" "off (chosen at setup): macOS keeps its swipes"; fi
 FEATURE=scroll-momentum
 if [[ $GLIDE == on && $GESTURES == on ]]; then
