@@ -3,15 +3,15 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.4.1 (unreleased)
+## 3.4.1
 
-- Omanotch on Omarchy 4.5 with Skip the notch: the tray's hidden icons open next to the tray, clear
-  of the notch, and every one of them can be clicked. When the open drawer did not fit right of the
-  notch, the tray jumped over the notch while the drawer slid open, closed and came back in a loop,
-  so its icons showed only behind the notch. Items that move left of the notch also keep clear of
-  where Omarchy 4.5's hidden indicators open (bar patch v39). On a full bar the tray now stays left
-  of the notch even while closed, where its drawer has room to open. A tray in the centre section
-  no longer moves the right side's items while its drawer slides open.
+- **Omanotch** on Omarchy 4.5 with Skip the notch (#734): the tray's hidden icons open next to the
+  tray, clear of the notch, and every one of them can be clicked. When the open drawer did not fit
+  right of the notch, the tray jumped over the notch while the drawer slid open, closed and came
+  back in a loop, so its icons showed only behind the notch. Items that move left of the notch also
+  keep clear of where Omarchy 4.5's hidden indicators open (bar patch v39). On a full bar the tray
+  now stays left of the notch even while closed, where its drawer has room to open. A tray in the
+  centre section no longer moves the right side's items while its drawer slides open.
 - **Omanotch** on Omarchy 4.0 VMs: the bar on the built-in display could stay parked off screen
   (1 px tall, nothing reserved at the top) after the notch strip went away, until something else
   was drawn on that display or Omarchy's bar toggle was pressed twice (#727, seen on hidden test VMs
@@ -19,21 +19,15 @@ in more words.
   again, so it comes back at its full size without waiting for a redraw (checked on those hidden
   VMs). Omarchy's own bar toggle and the bars in the notch strip work as before. Update VM brings it
   (bar patch v39).
-- **Full screen including notch after a start with the lid closed** (#716, reported by @hadiskeini): a
-  VM started with the MacBook's lid closed (an external display only) now covers the strip beside the
-  notch once the lid is opened and the external display unplugged, without a restart (it stayed black
-  until the VM was started again). OmacVM.app remembers this Mac's notch (measured whenever it sees the
-  built-in display; never another Mac's) and uses it while the built-in display is off; QEMU takes the
-  strip once the full screen is on the MacBook's display. `omacvm check` no longer warns while such a
-  full screen is on an external display.
-- **Venus**: the line qemu.log writes for a refused Vulkan call stays one line when the app's or a
-  shader's name holds control characters (each becomes a space; see #718).
-- **Clip distances 5 to 8 that a shader writes in a loop now reach the Mac's GPU (OmacVM.app, see
-  #692).** After such a loop (a tessellation control shader copying `gl_ClipDistance[i]` in a `for`
-  loop, or a vertex, geometry or evaluation shader writing them in one) the VM's Mesa copies only
-  distances 1 to 4 to the output, so 5 to 8 were undefined: on the M4 a negative one did not clip.
-  The app now copies the rest itself, for every VM; OmacVM's own guest Mesa build (#694) is no longer
-  needed for it. Needs the app update (from the VM's next start).
+- **Full screen including notch after a start with the lid closed** (#716, reported by @hadiskeini):
+  a VM started with the MacBook's lid closed (an external display only) now covers the strip beside
+  the notch once the lid is opened and the external display unplugged, without a restart (it stayed
+  black until the VM was started again). OmacVM.app remembers this Mac's notch (measured whenever it
+  sees the built-in display; never another Mac's) and uses it while the built-in display is off;
+  QEMU takes the strip once the full screen is on the MacBook's display. `omacvm check` no longer
+  warns while such a full screen is on an external display. After the update the app has to see the
+  built-in display once (opened with the lid open) before a start with the lid closed can use its
+  notch.
 - **Mac input methods** (experimental): in Omarchy 4.5's menu (Super+Space) the Mac's candidate
   window now opens at the menu's text cursor. 3.4.0 put it off by the origin of the window under the
   menu, or at the last click when no window was open. The same rule covers text fields in other
@@ -42,6 +36,22 @@ in more words.
   #357 by [@Vocllum](https://github.com/Vocllum) on Omarchy 4.5.
 - Docs: Omarchy 4.5's own Fcitx5 engines (Super+I) and their lone-Shift switch beside the Mac's
   input method.
+- **Clip distances 5 to 8 that a shader writes in a loop now reach the Mac's GPU (OmacVM.app, see
+  #692).** After such a loop (a tessellation control shader copying `gl_ClipDistance[i]` in a `for`
+  loop, or a vertex, geometry or evaluation shader writing them in one) the VM's Mesa copies only
+  distances 1 to 4 to the output, so 5 to 8 were undefined: on the M4 a negative one did not clip.
+  The app now copies the rest itself, for every VM; OmacVM's own guest Mesa build (#694) is no longer
+  needed for it. Needs the app update (from the VM's next start).
+- **Venus**: the line qemu.log writes for a refused Vulkan call stays one line when the app's or a
+  shader's name holds control characters (each becomes a space; #718, a follow-up of #710 reported
+  by @epicoun).
+- The Move to Omarchy 4.5 card, its sheet and docs/features.md say how long the move takes as
+  measured: a few minutes for a small VM, about 45 minutes for a well-used VM with a large disk,
+  backup included (they said 20-40 minutes).
+- Development: `release.sh` quotes the image upload's paths (a worktree path with a space stopped
+  the 3.4.0 publish before anything went up); CI's guest job fetches Lua 5.5 with retries, then
+  from PUC-Rio's copy, the SHA-256 pinned; the e2e kits show something on a Mac's screen after
+  60 s without input (was 300 s).
 
 ## 3.4.0
 
