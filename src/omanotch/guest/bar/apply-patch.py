@@ -51,6 +51,9 @@ What the patch adds:
     and a left click on the drawer's chevron opens or closes the drawer on
     both bars of the strip (it opens on hover, which the strip does not pass
     on); it closes when the pointer leaves the strip or the strip goes.
+    Omarchy 4.5's tray grows as its drawer slides open: Skip the notch
+    places it by its width with the drawer open, so the drawer opens in
+    place, clear of the housing, and the tray does not move while it slides.
 
 Omarchy's Bar.qml changed in October 2026 (upstream's notch floor from
 display-cutouts.json, a bar thickness per screen, the centre's hover area):
@@ -70,7 +73,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 37
+VERSION = 38
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -117,6 +120,7 @@ PIECES_45 = COMMON + [
     "(sections.notchLayout ? root.notchRight + Style.space(6) : ",           # 5.
     "            notchSlotIndex: moduleListRoot.keys.indexOf(modelData.key)\n",  # 8. lists
     "    readonly property real notchRest: {\n",                              # 8.
+    "          : more > 0 ? [c.width, c.width + more] : c.width\n",            # 8. a tray counts open
 ]
 
 
@@ -415,14 +419,19 @@ def lists_45(text):
     // omarchy-notch-bar: Skip the notch: {items: [{x, hidden}], animate} on
     // a bar in the notch strip, null elsewhere; the items' widths by their
     // place in the list (Omarchy's indicators as [now, at rest, their hidden
-    // ones]), and the list's width at rest.
+    // ones]; Omarchy's tray as [now, with its drawer open]: it grows as the
+    // drawer slides open, so where it goes is decided by that width, and it
+    // opens in place and never moves from under the pointer), and the list's
+    // width at rest.
     property var notchShift: null
     readonly property var notchWidths: {
       var out = []
       for (var i = 0; i < children.length; i++) {
         var c = children[i]
         if (!c || !(c.notchSlotIndex >= 0)) continue
-        out[c.notchSlotIndex] = c.notchPeekFull > 0 ? [c.width, c.notchPeekRest, c.notchPeekFull] : c.width
+        var t = c.activeItem, more = t && root.notchIsTray(t) ? Number(t.drawerExtent) - Number(t.revealExtent) : 0
+        out[c.notchSlotIndex] = c.notchPeekFull > 0 ? [c.width, c.notchPeekRest, c.notchPeekFull]
+          : more > 0 ? [c.width, c.width + more] : c.width
       }
       for (var j = 0; j < out.length; j++) if (out[j] === undefined) out[j] = 0
       return out

@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 37)
+        self.assertEqual(V, 38)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -1920,6 +1920,114 @@ console.log(JSON.stringify([chev({ text: "\\uf053" }), chev({ text: "\\uf054" })
 """.replace("CHEV", function(text, "notchIsChevron")).replace("DX", function(text, "notchTrayDx"))
         out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
         self.assertEqual(json.loads(out.stdout), [True, True, False, False, -48, -48, 48, 0])
+
+
+# Omarchy 4.5's tray grows as its drawer slides open (4.0's keeps the drawer's
+# room all the time). Skip the notch on the bar beside the notch, as on the
+# M1 Max 14-inch at 1512 pt (housing 663.5-848.5, FullPanel): the right list's
+# widths from the patched ModuleList (notchWidths) at each step of the slide,
+# laid out by notchSkipPlace, as the bar does each frame. Out per step: the
+# tray's span on the bar [start, end] or "hidden".
+TRAY_SKIP = r"""
+var root = { notchIsTray: function (item) { NOTCHISTRAY } };
+function widths(children) { WIDTHS }
+function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) { PLACE }
+function slide(closed, drawer, others, left, beside) {
+  var out = [];
+  for (var k = 0; k <= 10; k++) {
+    var r = k / 10;
+    var tray = { expanded: r > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer,
+                 revealExtent: drawer * r, revealProgress: r };
+    var children = [{ notchSlotIndex: 0, width: closed + drawer * r, notchPeekFull: 0, activeItem: tray }];
+    for (var i = 0; i < others.length; i++) children.push({ notchSlotIndex: i + 1, width: others[i], notchPeekFull: 0 });
+    var right = widths(children);
+    var p = place(1512, 8, left, right, [663.5, 848.5], beside, 6, 8, 24, null, 12);
+    var s = p.right[0], w = closed + drawer * r;
+    out.push(s.hidden ? "hidden" : [s.n + s.x, s.n + s.x + w]);
+  }
+  return out;
+}
+console.log(JSON.stringify(CASES.map(function (c) { return slide.apply(null, c) })));
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class TrayBesideTheNotch(unittest.TestCase):
+    """Omarchy 4.5's tray drawer beside the notch with Skip the notch on: the
+    layout decides where the tray goes by its width with the drawer open, so
+    the drawer opens in place, in visible room, and the tray never moves
+    while it slides (it jumped over the housing mid-slide and closed as the
+    pointer lost it)."""
+
+    HOUSING = (663.5, 848.5)
+
+    def slides(self, *cases):
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        f = d / "Bar.qml"
+        f.write_text(stock)
+        self.assertEqual(patch_file(f).returncode, 0)
+        full = f.read_text()
+        widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        js = (TRAY_SKIP.replace("NOTCHISTRAY", function(full, "notchIsTray")).replace("WIDTHS", widths)
+              .replace("PLACE", function(full, "notchSkipPlace")).replace("CASES", json.dumps(cases)))
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def check(self, steps, side):
+        for step in steps:
+            self.assertNotEqual(step, "hidden", steps)
+            a, b = step
+            # Visible room: clear of the housing, on the side it started on.
+            self.assertTrue(b <= self.HOUSING[0] if side == "left" else a >= self.HOUSING[1], steps)
+        # The drawer grows from the edge the tray keeps (its end): that edge
+        # never moves, so neither do the pinned icons and the chevron under
+        # the pointer.
+        self.assertEqual(len({round(s[1], 3) for s in steps}), 1, steps)
+
+    def test_room_on_the_right(self):
+        # Three drawer icons fit between the centre widgets and the right
+        # list: the tray stays where Omarchy puts it and opens there.
+        steps = self.slides([54, 81, [27] * 7, [27, 110], [90, 260]])[0]
+        self.check(steps, "right")
+        self.assertEqual(steps[0], [1261, 1315])
+        self.assertEqual(steps[-1], [1180, 1315])
+
+    def test_no_room_on_the_right(self):
+        # Six drawer icons do not fit there open: the tray sits left of the
+        # housing from the start (as Skip the notch moves any item that does
+        # not fit) and opens there. v37 decided by the width of the moment:
+        # it stayed right, jumped left at 80 % of the slide, and back.
+        for steps in self.slides([81, 162, [27] * 7, [27, 110], [90, 260]],
+                                 [108, 216, [27] * 7, [27, 110], [90, 300]],
+                                 [81, 162, [27] * 9, [27, 110], [90, 300]]):
+            self.check(steps, "left")
+
+    def test_the_patch_counts_a_tray_open(self):
+        # Only a tray counts at its open width; a tray already open, and
+        # every other item, at the width it has.
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        f = d / "Bar.qml"
+        f.write_text(stock)
+        patch_file(f)
+        full = f.read_text()
+        widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        js = """
+var root = { notchIsTray: function (item) { NOTCHISTRAY } };
+function tray(drawer, reveal) {
+  return { expanded: reveal > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer, revealExtent: drawer * reveal };
+}
+var children = [ { notchSlotIndex: 0, width: 54, activeItem: tray(81, 0) },
+                 { notchSlotIndex: 1, width: 94.5, activeItem: tray(81, 0.5) },
+                 { notchSlotIndex: 2, width: 135, activeItem: tray(81, 1) },
+                 { notchSlotIndex: 3, width: 27, activeItem: { expanded: false } },
+                 { notchSlotIndex: 4, width: 27, activeItem: tray(0, 0) } ];
+console.log(JSON.stringify((function () { WIDTHS })()));
+""".replace("NOTCHISTRAY", function(full, "notchIsTray")).replace("WIDTHS", widths)
+        out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(out.stdout), [[54, 135], [94.5, 135], 135, 27, 27])
 
 
 # The notched Macs at their default resolution: strip height and display
