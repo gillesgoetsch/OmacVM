@@ -451,18 +451,24 @@ static int patch_fill(const char *name, const char *text, const struct vrend_sha
  * "temp18[clamp(addr0 + 0, 0, 0)].x" did not compile on the Mac ("Swizzle of non-vector
  * primitive float") and a read gave one component in all four. Now the declaration from its
  * lowest indexed register on is one array; the rest of the GLSL is as before. MUST: strings
- * the text holds, MUST_NOT: one it must not. */
+ * the text holds, MUST_NOT: one it must not.
+ * #692 (virgl-shader-clip-copyback.patch): that Mesa copies only the first temp back
+ * (MOV OUT[1], TEMP[18]), so distances 4..7 never reached OUT[2]; the GLSL now copies the
+ * next temp too. COPY: that line (clip_dist_temp[1] = vec4(temp18[1]);), NULL: the text has
+ * no such copy. */
+#define CLIP_COPY "clip_dist_temp[1] = vec4(temp"
 static int indirect_temp(const char *name, const char *text, const struct vrend_shader_key *key,
-                         const char *must1, const char *must2, const char *must_not, bool have_gl)
+                         const char *must1, const char *must2, const char *must_not, const char *copy,
+                         bool have_gl)
 {
    static char glsl[32768];
    struct vrend_variable_shader_info var;
    if (!translate(name, text, key, HOST_MAC, glsl, &var))
       return 1;
    if ((must1 && !strstr(glsl, must1)) || (must2 && !strstr(glsl, must2)) ||
-       (must_not && strstr(glsl, must_not))) {
-      printf("FAIL: %s (want \"%s\", \"%s\", not \"%s\"):\n%s\n", name, must1 ? must1 : "",
-             must2 ? must2 : "", must_not ? must_not : "", glsl);
+       (must_not && strstr(glsl, must_not)) || (copy ? !strstr(glsl, copy) : !!strstr(glsl, CLIP_COPY))) {
+      printf("FAIL: %s (want \"%s\", \"%s\", %s\"%s\", not \"%s\"):\n%s\n", name, must1 ? must1 : "",
+             must2 ? must2 : "", copy ? "" : "not ", copy ? copy : CLIP_COPY, must_not ? must_not : "", glsl);
       return 1;
    }
    if (have_gl && !gl_compiles(name, stage_type(text), glsl))
@@ -540,7 +546,7 @@ static int patch_fill_rows(bool have_gl)
 /* the control shader of the 3.2.19 gate's tcs-8loop row as the guest's Mesa 26.2.5 sent it
  * (work/release-3.2.19 r4-qemu-b-take2.log): a for loop copies gl_in[].gl_ClipDistance[i]
  * into gl_out[].gl_ClipDistance[i]; only OUT[1] is copied back from the temps (OUT[2],
- * distances 4..7, never: that is the guest's Mesa) */
+ * distances 4..7, never: that is the guest's Mesa; the GLSL copies TEMP[19] itself, #692) */
 static const char *tcs_loop8_guest =
    "TESS_CTRL\n"
    "PROPERTY TCS_VERTICES_OUT 3\n"
@@ -676,6 +682,18 @@ static const char *gs_clip_loop =
 static const char *tes_clip_loop =
    TES_HEAD "DCL IN[][0], POSITION\nDCL SV[0], TESSCOORD\nDCL OUT[0], POSITION\n" CLIP_LOOP_DCL
    TES_POS CLIP_LOOP "END\n";
+/* #692: the same loop, then distance 5 written directly and OUT[2] copied (the guest's form for
+ * gl_ClipDistance[5] = -1.0 after the loop): the shader writes OUT[2] itself */
+static const char *vs_clip_loop_own1 =
+   "VERT\nDCL IN[0]\nDCL OUT[0], POSITION\n" CLIP_LOOP_DCL "MOV OUT[0], IN[0]\n" CLIP_LOOP
+   "MOV TEMP[3].y, IMM[1].xxxx\nMOV OUT[2], TEMP[3]\nEND\n";
+/* a sender with the clip outputs as one array, written with an index (not the guest's Mesa),
+ * and OUT[1] copied from its own indexed temps: OUT[2] may be written, so no copy */
+static const char *vs_clip_array_out =
+   "VERT\nDCL IN[0]\nDCL OUT[0], POSITION\nDCL OUT[1..2], ARRAY(1), CLIPDIST\nDCL TEMP[0..1]\n"
+   "DCL ADDR[0]\nIMM[0] UINT32 {0, 1, 8, 2}\n"
+   "IMM[1] FLT32 {    1.0000,     1.0000,     1.0000,     1.0000}\nDCL TEMP[2..3]\n"
+   "MOV OUT[0], IN[0]\n" CLIP_LOOP "UARL ADDR[0].x, IMM[0].yyyy\nMOV OUT[ADDR[0].x+1], IMM[1]\nEND\n";
 
 /* a temp array read and written with an indirect index: DECL is its declaration (TEMP[0] then
  * the three that are indexed); WRITE the indexed write (ADDR[0] or ADDR[1]) */
@@ -708,7 +726,7 @@ static int indirect_temp_rows(bool have_gl)
       snprintf(name, sizeof(name), "%s TCS from the guest's Mesa: 8 clip distances copied in a loop", how);
       failed |= indirect_temp(name, sep ? separable(tcs_loop8_guest) : tcs_loop8_guest, &key,
                               "vec4 temp18[2];", "temp18[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp18;",
-                              have_gl);
+                              "clip_dist_temp[1] = vec4(temp18[1]);", have_gl);
       for (int n = 1; n <= 8; n++) {
          for (int fixed = 0; fixed < 1 + (n > 4); fixed++) {
             /* the guest sends no NUM_CLIPDIST_ENABLED on the Mac: the counts are the declared
@@ -722,47 +740,62 @@ static int indirect_temp_rows(bool have_gl)
                                     &key, n > 4 ? "vec4 temp18[2];" : "vec4 temp18[1];",
                                     n > 4 ? "temp18[clamp(addr0 + 0, 0, 1)].w = " :
                                             "temp18[clamp(addr0 + 0, 0, 0)].w = ",
-                                    "vec4 temp18;", have_gl);
+                                    "vec4 temp18;",
+                                    /* the second vec4 copied by the GLSL only when the guest
+                                     * did not copy it */
+                                    n > 4 && !fixed ? "clip_dist_temp[1] = vec4(temp18[1]);" : NULL,
+                                    have_gl);
          }
       }
       /* the other stages that write clip distances in a loop; the counter temps stay single */
       memset(&key, 0, sizeof(key));
       snprintf(name, sizeof(name), "%s VS writes 8 clip distances in a loop", how);
       failed |= indirect_temp(name, sep ? separable(vs_clip_loop) : vs_clip_loop, &key, "vec4 temp2[2];",
-                              "temp2[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp1[", have_gl);
+                              "temp2[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp1[",
+                              "clip_dist_temp[1] = vec4(temp2[1]);", have_gl);
       snprintf(name, sizeof(name), "%s GS writes 8 clip distances in a loop", how);
       failed |= indirect_temp(name, sep ? separable(gs_clip_loop) : gs_clip_loop, &key, "vec4 temp2[2];",
-                              "temp2[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp1[", have_gl);
+                              "temp2[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp1[",
+                              "clip_dist_temp[1] = vec4(temp2[1]);", have_gl);
       key.tcs_present = 1;
       snprintf(name, sizeof(name), "%s TES writes 8 clip distances in a loop", how);
       failed |= indirect_temp(name, sep ? separable(tes_clip_loop) : tes_clip_loop, &key, "vec4 temp2[2];",
-                              "temp2[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp1[", have_gl);
+                              "temp2[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp1[",
+                              "clip_dist_temp[1] = vec4(temp2[1]);", have_gl);
+      /* #692: a shader that writes OUT[2] itself keeps its own distances 4..7 */
+      memset(&key, 0, sizeof(key));
+      snprintf(name, sizeof(name), "%s VS loop into the temps, then distance 5 written and copied itself", how);
+      failed |= indirect_temp(name, sep ? separable(vs_clip_loop_own1) : vs_clip_loop_own1, &key,
+                              "vec4 temp2[2];", "temp2[1].y = ", NULL, NULL, have_gl);
+      snprintf(name, sizeof(name), "%s VS with clip outputs as one array written with an index", how);
+      failed |= indirect_temp(name, sep ? separable(vs_clip_array_out) : vs_clip_array_out, &key,
+                              "vec4 temp2[2];", "clip_dist_temp[0 + addr0]", NULL, NULL, have_gl);
    }
    memset(&key, 0, sizeof(key));
    /* a read: the indexed vec4, not one component of a single temp in all four; TEMP[0], before
     * the lowest indexed register, stays single (Mesa's one DCL TEMP[0..N]) */
    failed |= indirect_temp("indexed temp read and write without ARRAY",
                            temp_index_frag("DCL TEMP[0..3]\n", "0"), &key, "vec4 temp0;\n",
-                           " vec4(temp1[clamp(addr0 + 0, 0, 2)])", "vec4 temp1;", have_gl);
+                           " vec4(temp1[clamp(addr0 + 0, 0, 2)])", "vec4 temp1;", NULL, have_gl);
    failed |= indirect_temp("direct writes into the indexed part use its array",
                            temp_index_frag("DCL TEMP[0..3]\n", "0"), &key, "temp1[1] = ",
-                           "temp1[clamp(addr0 + 0, 0, 2)].y = ", NULL, have_gl);
+                           "temp1[clamp(addr0 + 0, 0, 2)].y = ", NULL, NULL, have_gl);
    /* an index in ADDR[1]: the write names addr1 as the read always did */
    failed |= indirect_temp("indexed temp write through ADDR[1]",
                            temp_index_frag("DCL TEMP[0..3]\n", "1"), &key,
                            "temp1[clamp(addr1 + 0, 0, 2)].y = ", " vec4(temp1[clamp(addr1 + 0, 0, 2)])",
-                           "addr0 + 0", have_gl);
+                           "addr0 + 0", NULL, have_gl);
    /* a declared array keeps its text */
    failed |= indirect_temp("indexed temp ARRAY(1) as before",
                            temp_index_frag("DCL TEMP[0]\nDCL TEMP[1..3], ARRAY(1)\n", "0"), &key,
-                           "vec4 temp1[3];", "temp1[clamp(addr0 + 0, 0, 2)].y = ", NULL, have_gl);
+                           "vec4 temp1[3];", "temp1[clamp(addr0 + 0, 0, 2)].y = ", NULL, NULL, have_gl);
    /* no temp indexed (an indexed constant instead): every temp a single vec4 as before */
    failed |= indirect_temp("no temp indexed: single temps as before",
                            "VERT\nDCL IN[0]\nDCL OUT[0], POSITION\nDCL CONST[0..3]\nDCL TEMP[0..3]\n"
                            "DCL ADDR[0]\nARL ADDR[0].x, IN[0].xxxx\nMOV TEMP[1], CONST[ADDR[0].x+1]\n"
                            "MOV TEMP[3], IN[0]\nADD OUT[0], TEMP[1], TEMP[3]\nEND\n",
                            &key, "vec4 temp0;\n vec4 temp1;\n vec4 temp2;\n vec4 temp3;\n", "temp1 = ", "temp1[",
-                           have_gl);
+                           NULL, have_gl);
    return failed;
 }
 
