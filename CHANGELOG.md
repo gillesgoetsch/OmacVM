@@ -9,7 +9,9 @@ in more words.
   of the notch, and every one of them can be clicked. When the open drawer did not fit right of the
   notch, the tray jumped over the notch while the drawer slid open, closed and came back in a loop,
   so its icons showed only behind the notch. Items that move left of the notch also keep clear of
-  where Omarchy 4.5's hidden indicators open (bar patch v38).
+  where Omarchy 4.5's hidden indicators open (bar patch v38). On a full bar the tray now stays left
+  of the notch even while closed, where its drawer has room to open. A tray in the centre section
+  no longer moves the right side's items while its drawer slides open.
 
 ## 3.4.0
 

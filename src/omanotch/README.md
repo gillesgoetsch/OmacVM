@@ -91,7 +91,8 @@ notch; when they don't, they open left of it, so the rest of the bar stays
 where it is and the notch looks untouched until you point at the bar. Omarchy
 4.5's tray counts with its drawer open: it sits where the drawer opens in full,
 and does not move while the drawer slides open; what jumps left of the notch
-keeps clear of the room 4.5's hidden indicators open into there. The bar patch does the layout
+keeps clear of the room 4.5's hidden indicators open into there (so on a full
+bar a few more items hide there than on 4.0). The bar patch does the layout
 (`notchSkipPlace`); the app tells the VM through `/run/omacvm/host.env`
 (`OMACVM_NOTCHSKIP=1`) and `/run/omacvm/notch-skip`.
 
