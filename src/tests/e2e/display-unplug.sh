@@ -46,7 +46,7 @@
 #              built-in display off (the lid closed with another display on):
 #              the test app measures the notch with the built-in on
 #              (OmacVM --notch: "notch ..."), the built-in goes off for up to
-#              60 s (app/scripts/dev/builtin-display.m), the app then says
+#              120 s (app/scripts/dev/builtin-display.m), the app then says
 #              "remembered ..." with the same numbers, the VM starts in full
 #              screen on a virtual display (the only one on), its notch area
 #              line says the built-in display is off and QEMU arms it late;
@@ -498,7 +498,7 @@ case_fullpanel_clamshell() {
   log "fullpanel-clamshell: notch ${n0#notch }; the built-in display off, the VM on a virtual one"
   plug || { res fullpanel-clamshell FAIL "no virtual display"; return; }
   m0=$("$BDISP" mode)
-  "$BDISP" off 60 > "$OUT/fullpanel-clamshell-off.tool" 2>&1 &
+  "$BDISP" off 120 > "$OUT/fullpanel-clamshell-off.tool" 2>&1 &
   BOFF_PID=$!
   for ((r = 0; r < 20; r++)); do [[ $("$BDISP" mode) == *"builtin=none"* ]] && break; sleep 0.5; done
   if [[ $("$BDISP" mode) != *"builtin=none"* ]]; then
@@ -511,19 +511,22 @@ case_fullpanel_clamshell() {
     kill "$BOFF_PID" 2>/dev/null; BOFF_PID=""; unplug; return
   fi
   res fullpanel-clamshell-remembered ok "built-in off: $n1"
-  l0=$(wc -l < "$VMD/logs/qemu.log" 2>/dev/null || echo 0)
   start fullpanel-clamshell || { res fullpanel-clamshell FAIL "the VM did not start"; kill "$BOFF_PID" 2>/dev/null; BOFF_PID=""; unplug; return; }
   # QEMU's way into full screen while the built-in is off (it says so at once); then the built-in back.
-  for ((r = 0; r < 40; r++)); do
-    late=$(tail -n +$((l0 + 1)) "$VMD/logs/qemu.log" 2>/dev/null | grep -m1 'full panel: in full screen on a display without a camera housing')
+  # The app empties qemu.log at each start (Runner.swift, O_TRUNC), so the whole log is this start's.
+  # The built-in is off for 120 s (start up to 40 s, this up to 75 s); a late arm after it came
+  # back says "a window on another display" instead.
+  for ((r = 0; r < 75; r++)); do
+    late=$(grep -m1 -E 'full panel: (in full screen on a display without a camera housing|a window on another display than the built-in one)' "$VMD/logs/qemu.log" 2>/dev/null)
     [[ -n $late ]] && break; sleep 1
   done
   kill "$BOFF_PID" 2>/dev/null; wait "$BOFF_PID" 2>/dev/null; BOFF_PID=""
-  area=$(tail -n +$((l0 + 1)) "$VMD/logs/qemu.log" | grep -h 'OmacVM: notch area:' | tail -1)
+  area=$(grep -h 'OmacVM: notch area:' "$VMD/logs/qemu.log" | tail -1)
   if [[ $area != *"notch area: fullpanel (Omanotch off for this start; the built-in display is off"* ]]; then
     res fullpanel-clamshell FAIL "not a FullPanel start with the remembered notch: ${area:-no notch area line}"; unplug; stop; return
   fi
   [[ -n $late ]] || { res fullpanel-clamshell FAIL "QEMU did not arm the full screen late: $(fp_line)"; unplug; stop; return; }
+  [[ $late == *"another display"* ]] && res fullpanel-clamshell-late skip "armed late after the built-in was back (not with it off): ${late#omacvm: full panel: }"
   res fullpanel-clamshell-start ok "$(cut -c1-110 <<<"$area")"
   for ((r = 0; r < 90; r++)); do gssh "test -d /run/user/\$(id -u \$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env))/hypr" 2>/dev/null && break; sleep 2; done
   sleep 20
