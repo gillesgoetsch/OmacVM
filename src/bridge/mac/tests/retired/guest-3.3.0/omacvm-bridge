@@ -1,0 +1,174 @@
+#!/bin/bash
+# omacvm-bridge (guest side): small client for the OmacVM Bridge on the Mac.
+#   omacvm-bridge state | scan [--cached] | audio | display | bluetooth | battery | timezone | events [--external] [--direct]
+#     (--external: osd events also for brightness changed on the Mac itself;
+#      events come from the session's omacvm-bridge-events when it runs,
+#      --direct: straight from the Mac)
+#   omacvm-bridge volume +5 | -5 | 40        percent; +/- = relative, unmutes when raising
+#   omacvm-bridge mute [on|off|toggle]       default: toggle
+#   omacvm-bridge mic-volume 60 | mic-mute [on|off|toggle]
+#   omacvm-bridge output <uid> | input <uid> (UIDs: omacvm-bridge audio | jq '.devices')
+#   omacvm-bridge brightness +5 | -5 | 40    the Mac's built-in display
+#   omacvm-bridge external-brightness [--output Virtual-N] [+5 | -5 | 40]
+#                                            the external Mac display this VM (output) is on
+#   omacvm-bridge external                   every external Mac display, and how its brightness is set
+#   omacvm-bridge night-shift [on|off|toggle] [strength 0-100]
+#   omacvm-bridge true-tone [on|off|toggle]
+#   omacvm-bridge password [ssid]            Wi-Fi password + QR string (the Mac asks first)
+#   omacvm-bridge bluetooth power [on|off|toggle] | connect|disconnect|forget <address>
+#   omacvm-bridge bluetooth settings         the Mac's Bluetooth settings (to pair a device)
+#   omacvm-bridge wallpaper <image> [theme]  make it the Mac's wallpaper
+# Env: OMACVM_BRIDGE_URL (default: the Mac's address from /etc/omacvm/env, port 47831),
+#      OMACVM_BRIDGE_TOKEN_FILE (default ~/.config/omacvm-bridge/token),
+#      OMACVM_BRIDGE_EVENTS_SOCKET (default $XDG_RUNTIME_DIR/omacvm-bridge-events.sock)
+set -euo pipefail
+[[ -r /etc/omacvm/env ]] && source /etc/omacvm/env   # OMACVM_VM_TYPE, OMACVM_HOST (guest/install.sh)
+# The VM's default gateway, as Gestures' default_gateway() picks it: the
+# lowest metric among default routes whose card has a link. After the app
+# switches networks the old card's route stays listed (first) for seconds.
+SYS_NET=/sys/class/net
+default_gateway() {
+  local m via dev c
+  ip -4 route show default 2>/dev/null |
+    awk '{ v = d = ""; m = 0
+           for (i = 1; i < NF; i++) { if ($i == "via") v = $(i + 1); if ($i == "dev") d = $(i + 1); if ($i == "metric") m = $(i + 1) }
+           if (v != "") print m, v, d }' |
+    while read -r m via dev; do
+      c=$(cat "$SYS_NET/$dev/carrier" 2>/dev/null) || c=1   # no carrier to read: count it
+      if [[ $c == 1 ]]; then echo "$m $via"; fi
+    done | sort -n | awk '{ print $2; exit }'
+}
+# OmacVM.app on its fast network (vmnet, the app picks it at each start and
+# may switch while the VM runs): the Mac is the gateway 192.168.77.1.
+if [[ ${OMACVM_VM_TYPE:-} == app && -z ${OMACVM_BRIDGE_URL:-} && $(default_gateway) == 192.168.77.1 ]]; then
+  OMACVM_HOST=192.168.77.1
+fi
+URL=${OMACVM_BRIDGE_URL:-http://${OMACVM_HOST:-10.211.55.2}:47831}
+TOKEN_FILE=${OMACVM_BRIDGE_TOKEN_FILE:-$HOME/.config/omacvm-bridge/token}
+
+# The token only to a Bridge that first proved it knows it (HMAC-SHA256 of a
+# fresh nonce and the Mac address it answered on): on 127.0.0.1 (OmacVM.app)
+# any Mac program could listen in its place, and pass on a proof from the
+# Bridge on 10.211.55.2 but for the address. Bridges from before /proof get no
+# token: omacvm update.
+MAC_ADDR=${URL#*://}; MAC_ADDR=${MAC_ADDR%%[:/]*}
+[[ ${OMACVM_VM_TYPE:-} == app && $MAC_ADDR != 192.168.77.1 ]] && MAC_ADDR=127.0.0.1   # OmacVM.app's 10.0.2.2 is the Mac's 127.0.0.1
+proven() {
+  local n p
+  n=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  p=$(curl -sS -m 5 "${URL%/}/proof?nonce=$n" 2>/dev/null | jq -r '.proof // empty' 2>/dev/null) || p=""
+  python3 -c 'import hashlib, hmac, sys
+t = open(sys.argv[1], "rb").read().strip()
+w = hmac.new(t, f"omacvm-bridge mac {sys.argv[2]} {sys.argv[3]}".encode(), hashlib.sha256).hexdigest()
+sys.exit(not hmac.compare_digest(w.encode(), sys.argv[4].encode()))' "$TOKEN_FILE" "$MAC_ADDR" "$n" "$p" 2>/dev/null
+}
+# The token goes in via a header file, so it never shows up in `ps`.
+req() {
+  proven || { echo "omacvm-bridge: $URL did not prove it is OmacVM's Bridge (an older Bridge? omacvm update); token not sent" >&2; return 1; }
+  curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s\n' "$(<"$TOKEN_FILE")") "$@"; echo
+}
+post() { req -X POST -H 'Content-Type: application/json' -d "$2" "$URL$1"; }
+frac() { awk -v p="$1" 'BEGIN { printf "%.4f", p / 100 }'; }
+check_switch() { [[ ${2:-toggle} =~ ^(on|off|toggle)$ ]] || { echo "$1: on, off or toggle" >&2; exit 2; }; }
+switch_json() {
+  case ${1:-toggle} in on) echo true ;; off) echo false ;; *) echo '"toggle"' ;; esac
+}
+check_percent() { [[ $2 =~ ^[+-]?[0-9]+(\.[0-9]+)?$ ]] || { echo "$1: a number in percent, e.g. +5, -5 or 40" >&2; exit 2; }; }
+level_json() {   # <key> <percent> [extra json]
+  case $2 in
+    +*|-*) echo "{\"delta\": $(frac "$2")${3:-}}" ;;
+    *) echo "{\"$1\": $(frac "$2")${3:-}}" ;;
+  esac
+}
+urlencode() { jq -rn --arg s "$1" '$s | @uri'; }
+
+case ${1:-} in
+  state) req "$URL/state" ;;
+  scan) [[ ${2:-} == --cached ]] && req "$URL/scan?cached=1" || req "$URL/scan" ;;
+  audio) req "$URL/audio" ;;
+  display) req "$URL/display" ;;
+  battery) req "$URL/battery" ;;
+  timezone) req "$URL/timezone" ;;
+  bluetooth)
+    case ${2:-} in
+      "") req "$URL/bluetooth" ;;
+      power) check_switch power "${3:-}"; post /bluetooth/power "{\"enabled\": $(switch_json "${3:-}")}" ;;
+      connect|disconnect|forget)
+        [[ ${3:-} =~ ^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$ ]] || { echo "bluetooth $2: a device address, e.g. AA:BB:CC:DD:EE:FF" >&2; exit 2; }
+        post "/bluetooth/$2" "{\"address\": \"$3\"}" ;;
+      settings) post /bluetooth/settings '{}' ;;
+      *) echo "bluetooth: power, connect, disconnect, forget or settings" >&2; exit 2 ;;
+    esac ;;
+  events)
+    q=""; direct=0
+    for a in "${@:2}"; do
+      case $a in --external) q="?osd=external" ;; --direct) direct=1 ;; *) echo "events: --external, --direct" >&2; exit 2 ;; esac
+    done
+    # One stream per session (omacvm-bridge-events.socket); nobody listening
+    # there (curl's 7): straight to the Mac, as before.
+    SOCK=${OMACVM_BRIDGE_EVENTS_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omacvm-bridge-events.sock}
+    if (( ! direct )) && [[ -S $SOCK ]]; then
+      if command -v socat >/dev/null; then
+        # socat (in Omarchy's base packages) waits for the stream without a
+        # timer of its own; curl's transfer loop wakes every second, five
+        # readers in every session. The response's header lines pass through:
+        # the readers take only SSE lines. shut-none: the request's end is no
+        # end of the connection (the stream would close). Exit 1: nobody listening.
+        rc=0
+        printf 'GET /events%s HTTP/1.1\r\nHost: omacvm-bridge\r\nConnection: close\r\n\r\n' "$q" |
+          socat -t 2000000000 - "UNIX-CONNECT:$SOCK,shut-none" 2>/dev/null || rc=$?
+        (( rc == 1 )) || exit "$rc"
+      else
+        rc=0; curl -sN --fail --unix-socket "$SOCK" "http://omacvm-bridge/events$q" || rc=$?
+        (( rc == 7 )) || exit "$rc"
+      fi
+    fi
+    req -N "$URL/events$q" ;;
+  volume) check_percent volume "${2:-}"; post /audio/volume "$(level_json volume "$2")" ;;
+  mute) check_switch mute "${2:-}"; post /audio/mute "{\"muted\": $(switch_json "${2:-}")}" ;;
+  mic-volume) check_percent mic-volume "${2:-}"; post /audio/volume "$(level_json volume "$2" ', "scope": "input"')" ;;
+  mic-mute) check_switch mic-mute "${2:-}"; post /audio/mute "{\"muted\": $(switch_json "${2:-}"), \"scope\": \"input\"}" ;;
+  output|input) post "/audio/$1" "{\"uid\": \"${2:?device uid}\"}" ;;
+  brightness) check_percent brightness "${2:-}"; post /display/brightness "$(level_json brightness "$2")" ;;
+  external) req "$URL/display/external" ;;
+  external-brightness)
+    shift; out=""
+    if [[ ${1:-} == --output ]]; then
+      out=${2:-}
+      [[ $out =~ ^Virtual-[0-9]+$ ]] || { echo "external-brightness: --output Virtual-N" >&2; exit 2; }
+      shift 2
+    fi
+    q=""
+    # OmacVM.app: the output's box from the app's layout says which Mac display
+    # it is on (omacvm-displays keeps it). Elsewhere the VM app in front decides.
+    if [[ ${OMACVM_VM_TYPE:-} == app && -n $out ]]; then
+      layout=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omacvm/displays.json
+      q=$(jq -r --arg o "$out" 'first(.layout[]? | select(.output == $o)
+            | select([.x, .y, .width, .height] | all(type == "number"))
+            | "x=\(.x)&y=\(.y)&width=\(.width)&height=\(.height)") // empty' "$layout" 2>/dev/null)
+      [[ -n $q ]] || { echo "external-brightness: $out is not on a Mac display" >&2; exit 1; }
+    fi
+    if [[ -z ${1:-} ]]; then req "$URL/display/external-brightness${q:+?$q}"
+    else
+      check_percent external-brightness "$1"
+      n=$(awk -v p="$1" 'BEGIN { printf "%g", p }')   # JSON: no "+", no leading zeros
+      case $1 in +*|-*) body="{\"delta\": $n}" ;; *) body="{\"brightness\": $n}" ;; esac
+      post "/display/external-brightness${q:+?$q}" "$body"
+    fi ;;
+  night-shift)
+    body="{"
+    if [[ ${2:-} == strength ]]; then
+      check_percent strength "${3:-}"; body+="\"strength\": $(frac "$3")"
+    else
+      check_switch night-shift "${2:-}"; body+="\"enabled\": $(switch_json "${2:-}")"
+      [[ ${3:-} == strength ]] && { check_percent strength "${4:-}"; body+=", \"strength\": $(frac "$4")"; }
+    fi
+    post /display/night-shift "$body}" ;;
+  true-tone) check_switch true-tone "${2:-}"; post /display/true-tone "{\"enabled\": $(switch_json "${2:-}")}" ;;
+  wallpaper)
+    [[ -f ${2:-} ]] || { echo "wallpaper: an image file" >&2; exit 2; }
+    req -X POST -H 'Content-Type: application/octet-stream' -H "X-Omarchy-Theme: ${3:-}" \
+      --data-binary "@$2" "$URL/wallpaper" ;;
+  password) req --max-time 75 "$URL/wifi/password${2:+?ssid=$(urlencode "$2")}" ;;
+  *) sed -n '2,23s/^# \{0,1\}//p' "$0"; exit 2 ;;
+esac

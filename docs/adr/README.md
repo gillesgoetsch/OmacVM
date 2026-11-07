@@ -56,5 +56,6 @@ a new record replaces it and says so.
 | [0067](0067-qemu-graphics-extras.md) | QEMU's own graphics per window: the console texture made only when drawn (none while a GL scanout shows), the spare present surfaces volatile 2 s after the window goes out of sight | accepted, built (`vm-memory-gfx-fixed`), on by default |
 | [0069](0069-drag-and-drop.md) | Drag and drop of files from the Mac: QEMU opens the dropped files and passes descriptors, the app clones them into a read-only 9p share, the VM drops them into the app under the pointer (Wayland drag from a transparent overlay) or Downloads | accepted, built (`drag-drop`, 3.3.0), off by default, experimental |
 | [0070](0070-display-awake-for-video.md) | The Mac's display stays on while a video plays in the VM: the guest's display agent sends the outputs whose windows inhibit idle (no Hyprland rule, shown, not locked, Chromium 157+), QEMU holds PreventUserIdleDisplaySleep while such a window can be seen and the VM runs (30 s lease, powerd timeout) | accepted, built (`idle-inhibit`, 3.3.1), always on, OmacVM.app only |
+| [0071](0071-omacvm-app-only.md) | OmacVM.app only: Parallels, UTM and VMware Fusion retired; existing VMs left as they are; never added back without the owner's explicit consent | accepted, 3.4.0 |
 
 The whole chain: [../architecture/graphics.md](../architecture/graphics.md).

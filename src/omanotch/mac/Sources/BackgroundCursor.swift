@@ -22,7 +22,7 @@ enum BackgroundCursor {
         return err == 0
     }()
 
-    /// Fully transparent cursor: what Parallels shows over its VM windows,
+    /// Fully transparent cursor: what a VM app shows over its VM windows,
     /// where the guest draws its own cursor.
     static let transparent: NSCursor = {
         let image = NSImage(size: NSSize(width: 16, height: 16))

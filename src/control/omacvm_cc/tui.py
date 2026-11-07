@@ -904,7 +904,7 @@ class ControlCentre(App):
     def subtitle(self) -> str:
         c = self.c
         n = sum(1 for r in self.rows if r.update)
-        parts = [{"parallels": "Parallels", "utm": "UTM", "fusion": "VMware Fusion", "app": "OmacVM.app"}.get(c.local.vm_type, "VM")]
+        parts = [{"app": "OmacVM.app"}.get(c.local.vm_type, "VM")]
         if c.linked:
             parts.append("Mac linked")
         elif c.mac_error is not None:
@@ -978,7 +978,7 @@ class ControlCentre(App):
         name = self.c.vm_name()
         # The app too: the Mac refuses a name that is in two apps without it.
         kind = self.c.local.vm_type
-        which = f" --vm-type {kind}" if kind in ("parallels", "utm", "fusion", "app") else ""
+        which = f" --vm-type {kind}" if kind == "app" else ""
         return f"omacvm {command} --vm {shlex.quote(name) if name else 'NAME'}{which}"
 
     def outcome(self, what: str, action: str, job: S.Job) -> str:

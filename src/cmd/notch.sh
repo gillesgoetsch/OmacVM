@@ -40,8 +40,16 @@ while (( $# )); do
   esac
 done
 [[ -n $VM ]] || usage "which VM? --vm NAME (omacvm vms lists them)"
-[[ $TYPE == app ]] || usage "full screen including notch is OmacVM.app's setting (UTM, VMware Fusion and Parallels keep their window below the notch: Omanotch fills the strip there)"
-d=$(app_dir "$VM") || usage "no OmacVM.app VM named '$VM' (omacvm vms lists them)"
+# A retired VM (src/lib/retired.sh): exit 3 with what to do.
+retired_check() {
+  local t
+  t=$(retired_list | awk -F'\t' -v n="$VM" -v t="$TYPE" '$1 == n && (t == "app" || $2 == t) { print $2; exit }')
+  [[ -n $t ]] && retired_stop "$VM" "$t"
+  return 0
+}
+route_retired "$TYPE" && retired_check
+[[ $TYPE == app ]] || usage "--vm-type app (the only one)"
+d=$(app_dir "$VM" 2>/dev/null) || { retired_check; usage "no OmacVM.app VM named '$VM' (omacvm vms lists them)"; }
 
 CHANGED=false; NOTE=""
 if [[ -n $SET && $SET != "$(notch_choice "$d")" ]]; then
@@ -55,7 +63,7 @@ if [[ -n $SKIP && $SKIP != "$(notch_skip "$d")" ]]; then
 fi
 
 choice=$(notch_choice "$d")
-mac=$(mac_tool mac-notch 2>/dev/null || echo none)
+mac=$(notch_mac_state)
 full=0; notch_app_full_screen && full=1
 next=$(notch_next_start "$d" "$mac" "$full")
 last=$(notch_this_start "$d")

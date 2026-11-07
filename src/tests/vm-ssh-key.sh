@@ -42,7 +42,7 @@ expect "... the key gone: a new one" "yes" "$([[ -f $V/ssh-key && $(cat "$V/ssh-
 expect "gssh to an app VM: the folder's key first, then the Mac's" "$V/ssh-key $H/.ssh/omacvm " \
   "$(lib 'vm_pin "Copied VM" app; gssh 127.0.0.1:52998 true')"
 expect "gssh to a VM of another app: the Mac's key only" "$H/.ssh/omacvm " \
-  "$(lib 'vm_pin "Copied VM" app; vm_pin "Copied VM" parallels; gssh 10.211.55.9 true')"
+  "$(lib 'vm_pin "Copied VM" app; vm_pin "Copied VM" other; gssh 10.0.2.9 true')"
 mkdir -p "$H/VMs/Old VM"; printf "NAME='Old VM'\n" > "$H/VMs/Old VM/vm.env"
 expect "an app VM without its own key (set up before): the Mac's key only" "$H/.ssh/omacvm " \
   "$(lib 'vm_pin "Copied VM" app; vm_pin "Old VM" app; gssh 127.0.0.1:52997 true')"

@@ -108,7 +108,7 @@ check(!DisplayPick.covers(windowOnExternal, external.bounds), "a window is not f
 check(DisplayPick.home(windowOnExternal, displays) == external, "a window's home display")
 check(DisplayPick.home(CGRect(x: 5000, y: 5000, width: 10, height: 10), displays) == nil, "off every display: none")
 
-// Full screen on both (Parallels' "all displays", OmacVM.app with external displays): the pointer decides.
+// Full screen on both (OmacVM.app with external displays): the pointer decides.
 let both = [fullBuiltin, fullExternal]
 check(DisplayPick.focused(windows: both, displays: displays, pointer: onExternal, windowed: false).map { $0.display == external && $0.fullScreen } == true,
       "full screen on both, pointer on the external: the external")
@@ -119,7 +119,7 @@ check(DisplayPick.focused(windows: [fullExternal], displays: displays, pointer: 
       "full screen on the external, pointer on the built-in: the external")
 // A window (not full screen): only for OmacVM.app (windowed) or a guest request.
 check(DisplayPick.focused(windows: [windowOnExternal], displays: displays, pointer: onExternal, windowed: false) == nil,
-      "Parallels/UTM/Fusion windowed: nothing (as before)")
+      "windowed, not asked for: nothing")
 check(DisplayPick.focused(windows: [windowOnExternal], displays: displays, pointer: onBuiltin, windowed: true).map { $0.display == external && !$0.fullScreen } == true,
       "OmacVM.app windowed on the external: the external")
 check(DisplayPick.focused(windows: [], displays: displays, pointer: onExternal, windowed: true) == nil, "no window: nothing")

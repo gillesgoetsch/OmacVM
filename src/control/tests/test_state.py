@@ -150,12 +150,11 @@ def test_a_warning_works_and_says_why(features):
 
 def test_rows_map_checks_and_local_avail(features):
     on = S.desired(features, {})
-    rows = S.build_rows(features, on, vm_type="parallels",
+    rows = S.build_rows(features, on, vm_type="other",
                         checks=[chk("fail", "bridge", name="audio"), chk("fail", "", name="zram")])
     r = {x.feature.name: x for x in rows}
     assert r["bridge"].status is S.Status.FAILING
     assert r["gestures"].status is S.Status.WORKS
-    assert r["battery"].status is S.Status.UNAVAILABLE and "Parallels" in r["battery"].note
     assert r["fast-network"].status is S.Status.UNAVAILABLE and "OmacVM.app" in r["fast-network"].note
 
 
@@ -231,7 +230,7 @@ def test_checks_off_hides_marks_but_not_a_running_update():
 
 def test_graphics_row_only_for_app_vms():
     st = {"graphics": {"graphics": "auto", "next_start": "vulkan", "this_start": "auto -> vulkan (macOS 27, KosmicKrisp)"}}
-    assert S.graphics_row(st, "parallels") is None
+    assert S.graphics_row(st, "other") is None
     r = S.graphics_row(st, "app")
     assert r.feature.name == "graphics" and r.status is S.Status.WORKS
     assert r.note == "Automatic: OpenGL and Vulkan"
@@ -323,8 +322,8 @@ GM = {"measured": True, "in_use_mb": 1126, "peak_mb": 1638, "budget_mb": 49152, 
 
 
 def test_gpu_memory_row_only_on_app_vms():
-    assert S.gpu_memory_row(GM, "parallels") is None
-    assert S.gpu_memory_row(GM, "utm") is None
+    assert S.gpu_memory_row(GM, "other") is None
+    assert S.gpu_memory_row(GM, "none") is None
 
 
 def test_gpu_memory_row_numbers():
@@ -461,7 +460,7 @@ def test_update_plan():
     assert update_plan("3.0.2", "3.0.1", "3.0.2", True, True, True) == "vm"
     assert update_plan("3.0.2", "3.0.2", "3.0.2", True, True, True) == "none"
     assert update_plan("3.0.2", "3.0.1", "3.0.1", False, False, True) == "mac-checkout"
-    assert update_plan("3.0.2", "3.0.1", "3.0.1", True, False, True) == "manual"   # a Parallels VM, the app's omacvm
+    assert update_plan("3.0.2", "3.0.1", "3.0.1", True, False, True) == "manual"   # a VM of another app, the app's omacvm
     assert update_plan("3.0.2", "3.0.1", "3.0.1", True, True, False) == "manual"   # an older Mac
     assert update_plan("3.0.1", "3.0.1", "3.0.2", True, True, True) == "none"     # the Mac is ahead: never down
     assert update_plan(None, "3.0.1", "3.0.1", True, True, True) == "none"
@@ -493,5 +492,5 @@ def test_fast_network_from_the_next_start():
     assert "password on the Mac at that start" in on
     off = S.next_start_note("fast-network", False, "app")
     assert off.startswith("From the VM's next start") and "password" not in off
-    assert S.next_start_note("fast-network", True, "parallels") == ""
+    assert S.next_start_note("fast-network", True, "other") == ""
     assert S.next_start_note("touch-id", True, "app") == ""

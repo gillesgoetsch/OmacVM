@@ -55,6 +55,8 @@ final class AppState: ObservableObject {
     var vmRunning: () -> Bool = { false }
     /// Check for Updates (main.swift sets it): a VM with a newer OmacVM.
     var checkForUpdates: () -> Void = {}
+    /// Shuts this app's running VM down (main.swift sets it): before a move.
+    var powerDownVM: () -> Void = {}
 
     /// Is this Mac set up for the shown VM (MacSetup: its helpers, their
     /// permissions, its token): the notice under the header and the header's
@@ -92,6 +94,14 @@ final class AppState: ObservableObject {
     /// without it (a hidden run). A failed one stays on its screen (Back).
     func buildEnded(ok: Bool) {
         guard ok else { startAfterUpdate = false; return }
+        if creator.job == .move {
+            // move-vm.sh shut the VM down cleanly.
+            try? FileManager.default.removeItem(at: config.folder.appendingPathComponent(RunMarker.fileName))
+            screen = .ready
+            reload()
+            tell("\(config.name) is on Omarchy 4.5 now. The disk from before is kept until you delete it (top of the settings).")
+            return
+        }
         let updated = creator.job == .update
         // Update VM shut the VM down cleanly: no run marker to warn about.
         if updated { try? FileManager.default.removeItem(at: config.folder.appendingPathComponent(RunMarker.fileName)) }
@@ -144,6 +154,30 @@ final class AppState: ObservableObject {
         message = nil
         creator.update(config: config)
         screen = .building
+    }
+
+    /// Move to Omarchy 4.5 (the card's Move… and Resume): the VM shut down
+    /// first when it runs, then move-vm.sh in the build panel (BuildView).
+    func moveVM(resume: Bool) {
+        if let why = Paths.startProblem(config.folder) { say(why); return }
+        if let p = MoveFiles.problem(config) { say(p); return }
+        if !resume, !RunMarker.confirmStart(config) { return }
+        message = nil
+        guard vmRunning() else { creator.move(config: config); screen = .building; return }
+        powerDownVM()
+        tell("\(config.name) shuts down for the move to Omarchy 4.5…")
+        let folder = config.folder
+        Task { @MainActor in
+            for _ in 0..<120 {
+                try? await Task.sleep(for: .seconds(1))
+                if !vmRunning() { break }
+            }
+            guard config.folder == folder, screen == .ready else { return }
+            guard !vmRunning() else { say("\(config.name) did not shut down within 2 minutes: shut it down in Omarchy, then move it."); return }
+            message = nil
+            creator.move(config: config)
+            screen = .building
+        }
     }
 
     /// watchDrives false: the window pictures, which must not switch to a
@@ -560,15 +594,52 @@ struct BuildView: View {
     @ObservedObject var creator: Creator
     @State private var showDetails = false
 
+    private var headerTitle: String {
+        switch creator.job {
+        case .build: return "Building \(state.config.name)"
+        case .update: return "Updating OmacVM in \(state.config.name)"
+        case .move: return "Moving to Omarchy 4.5"
+        }
+    }
+
+    private func back() {
+        state.startAfterUpdate = false
+        state.screen = creator.job == .build ? .setup : .ready
+    }
+
+    /// The stopped move's journal says Resume goes on (the window pictures: a preview's word).
+    private var moveResumable: Bool {
+        if let r = creator.renderResumable { return r }
+        switch MoveFiles.card(state.config) {
+        case .failed(_, _, let r), .interrupted(_, _, let r): return r
+        default: return false
+        }
+    }
+
+    private var pillText: String {
+        switch creator.job {
+        case .build: return "Building"
+        case .update: return "Updating"
+        case .move: return "Moving"
+        }
+    }
+
     var body: some View {
         WindowShell {
-            WindowHeader(title: creator.job == .build ? "Building \(state.config.name)" : "Updating OmacVM in \(state.config.name)",
-                         pill: creator.failed == nil ? StatusPill(text: creator.job == .build ? "Building" : "Updating", dot: Look.orange)
+            WindowHeader(title: headerTitle,
+                         pill: creator.failed == nil ? StatusPill(text: pillText, dot: Look.orange)
                              : StatusPill(text: "Stopped", dot: Look.red),
                          facts: creator.step > 0 ? "Step \(creator.step) of \(creator.steps): \(creator.title)" : creator.title) {
                 AppIconButton()
             } trailing: {
                 if creator.failed != nil {
+                    // A stopped move that can go on: Resume here too (the card's, same checks).
+                    if creator.job == .move, moveResumable {
+                        Button("Resume") { state.moveVM(resume: true) }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                            .layoutProbe("move-resume-progress")
+                    }
                     if let cmd = creator.manualKeyCommand {
                         CopyCommandButton(command: cmd)
                         InfoButton(topic: "SSH access", text: SSHRepair.info)
@@ -576,35 +647,44 @@ struct BuildView: View {
                     Button("Show Log") {
                         NSWorkspace.shared.open(creator.log ?? state.config.folder.appendingPathComponent("create.log"))
                     }
-                    Button("Back") {
-                        state.startAfterUpdate = false
-                        state.screen = creator.job == .build ? .setup : .ready
+                    if creator.job == .move, moveResumable {
+                        Button("Back") { back() }
+                            .layoutProbe("start")
+                    } else {
+                        Button("Back") { back() }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                            .layoutProbe("start")
                     }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .layoutProbe("start")
                 }
             }
         } notices: {
             if let error = creator.failed { MessageStrip(text: error, error: true) }
         } content: {
             VStack(alignment: .leading, spacing: 0) {
-                SectionTitle(text: creator.job == .build ? "Build" : "Update", first: true)
+                SectionTitle(text: creator.job == .build ? "Build" : creator.job == .update ? "Update" : "Move to Omarchy 4.5", first: true)
                 Card {
                     VStack(alignment: .leading, spacing: 10) {
                         ProgressView(value: Double(max(creator.step - 1, 0)), total: Double(creator.steps))
+                        if creator.job == .move {
+                            MoveStepList(step: creator.step, failed: creator.failed != nil)
+                            Divider()
+                        }
                         if let q = creator.kernelQuestion, creator.failed == nil {
                             KernelQuestionView(question: q, vm: state.config.name, creator: creator)
                         } else if creator.failed == nil {
                             BuildNowView(creator: creator)
                         } else {
-                            Text(creator.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                            Text(creator.detail.prefix(1).uppercased() + creator.detail.dropFirst())
+                                .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
                         }
                     }
                     .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
                 }
                 if creator.failed == nil {
-                    Text("You can use your Mac meanwhile. Keep it awake and online.")
+                    Text(creator.job == .move
+                         ? "You can use your Mac meanwhile. Keep it awake and online. Quitting OmacVM stops the move at a safe point; Resume goes on later."
+                         : "You can use your Mac meanwhile. Keep it awake and online.")
                         .font(.subheadline).foregroundStyle(.secondary)
                         .padding(.top, 8).padding(.leading, 4)
                 }
@@ -694,7 +774,10 @@ struct BuildNowView: View {
         var s = "This step: \(BuildText.duration(now.timeIntervalSince(creator.stepStarted))) so far"
         // An update has its own steps: no build times for them.
         guard creator.job == .build else {
-            return s + ". Whole update: \(BuildText.duration(now.timeIntervalSince(creator.buildStarted)))."
+            // The whole only once it says more than this step (a minute apart).
+            let whole = now.timeIntervalSince(creator.buildStarted), step = now.timeIntervalSince(creator.stepStarted)
+            guard whole - step >= 60 else { return s + "." }
+            return s + ". Whole \(creator.job == .move ? "move" : "update"): \(BuildText.duration(whole))."
         }
         if let last = StepTimes.last(route: creator.route, step: creator.step) {
             s += ", last time \(BuildText.duration(last)) on this Mac"

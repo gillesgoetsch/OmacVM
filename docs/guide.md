@@ -1,6 +1,6 @@
 # Build and use a VM, step by step
 
-The short version is in the [README](../README.md#build-a-vm). This page has
+The short version is in the [README](../README.md#get-started). This page has
 every step of the build, what to do after it, and the everyday commands in
 full.
 
@@ -10,43 +10,26 @@ full.
 omacvm            # or: omacvm build
 ```
 
-It first shows what it found on your Mac (Xcode's command line tools,
-Homebrew, OmacVM.app, UTM, VMware Fusion, Parallels) and installs what is
-missing, after asking. Then a few screens (↑/↓ to choose, space to switch,
-Return to confirm):
+It first checks your Mac and downloads OmacVM.app if it is missing, after
+asking. Then a few screens (↑/↓ to choose, space to switch, Return to
+confirm):
 
-1. **The app: OmacVM.app, UTM, VMware Fusion or Parallels**, with a short
-   comparison. If the app isn't installed yet (or UTM is older than 5), it
-   offers to install it (OmacVM.app: it downloads it; UTM: with Homebrew), or
-   tells you how (Fusion: a free download from Broadcom, after signing in). A
-   fresh Parallels without a licence yet asks which edition you plan on (the
-   trial is Pro).
-2. **Build it yourself or download a prebuilt VM.** Building takes 30 to 70
-   minutes and fetches everything from Arch Linux ARM and omarchy-mac. The
+1. **Build it yourself or download a prebuilt VM.** Building takes 10 to 30
+   minutes and fetches Omarchy 4.5 from Omarchy's official aarch64
+   repositories, always the latest stable release. The
    prebuilt VM is the same build, made by OmacVM without any user in it and
    brought to your OmacVM version on the way: a download of 3.5 to 6 GB, then
-   a few minutes (6 minutes in all for Parallels on a fast connection). Either
-   way you get your own user, password, features, keyboard and timezone. You
-   can also download a prebuilt VM by hand from the
-   [releases](https://github.com/gillesgoetsch/omacvm/releases) and open it in
-   its app: it asks for your user and password on its first boot. `--prebuilt`
-   or `--build` for scripts; details, what is in the images and how they are
-   made: [prebuilt.md](prebuilt.md). OmacVM.app offers the same choice in its
-   own setup once a release has an image for it.
-3. **How much of the Mac the VM gets**: Low, Balanced, High or Best, shown as
+   a few minutes. Either way you get your own user, password, features,
+   keyboard and timezone. `--prebuilt` or `--build` for scripts; details,
+   what is in the images and how they are made: [prebuilt.md](prebuilt.md).
+   OmacVM.app's own setup offers the same choice.
+2. **How much of the Mac the VM gets**: Low, Balanced, High or Best, shown as
    CPUs and memory, or Custom. Best leaves macOS and the GPU a buffer of a
    quarter of the memory, at least 8 GB. More is allowed (OmacVM.app and
-   `omacvm resources` warn): on OmacVM.app and UTM the VM's graphics come on
-   top of its memory
-   ([graphics memory](routes/app.md#graphics-memory-and-vm-memory)). On
-   Parallels Standard OmacVM stays within its limits
-   ([Parallels](routes/parallels.md)).
-
-   Then **where the VM goes**: the app's own folder, or any folder you pick,
-   an external drive for example (APFS or Mac OS Extended; Parallels, UTM
-   and Fusion; OmacVM.app keeps its VMs in the folder set in the app). With
-   `--vm-dir PATH` for scripts.
-4. **Features**, one checklist with the recommended ones on:
+   `omacvm resources` warn): the VM's graphics come on top of its memory
+   ([graphics memory](routes/app.md#graphics-memory-and-vm-memory)). The VM
+   goes into the folder set in the app (Storage moves it later).
+3. **Features**, one checklist with the recommended ones on:
 
    | | Default |
    |---|---|
@@ -55,25 +38,21 @@ Return to confirm):
    | Trackpad gestures in Omarchy, in full screen (macOS's own swipes are off then; ⌃⌥ Esc takes you back to macOS) | on |
    | macOS-native scroll momentum *(experimental)*: a trackpad's scrolling only, mice scroll one to one | on |
    | Omanotch, on a MacBook with a notch | on |
-   | The Mac's battery: its charge and charging state in Omarchy's bar (Parallels shows it itself) | on with a battery, not on Parallels |
+   | The Mac's battery: its charge and charging state in Omarchy's bar | on with a battery |
    | The Mac's clock: at the far right of the bar, in your Mac's menu bar format | on |
-   | The Mac's camera as *Mac Camera*, on only while a Linux app uses it (UTM and Fusion: through OmacVM Bridge, also with the Bridge off) | on |
+   | The Mac's camera as *Mac Camera*, on only while a Linux app uses it | on |
    | External display brightness: the brightness keys (and Omarchy's own) set the external display the VM is on, over DDC/CI (needs the Bridge) | on |
    | Screensaver and lock disabled: Omarchy's own screensaver and lock after idle stay off, the Mac's lock protects the VM | off |
    | Autologin | off |
    | Memory-optimized kernel: Arch Linux ARM's kernel rebuilt with transparent huge pages and MGLRU (its own has neither), for memory-heavy work; a kernel build in the VM: about 10 minutes with 16 CPUs, over an hour with 4 | off |
    | The OmacVM control centre: `omacvm` in Omarchy, also in the Omarchy menu and the bar | on |
 
-5. **Your user name, full name and password.** Omarchy's own first-boot setup
+4. **Your user name, full name and password.** Omarchy's own first-boot setup
    is not used.
 
-Then it shows a summary and starts: 30 to 70 minutes in numbered steps
-(OmacVM.app 10 to 30 minutes; VMware Fusion about 15 minutes more: it builds
-Hyprland with a fix), mostly downloads and Omarchy's install, with the whole log in
-`~/Library/Logs/omacvm-build-*.log`. A VM window opens on the way: that is the
-temporary installer, leave it alone. Parallels Desktop may also show its own
-windows on the way (sign in, continue the trial): click through them, the
-build waits.
+Then it shows a summary and starts: 10 to 30 minutes in numbered steps,
+mostly downloads and Omarchy's install, with the whole log in
+`~/Library/Logs/omacvm-build-*.log`.
 
 `omacvm build --dry-run` asks everything and stops at the summary;
 `omacvm build --help` lists the options for unattended builds. Your keyboard
@@ -104,9 +83,6 @@ changes without one.
   reach the Mac's 127.0.0.1: there the VM uses `192.168.77.1:<port>` if the
   proxy accepts LAN connections (Clash: "Allow LAN"), else no proxy, and
   goes out through the Mac (and its VPN or TUN mode, if one is on) directly.
-  Parallels, UTM and Fusion cannot reach the Mac's 127.0.0.1 either: let the
-  proxy accept LAN connections and set `http_proxy`/`https_proxy` to the
-  Mac's address before building.
 - **Not read**: proxy auto-config (PAC) files and automatic discovery (WPAD).
   The build says so; set `http_proxy` and `https_proxy` in the terminal.
 - **Flaky connections**: while Omarchy installs, pacman and `git clone` try
@@ -119,27 +95,16 @@ changes without one.
 
 Once, on the Mac:
 
-1. **Allow the prompts**: Location Services for *OmacVM Bridge* (Wi-Fi
-   names), Bluetooth for *OmacVM Bridge*, Accessibility for *OmacVM Bridge*
-   and *OmacVM Gestures*, Input Monitoring for *OmacVM Gestures* (Omanotch
-   needs none). The camera
-   is asked for the first time a Linux app uses it: for *OmacVM Bridge* (UTM,
-   Fusion), *OmacVM* (the app) or *Parallels Desktop*. The microphone belongs
-   to the VM's app: UTM asks the first time, OmacVM.app when it starts the VM;
-   for Parallels Desktop and VMware Fusion check System Settings › Privacy &
-   Security › Microphone, or the VM records silence or nothing. With the
-   Bridge off but the camera on (UTM, Fusion), *OmacVM Bridge* is still
-   installed for the camera and asks for Location Services, Accessibility and
-   Bluetooth too: say no, the camera does not need them.
-2. **Parallels: let Cmd reach Omarchy.** One Parallels setting:
-   [Parallels](routes/parallels.md#after-the-build-let-cmd-reach-omarchy).
-3. **UTM: keep UTM in the foreground app list** (started from the Dock or
-   Spotlight): [UTM](routes/utm.md#keep-utm-in-the-foreground).
+**Allow the prompts**: Location Services for *OmacVM Bridge* (Wi-Fi names),
+Bluetooth for *OmacVM Bridge*, Accessibility for *OmacVM Bridge* and *OmacVM
+Gestures*, Input Monitoring for *OmacVM Gestures* (Omanotch needs none).
+*OmacVM* asks for the camera the first time a Linux app uses it, and for the
+microphone when it starts the VM.
 
 Then put the VM in full screen: see
 [full screen and ⌃⌥ Esc](features.md#full-screen-and-the-escape-keys).
 
-OmacVM.app: while something plays in the VM, AirPods, other Bluetooth
+While something plays in the VM, AirPods, other Bluetooth
 headphones and Control Center play, pause and skip it, as with a Mac app
 (**AirPods and media controls**, on by default; an existing VM needs Update VM
 once): [details](routes/app.md#airpods-and-media-controls-on-by-default).
@@ -178,12 +143,9 @@ for it from its next start, and `omacvm check` says "off".
 On OmacVM.app the same goes for turning one on: the VM gets its link to
 the Mac from its next start (shut it down and start it again).
 
-**Already have an Omarchy VM** you installed yourself from omarchy-mac?
-`omacvm apply --vm NAME` adds OmacVM to it. If OmacVM cannot get in yet, it
-prints the one command to run in the VM's terminal first (it lets OmacVM in
-with its own SSH key, from the Mac only).
+<a name="graphics-opengl-vulkan-or-automatic-omacvmapp"></a>
 
-## Graphics: OpenGL, Vulkan or Automatic (OmacVM.app)
+## Graphics: OpenGL, Vulkan or Automatic
 
 ```bash
 omacvm graphics --vm Omarchy            # the setting, and what it gives on this Mac
@@ -207,11 +169,9 @@ omacvm resources --vm Omarchy --resources high   # low, balanced, high or best
 omacvm resources --vm Omarchy --cpus 8 --memory-gb 24
 ```
 
-The same tiers and limits as the build: up to this Mac's CPUs and memory, and
-within the Parallels licence. Parallels, UTM and VMware Fusion change a
-stopped VM only (shut it down first; a suspended one too); a change applies on
-the VM's next start. OmacVM.app has the same picker in its window, below the
-VM's name. A name used in two apps needs `--vm-type parallels|utm|fusion|app`.
+The same tiers and limits as the build: up to this Mac's CPUs and memory. A
+change applies on the VM's next start. OmacVM.app has the same picker in its
+window, below the VM's name.
 
 ## Update
 

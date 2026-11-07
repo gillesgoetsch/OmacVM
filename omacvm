@@ -3,7 +3,7 @@
 #
 #   omacvm                       asks what you want to do: build a VM, change
 #                                its features, update, check
-#   omacvm build                 a new Omarchy VM in Parallels, UTM, VMware Fusion or OmacVM.app, from nothing
+#   omacvm build                 a new Omarchy VM in OmacVM.app, from nothing
 #   omacvm features [--vm NAME]  a VM's features: see them, switch them
 #                                (--in-vm: open the control centre on the VM's desktop)
 #   omacvm enable FEATURE...     switch features on (omacvm enable scroll-momentum)
@@ -13,7 +13,7 @@
 #   omacvm fullscreen --vm NAME  an OmacVM.app VM's full screen: notch via Omanotch (standard)
 #                                or including notch, no Omanotch needed (experimental; = omacvm notch)
 #   omacvm gestures              the Mac's ⌃⌥ Esc, Swipe out to macOS and Magic Mouse swipe (every route)
-#   omacvm apply [--vm NAME]     OmacVM onto a VM, also one installed by hand
+#   omacvm apply [--vm NAME]     OmacVM onto a VM (what Update VM does)
 #   omacvm update                this checkout, the Mac side and your VMs
 #   omacvm check [--vm NAME]     is everything working, on the Mac and in the VM
 #   omacvm vms                   your VMs and their OmacVM state

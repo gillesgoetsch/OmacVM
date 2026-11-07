@@ -23,7 +23,7 @@ def notch(**kw):
 
 
 def test_only_app_vms_with_a_notch_or_the_setting():
-    assert S.notch_row(notch(), "parallels") is None
+    assert S.notch_row(notch(), "other") is None
     assert S.notch_row(notch(mac_has_notch=False), "app") is None   # a Mac mini: nothing to choose
     assert S.notch_row(notch(notch="fullpanel", mac_has_notch=False), "app") is not None   # set: say so
     assert S.notch_row({"graphics": {}}, "app") is None              # a Mac older than FullPanel
@@ -125,7 +125,7 @@ def test_job_body(app_world):
 # Skip the notch (omacvm notch --skip): its row right after Full screen.
 def test_skip_row_states():
     assert S.notch_skip_row(notch(), "app") is None                      # a Mac older than it: no skip key
-    assert S.notch_skip_row(notch(skip="off"), "parallels") is None
+    assert S.notch_skip_row(notch(skip="off"), "other") is None
     assert S.notch_skip_row(notch(skip="off", mac_has_notch=False), "app") is None   # no notch here
     r = S.notch_skip_row(notch(skip="off", skip_ready=True), "app")
     assert (r.on, r.status, r.note) == (False, S.Status.OFF, "off")

@@ -267,7 +267,7 @@ echo vulkan > "$cg/graphics"; rm -f "$cg/vulkan"
 rm -f "$cg/graphics-fallback"; echo "OmacVM: graphics: $(wv record-once)" > "$cg/logs/qemu.log"
 expect "check: Vulkan fell back for this start: warn" "warn Graphics: this start: $(wv record-once)" "$(crow)"
 cli metal >/dev/null 2>&1; expect "omacvm graphics: unknown value refused" 2 "$?"
-cli --vm-type utm >/dev/null 2>&1; expect "omacvm graphics: app VMs only" 2 "$?"
+cli --vm-type other >/dev/null 2>&1; expect "omacvm graphics: app VMs only" 2 "$?"
 
 # Wired in: the app uses the plan for QEMU's Venus options; apply passes it to the VM.
 grep -q 'g.venus ? ",blob=true,venus=true,hostmem=\\(g.hostmemMB)M"' "$R/app/app/Sources/OmacVM/Runner.swift" &&

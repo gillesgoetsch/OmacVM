@@ -10,7 +10,7 @@ The result is the same kernel with the same config, except:
   * zswap defaults to zstd;
   * named linux-aarch64-thp, installed as /boot/vmlinuz-linux-aarch64-thp next
     to the stock kernel (which stays the fallback in the boot menu);
-  * no device-tree blobs and no Chromebook image (a Parallels VM needs neither).
+  * no device-tree blobs and no Chromebook image (a VM needs neither).
 Fails loudly if ALARM's PKGBUILD no longer has the expected shape.
 """
 import hashlib

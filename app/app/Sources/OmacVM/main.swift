@@ -108,6 +108,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let name = note.object as? String ?? ""
             MainActor.assumeIsolated { self?.startRequested(name) }
         }
+        // The built-in display's notch, kept for VM starts with the lid closed
+        // (#716): now, and whenever the displays change (the lid opened while
+        // a VM runs that started without it).
+        Mac.rememberNotch()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { Mac.rememberNotch() }
+        }
         DistributedNotificationCenter.default().addObserver(
             forName: Self.updateRequest, object: nil, queue: .main) { _ in
             // From `--update-now` of a second launcher: this one stays open.
@@ -147,6 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.startVM = { [weak self] in self?.startVM() }
         state.checkForUpdates = { [weak self] in self?.checkForUpdates(nil) }
         state.showVM = { Self.qemuApp?.activate() }
+        state.powerDownVM = { [weak self] in self?.runner?.powerDown() }
         state.vmRunning = { [weak self] in self?.runner?.isRunning == true || Self.qemuApp != nil }
         state.storage.appBusy = { [weak self] in
             guard let self else { return false }
@@ -159,13 +168,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for u in Storage.removeStaleMoves(in: Paths.vmsRoots) {
                 FileHandle.standardError.write(Data("storage: removed the half copy \(u.path)\n".utf8))
             }
-            for vm in VMConfig.all() { Storage.excludeFromBackup(vm.folder) }
+            let vms = VMConfig.all()
+            for vm in vms { Storage.excludeFromBackup(vm.folder) }
+            // A move to Omarchy 4.5 whose script is gone (OmacVM crashed or
+            // was force quit) left its VM running without a window: shut down.
+            MoveFiles.settleLeftovers(vms)
         }
         Updater.shared.busyReason = { [weak self] in
             guard let self else { return nil }
             if self.runner?.isRunning == true { return "The VM runs" }
-            if self.state.screen == .building { return "A VM is being built" }
+            if self.state.screen == .building {
+                return self.state.creator.job == .move ? "A VM moves to Omarchy 4.5" : "A VM is being built"
+            }
             if self.quitting { return "Quitting" }
+            // A move to Omarchy 4.5 between two of its VM starts (only move-vm.sh runs, outside the bundle).
+            if MoveFiles.running(VMConfig.all()) != nil { return OmarchyMove.updateWaits }
             return nil
         }
         // Update with a VM restart (Updater.swift): the launcher's VM and its controls.
@@ -179,8 +196,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         u.startVMAgain = { [weak self] folder in self?.startAgain(folder) }
         u.restartBlocker = { [weak self] in
             guard let self else { return nil }
-            if self.state.screen == .building { return "a VM is being built" }
+            if self.state.screen == .building {
+                return self.state.creator.job == .move ? "a VM moves to Omarchy 4.5" : "a VM is being built"
+            }
             if self.state.storage.moving != nil { return "a VM is being moved" }
+            if MoveFiles.running(VMConfig.all()) != nil { return "the move to Omarchy 4.5 runs" }
             if self.quitting { return "it is quitting" }
             return nil
         }
@@ -311,6 +331,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateLater
         }
         if state.screen == .building {
+            if state.creator.job == .move, state.creator.running {
+                // The move stops at its next safe point (never inside the
+                // guest's package switch) and shuts the VM down; the window
+                // offers Resume or Undo at the next open.
+                showWindow()
+                let alert = NSAlert()
+                alert.messageText = "Moving \(state.config.name) to Omarchy 4.5 (step \(state.creator.step) of \(state.creator.steps))"
+                alert.informativeText = "Quit stops the move after the current part (a few minutes) and shuts the VM down. When you open OmacVM again, it offers Resume or Undo."
+                alert.addButton(withTitle: "Keep Moving")
+                alert.addButton(withTitle: "Stop and Quit")
+                guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+                state.creator.requestStop()
+                func wait() {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                        guard let c = self?.state.creator, c.running else {
+                            NSApp.reply(toApplicationShouldTerminate: true)
+                            return
+                        }
+                        wait()
+                    }
+                }
+                wait()
+                return .terminateLater
+            }
             if state.creator.job == .update {
                 // Stopping the update script would leave its apply running in
                 // the user's VM while the VM shuts down: quit once the script
@@ -453,6 +497,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let p = state.config.filesProblem {
             state.message = p
+            showWindow()
+            return
+        }
+        // A move to Omarchy 4.5 that stopped: Resume or Undo first (or Keep This Disk).
+        if let why = MoveFiles.openWhy(state.config) {
+            state.message = why
             showWindow()
             return
         }
@@ -961,6 +1011,17 @@ if CommandLine.arguments.dropFirst().first == "--key-access" {
 // `omacvm check` and the tests.
 if CommandLine.arguments.dropFirst().first == "--vms-folder" {
     print(Paths.vmsRoot.path)
+    exit(0)
+}
+
+// `OmacVM --notch`: the notch a VM start would use now (MacNotch: notch,
+// remembered or none, and its numbers), after keeping the one measured now
+// (#716; for the e2e rows and a look at a person's Mac). No window.
+if CommandLine.arguments.dropFirst().first == "--notch" {
+    MainActor.assumeIsolated {
+        let n = Mac.notch
+        print([n.word, n.geometry?.text].compactMap { $0 }.joined(separator: " "))
+    }
     exit(0)
 }
 

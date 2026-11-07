@@ -90,14 +90,14 @@ M=$T/images/omacvm-prebuilt-$VERSION-app.json
 "$REALPY" - "$M" "$VERSION" <<'PY'
 import json, sys
 json.dump({"format": 1, "kind": "prebuilt-manifest", "devid_teams": ["722686Y34B"], "route": "app",
-           "omacvm": sys.argv[2], "omarchy": "4.0.3", "bundle": "Omarchy", "unpacked_kb": 7000000,
+           "omacvm": sys.argv[2], "omarchy": "4.5.0", "bundle": "Omarchy", "unpacked_kb": 7000000,
            "disk_gb": 64, "compression": "tar + zstd --long=27", "created": "2026-10-07T03:44:00Z",
            "size": 3600000000, "parts": [{"name": "omacvm-prebuilt-%s-app.tar.zst.part-aa" % sys.argv[2],
                                           "size": 3600000000, "sha256": "0" * 64}]}, open(sys.argv[1], "w"))
 PY
 sign_doc "$M"
 got=$("${NOCLT[@]}" OMACVM_PREBUILT_SOURCE="$T/images" OMACVM_CACHE="$T/cache" bash "$RES/scripts/prebuilt-vm.sh" --lookup 2>&1)
-expect "prebuilt-vm.sh --lookup (the setup screen)" "local 3600000000 4.0.3 $VERSION" "$got"
+expect "prebuilt-vm.sh --lookup (the setup screen)" "local 3600000000 4.5.0 $VERSION" "$got"
 no_calls "prebuilt-vm.sh --lookup"
 # The password hash for the image's first boot.
 got=$(printf 'pw' | "${NOCLT[@]}" bash -c 'source "$1/lib/mac.sh"; python3 "$1/prebuilt/sha512crypt.py"' _ "$IN")
@@ -135,7 +135,7 @@ S=$T/run/src; mkdir -p "$T/run"; cp -R "$IN" "$S"
 for d in bridge/mac gestures/mac omanotch/mac; do
   printf '#!/bin/bash\necho "%s $*" >> "%s/installs"\n' "$d" "$T" > "$S/$d/install.sh"; chmod +x "$S/$d/install.sh"
 done
-out=$("${NOCLT[@]}" OMACVM_HELPERS="$T/none" "$S/mac/install.sh" --skip-clip --omanotch --quiet 2>&1); rc=$?
+out=$("${NOCLT[@]}" OMACVM_HELPERS="$T/none" "$S/mac/install.sh" --omanotch --quiet 2>&1); rc=$?
 expect "install.sh without the app's helpers: exit 5" 5 "$rc"
 expect "... says the Bridge needs the Command Line Tools" 1 "$(grep -c "^OmacVM Bridge: building it needs Xcode's Command Line Tools" <<<"$out")"
 expect "... and Omanotch" 1 "$(grep -c "^Omanotch: building it needs Xcode's Command Line Tools" <<<"$out")"

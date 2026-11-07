@@ -4,7 +4,9 @@
 # ui/omacvm-fullpanel-retake.h and the user's qemu.log (the built-in display
 # gone and back with an external one on: the strip beside the notch stayed
 # away) replayed through a C copy of the window's FullPanel state
-# (test-fullpanel-retake.c). No QEMU, no display, no notch.
+# (test-fullpanel-retake.c), and a full screen armed late (#716: the lid
+# closed at the start; omacvm-cocoa-fullpanel-late-arm-logic.patch). No
+# QEMU, no display, no notch.
 #   test-fullpanel-retake.sh                the rules and the rows (CI)
 #   test-fullpanel-retake.sh <ui/cocoa.m>   also the wiring in the patched file (the runtime build)
 #   test-fullpanel-retake.sh --self-test    the user's rows fail with 3.2.10's decisions and the
@@ -153,7 +155,8 @@ problems() {
 
 patch -s -d "$work" -p1 -f -i "$patches/omacvm-cocoa-fullpanel-logic.patch" &&
   patch -s -d "$work" -p1 -f -i "$patches/omacvm-cocoa-display-settle-logic.patch" &&
-  patch -s -d "$work" -p1 -f -i "$patches/omacvm-cocoa-fullpanel-retake-logic.patch" ||
+  patch -s -d "$work" -p1 -f -i "$patches/omacvm-cocoa-fullpanel-retake-logic.patch" &&
+  patch -s -d "$work" -p1 -f -i "$patches/omacvm-cocoa-fullpanel-late-arm-logic.patch" ||
   { echo "test-fullpanel-retake: the logic patches do not apply" >&2; exit 1; }
 
 if [[ ${1:-} == --self-test ]]; then

@@ -1,6 +1,5 @@
 // The Mac's battery for the VM: one snapshot of its power sources, as JSON.
-// The same as in OmacVM Bridge (src/bridge/mac/battery.swift), which serves
-// it to UTM and VMware Fusion VMs; keep the two alike.
+// (The Bridge's copy went with the retired routes in 3.4.0.)
 //
 // From try-omarchy (github.com/omacom/try-omarchy), MIT, (c) Try Omarchy
 // contributors: macos/Sources/OmarchyVMHelper/NativeBatteryBridge.swift

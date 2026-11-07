@@ -8,7 +8,7 @@
 //   clang -fobjc-arc -framework AppKit -framework CoreGraphics \
 //     builtin-display.m -o builtin-display
 //   ./builtin-display mode           the built-in's id, mode, frame, notch (reads only)
-//   ./builtin-display off SECONDS    the built-in off for SECONDS (1-60), then on again
+//   ./builtin-display off SECONDS    the built-in off for SECONDS (1-120), then on again
 //
 // The change is made kCGConfigureForAppOnly: macOS puts it back when this
 // process ends, also when it is killed. Refuses when the built-in is the
@@ -82,8 +82,8 @@ int main(int argc, char **argv)
         EnableFn enable = sl ? (EnableFn)dlsym(sl, "CGSConfigureDisplayEnabled") : NULL;
         CGDisplayConfigRef cfg;
 
-        if (secs < 1 || secs > 60) {
-            fprintf(stderr, "SECONDS: 1-60\n");
+        if (secs < 1 || secs > 120) {
+            fprintf(stderr, "SECONDS: 1-120\n");
             return 2;
         }
         if (!b || n < 2) {

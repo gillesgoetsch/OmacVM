@@ -107,7 +107,7 @@ browser_start() {
   else
     # Google Chrome, as on the Mac (install-chrome.sh); Arch's Chromium is slower.
     [[ -x /opt/google/chrome/google-chrome ]] || { echo "Google Chrome is missing: install-chrome.sh" >&2; return 1; }
-    # The flags Omarchy launches Chrome with (on Fusion: --ignore-gpu-blocklist
+    # The flags Omarchy launches Chrome with (--ignore-gpu-blocklist
     # in /etc/chrome-flags.conf), without its extensions. The binary itself, not
     # the launcher, so the flags are not added twice.
     local flags=() f

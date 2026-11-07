@@ -80,7 +80,7 @@ feature_default() {
   case ${FDEF[$1]} in
     on) echo on ;;
     notch) [[ ${NOTCH:-none} == notch ]] && echo on || echo off ;;
-    laptop) [[ ${TYPE:-} != parallels && $(mac_battery) == yes ]] && echo on || echo off ;;
+    laptop) [[ $(mac_battery) == yes ]] && echo on || echo off ;;
     *) echo off ;;
   esac
 }
@@ -90,7 +90,6 @@ feature_available() {
   REASON=""
   if feature_has_tag "$1" notch && [[ ${NOTCH:-none} != notch ]]; then REASON="needs a MacBook with a notch"; return 1; fi
   if feature_has_tag "$1" laptop && [[ $(mac_battery) != yes ]]; then REASON="needs a Mac with a battery"; return 1; fi
-  if feature_has_tag "$1" not-parallels && [[ ${TYPE:-} == parallels ]]; then REASON="Parallels does it itself"; return 1; fi
   if feature_has_tag "$1" app-only && [[ -n ${TYPE:-} && $TYPE != app ]]; then REASON="OmacVM.app only"; return 1; fi
   return 0
 }

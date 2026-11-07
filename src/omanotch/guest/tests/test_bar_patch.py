@@ -5,8 +5,8 @@
 
 With node installed, the patch's startup and watchdog logic also runs against
 fake state files: the right bar from the first frame after login. RealOmarchy
-runs it on Omarchy's own Bar.qml as omarchy-mac and upstream have it
-(src/tests/omarchy-shell).
+runs it on Omarchy's own Bar.qml as omarchy-mac, upstream (October 2026) and
+Omarchy 4.5.0 have it (src/tests/omarchy-shell).
 """
 import json
 import os
@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 36)
+        self.assertEqual(V, 37)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -594,20 +594,29 @@ class Behaviour(unittest.TestCase):
             self.assertEqual(r["root"]["notchLeft"], 918, geom)
 
 
-SHELLS = sorted((ROOT / "src/tests/omarchy-shell").glob("*/shell/plugins/bar/Bar.qml"))
+SHELL_DIR = ROOT / "src/tests/omarchy-shell"
+SHELLS = sorted(SHELL_DIR.glob("*/shell/plugins/bar/Bar.qml"))
 
 
 def patch_file(path):
     return subprocess.run([sys.executable, str(PATCH), str(path)], capture_output=True, text=True)
 
 
+def is_45(stock):
+    """Omarchy 4.5's bar (a widget pool per bar surface, GridLayout lists)."""
+    return "  component WidgetPool: Item {\n" in stock
+
+
 class RealOmarchy(unittest.TestCase):
-    """Omarchy's own Bar.qml: omarchy-mac's (what users have) and upstream's
+    """Omarchy's own Bar.qml: omarchy-mac's (what 4.0 VMs have), upstream's
     from October 2026 (notch floor from display-cutouts.json, a thickness per
-    screen, the centre's hover area up to the anchor widget)."""
+    screen, the centre's hover area up to the anchor widget) and Omarchy
+    4.5.0's (each bar surface spans its screen, a widget pool, three centre
+    sections)."""
 
     def setUp(self):
-        self.assertEqual(len(SHELLS), 2, SHELLS)
+        self.assertEqual(len(SHELLS), 3, SHELLS)
+        self.assertEqual(sum(is_45(b.read_text()) for b in SHELLS), 1)
         self.dir = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.dir)
 
@@ -643,13 +652,16 @@ class RealOmarchy(unittest.TestCase):
             # Ordinary bars: Omarchy's height and how far it parks a hidden bar.
             height = re.search(r"^    implicitHeight: root\.vertical \? 0 : (.*)$", stock, re.M).group(1)
             self.assertIn('implicitHeight: root.vertical ? 0 : (barWindow.notchRole === "" ? %s : barWindow.parkedSize)' % height, full)
-            size = "barWindow.thickness" if "-barWindow.thickness : 0" in stock else "root.barSize"
+            size = ("barWindow.parkDistance" if "-barWindow.parkDistance : 0" in stock
+                    else "barWindow.thickness" if "-barWindow.thickness : 0" in stock else "root.barSize")
             self.assertIn('notchRole === "fullpanel" ? notchPanelFit[0] : %s\n' % size, full)
             self.assertIn('top: barWindow.parked && root.position === "top" ? -barWindow.parkedSize : 0', full)
             self.assertNotIn("root.barHidden && root.position", full)
 
     def test_centre_around_the_housing(self):
         for name, stock in self.each():
+            if is_45(stock):
+                continue   # test_45_centre_sections_around_the_housing
             full = self.full(stock)
             self.assertEqual(full.count("notchLayout: barWindow.notchLayout"), 1)
             self.assertEqual(full.count("anchors.right: centerRoot.notchLayout ? notchLeftEdge.left : centerAnchorModule.left"), 1)
@@ -666,17 +678,77 @@ class RealOmarchy(unittest.TestCase):
             self.assertEqual(full.count("id: notchSkipBar"), 1)
             self.assertEqual(full.count("notchShift: notchSkipBar.notchSkip ? { items: notchSkipBar.notchSkip."), 2)
             self.assertEqual(full.count("id: rightModules"), 1)
-            # Each item of a horizontal list, not the vertical ones.
-            self.assertEqual(full.count("notchShift: root.notchShiftAt(moduleListRoot.notchShift, index)"), 1)
+            # Each item of a list (only the horizontal bar's lists get a shift).
+            index = "notchSlotIndex" if is_45(stock) else "index"
+            self.assertEqual(full.count("notchShift: root.notchShiftAt(moduleListRoot.notchShift, %s)" % index), 1)
             self.assertEqual(full.count("transform: Translate { x: slot.notchShift ? slot.notchShownX - (slot.notchEnd ? slot.width : 0) - slot.notchPlaceX : 0 }"), 1)
             # The housing's centre widths, and the after list named for them.
-            self.assertEqual(full.count("id: notchCentreAfter"), 1)
-            self.assertIn("? [notchCentreBefore.width, centerAnchorModule.width + notchCentreAfter.width]", full)
+            if is_45(stock):
+                self.assertIn("? [beginList.notchRest, centerBox.width + endList.notchRest] : [0, 0]", full)
+            else:
+                self.assertEqual(full.count("id: notchCentreAfter"), 1)
+                self.assertIn("? [notchCentreBefore.width, centerAnchorModule.width + notchCentreAfter.width]", full)
             # The indicators' hidden ones: their own transform, set from the bar.
             self.assertEqual(full.count("    Translate { id: notchPeekMove; x: slot.notchPeekDx }\n"), 1)
             self.assertIn("area.transform = s && s.peekAt !== undefined ? [notchPeekMove] : []", full)
             # Omanotch's clicks and hover skip hidden items.
             self.assertEqual(full.count("if (!moduleTargetClickable(t) || t.enabled === false) continue"), 2)
+
+    def test_45_a_notch_roles_window_is_its_strip(self):
+        # 4.5's bar window spans its screen and draws the strip at its edge.
+        # The parked copy (1 px), NOTCH's and FullPanel's bar are only their
+        # strip: the window, the strip in it, the zone it reserves.
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        full = self.full(stock)
+        self.assertIn('    implicitHeight: root.vertical ? 0 : (barWindow.notchRole === "" ? '
+                      '(screen ? screen.height : thickness) : barWindow.parkedSize)\n', full)
+        self.assertIn('      height: root.vertical ? parent.height : (barWindow.notchRole === "" ? barWindow.thickness : parent.height)\n', full)
+        self.assertIn('    exclusionMode: barWindow.parked ? ExclusionMode.Ignore : ExclusionMode.Normal\n'
+                      '    exclusiveZone: barWindow.notchRole === "" ? thickness : barWindow.parkedSize\n', full)
+        self.assertIn('      : notchRole === "notch" ? notchFit[0] : notchRole === "fullpanel" ? notchPanelFit[0] : barWindow.parkDistance\n', full)
+        strip = full[full.index("      id: barStrip\n"):full.index("    PopupWindow {")]
+        self.assertIn("        anchors.topMargin: barWindow.notchPadTop\n        anchors.bottomMargin: barWindow.notchPadBottom\n"
+                      "        visible: !barWindow.notchClear\n", strip)
+        self.assertEqual(strip.count("visible: !barWindow.notchClear"), 2)   # its background too
+        # Omarchy's own input mask and remap stay.
+        self.assertEqual(full.count("mask: dragActive ? null : (underFullscreen ? noInputRegion : stripInputRegion)"), 1)
+        self.assertEqual(full.count("ScreenMoveRemap {"), stock.count("ScreenMoveRemap {"))
+
+    def test_45_centre_sections_around_the_housing(self):
+        # centerBegin ends left of the housing, the center box and centerEnd
+        # start right of it (4.0's look); vertical bars and the sections
+        # beside the right one (4.5's own notch layout) as Omarchy has them.
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        full = self.full(stock)
+        self.assertEqual(full.count("notchLayout: barWindow.notchLayout"), 1)
+        self.assertEqual(full.count("notchLayout: centerRoot.notchLayout"), 1)
+        sections = full[full.index("  component CenterSections: Item {"):full.index("  component CenterBox: Item {")]
+        self.assertIn(": (sections.notchLayout ? root.notchLeft - Style.space(6) - width : centerBox.x - width)", sections)
+        self.assertIn("x: root.vertical ? 0 : (sections.notchLayout ? root.notchRight + Style.space(6) : "
+                      "sections.besideRight ? beginList.width : Math.round((sections.width - width) / 2))", sections)
+        self.assertIn('fixedEdge: sections.notchLayout ? "start" : sections.besideRight ? "end" : "center"', sections)
+        self.assertIn("x: root.vertical ? Math.round((sections.width - width) / 2) : centerBox.x + centerBox.width", sections)
+        self.assertEqual(full.count("drawn: !barWindow.centerBesideRight"), 1)
+        self.assertEqual(full.count("active: barWindow.centerBesideRight"), 1)
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_45_list_widths_at_rest(self):
+        # A 4.5 list's items by their place in its keys (a drag's spacers and
+        # the Repeater are no items of it); the indicators count at rest.
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        full = self.full(stock)
+        widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        rest = re.search(r"    readonly property real notchRest: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        js = """
+var children = [ {}, { notchSlotIndex: 2, width: 40, notchPeekFull: 0 }, { notchSlotIndex: 0, width: 30, notchPeekFull: 0 },
+                 { width: 50 }, { notchSlotIndex: 1, width: 90, notchPeekRest: 22, notchPeekFull: 68 } ];
+var notchWidths = (function () { WIDTHS })();
+console.log(JSON.stringify([notchWidths, (function () { REST })()]));
+""".replace("WIDTHS", widths).replace("REST", rest)
+        out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(out.stdout), [[30, [90, 22, 68], 40], 92])
+        self.assertIn("            notchSlotIndex: moduleListRoot.keys.indexOf(modelData.key)\n", full)
+        self.assertIn("onKeysChanged: if (notchShift && notchShift.animate)", full)
 
     def test_an_older_patcher_puts_its_own_back(self):
         # 3.1.4's patcher (v22) does not take this file for its own: it patches
@@ -726,7 +798,16 @@ console.log(JSON.stringify(out))
                  [False, "Virtual-2", False], [False, "Virtual-1", True], [False, "Virtual-2", True]]
         for name, stock in self.each():
             full = self.full(stock)
-            js_case = (js.replace("CASES", json.dumps(cases)).replace("BODY", function(full, "barSizeFor"))
+            ask = js
+            if is_45(stock):
+                # 4.5 asks through its Delivery.js: the deck's top margin is
+                # Delivery.barThickness (0 or less: the default size) + the gap.
+                delivery = (SHELL_DIR / name / "shell/plugins/notifications/Delivery.js").read_text()
+                thick = "function barThickness(bar, screenName, defaultBarSize) {%s}" % function(delivery, "barThickness")
+                ask = js.replace("function barClearance(bar, screenName, defaultBarSize, gapsOut) {",
+                                thick + "\nfunction barClearance(bar, screenName, defaultBarSize, gapsOut) {\n"
+                                "  return barThickness(bar, screenName, defaultBarSize) + Number(gapsOut)")
+            js_case = (ask.replace("CASES", json.dumps(cases)).replace("BODY", function(full, "barSizeFor"))
                        .replace("ROLE", function(full, "notchRoleFor")).replace("BOX", function(full, "notchBox")))
             out = subprocess.run(["node", "-e", js_case], check=True, capture_output=True, text=True)
             other = 34 if "screenBarSizes" in stock else 26   # a thicker bar there (notch floor) on the newer one
@@ -739,7 +820,8 @@ console.log(JSON.stringify(out))
             backup.write_text(stock)
             # An older version (3.1.2 had v21), a version line alone, each piece missing.
             olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v21"), VERSION_LINE + "\n"]
-            olds += [full.replace(p, "") for p in load_patch().PIECES]
+            mod = load_patch()
+            olds += [full.replace(p, "") for p in (mod.PIECES_45 if is_45(stock) else mod.PIECES)]
             for old in olds:
                 bar.write_text(old)
                 out = patch_file(bar)
@@ -1074,6 +1156,14 @@ class SkipTheNotch(unittest.TestCase):
                 body = m.group(1)
                 self.assertIn('parent.forceLayout()', body)
                 self.assertLess(body.index("parent.forceLayout()"), body.index("notchShownX ="))
+                self.assertLess(body.index("parent.ensurePolished()"), body.index("notchShownX ="))
+                if is_45(text):
+                    # 4.5: the slot sits right in Omarchy's GridLayout (a
+                    # delegate of its Repeater); Qt's ensurePolished lays it out.
+                    m = re.search(r"  component ModuleList: GridLayout \{\n(.*?)\n  \}\n", text, re.S)
+                    self.assertIsNotNone(m)
+                    self.assertRegex(m.group(1), r"\n    Repeater \{\n(?:.*\n){0,30}        DelegateChoice \{\n          ModuleSlot \{")
+                    continue
                 # The slot sits right in Omarchy's Row (or Column): forceLayout is theirs.
                 m = re.search(r"id: horizontalModuleList\n\n      Row \{\n(.*?)\n    Component \{", text, re.S)
                 self.assertIsNotNone(m)
@@ -1402,6 +1492,39 @@ class Hover(unittest.TestCase):
     def test_ipc_entry(self):
         self.assertIn("return root.notchHover(x)", function(patched(), "hover"))
 
+    def run_hover_45(self, xs, edge=900):
+        # Omarchy 4.5: no setCenterSectionHovered; its own hover peeks left of
+        # the bar's peekEdge (where the centre box starts), widgets included.
+        body = function(patched(), "notchHover")
+        js = (HOVER % (body, json.dumps(xs))).replace("setCenterSectionHovered: function", "gone: function")
+        js = js.replace("var closed = 0;", "var closed = 0; root.notchPeekEdge = function() { return %d };" % edge)
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def test_45_peeks_left_of_the_centre_box(self):
+        r = self.run_hover_45([40, 110, 950, 40, -1, -1])
+        self.assertEqual(r[0], ["free", ["bar true"]])     # left of the centre box: the peek opens
+        self.assertEqual(r[1], ["widget", []])             # over a widget there: stays open
+        self.assertEqual(r[2], ["free", ["bar false"]])    # past the centre box's start: shut
+        self.assertEqual(r[3], ["free", ["bar true"]])
+        self.assertEqual(r[4], ["off", ["bar false"]])     # left the strip: let go once
+        self.assertEqual(r[5], ["off", []])
+
+    def test_45_without_a_parked_bar_says_so(self):
+        self.assertEqual(self.run_hover_45([40, -1], edge=-1), [["unsupported", []], ["off", []]])
+
+    def test_45_edge_of_the_parked_bar(self):
+        js = """
+var notchParkedScreen = "Virtual-1";
+var notchBarVariants = { instances: [ { screen: { name: "NOTCH" }, peekEdge: 700 }, { screen: null },
+                                      { screen: { name: "Virtual-1" }, peekEdge: 912.5 } ] };
+function edge() { BODY }
+var a = edge(); notchParkedScreen = "Virtual-2"; var b = edge();
+notchBarVariants.instances[2].peekEdge = undefined; notchParkedScreen = "Virtual-1";
+console.log(JSON.stringify([a, b, edge()]));
+""".replace("BODY", function(patched(), "notchPeekEdge"))
+        out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(out.stdout), [912.5, -1, -1])
+
 
 # Omarchy's tray (#662) on fake bars: the parked copy on Virtual-1 takes the
 # strip's clicks, NOTCH shows it, Virtual-2 is another display. Each bar has
@@ -1481,7 +1604,8 @@ console.log(JSON.stringify(out));
 # The functions the tray needs from the patch, and its IPC calls.
 TRAY_FUNCS = ["notchTargetAt", "notchTargetRects", "notchHover", "notchIsTray", "notchTrayOf", "notchIsTrayIcon",
               "notchTrayIconsIn", "notchTrayDx", "notchSpan", "notchTraySpans", "notchTrayTarget", "notchTraySet",
-              "notchTrayToggle", "click", "wheel", "targets", "trays"]
+              "notchTrayToggle", "notchIsChevron", "notchPeekEdge", "notchParkedX", "notchShownSlots",
+              "click", "wheel", "targets", "trays", "pick"]
 
 
 def tray_js(text, steps):
@@ -1599,6 +1723,127 @@ step("unparked", function() { root.notchTraySet(false, "", ""); return null });
         self.assertEqual(r["chevron"], {"r": "ok", "log": ["Virtual-1 chevron press 1"], "open": [False] * 3})
 
 
+# The strip shows NOTCH's copy of the bar and presses the parked one. Each
+# copy's widgets keep their own state: Omarchy's update icon (SystemUpdate.qml,
+# 4.0 and 4.5) asks at its start and then every 6 hours, so a NOTCH output
+# made after an update came out shows the icon and the parked bar, older, not
+# (M1 2026-11-06: weather 1610.3 on NOTCH, 1631.3 on the parked bar). Right
+# section: weather, [update], indicators, clock; a click target fills each.
+TWINS = r"""
+var log = [];
+var Qt = { LeftButton: 1, RightButton: 2, MiddleButton: 4 };
+function Item(o, kids) {
+  var it = { x: 0, width: 0, height: 26, visible: true, enabled: true, opacity: 1, clip: false, parent: null };
+  for (var k in o) it[k] = o[k];
+  it.children = kids || [];
+  it.children.forEach(function(c) { c.parent = it });
+  it.mapToItem = function(to, px, py) {
+    var ax = 0;
+    for (var p = this; p && p !== to; p = p.parent) ax += p.x;
+    return { x: ax + px, y: py };
+  };
+  return it;
+}
+var windows = {}, clickTargets = [], moduleSlots = [];
+function Bar(screen, ids) {
+  var x = 1580, slots = [];
+  ids.forEach(function(id) {
+    var shown = id.charAt(0) !== "-", name = shown ? id : id.slice(1), w = shown ? 21 : 0;
+    var t = Item({ width: w, visible: shown, triggerPress: function(b) { log.push(screen + " " + name + " " + b) },
+                   wheelMoved: function(d) { log.push(screen + " " + name + " wheel " + d) } });
+    var s = Item({ x: x, width: w, region: "right", moduleName: name, activeItem: t }, [t]);
+    slots.push(s); clickTargets.push(t); moduleSlots.push(s); x += w;
+  });
+  windows[screen] = { screen: { name: screen }, contentItem: Item({ width: 1920 }, slots) };
+}
+var root = {
+  notchParkedScreen: "Virtual-1", barHidden: false, notchFullscreen: false, notchHovering: false,
+  clickTargets: clickTargets, moduleSlots: moduleSlots,
+  moduleTargetClickable: function(t) {
+    return t && t.visible !== false && t.opacity !== 0 && t.interactive !== false && t.pressable !== false &&
+      t.concealed !== true && typeof t.triggerPress === "function";
+  },
+  targetWindow: function(t) {
+    var p = t; while (p && p.parent) p = p.parent;
+    for (var n in windows) if (windows[n].contentItem === p) return windows[n];
+    return null;
+  },
+  slotWindow: function(s) { return root.targetWindow(s) },
+  setCenterSectionHovered: function() {}, setBarHovered: function() {},
+};
+FUNCS
+BARS
+var out = {};
+function step(name, f) { log = []; var r; try { r = f() } catch (e) { r = String(e) } out[name] = { r: r, log: log } }
+STEPS
+console.log(JSON.stringify(out));
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class Twins(unittest.TestCase):
+    """A click on the strip presses the parked bar's twin of the item shown
+    under it, also while the two copies differ (v37 and older pressed what
+    the parked bar had at that x: the update icon's place pressed the
+    weather, the weather's place nothing)."""
+
+    STEPS = r"""
+step("weather", function() { return root.click(1590, 10, 1) });
+step("update", function() { return root.click(1610, 10, 1) });
+step("indicators", function() { return root.click(1632, 10, 2) });
+step("clock", function() { return root.click(1660, 10, 1) });
+step("clock wheel", function() { return root.wheel(1660, 10, 120) });
+step("free", function() { return root.click(1000, 10, 1) });
+step("hover update", function() { return root.notchHover(1610) });
+step("pick weather", function() { return root.pick(1590) });
+step("pick update", function() { return root.pick(1610) });
+"""
+
+    def run_twins(self, text, notch, parked):
+        funcs = []
+        for name in TRAY_FUNCS:
+            m = re.search(r"function %s\(([^)]*)\)" % name, text)
+            if not m:
+                continue
+            args = ", ".join(a.split(":")[0].strip() for a in m.group(1).split(",") if a.strip())
+            funcs.append("with (root) { root.%s = function(%s) { %s } }" % (name, args, function(text, name)))
+        bars = 'Bar("Virtual-1", %s); Bar("NOTCH", %s);' % (json.dumps(parked), json.dumps(notch))
+        js = TWINS.replace("FUNCS", "\n".join(funcs)).replace("BARS", bars).replace("STEPS", self.STEPS)
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def test_the_same_copies_press_what_shows(self):
+        ids = ["omarchy.weather", "omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        r = self.run_twins(patched(), ids, ids)
+        self.assertEqual(r["weather"], {"r": "ok", "log": ["Virtual-1 omarchy.weather 1"]})
+        self.assertEqual(r["update"], {"r": "ok", "log": ["Virtual-1 omarchy.system-update 1"]})
+        self.assertEqual(r["indicators"]["log"], ["Virtual-1 omarchy.indicators 2"])
+        self.assertEqual(r["clock"]["log"], ["Virtual-1 omarchy.clock 1"])
+        self.assertEqual(r["free"]["r"], "miss")
+
+    def test_an_item_only_notch_shows_is_not_pressed_and_moves_nothing(self):
+        notch = ["omarchy.weather", "omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        parked = ["omarchy.weather", "-omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        r = self.run_twins(patched(), notch, parked)
+        self.assertEqual(r["weather"], {"r": "ok", "log": ["Virtual-1 omarchy.weather 1"]})
+        self.assertEqual(r["update"], {"r": "miss", "log": []})
+        self.assertEqual(r["indicators"], {"r": "ok", "log": ["Virtual-1 omarchy.indicators 2"]})
+        self.assertEqual(r["clock"], {"r": "ok", "log": ["Virtual-1 omarchy.clock 1"]})
+        self.assertEqual(r["clock wheel"], {"r": "ok", "log": ["Virtual-1 omarchy.clock wheel 120"]})
+        self.assertEqual(r["free"]["r"], "miss")
+        self.assertEqual(r["hover update"]["r"], "free")
+        self.assertEqual(r["pick weather"]["r"], '["Virtual-1","omarchy.weather"]')
+        self.assertEqual(r["pick update"]["r"], "miss")
+
+    def test_an_item_only_the_parked_bar_shows_is_skipped(self):
+        notch = ["omarchy.weather", "-omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        parked = ["omarchy.weather", "omarchy.system-update", "omarchy.indicators", "omarchy.clock"]
+        r = self.run_twins(patched(), notch, parked)
+        self.assertEqual(r["weather"]["log"], ["Virtual-1 omarchy.weather 1"])
+        # NOTCH's indicators sit where the parked bar's update icon is.
+        self.assertEqual(r["update"], {"r": "ok", "log": ["Virtual-1 omarchy.indicators 1"]})
+        self.assertEqual(r["clock"]["log"], ["Virtual-1 omarchy.clock 1"])
+
+
 TRAYS = sorted((ROOT / "src/tests/omarchy-shell").glob("*/shell/plugins/bar/widgets/Tray.qml"))
 
 
@@ -1606,10 +1851,13 @@ class TrayShape(unittest.TestCase):
     """What the patch finds Omarchy's tray by is still there (omarchy-mac's and upstream's Tray.qml)."""
 
     def test_shape(self):
-        self.assertEqual(len(TRAYS), 2, TRAYS)
+        self.assertEqual(len(TRAYS), 3, TRAYS)
         for f in TRAYS:
             with self.subTest(omarchy=f.parts[-6]):
                 q = f.read_text()
+                if "  readonly property bool fixedAtStart: " in q:
+                    self.shape_45(q)
+                    continue
                 self.assertIn("  property bool expanded: false\n", q)
                 self.assertIn("  readonly property var drawerItems: ", q)
                 self.assertIn("  function openTrayMenu(item, anchorItem, mouse) {\n", q)
@@ -1629,6 +1877,49 @@ class TrayShape(unittest.TestCase):
                 self.assertIn("trayItemRoot.modelData.activate()", item)
                 self.assertIn("trayItemRoot.modelData.scroll(wheel.angleDelta.y, false)", item)
                 self.assertIn("if (mouse.button === Qt.RightButton) {\n          trayItemRoot.displayMenu(mouse)", item)
+
+    def shape_45(self, q):
+        # Omarchy 4.5's tray: the drawer grows from the edge the tray is fixed
+        # by (its chevron points the other way at the bar's start), the icons
+        # sit still in a clip as wide as the part shown, and the whole tray
+        # moves by what the drawer still has to open (notchTrayDx).
+        self.assertIn("  property bool expanded: false\n", q)
+        self.assertIn("  readonly property var drawerItems: ", q)
+        self.assertIn("  function openTrayMenu(item, anchorItem, mouse) {\n", q)
+        self.assertIn("  readonly property int drawerExtent: ", q)
+        self.assertIn("  property real revealProgress: expanded || holdOpen ? 1 : 0\n", q)
+        self.assertIn("  readonly property real revealExtent: drawerExtent * revealProgress\n", q)
+        self.assertIn('  readonly property bool fixedAtStart: fixedEdge === "start"\n', q)
+        self.assertEqual(q.count('          text: root.fixedAtStart ? "\\uf054" : "\\uf053"\n'), 2)
+        self.assertEqual(q.count("onHoveredChanged: root.expanded = hovered"), 2)
+        self.assertIn("      implicitWidth: pinnedRow.implicitWidth + chevronWidth + root.revealExtent\n", q)
+        self.assertIn("          id: trayClip\n          x: root.fixedAtStart ? 0 : expandIcon.width\n", q)
+        self.assertIn("          width: root.revealExtent\n          height: root.barSize\n          clip: true\n", q)
+        self.assertIn("            x: root.fixedAtStart ? root.revealExtent - root.drawerExtent : 0\n", q)
+        item = q[q.index("  component TrayItem: Item {"):]
+        self.assertIn("    function displayMenu(mouse) {\n", item)
+        self.assertIn("trayItemRoot.modelData.secondaryActivate()", item)
+        self.assertIn("} else if (trayItemRoot.modelData.onlyMenu) {\n          trayItemRoot.displayMenu(mouse)", item)
+        self.assertIn("trayItemRoot.modelData.activate()", item)
+        self.assertIn("trayItemRoot.modelData.scroll(wheel.angleDelta.y, false)", item)
+        self.assertIn("if (mouse.button === Qt.RightButton) {\n          trayItemRoot.displayMenu(mouse)", item)
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_45_chevron_and_slide(self):
+        # 4.5's tray at the bar's start: its chevron is the other glyph, and
+        # it opens rightwards; one at the end opens leftwards as before.
+        text = patched()
+        js = """
+function chev(t) { CHEV }
+function dx(tray) { DX }
+console.log(JSON.stringify([chev({ text: "\\uf053" }), chev({ text: "\\uf054" }), chev({ text: "x" }), chev(null),
+  dx({ drawerExtent: 64, revealProgress: 0.25, expanded: true }),
+  dx({ drawerExtent: 64, revealProgress: 0.25, expanded: true, fixedAtStart: false }),
+  dx({ drawerExtent: 64, revealProgress: 0.25, expanded: true, fixedAtStart: true }),
+  dx({ drawerExtent: 64, revealProgress: 1, expanded: true, fixedAtStart: true })]));
+""".replace("CHEV", function(text, "notchIsChevron")).replace("DX", function(text, "notchTrayDx"))
+        out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(out.stdout), [True, True, False, False, -48, -48, 48, 0])
 
 
 # The notched Macs at their default resolution: strip height and display
@@ -2093,6 +2384,62 @@ tray.set({x: 105, n: 746, hidden: false, animate: true}); flush(); out.push(tray
         self.assertEqual(ind, [])        # its own place on the bar did not change
         self.assertEqual(tray, [])       # the tray stays where it showed
 
+
+
+WSPATCH = ROOT / "src/omanotch/guest/bar/workspaces-patch.py"
+
+
+class Workspaces45(unittest.TestCase):
+    """Omarchy 4.5 shows each output's own workspaces; the NOTCH copy of the
+    bar must show the built-in display's (what the strip stands in for), at
+    the parked bar's width, or the strip's clicks land beside the widgets."""
+
+    def stock(self):
+        return (SHELL_DIR / "omarchy-ac2690cd/shell/plugins/bar/widgets/Workspaces.qml").read_text()
+
+    def run_patch(self, text):
+        d = pathlib.Path(tempfile.mkdtemp())
+        try:
+            f = d / "Workspaces.qml"
+            f.write_text(text)
+            out = subprocess.run([sys.executable, str(WSPATCH), str(f)], capture_output=True, text=True)
+            return out, f.read_text()
+        finally:
+            shutil.rmtree(d)
+
+    def test_patch_and_again(self):
+        out, full = self.run_patch(self.stock())
+        self.assertEqual((out.returncode, out.stdout.strip()), (0, "patched"))
+        self.assertEqual(full.count("// omarchy-notch-bar"), 1)
+        self.assertEqual(len(full.splitlines()) - len(self.stock().splitlines()), 7)
+        out, again = self.run_patch(full)
+        self.assertEqual((out.returncode, out.stdout.strip(), again), (0, "already patched", full))
+
+    def test_an_older_widget_stays(self):
+        # Omarchy 4.0's widget has no per-output workspaces: nothing to do.
+        older = self.stock().replace("return screen ? Hyprland.monitorFor(screen) : Hyprland.focusedMonitor",
+                                     "return Hyprland.focusedMonitor")
+        out, text = self.run_patch(older)
+        self.assertEqual((out.returncode, out.stdout.strip(), text), (0, "nothing to patch", older))
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_notch_copy_shows_the_built_in_displays(self):
+        out, full = self.run_patch(self.stock())
+        body = re.search(r"  readonly property var monitor: \{\n(.*?)\n  \}\n", full, re.S).group(1)
+        js = """
+var mons = { "Virtual-1": { name: "Virtual-1" }, "Virtual-2": { name: "Virtual-2" }, "NOTCH": { name: "NOTCH" } };
+var Hyprland = { monitors: { values: [mons["Virtual-1"], mons["Virtual-2"], mons.NOTCH] },
+                 focusedMonitor: mons["Virtual-2"], monitorFor: function (s) { return mons[s.name] } };
+function pick(screenName, parked, noBar) {
+  var root = { QsWindow: { window: screenName ? { screen: { name: screenName } } : null },
+               bar: noBar ? null : { notchParkedScreen: parked } };
+  return (function () { BODY })().name;
+}
+console.log(JSON.stringify([pick("NOTCH", "Virtual-1"), pick("NOTCH", "Virtual-2"), pick("Virtual-1", "Virtual-2"),
+  pick("NOTCH", "Virtual-9"), pick("NOTCH", "Virtual-1", true), pick(null, "Virtual-1")]));
+""".replace("BODY", body)
+        r = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(r.stdout), ["Virtual-1", "Virtual-2", "Virtual-1", "NOTCH", "NOTCH", "Virtual-2"])
 
 if __name__ == "__main__":
     unittest.main()

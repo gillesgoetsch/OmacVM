@@ -172,8 +172,6 @@ jobs:
       - name: Install dialog defaults (previous copy, Run Without Installing)
         run: src/tests/install-defaults.sh
 
-      - name: Fusion guest install (first Hyprland build from the source tree)
-        run: src/tests/fusion-install.sh
 
       - name: OmacVM.app update checks
         working-directory: app/app
@@ -238,6 +236,10 @@ jobs:
 
       - name: Which VM --vm NAME means
         run: src/tests/vm-names.sh
+      - name: Retired Parallels, UTM and VMware Fusion VMs are listed and refused, never touched
+        run: src/tests/retired-routes.sh
+      - name: No retired route comes back without the owner's consent
+        run: src/tests/no-retired-routes.sh
 
       - name: input-latency-vm without a VM (its stage split on a made-up QEMU trace, it refuses ~/OmacVM)
         run: src/tests/input-latency-harness.sh
@@ -248,8 +250,6 @@ jobs:
       - name: omacvm gestures (the escape combo, Swipe out to macOS, Magic Mouse swipe; a throwaway domain)
         run: src/tests/gestures-settings.sh
 
-      - name: Two builds at once (build-live.sh waits for the other one's work folder)
-        run: src/tests/build-live-lock.sh
 
       - name: The control centre opened from the Mac (the VM's script, a made-up Hyprland)
         run: src/tests/cc-open.sh
@@ -262,8 +262,6 @@ jobs:
       - name: Is this Mac set up for an app VM (its helpers, their permissions, its token)
         run: src/tests/mac-setup.sh
 
-      - name: omacvm vms never waits on UTM's data
-        run: src/tests/vms-no-container.sh < /dev/null
       - name: omacvm never starts a VM by itself, nor with an old copy of the app
         run: src/tests/no-autostart.sh < /dev/null
 
@@ -277,6 +275,15 @@ jobs:
 
       - name: Release script (KosmicKrisp from another Mac, bad arguments)
         run: src/tests/release-script.sh
+
+      - name: Every script OmacVM.app runs is put into it (build-app.sh, release.sh)
+        run: src/tests/app-scripts.sh
+
+      - name: The moves gate (3.4.0 on) reads the move matrix's rows
+        run: src/tests/move-45-gate.sh
+
+      - name: New VMs are Omarchy 4.5 (CLI and app agree; omarchy-mac 4.0 for tests only)
+        run: src/tests/omarchy-route.sh
 
       - name: Vulkan (Venus) driver step for app VMs (when it builds Mesa's vulkan-virtio)
         run: src/tests/venus-driver.sh
@@ -307,10 +314,6 @@ jobs:
       - name: Prebuilt image disk is packed sparse (holes for zeros, owner root)
         run: src/tests/prebuilt-sparse.sh
 
-      - name: Prebuilt images for Parallels, UTM and Fusion are checked (untrusted input)
-        run: |
-          command -v zstd >/dev/null || brew install zstd
-          src/tests/prebuilt-routes.sh
 
       - name: Ctrl-C in omacvm build stops the running step (a terminal, no VM)
         run: src/tests/build-ctrlc.sh
@@ -318,12 +321,6 @@ jobs:
       - name: omacvm build checks free space on the drive the VM goes to (every route, no VM)
         run: src/tests/build-space.sh
 
-      - name: UTM VM on another drive (--vm-dir; a stand-in UTM, no VM)
-        run: src/tests/utm-vm-dir.sh
-      - name: The openssl probe says nothing on stderr when SIGPIPE is ignored (--plan --json stays JSON)
-        run: src/tests/openssl-probe.sh
-      - name: UTM's shared network on another range is found before the install
-        run: src/tests/utm-network.sh
 
       - name: omacvm-netd offline tests
         run: src/net/mac/test.sh
@@ -351,6 +348,9 @@ jobs:
 
       - name: Bridge brightness keys read from the keyboard (made-up keyboards)
         run: src/bridge/mac/test-hid.sh
+
+      - name: Bridge on a retired route's address (3.3.0 guest clients get the move text; one held event stream)
+        run: src/bridge/mac/test-retired.sh
 
       - name: OmacVM.app's signed Mac helpers are used only for the same sources
         run: src/tests/prebuilt-helpers.sh
@@ -428,6 +428,9 @@ jobs:
 
       - name: A VM not shut down cleanly, or copied while it ran, warns before a start
         run: src/tests/app-run-marker.sh
+
+      - name: Move to Omarchy 4.5 backs up first, resumes, undoes byte for byte and deletes the backup only when asked
+        run: src/tests/app-move-vm.sh
 
       - name: Update VM never waits forever (disk errors, a read-only VM, a hang), asks before a kernel build
         run: src/tests/update-vm-watch.sh
@@ -563,6 +566,11 @@ jobs:
           app/runtime/Tests/display/test-fullpanel-retake.sh
           app/runtime/Tests/display/test-fullpanel-retake.sh --self-test
 
+      - name: Full screen including notch after a start with the lid closed (issue 716; the checks catch the old code)
+        run: |
+          app/runtime/Tests/display/test-fullpanel-late-arm.sh
+          app/runtime/Tests/display/test-fullpanel-late-arm.sh --self-test
+
       - name: HDR's headroom for the guest (ADR 0049; the checks catch code without it)
         run: app/runtime/Tests/display/test-hdr-headroom.sh
 
@@ -638,6 +646,12 @@ jobs:
       - name: OmacVM's edits of Omarchy's shell on omarchy-mac's and upstream's files (toasts, display panels, night light indicator)
         run: src/tests/omarchy-shell.sh
 
+      - name: Per-display workspaces step aside on Omarchy 4.5 and keep the rest of bindings.lua
+        run: src/tests/workspaces-45.sh
+
+      - name: The move to Omarchy 4.5 (preflight, steps, resume, keyring, report), its repo files, pkg-add's marking
+        run: src/tests/omarchy-move.sh
+
       - name: OmacVM.app moves VM folders safely (fixtures, small disk images)
         run: src/tests/app-storage.sh
 
@@ -660,9 +674,6 @@ jobs:
           python3 src/app/guest/tests/test_audio_latency.py
           python3 src/app/guest/tests/test_chrome_drirc.py
           python3 src/app/guest/tests/test_omacvm_media.py
-
-      - name: Final-round benchmark kit offline tests (one timing method per row, what is left out, preflight)
-        run: tests/bench/final-round/test.sh
 
       - name: Sound on a busy Mac and a Mac audio device that does not answer (log lines, check, test stub)
         run: src/tests/audio-timing.sh
@@ -873,8 +884,25 @@ jobs:
       - name: OmacVM's edits of Omarchy's shell on Linux (GNU tools, as in the VM)
         run: src/tests/omarchy-shell.sh
 
+      - name: Per-display workspaces step aside on Omarchy 4.5 on Linux (GNU awk, as in the VM)
+        run: src/tests/workspaces-45.sh
+
+      - name: The move to Omarchy 4.5 on Linux (bash 5, GNU tools, as in the VM)
+        run: src/tests/omarchy-move.sh
+
+      - name: The move's package switch with the real pacman on made-up repos (split, rename, merge, file moves; Debian's pacman under fakeroot)
+        run: |
+          sudo apt-get install -y -qq pacman-package-manager libarchive-tools fakeroot >/dev/null
+          src/tests/omarchy-move-pacman.sh
+
+      - name: The memory step on a VM whose kernel was replaced since it started (the move to Omarchy 4.5)
+        run: src/tests/memory-kernel-replaced.sh
+
       - name: omarchy-mac's ARM package targets that Omarchy's repo has (bash 5, as in the VM)
         run: src/tests/omarchy-targets.sh
+
+      - name: A prebuilt image VM makes its own pacman keyring; the Omarchy line (real gpg for the key files)
+        run: src/tests/prebuilt-guest.sh
 
       - name: OmacVM's virtio-gpu driver's loader and builder on Linux (GNU tools, as in the VM)
         run: src/tests/virtio-gpu-load.sh
@@ -948,8 +976,6 @@ jobs:
           sudo apt-get install -yq --no-install-recommends glslang-tools
           OMACVM_HC_STRICT=1 src/tests/hypr-capture.sh
 
-      - name: VMware Fusion's vmwgfx fix, one patch per Hyprland release (each applies to its tag; none fits a newer one, and the apply goes on and says so)
-        run: OMACVM_FUSION_STRICT=1 src/tests/fusion-vmwgfx.sh
 
       - name: Chromium's video decoder builds, and waits for a GPU that is not usable (no render node here)
         run: |

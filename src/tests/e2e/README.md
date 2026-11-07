@@ -24,7 +24,7 @@ was green; nobody had pressed the switches in a real VM.
 | window | Check Now, the Fast network switch (Turn On…/Turn Off… before 3.0.5) in the app's window (VM stopped) | no error in the window; the VM's `fast-network` file |
 | keys | (none: key events with exact flags go into the VM's QEMU only, `modifier-keys.sh`) | Shift+2 as the Mac's keyboard sends it; Shift's flagsChanged twice, or an event without flags right after it (Universal Control, #412); left and right Shift, Option, Control; Command without the keyboard; Caps Lock; a held key: the guest's virtio keyboard shows exactly those keys |
 | unplug | a 6K virtual display plugged in and taken away while the VM's window is on it (`display-unplug.sh`): full screen with one window per display (3 times), Full screen including notch (a made-up notch, twice), a window (VM stopped first; not with `--hidden`) | the same QEMU runs on 8 s after each unplug, the VM answers over SSH, no new crash report (#402) |
-| update | the release before installed, its Update VM, the features a new VM has, its control centre (`previous-*`); the app updates itself to this build (local feed, throwaway key); Update VM; every switch again | the app's version and signature, `update.log`, the switches as above |
+| update | the release before installed, its Update VM, the features a new VM has, its control centre (`previous-*`); the app updates itself to this build (local feed, throwaway key); Update VM; every switch again | the app's version and signature, `update.log`, the app's settings and the VM's records as before (`settings-kept`), the switches as above |
 
 The control centre is the real one: `omacvm` in tmux, started in the desktop
 user's service manager (`systemd-run --user`) as a terminal on the desktop
@@ -305,3 +305,53 @@ again. Any pixel below the bar that changed is a stale frame: in the guest's
 buffer, or on the Mac. A grim screenshot cannot show this itself: Hyprland's
 screencopy damages the whole output first. `src/tests/stale-frames-diff.sh`
 tests the comparison offline (CI).
+
+## The move to Omarchy 4.5 (`move-45.sh`, release gate from 3.4.0)
+
+`move-45.sh` moves real Omarchy 4.0 test VMs to 4.5 with the app's own
+scripts (`move-vm.sh`: backup, Update VM, the guest's `omarchy-move.sh`,
+restart), one row at a time on an APFS clone, and puts in a fault at the
+step the row names. `move-45.sh --rows` lists them: a clean move (then
+Omarchy's own second update must keep snapper, iwd and OmacVM), Undo (the
+disk's SHA-256 equal to before the move), a move again after Undo, Delete
+the old backup (space shown = space freed), the internet cut during the
+download, the network link down for 90 s, QEMU killed before and inside the
+package switch, QEMU killed once in every step before the switch and once in
+every step after it (`kill-pre`, `kill-post`: each Resume must boot the VM
+and go on to done, one that fails with no cut in its run is a FAIL), the app
+quitting, a power loss in the switch and in the
+backup, an app crash, the VM's disk nearly full, the Mac's drive nearly
+full, a non-APFS drive, a disk size change not finished, everything else
+refused while the move runs (Update VM, a second move, Undo, Delete), and
+the app opened after a crash starts nothing and an app update offered
+mid-move waits and goes in after it (`app-guards`, no window; between the
+move's VM starts the app itself must defer it, "deferred" in update.log, not
+hand it to update-swap.sh), and Disk › Change… is locked in the window while
+a move runs and while one not finished waits for Resume or Undo (`disk-lock`). After every fault nothing may start by itself until Resume or Undo.
+Resume must finish a move that stopped resumable; Undo must give back
+exactly the VM from before. After a move OmacVM's guest check runs with the
+desktop up (the test app starts the VM without a window, SDDM logs the user
+in for that start, the test identity's own Bridge and Gestures run) and may fail no line that did not fail on the same 4.0
+VM, checked the same way before the move; the Venus driver meant for the VM
+(the Vulkan feature's own Mesa, else the one it had) must be there and load.
+
+    move-45.sh --app "<test identity build>.app" --base "<test VMs>/OmacVM M-mv-a308" --row clean --out DIR
+    move-45.sh --summary DIR        # DIR/result.json for the gate
+
+Bases: 4.0 VMs of every age we shipped (a VM from prebuilt-3.0.0, one from
+prebuilt-3.0.8, a fresh 4.0.3rc4 build with more features), powered off, in
+the test app's VMs folder. The caller holds the Mac's VM lock and memory
+gate; nothing shows on the screen but `disk-lock`, which opens the test
+app's window only when nobody is at the Mac (HID idle over 5 minutes, the
+screen unlocked; else BLOCKED). `app-guards` and `disk-lock` need a
+compiled test build of the commit and hold `~/.omacvm-test-identity.lock`
+(so does the guest check while the test app runs the VM).
+Every run writes its own file (`ROW-BASE-MAC-TIME.json`); copy the second
+Mac's into the same `DIR/rows`. `src/release/release.sh` step `moves`
+passes when the newest run of every row passed, "clean" on three ages,
+rows from two Macs with the last two clean moves passed on each, on one
+tested commit whose move files (`move-45.sh --paths`) are the same in the
+release commit (`move-45-result.py gate`; `src/tests/move-45-gate.sh` tests the gate).
+Each row also names the kit it ran with (`move-45.sh` and
+`move-45-result.py`): all rows one kit, and M's, so a row run with older
+checks does not count.
