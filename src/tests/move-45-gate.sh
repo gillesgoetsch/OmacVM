@@ -336,4 +336,103 @@ ksrun() {   # SCENARIO -> the failed checks' names, one per line ("-" when none)
 expect "kill_steps: a cut, then Resume to done: no FAIL" "-" "$(ksrun resume)"
 expect "kill_steps: a run cut in 'report' that still ends done is a FAIL" 1 "$(ksrun cutdone | grep -c "cut in 'report' ended done")"
 
+# ---- kill-commit, power-loss: the cut lands in a HALF switch, judged by the guest (x34b-kitfix, rc 02e3a4e4) ----
+# rc 02e3a4e4's kill 10 s into the commit landed before pacman changed anything (cut-before): Resume rightly went
+# on, and the row failed as if the product had. Now the kill waits for the guest's marker, and a cut the guest
+# still calls cut-before / cut-done is a retry of the kill's timing (Undo exact, the move again), never a result.
+expect "the kit: kill-commit and power-loss kill on the guest's half marker, not on a timer" "0 2" \
+  "$(awk '/^row_kill_commit\(\) \{/,/^}$/; /^row_power_loss\(\) \{/,/^}$/' "$R/src/tests/e2e/move-45.sh" | grep -c 'sleep 10') $(grep -c '^  half_cut_row \(qemu\|power\) || return$' "$R/src/tests/e2e/move-45.sh")"
+hcrun() {   # SCENARIO KIND -> the row's checks as "ok|FAIL name", one per line
+  local fns; fns=$(awk '/^(cut_half|cut_landed|undo_exact_try|half_cut_row)\(\) \{/,/^}$/' "$R/src/tests/e2e/move-45.sh")
+  ( VD=$T/hc-$1; mkdir -p "$VD/logs"; CHECKS=() CUT_TRIES=3 HALF_MIN=3 PRE_DISK=d PRE_EFI=e PRE_REC=r MV_PID="" POWER_PIDS=""
+    SCEN=$1 TRY=$T/hc-$1.try; echo 0 > "$TRY"
+    check() { CHECKS+=("$( (($2)) && echo ok || echo FAIL) $1"); }
+    log() { :; }; vm_off() { :; }; nothing_starts() { :; }; power_gone() { check "power gone" 1; }; power_off_all() { POWER_PIDS=1; }
+    wait_until() { return 0; }; committing() { return 0; }; gstat() { echo commit; }; qemu_pid() { :; }; mv_script_pid() { :; }
+    switch_half_now() { echo 5; }; sha() { case $1 in *disk.img) echo d ;; *) echo e ;; esac; }; records() { echo r; }
+    mvm_bg() { sleep 0.1 & MV_PID=$!; echo $(( $(cat "$TRY") + 1 )) > "$TRY"; }
+    mvm_wait() { wait "$MV_PID"; MV_PID=""; return 1; }
+    t() { cat "$TRY"; }
+    # The guest's word at Resume, per try: half (refused), cut-before / cut-done (went on, its log line), or
+    # "lie": refused while the guest says cut-before (a product FAIL).
+    word() { case $SCEN in half) echo half ;; before) echo cut-before ;; done) echo cut-done ;; lie) echo lie ;;
+               before-half) (( $(t) == 1 )) && echo cut-before || echo half ;; esac; }
+    J() { case $1 in resumable) echo 0 ;; state) echo running ;; pid) echo 999999 ;;
+            guest_switch) case $(word) in half) echo half ;; lie) echo cut-before ;; *) echo done ;; esac ;; *) echo ;; esac; }
+    mvm() { case $1 in
+              run) case $(word) in
+                     cut-before) echo "OmacVM: the switch was cut off before pacman changed anything: it runs again" > "$VD/logs/move-4.5.log"; return 0 ;;
+                     cut-done) echo "OmacVM: the switch was cut off after pacman wrote all of it: its packages again" > "$VD/logs/move-4.5.log"; return 0 ;;
+                     *) return 4 ;;
+                   esac ;;
+              undo) return 0 ;;
+            esac; }
+    eval "$fns"
+    half_cut_row "$2"
+    printf '%s\n' "${CHECKS[@]}" ) 2>/dev/null
+}
+expect "half cut: Resume refused, the guest says half: no FAIL" 0 "$(hcrun half qemu | grep -c '^FAIL')"
+expect "half cut: the guest's half is a check" 1 "$(hcrun half qemu | grep -c '^ok the guest at Resume: its switch was cut half way')"
+expect "half cut, power loss: every process gone is a check, no FAIL" "1 0" "$(hcrun half power | grep -c '^ok power gone') $(hcrun half power | grep -c '^FAIL')"
+expect "cut-before at the first try, half at the second: Undo exact between, no FAIL" "1 0" \
+  "$(hcrun before-half qemu | grep -c '^ok try 1 (cut at cut-before): Undo after the move') $(hcrun before-half qemu | grep -c '^FAIL')"
+expect "cut-before at every try: only the kit-timing check fails (three tries)" "FAIL kit timing: a cut landed in a half switch in 3 moves" "$(hcrun before qemu | grep '^FAIL')"
+expect "cut-done at every try: only the kit-timing check fails" 1 "$(hcrun done power | grep -c '^FAIL kit timing:')"
+expect "Resume refused while the guest says cut-before: a FAIL of the product, not timing" "FAIL the guest at Resume: its switch was cut half way (Undo only)" "$(hcrun lie qemu | grep '^FAIL')"
+# A row whose only failures are kit timing is a RETRY: not passed, not failed.
+D=$T/retry; full "$D"
+printf 'Undo\t1\t\nkit timing: a cut landed in a half switch in 3 moves\t0\tevery cut landed outside half\n' |
+  MOVE45_KIT_START=$KIT0 MOVE45_MAC=mini MOVE45_COMMIT=$C python3 -I "$PY" row "$D/rows/kill-commit-M-mv-a300-mini-300.json" kill-commit M-mv-a300 5 >/dev/null
+python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["ended"]=300; json.dump(o, open(p,"w"))' "$D/rows/kill-commit-M-mv-a300-mini-300.json"
+expect "a row with only kit-timing failures: retry, not passed" "True False" "$(python3 -I -c 'import json,sys; o=json.load(open(sys.argv[1])); print(o.get("retry"), o["pass"])' "$D/rows/kill-commit-M-mv-a300-mini-300.json")"
+expect "a retry row: summary fails, lists it as retry, not as failed" "1 [\"kill-commit/M-mv-a300/mini\"] []" "$(sumrc "$D") $(key "$D" retry) $(key "$D" failed)"
+printf 'Undo\t0\t\nkit timing: a cut landed in a half switch in 3 moves\t0\t\n' |
+  MOVE45_KIT_START=$KIT0 MOVE45_MAC=mini MOVE45_COMMIT=$C python3 -I "$PY" row "$T/r2.json" kill-commit M-mv-a300 5 >/dev/null
+expect "kit timing and a real FAIL: a FAIL, not a retry" "None False" "$(python3 -I -c 'import json,sys; o=json.load(open(sys.argv[1])); print(o.get("retry"), o["pass"])' "$T/r2.json")"
+
+# ---- power-backup / power-loss: the whole tree of the move stops at once (power_off_all) ----
+# rc 02e3a4e4: the kit listed move-vm.sh's tree, then killed it; move-vm.sh went on meanwhile and started QEMU,
+# which outlived the "power cut". Now move-vm.sh and its subshell are stopped first, the tree again until no new
+# pid shows, then all -9. A stand-in move-vm.sh forks a child every 20 ms and starts a stand-in QEMU (named by its
+# disk like the real one) at its 10th: after the cut nothing of it may run, also 2 s later.
+S=$T/pw; mkdir -p "$S/vm"
+printf '#!/bin/bash\nwhile :; do sleep 1; done\n' > "$S/child.sh"; cp "$S/child.sh" "$S/qemu.sh"
+printf '#!/bin/bash\nn=0\nwhile :; do\n  "%s/child.sh" &\n  n=$((n + 1)); [[ $n == 10 ]] && { "%s/qemu.sh" -drive "file=%s/vm/disk.img,if=none" & }\n  sleep 0.02\ndone\n' "$S" "$S" "$S" > "$S/move-vm.sh"
+chmod +x "$S"/*.sh
+pwrun() {   # SECONDS_BEFORE_THE_CUT -> pids of the stand-ins still running 2 s after the cut
+  local fns; fns=$(awk '/^(descendants|power_off_all|mv_script_pid|qemu_pid)\(\) \{/,/^}$/' "$R/src/tests/e2e/move-45.sh")
+  ( VD=$S/vm MV_PID="" POWER_PIDS=""
+    eval "$fns"
+    mvm() { "$S/move-vm.sh" "$VD" run > /dev/null 2>&1; }
+    mvm "$@" & MV_PID=$!
+    local sp="" i; for ((i = 0; i < 100; i++)); do sp=$(mv_script_pid); [[ -n $sp ]] && break; sleep 0.02; done
+    sleep "$1"
+    power_off_all $sp
+    sleep 2
+    LC_ALL=C pgrep -f "$S/" | tr '\n' ' ' ) 2>/dev/null
+}
+expect "power cut before the stand-in QEMU starts: nothing of the move runs after it" "" "$(pwrun 0.05 | tr -d ' ')"
+expect "power cut after the stand-in QEMU started: nothing of the move runs after it" "" "$(pwrun 0.5 | tr -d ' ')"
+for p in $(LC_ALL=C pgrep -f "$S/"); do kill -9 "$p" 2>/dev/null; done
+
+# ---- D15: rows of an earlier kit this one carries (KIT_CARRY), not the rows whose checks changed since ----
+CK=$(sed -n 's/^    "\([0-9a-f]\{16\}\)": (.*/\1/p' "$PY" | head -1)
+CROWS=$(sed -n "s/^    \"$CK\": (\(.*\)),\$/\1/p" "$PY" | tr -d '", ')
+expect "the kit carries rc 02e3a4e4's kit (6956a2f5) except kill-commit, power-loss, power-backup" "6956a2f5685b2e78 kill-commitpower-losspower-backup" "$CK $CROWS"
+D=$T/carry; full "$D"
+for f in "$D"/rows/*.json; do case $(basename "$f") in kill-commit-*|power-loss-*|power-backup-*) ;; *) setkit "$f" "$CK" ;; esac; done
+expect "rows of the carried kit + the changed rows with this kit: summary passes, gate passes" "0 0" "$(sumrc "$D") $(gate "$D" "$M")"
+expect "the result names the carried kit and its rows" 1 "$(key "$D" carried | grep -c "\"$CK\": \[\"again\"")"
+setkit "$D/rows/power-backup-M-mv-a300-mini-100.json" "$CK"
+expect "a changed row (power-backup) only with the carried kit: it does not count, summary fails" "1 [\"power-backup\"]" "$(sumrc "$D") $(key "$D" missing_rows)"
+mkrow "$D" power-backup "M-mv-a300" 1 mini "" 50
+expect "the changed row run again with this kit (older than the carried run): counts, summary passes" 0 "$(sumrc "$D")"
+D=$T/carryall; full "$D"; for f in "$D"/rows/*.json; do setkit "$f" "$CK"; done
+expect "every row with the carried kit only (the old matrix): summary passes for that kit, gate refuses" "0 1" "$(sumrc "$D") $(gate "$D" "$M")"
+D=$T/carrylie; full "$D"; sumrc "$D" >/dev/null
+python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["carried"]={"0123456789abcdef": ["undo"]}; o["kits"]=sorted(o["kits"]+["0123456789abcdef"]); json.dump(o, open(p,"w"))' "$D/result.json"
+expect "a result with rows of a kit M's kit does not carry: gate refuses" 1 "$(gate "$D" "$M")"
+python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["carried"]={sys.argv[2]: ["kill-commit", "undo"]}; o["kits"]=sorted(set(o["kits"]) - {"0123456789abcdef"} | {sys.argv[2]}); json.dump(o, open(p,"w"))' "$D/result.json" "$CK"
+expect "a result counting a changed row (kill-commit) with the carried kit: gate refuses" 1 "$(gate "$D" "$M")"
+
 exit $fail
