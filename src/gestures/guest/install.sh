@@ -35,7 +35,7 @@ else
 fi
 if (( ${#missing[@]} )); then
   {
-    home_grep "$I" -q '^-- OmacVM trackpad:' || printf '\n%s\n%s\n' \
+    home_grep "$I" -q "^-- OmacVM trackpad: the Mac's multi-finger" || printf '\n%s\n%s\n' \
       "-- OmacVM trackpad: the Mac's multi-finger gestures arrive on a virtual" \
       "-- touchpad while the VM is full screen. Swipe between workspaces like Spaces."
     for n in "${missing[@]}"; do
@@ -47,9 +47,12 @@ fi
 # through the VM app's pointer, as macOS's own settings make it. Omarchy 4.5
 # leaves tap-to-click at Hyprland's default (on; omarchy-mac's 4.0 had it off),
 # so the two still fingers at the start of a pinch, lifted when macOS calls it a
-# pinch, were a two-finger tap there: a right click. Unless you set it yourself.
-if ! grep -Eq 'magic-trackpad-\(omacvm\).*tap_to_click' < <(home_run cat -- "$H"/.config/hypr/*.lua 2>/dev/null); then
-  printf '%s\n' '-- OmacVM trackpad: no tap-to-click on the virtual trackpad (the Mac'"'"'s taps and clicks still count).' \
+# pinch, were a two-finger tap there: a right click. Unless you set it yourself
+# (a line that is not a comment; an hl.device table for it over several lines is
+# not seen: OmacVM's line is added too, and the one that loads later wins).
+if ! grep -Eq '^[[:space:]]*hl\.device\(.*magic-trackpad-\(omacvm\).*tap_to_click' \
+    < <(home_run cat -- "$H"/.config/hypr/*.lua 2>/dev/null); then
+  printf '%s\n' '-- OmacVM taps: no tap-to-click on the virtual trackpad (the Mac'"'"'s taps and clicks still count).' \
     'hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", tap_to_click = false })' | home_append "$I"
 fi
 # Omarchy turns the workspace animation off, so a swipe jumped to the next

@@ -68,7 +68,22 @@ printf '%s\n' 'hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", accel_pr
   '            scroll_factor = 0.656 })' > "$T/home/u/.config/hypr/omacvm_glide.lua"
 run
 check '[[ $(notap) == 1 ]]' "scroll momentum's settings for the trackpad (no tap there): added"
-if command -v luac > /dev/null 2>&1; then
-  check 'luac -p "$I"' "input.lua parses as Lua"
+: > "$I"
+printf '%s\n' '-- hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", tap_to_click = false })' > "$T/home/u/.config/hypr/mine.lua"
+run
+check '[[ $(notap) == 1 ]]' "a commented-out tap line (not a setting): added"
+rm -f "$T/home/u/.config/hypr/mine.lua"
+# The tap line first, a swipe added later: the gesture block still gets its header.
+printf '%s\n' 'hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })' \
+  'hl.gesture({ fingers = 4, direction = "horizontal", action = "workspace" })' > "$I"
+run
+grep -v 'fingers = 3' "$I" > "$T/i" && cat "$T/i" > "$I"
+run
+check 'grep -q "^-- OmacVM trackpad: the Mac" "$I" && [[ $(lines 3) == 1 && $(notap) == 1 ]]' "a swipe added after the tap line: with its header"
+# LUAC: a Lua 5.5 luac (CI's guest job builds one); else luac on PATH, if any.
+LUAC=${LUAC:-$(command -v luac || true)}
+if [[ -n $LUAC ]]; then
+  check '"$LUAC" -p "$I"' "input.lua parses as Lua ($("$LUAC" -v 2>&1 | head -1))"
+else echo "skip input.lua parses as Lua (no luac; LUAC=path)"
 fi
 exit $fail
