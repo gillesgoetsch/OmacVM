@@ -167,6 +167,223 @@ int main() {
                "no window, or a broken answer: nothing");
     }
 
+    // ---------- the caret in a layer surface (#357) ----------
+    // Omarchy 4.5's menu (Super+Space) is a layer surface of quickshell; Qt
+    // gives its caret relative to that layer. Numbers from the 4.5 row on the
+    // mini (work/open-1107/i357): foot at [12,38] 1296x690, the menu
+    // full-screen at level 3, its caret at about (578,106) in the menu.
+    // Without the layer rule (3.4.0 and older) the module sent [590,144] over
+    // foot and nothing with no window open.
+    {
+        // pid 700 quickshell (started through its "qs" link), 800 foot,
+        // 900 a long name.
+        NameOf names = [](long pid) {
+            if (pid == 700) return ProcName{"qs", "quickshell"};
+            if (pid == 800) return ProcName{"foot", "foot"};
+            if (pid == 900) return ProcName{"telegram-deskto", "telegram-desktop"};
+            if (pid == 901) return ProcName{"soffice.bin", "soffice.bin"};
+            return ProcName{};
+        };
+        auto layer = [](double x, double y, double w, double h, long pid, int level, size_t order,
+                        double alpha = 1) {
+            HyprLayer l;
+            l.box = Rect{x, y, w, h};
+            l.pid = pid;
+            l.level = level;
+            l.order = order;
+            l.alpha = alpha;
+            return l;
+        };
+        // Omarchy 4.5's shell layers, in Hyprland's order (the row's list).
+        std::vector<HyprLayer> shell = {
+            layer(0, 0, 1320, 740, 700, 0, 0),     // background
+            layer(0, 0, 1320, 740, 700, 2, 0),     // bar
+            layer(0, 533, 1320, 207, 700, 2, 1),   // dock
+            layer(921, 0, 399, 740, 700, 3, 0),    // notifications
+            layer(0, 0, 1320, 740, 700, 3, 1),     // the menu
+        };
+        HyprWindow foot{Rect{12, 38, 1296, 690}, 800};
+        Rect menuCaret{578, 106, 1, 22};
+
+        Caret c = caretOn(menuCaret, 1.0, true, "quickshell", foot, shell, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 578 && c.rect->y == 106 && c.rect->w == 1 && c.rect->h == 22,
+               "the menu over foot: the menu's caret (was [590,144], foot's origin added)");
+        c = caretOn(menuCaret, 1.0, true, "quickshell", std::nullopt, shell, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 578 && c.rect->y == 106,
+               "the menu with no window: its caret (was no rect)");
+        c = caretOn(Rect{1156, 212, 2, 44}, 2.0, true, "quickshell", foot, shell, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 578 && c.rect->y == 106 && c.rect->w == 1 && c.rect->h == 22,
+               "the menu at scale 2: the caret in the layer's logical pixels");
+
+        // The notifications layer (same process, same level) after the menu in
+        // the list, the caret outside its box: still the menu.
+        std::vector<HyprLayer> notesLast = {shell[0], shell[1], shell[2], layer(0, 0, 1320, 740, 700, 3, 0),
+                                            layer(921, 0, 399, 740, 700, 3, 1)};
+        c = caretOn(menuCaret, 1.0, true, "quickshell", foot, notesLast, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 578 && c.rect->y == 106,
+               "notifications after the menu, caret outside them: the menu");
+        // Inside a level the last one is on top.
+        std::vector<HyprLayer> two = {layer(0, 0, 1320, 740, 700, 3, 0), layer(100, 50, 800, 600, 700, 3, 1)};
+        c = caretOn(Rect{10, 10, 1, 20}, 1.0, true, "quickshell", foot, two, names);
+        EXPECT(c.rect && c.rect->x == 110 && c.rect->y == 60, "inside a level: the last one (on top)");
+        // A higher level wins over the order; one fading out never counts.
+        std::vector<HyprLayer> lv = {layer(0, 0, 1320, 740, 700, 3, 0), layer(200, 0, 1000, 740, 700, 2, 5),
+                                     layer(300, 300, 900, 400, 700, 3, 1, 0)};
+        c = caretOn(Rect{10, 10, 1, 20}, 1.0, true, "quickshell", foot, lv, names);
+        EXPECT(c.rect && c.rect->x == 10 && c.rect->y == 10, "a higher level wins; a layer fading out never");
+        // A second monitor to the right.
+        std::vector<HyprLayer> right = {layer(1320, 0, 1920, 1080, 700, 3, 0)};
+        c = caretOn(menuCaret, 1.0, true, "quickshell", std::nullopt, right, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 1898 && c.rect->y == 106, "a menu on a second monitor");
+
+        // Today's result, unchanged:
+        Caret before = caretFor(Rect{40, 60, 4, 36}, 2.0, true, foot.box);
+        c = caretOn(Rect{40, 60, 4, 36}, 2.0, true, "foot", foot, shell, names);
+        EXPECT(c.rect && before.rect && c.exact == before.exact && c.rect->x == before.rect->x &&
+                   c.rect->y == before.rect->y && c.rect->x == 32 && c.rect->y == 68,
+               "the window's own program: window origin + caret, as before");
+        // A program whose name is not its window's process (LibreOffice's
+        // soffice.bin under another name, a wrapper): no layer of that name,
+        // so today's exact window-relative caret, never the window's box.
+        HyprWindow office{Rect{12, 38, 1296, 690}, 901};
+        c = caretOn(Rect{40, 60, 4, 36}, 1.0, true, "soffice", office, shell, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 52 && c.rect->y == 98,
+               "a name that matches nothing: today's window-relative caret, exact");
+        c = caretOn(Rect{40, 60, 4, 36}, 1.0, true, "", office, shell, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 52, "no program name: today's result");
+        c = caretOn(menuCaret, 1.0, true, "quickshell", foot, std::nullopt, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 590 && c.rect->y == 144,
+               "layers not read (Hyprland did not answer): today's result");
+        c = caretOn(menuCaret, 1.0, true, "walker", std::nullopt, shell, names);
+        EXPECT(!c.rect, "no window and no layer of that program: no rect, as before");
+        c = caretOn(Rect{0, 0, 0, 0}, 1.0, true, "quickshell", foot, shell, names);
+        EXPECT(c.rect && !c.exact && c.rect->x == 12, "no caret: the window's box, as before");
+        c = caretOn(menuCaret, 1.0, false, "quickshell", foot, shell, names);
+        EXPECT(c.rect && !c.exact && c.rect->x == 12, "an absolute caret: the window's box, as before");
+        c = caretOn(Rect{1400, 106, 1, 22}, 1.0, true, "quickshell", foot, shell, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 1412, "a caret outside every layer of the program: today's result");
+
+        EXPECT(layerCandidate(menuCaret, true, "quickshell", foot, names) &&
+                   layerCandidate(menuCaret, true, "quickshell", std::nullopt, names) &&
+                   !layerCandidate(menuCaret, true, "foot", foot, names) &&
+                   !layerCandidate(menuCaret, false, "quickshell", foot, names) &&
+                   !layerCandidate(Rect{0, 0, 0, 0}, true, "quickshell", foot, names) &&
+                   !layerCandidate(menuCaret, true, "", foot, names),
+               "j/layers is asked only for a relative caret of a program that is not the window's");
+
+        // Names: Qt's program name against comm (15 bytes, the started path)
+        // and the file name of the resolved executable.
+        EXPECT(sameProgram("quickshell", ProcName{"qs", "quickshell"}), "names: quickshell started as qs (exe)");
+        EXPECT(sameProgram("telegram-desktop", ProcName{"telegram-deskto", ""}),
+               "names: a long name against comm's 15 bytes");
+        EXPECT(sameProgram("telegram-desktop", ProcName{"telegram-deskto", "telegram-desktop"}) &&
+                   sameProgram("/usr/bin/foot", ProcName{"foot", ""}),
+               "names: exe, and a program given as a path");
+        EXPECT(!sameProgram("quickshell", ProcName{"qs", ""}) && !sameProgram("qs", ProcName{"quickshel", "x"}) &&
+                   !sameProgram("", ProcName{"", ""}) && !sameProgram("foot", ProcName{"", ""}) &&
+                   !sameProgram("/", ProcName{"", ""}),
+               "names: no match without a name in common");
+        EXPECT(exeName("/usr/bin/quickshell") == "quickshell" &&
+                   exeName("/usr/bin/quickshell (deleted)") == "quickshell" && exeName("foot") == "foot" &&
+                   exeName("") == "",
+               "exe names: file name, a binary replaced by an update");
+    }
+
+    // ---------- Hyprland's j/layers and j/activewindow ----------
+    {
+        // Hyprland 0.56.2's j/layers layout (HyprCtl.cpp layersRequest), the
+        // levels written out of order on purpose: the level is the key.
+        const char *layers = R"({
+"Virtual-1": {
+    "levels": {
+        "3": [
+                {
+                    "address": "0xaaaa",
+                    "x": 921,
+                    "y": 0,
+                    "w": 399,
+                    "h": 740,
+                    "alpha": 1,
+                    "namespace": "omarchy-notifications",
+                    "pid": 700
+                },                {
+                    "address": "0xbbbb",
+                    "x": 0,
+                    "y": 0,
+                    "w": 1320,
+                    "h": 740,
+                    "alpha": 0.5,
+                    "namespace": "omarchy-menu",
+                    "pid": 700
+                }
+        ],
+        "0": [
+                {
+                    "address": "0xcccc",
+                    "x": 0,
+                    "y": 0,
+                    "w": 1320,
+                    "h": 740,
+                    "alpha": 1,
+                    "namespace": "omarchy-background",
+                    "pid": 700
+                }
+        ],
+        "1": [],
+        "2": []
+    }
+},
+"Virtual-2": {
+    "levels": {
+        "0": [],
+        "1": [],
+        "2": [
+                {
+                    "address": "0xdddd",
+                    "x": 1320,
+                    "y": 0,
+                    "w": 0,
+                    "h": 30,
+                    "alpha": 1,
+                    "namespace": "empty",
+                    "pid": 700
+                }
+        ],
+        "3": []
+    }
+}
+}
+)";
+        auto ls = parseHyprLayers(layers);
+        EXPECT(ls && ls->size() == 3 && (*ls)[0].level == 3 && (*ls)[0].order == 0 && (*ls)[1].level == 3 &&
+                   (*ls)[1].order == 1 && (*ls)[1].alpha == 0.5 && (*ls)[1].box.w == 1320 && (*ls)[2].level == 0 &&
+                   (*ls)[0].pid == 700 && (*ls)[0].box.x == 921,
+               "j/layers: levels by key, order inside a level, sizeless layers left out");
+        EXPECT(parseHyprLayers("{}") && parseHyprLayers("{}")->empty(), "j/layers: no monitors");
+        EXPECT(!parseHyprLayers("{\"M\":{\"levels\":{\"4\":[]}}}") &&
+                   !parseHyprLayers("{\"M\":{\"levels\":{\"10\":[]}}}") &&
+                   !parseHyprLayers("{\"M\":{\"levels\":[]}}") && !parseHyprLayers("{\"M\":{}}") &&
+                   !parseHyprLayers("{\"M\":{\"levels\":{\"0\":[{\"x\":\"0\",\"y\":0,\"w\":1,\"h\":1,\"pid\":1}]}}}") &&
+                   !parseHyprLayers("{\"M\":{\"levels\":{\"0\":[{\"x\":1e9,\"y\":0,\"w\":1,\"h\":1,\"pid\":1}]}}}") &&
+                   !parseHyprLayers("{\"M\":{\"levels\":{\"0\":[{\"y\":0,\"w\":1,\"h\":1,\"pid\":1}]}}}") &&
+                   !parseHyprLayers("[]") && !parseHyprLayers("not json"),
+               "j/layers: unknown levels, wrong types, huge or missing values: nothing");
+        auto nopid = parseHyprLayers("{\"M\":{\"levels\":{\"0\":[{\"x\":0,\"y\":0,\"w\":1,\"h\":1,\"pid\":-1},"
+                                     "{\"x\":0,\"y\":0,\"w\":1,\"h\":1,\"pid\":1.5},{\"x\":0,\"y\":0,\"w\":1,\"h\":1}]}}}");
+        EXPECT(nopid && nopid->empty(), "j/layers: layers without a usable pid are left out");
+        std::string many = "{\"M\":{\"levels\":{\"0\":[";
+        for (size_t i = 0; i <= kMaxLayers; i++) {
+            many += std::string(i ? "," : "") + "{\"x\":0,\"y\":0,\"w\":1,\"h\":1,\"pid\":1}";
+        }
+        many += "]}}}";
+        EXPECT(!parseHyprLayers(many), "j/layers: more than 512 layers: nothing");
+        EXPECT(!parseHyprLayers(std::string(256 * 1024 + 1, ' ')), "j/layers: an answer over 256 KiB: nothing");
+        auto w = parseHyprActive("{\"address\":\"0x1\",\"at\":[12, 38],\"size\":[1296,690],\"pid\":812}");
+        EXPECT(w && w->box.x == 12 && w->pid == 812, "j/activewindow: the pid");
+        w = parseHyprActive("{\"at\":[12, 38],\"size\":[1296,690],\"pid\":\"812\"}");
+        EXPECT(w && w->pid == -1, "j/activewindow: a pid that is no number: -1, the box still read");
+    }
+
     // ---------- fuzz: random and mutated input never crashes ----------
     {
         std::mt19937 rng(273);

@@ -94,34 +94,76 @@ std::string hyprSocket() {
     return best;
 }
 
-// The focused window's box in Hyprland's global logical pixels
-// (j/activewindow), or nothing. At most ~150 ms; Hyprland answers in ~1 ms.
-std::optional<Rect> activeWindow() {
+// One request on Hyprland's socket (j/activewindow, j/layers), its answer or
+// "" once `deadline` (CLOCK_MONOTONIC, µs) has passed: Hyprland answers in
+// ~1 ms, and a caret never holds Fcitx5's loop for more than that budget.
+std::string hyprRequest(const char *request, uint64_t deadline) {
+    auto left = [deadline]() -> uint64_t {
+        uint64_t now = fcitx::now(CLOCK_MONOTONIC);
+        return now + 1000 < deadline ? deadline - now : 0;
+    };
+    auto limit = [](int fd, uint64_t usec) {
+        struct timeval tv = {time_t(usec / 1000000), suseconds_t(usec % 1000000)};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    };
     std::string path = hyprSocket();
     struct sockaddr_un addr = {};
-    if (path.empty() || path.size() >= sizeof(addr.sun_path)) {
-        return std::nullopt;
+    uint64_t usec = left();
+    if (path.empty() || path.size() >= sizeof(addr.sun_path) || !usec) {
+        return {};
     }
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
-        return std::nullopt;
+        return {};
     }
-    struct timeval tv = {0, 150000};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    limit(fd, usec);
     addr.sun_family = AF_UNIX;
     std::memcpy(addr.sun_path, path.c_str(), path.size());
     std::string reply;
+    size_t len = std::strlen(request);
     if (connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0 &&
-        write(fd, "j/activewindow", 14) == 14) {
+        write(fd, request, len) == ssize_t(len)) {
         char buf[4096];
         ssize_t n;
-        while ((n = read(fd, buf, sizeof buf)) > 0 && reply.size() < 256 * 1024) {
+        while (reply.size() < 256 * 1024 && (usec = left())) {
+            limit(fd, usec);
+            if ((n = read(fd, buf, sizeof buf)) <= 0) {
+                break;
+            }
             reply.append(buf, size_t(n));
         }
     }
     close(fd);
-    return parseHyprWindow(reply);
+    return reply;
+}
+
+// /proc/PID/comm and the file name of /proc/PID/exe (the same user's
+// processes: Fcitx5 runs in the desktop session).
+ProcName procName(long pid) {
+    ProcName p;
+    if (pid <= 0) {
+        return p;
+    }
+    std::string dir = "/proc/" + std::to_string(pid);
+    int fd = ::open((dir + "/comm").c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        char buf[64];
+        ssize_t n = read(fd, buf, sizeof buf);
+        close(fd);
+        if (n > 0) {
+            p.comm.assign(buf, size_t(n));
+            while (!p.comm.empty() && p.comm.back() == '\n') {
+                p.comm.pop_back();
+            }
+        }
+    }
+    char link[4096];
+    ssize_t n = readlink((dir + "/exe").c_str(), link, sizeof link);
+    if (n > 0 && size_t(n) < sizeof link) {
+        p.exe = exeName(std::string_view(link, size_t(n)));
+    }
+    return p;
 }
 
 class OmacVMIme : public fcitx::AddonInstance {
@@ -270,7 +312,26 @@ private:
         const fcitx::Rect &r = ic->cursorRect();
         Rect cursor{double(r.left()), double(r.top()), double(r.width()), double(r.height())};
         bool relative = ic->capabilityFlags().test(fcitx::CapabilityFlag::RelativeRect);
-        return caretFor(cursor, ic->scaleFactor(), relative, activeWindow());
+        const std::string &program = ic->program();
+        // Both requests share one budget: Fcitx5's loop waits for them.
+        uint64_t deadline = fcitx::now(CLOCK_MONOTONIC) + 150000;
+        auto window = parseHyprActive(hyprRequest("j/activewindow", deadline));
+        std::vector<std::pair<long, ProcName>> known;   // each pid read once
+        NameOf names = [&known](long pid) {
+            for (const auto &k : known) {
+                if (k.first == pid) {
+                    return k.second;
+                }
+            }
+            known.emplace_back(pid, procName(pid));
+            return known.back().second;
+        };
+        std::optional<std::vector<HyprLayer>> layers;
+        if (layerCandidate(cursor, relative, program, window, names)) {
+            // A layer surface (Omarchy 4.5's menu) may hold the caret (#357).
+            layers = parseHyprLayers(hyprRequest("j/layers", deadline));
+        }
+        return caretOn(cursor, ic->scaleFactor(), relative, program, window, layers, names);
     }
 
     void sendFocus() {
