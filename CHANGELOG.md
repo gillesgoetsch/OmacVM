@@ -3,6 +3,13 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.1 (unreleased)
+
+- Omarchy 4.5: a pinch zoom (in Chrome and elsewhere) no longer starts with a right click. Omarchy
+  4.5 leaves tap-to-click on, and OmacVM's virtual trackpad took the two fingers at the start of a
+  pinch as a two-finger tap. Tap-to-click is now off for that trackpad only; taps and clicks on
+  the Mac's trackpad work as before.
+
 ## 3.4.0
 
 - **New VMs get Omarchy 4.5** from Omarchy's own aarch64 repos, always the latest stable release
