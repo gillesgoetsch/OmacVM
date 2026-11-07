@@ -19,6 +19,13 @@ in more words.
   again, so it comes back at its full size without waiting for a redraw (checked on those hidden
   VMs). Omarchy's own bar toggle and the bars in the notch strip work as before. Update VM brings it
   (bar patch v39).
+- **Full screen including notch after a start with the lid closed** (#716, reported by @hadiskeini): a
+  VM started with the MacBook's lid closed (an external display only) now covers the strip beside the
+  notch once the lid is opened and the external display unplugged, without a restart (it stayed black
+  until the VM was started again). OmacVM.app remembers this Mac's notch (measured whenever it sees the
+  built-in display; never another Mac's) and uses it while the built-in display is off; QEMU takes the
+  strip once the full screen is on the MacBook's display. `omacvm check` no longer warns while such a
+  full screen is on an external display.
 
 ## 3.4.0
 

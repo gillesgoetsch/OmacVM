@@ -129,7 +129,7 @@ final class Runner {
         // FullPanel (NotchArea): the camera housing for the guest's bar, which
         // then sits in the strip beside the notch (omacvm-app-host -> host.env;
         // the bar and notchcast read it). Native starts send nothing.
-        if notchStart.fullPanel, let g = notchGeometry {
+        if notchStart.fullPanel, let g = notchStart.geometry {
             a += ["-smbios", "type=11,value=\(g.smbios)"]
         }
         // Skip the notch (NotchSkip): the bar beside the notch, either full screen.
@@ -448,14 +448,17 @@ final class Runner {
         // What of the Mac this start may use (its features), read once.
         links = MacLinks.load(folder: c.folder)
         // The strip beside the notch (NotchArea, #339): FullPanel only with the
-        // VM's setting, a full-screen start and a notch now. Then QEMU covers
-        // the strip and the guest's bar sits in it: no Omanotch link for this
-        // start (the VM's features keep it; the next native start has it again).
+        // VM's setting, a full-screen start and a notch: now, or with the
+        // built-in display off (the lid closed) as last measured on this Mac
+        // (#716; QEMU then takes the strip once its full screen is on the
+        // MacBook's display). Then QEMU covers the strip and the guest's bar
+        // sits in it: no Omanotch link for this start (the VM's features keep
+        // it; the next native start has it again).
         // A test build on a Mac without a notch may be given one (OMACVM_TEST_NOTCH_GEOMETRY).
-        notchGeometry = NotchArea.geometry(test: TestHooks.value("OMACVM_TEST_NOTCH_GEOMETRY",
-                                                                 bundleID: Bundle.main.bundleIdentifier)) ?? Mac.notchGeometry
+        let macNotch = NotchArea.geometry(text: TestHooks.value("OMACVM_TEST_NOTCH_GEOMETRY",
+                                                                bundleID: Bundle.main.bundleIdentifier)).map { MacNotch.now($0) } ?? Mac.notch
         notchStart = NotchArea.start(mode: NotchArea.read(folder: c.folder),
-                                     fullScreen: Settings.startFullScreen, notch: notchGeometry,
+                                     fullScreen: Settings.startFullScreen, notch: macNotch,
                                      guestReady: NotchArea.guestReady(folder: c.folder, features: try? String(
                                         contentsOf: c.folder.appendingPathComponent("features"), encoding: .utf8)))
         if notchStart.fullPanel { links.omanotch = false }
@@ -495,6 +498,11 @@ final class Runner {
         env["OMACVM_PRODUCT_NAME"] = Product.name
         // QEMU's FullPanel (omacvm-cocoa-fullpanel.patch): only for this start.
         if notchStart.fullPanel { env["OMACVM_FULLPANEL"] = "1" } else { env.removeValue(forKey: "OMACVM_FULLPANEL") }
+        // The panel its notch was measured on: a full screen entered on another
+        // display takes the strip later only on one of this size (#716).
+        if notchStart.fullPanel, let g = notchStart.geometry { env["OMACVM_FULLPANEL_PANEL"] = g.panel } else {
+            env.removeValue(forKey: "OMACVM_FULLPANEL_PANEL")
+        }
         // The scale the guest asked for, kept for FullPanel's next start (#355, omacvm-cocoa-fullpanel-scale.patch).
         env["OMACVM_FULLPANEL_SCALE_FILE"] = c.folder.appendingPathComponent("fullpanel-scale").path
         // Named under the boot logo when the VM is slow to show anything.
@@ -873,7 +881,6 @@ final class Runner {
     private(set) var ghosttyGPU: (on: Bool, why: String) = (false, "switch off")
     /// Extra brightness at this start (Settings.extraBrightnessStart), set in start().
     private(set) var extraBright: (on: Bool, why: String) = (false, "switch off")
-    private(set) var notchGeometry: NotchGeometry?
 
     /// omacvm-netd may still refuse QEMU (another build, the limit), vmnet
     /// may not start, or the daemon may go away later: then QEMU only tries

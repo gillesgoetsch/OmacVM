@@ -134,19 +134,57 @@ expect(NotchGeometry.strip(menuBar: 0, safeTop: 32) == 33.5, "strip: menu bar hi
 expect(air.smbios == "omacvm.fullpanel=640.5x829.5x37.0x1470.0x956.0", "SMBIOS string: digits, dots and x only")
 let allowed = Set("0123456789.x")
 expect(pro16.smbios.split(separator: "=")[1].allSatisfy { allowed.contains($0) }, "SMBIOS value passes omacvm-app-host's filter")
-let fp = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: air, guestReady: true)
-expect(fp.fullPanel && fp.record.hasPrefix("fullpanel (Omanotch off"), "start: FullPanel, full screen, notch: FullPanel")
-expect(NotchArea.start(mode: .native, fullScreen: true, notch: air, guestReady: true) == NotchStart(fullPanel: false, record: "native"),
+let fp = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: .now(air), guestReady: true)
+expect(fp.fullPanel && fp.record.hasPrefix("fullpanel (Omanotch off") && fp.geometry == air,
+       "start: FullPanel, full screen, notch: FullPanel with that notch")
+expect(NotchArea.start(mode: .native, fullScreen: true, notch: .now(air), guestReady: true) == NotchStart(fullPanel: false, record: "native"),
        "start: native: native")
-let windowed = NotchArea.start(mode: .fullpanel, fullScreen: false, notch: air, guestReady: true)
-expect(!windowed.fullPanel && windowed.record.hasPrefix("native (") && windowed.record.contains("in a window"),
+let windowed = NotchArea.start(mode: .fullpanel, fullScreen: false, notch: .now(air), guestReady: true)
+expect(!windowed.fullPanel && windowed.record.hasPrefix("native (") && windowed.record.contains("in a window") && windowed.geometry == nil,
        "start: FullPanel windowed: native, says why")
-let fpNoNotch = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: nil, guestReady: true)
-expect(!fpNoNotch.fullPanel && fpNoNotch.record.contains("no notch"), "start: FullPanel on a Mac without a notch (lid closed): native")
+let fpNoNotch = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: .none, guestReady: true)
+expect(!fpNoNotch.fullPanel && fpNoNotch.record.contains("no notch") && fpNoNotch.geometry == nil,
+       "start: FullPanel without a notch (none now, nothing remembered): native")
 let bad = NotchArea.start(mode: .fullpanel, fullScreen: true,
-                          notch: NotchGeometry(left: 640, right: 830, strip: 4, width: 1470, height: 956), guestReady: true)
+                          notch: .now(NotchGeometry(left: 640, right: 830, strip: 4, width: 1470, height: 956)), guestReady: true)
 expect(!bad.fullPanel, "start: FullPanel with odd numbers: native")
-let notReady = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: air, guestReady: false)
+// #716: the lid closed (the built-in display off), the notch remembered for this Mac: FullPanel with it.
+let lidClosed = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: .remembered(pro16), guestReady: true)
+expect(lidClosed.fullPanel && lidClosed.record.hasPrefix("fullpanel (Omanotch off for this start; the built-in display is off") &&
+       lidClosed.geometry == pro16 && lidClosed.record.contains("notch 765.0-963.0, strip 43.0 of 1728x1117 points"),
+       "start: FullPanel, the lid closed, the notch remembered: FullPanel with it (#716)")
+expect(!NotchArea.start(mode: .fullpanel, fullScreen: true, notch: .remembered(NotchGeometry(left: 640, right: 830, strip: 4, width: 1470, height: 956)),
+                        guestReady: true).fullPanel, "start: a remembered notch with odd numbers: native")
+expect(!NotchArea.start(mode: .native, fullScreen: true, notch: .remembered(pro16), guestReady: true).fullPanel &&
+       !NotchArea.start(mode: .fullpanel, fullScreen: false, notch: .remembered(pro16), guestReady: true).fullPanel &&
+       !NotchArea.start(mode: .fullpanel, fullScreen: true, notch: .remembered(pro16), guestReady: false).fullPanel,
+       "start: remembered, but native, windowed or the VM not ready: native")
+// Which notch a start may use (Mac.notch): the live one; the remembered one only with the built-in display off.
+expect(MacNotch.of(live: air, builtinOff: false, remembered: pro16) == .now(air), "Mac notch: measured now wins")
+expect(MacNotch.of(live: nil, builtinOff: true, remembered: pro16) == .remembered(pro16), "Mac notch: lid closed: remembered")
+expect(MacNotch.of(live: nil, builtinOff: false, remembered: pro16) == .none,
+       "Mac notch: built-in on below the notch or mirrored: none, the remembered notch not used")
+expect(MacNotch.of(live: nil, builtinOff: true, remembered: nil) == .none, "Mac notch: lid closed, nothing remembered: none")
+expect(MacNotch.of(live: NotchGeometry(left: 640, right: 830, strip: 4, width: 1470, height: 956), builtinOff: true, remembered: pro16) == .remembered(pro16),
+       "Mac notch: odd live numbers are none")
+expect(MacNotch.now(air).word == "notch" && MacNotch.remembered(air).word == "remembered" && MacNotch.none.word == "none",
+       "Mac notch: the command line's words")
+expect(air.panel == "1470.0x956.0" && pro16.text == "765.0x963.0x43.0x1728.0x1117.0", "notch: panel and text")
+// The remembered notch: this Mac's only (a hash of its hardware UUID), one a MacBook can have.
+let macA = NotchHousing.macKey(hardwareID: "00000000-0000-0000-0000-000000000716")
+let macB = NotchHousing.macKey(hardwareID: "00000000-0000-0000-0000-000000000717")
+expect(macA.count == 16 && macA.allSatisfy { "0123456789abcdef".contains($0) } && macA != macB && !macA.contains("0716"),
+       "remembered: the Mac's key is 16 hex digits of a hash, not the UUID")
+expect(NotchHousing.remembered(NotchHousing.entry(pro16, mac: macA), mac: macA) == pro16, "remembered: written and read back")
+expect(NotchHousing.remembered(NotchHousing.entry(pro16, mac: macA), mac: macB) == nil, "remembered: another Mac's: none")
+expect(NotchHousing.remembered(nil, mac: macA) == nil && NotchHousing.remembered("", mac: macA) == nil &&
+       NotchHousing.remembered(macA, mac: macA) == nil && NotchHousing.remembered("\(macA) 765x963x43x1728", mac: macA) == nil &&
+       NotchHousing.remembered("\(macA)  765x963x43x1728x1117", mac: macA) == nil &&
+       NotchHousing.remembered("\(macA) 765x963x43x1728x1117 x", mac: macA) == nil &&
+       NotchHousing.remembered("\(macA) 765x963x4x1728x1117", mac: macA) == nil &&
+       NotchHousing.remembered(" 765x963x43x1728x1117", mac: "") == nil,
+       "remembered: malformed, impossible or no key: none")
+let notReady = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: .now(air), guestReady: false)
 expect(!notReady.fullPanel && notReady.record.contains("not ready"), "start: FullPanel, VM not ready (older VM or Omanotch off): native")
 let readyDir = FileManager.default.temporaryDirectory.appendingPathComponent("notch-ready-\(getpid())")
 try? FileManager.default.createDirectory(at: readyDir, withIntermediateDirectories: true)
@@ -156,11 +194,13 @@ expect(NotchArea.guestReady(folder: readyDir, features: "bridge=on omanotch=on")
        "ready: file and Omanotch on (or not named): ready")
 expect(!NotchArea.guestReady(folder: readyDir, features: "bridge=on omanotch=off\n"), "ready: Omanotch off: not ready")
 try? FileManager.default.removeItem(at: readyDir)
-expect(NotchArea.geometry(test: "640.5x829.5x37x1470x956") == NotchGeometry(left: 640.5, right: 829.5, strip: 37, width: 1470, height: 956),
-       "test geometry: parsed")
-expect(NotchArea.geometry(test: nil) == nil && NotchArea.geometry(test: "1") == nil &&
-       NotchArea.geometry(test: "640x830x4x1470x956") == nil && NotchArea.geometry(test: "axbxcxdxe") == nil,
-       "test geometry: malformed or impossible: none")
+expect(NotchArea.geometry(text: "640.5x829.5x37x1470x956") == NotchGeometry(left: 640.5, right: 829.5, strip: 37, width: 1470, height: 956),
+       "geometry text: parsed")
+expect(NotchArea.geometry(text: nil) == nil && NotchArea.geometry(text: "1") == nil &&
+       NotchArea.geometry(text: "640x830x4x1470x956") == nil && NotchArea.geometry(text: "axbxcxdxe") == nil &&
+       NotchArea.geometry(text: "640.5x829.5xx37x1470x956") == nil,
+       "geometry text: malformed or impossible: none")
+expect(NotchArea.geometry(text: air.text) == air, "geometry text: the text reads back")
 // "Start in": one picker onto startFullScreen + the VM's notch-mode.
 expect(StartIn.choices(hasNotch: true) == [.window, .fullScreen, .fullScreenNotch], "Start in: three choices with a notch")
 expect(StartIn.choices(hasNotch: false) == [.window, .fullScreen], "Start in: no notch, no including-notch choice")

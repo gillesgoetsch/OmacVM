@@ -1,0 +1,235 @@
+From: OmacVM
+Subject: [PATCH] cocoa: FullPanel arms a full screen entered without the notch
+
+What: in "Full screen including notch" (FullPanel), the main window's full
+screen on a display without a camera housing is armed late instead of
+being normal full screen for good. It is normal full screen there, as a
+full screen a display change moved there (released, a display change with
+its own 3 tries), and says so once with a line omacvm check does not warn
+about ("in full screen on a display without a camera housing (the
+MacBook's display is off): ..."; beside the open MacBook the old "a window
+on another display ..." line). didEnterFullScreen counts it as entered
+(the retake and the sorting of later frame changes need that). Once
+AppKit has its Space on a display with a housing (the lid opened, the
+external display unplugged), the existing paths take the strip: the claim
+(AppKit lays it out under the reservation answer: "strip covered"), else
+the retake once the displays settle ("strip taken again", then "strip
+covered"). On the way back to a display with a housing (any full screen)
+a "display change: ..." line comes first, which omacvm check warns about
+until "strip covered". A full screen armed late takes the strip only on a
+display of the size this start's notch was measured on
+(OMACVM_FULLPANEL_PANEL from OmacVM.app): on another size it stays normal
+full screen with a line ("... start the VM again for the strip"), as the
+guest's bar was given that notch for the whole boot. The other displays'
+windows (made again per display) stay as before; so does an entry where
+another part is missing (the menu bar always shown, no reservation, no
+SkyLight), whose line now names that part.
+
+Why: #716 (reported by @hadiskeini). A VM started in "Full screen including
+notch" with the lid closed (an external display only) kept a black strip
+beside the notch after the lid was opened and the external display
+unplugged, until the VM was started again (the guest 3456x2160 instead of
+3456x2234 on a 16-inch MacBook Pro). OmacVM.app now gives such a start
+FullPanel with the notch it measured last on this Mac; but QEMU armed a
+full screen only when it was entered on a display with a housing
+(-willEnterFullScreen returned before armed), and the claim, the resume
+after a display without a housing and the retake all need an armed full
+screen, so its Space never took the strip on the MacBook's display.
+
+Fallbacks: anything this needs that is missing gives today's behaviour:
+normal full screen below the notch, with the retake's lines ("strip not
+back ..."); leaving and entering full screen on the MacBook's display
+still covers the strip. A Split View tile is never taken.
+
+Upstream: not applicable (private AppKit, OmacVM's notch strip).
+Test: app/runtime/Tests/display/test-fullpanel-late-arm.sh (the rules,
+and the wiring in the patched ui/cocoa.m at build time; --self-test: the
+wiring checks fail on the code before), test-fullpanel-retake.c (a late
+entry replayed: arrival at full height, AppKit keeping the band, Split
+View and a later display change after it, quiet on the external display,
+another panel size); the strip itself only on a notched Mac
+(src/tests/e2e/display-unplug.sh, case fullpanel-clamshell). Applies
+after omacvm-cocoa-fullpanel-retake.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -3559,6 +3559,8 @@
+     int retake_reasks;         /* asked again after a wait since the last trigger */
+     bool retake_tried;         /* a try in this full screen: retake_settle is its settle */
+     unsigned retake_settle;    /* omacvm_fullpanel_settles at the last try */
++    /* Armed late (omacvm-cocoa-fullpanel-late-arm.patch). */
++    bool late;                 /* entered on a display without a housing, no strip yet */
+ }
+ - (id)initWithWindow:(NSWindow *)w;
+ - (bool)claimsStrip;
+@@ -3572,6 +3574,7 @@
+ - (bool)retakeTaken;
+ - (void)retakeExpired;
+ - (void)retakeGiveUp:(const char *)reason;
++- (bool)lateFits;
+ @end
+ 
+ /*
+@@ -3585,6 +3588,19 @@
+ /* Settles of the displays so far (the display update ran): one try per settle. */
+ static unsigned omacvm_fullpanel_settles;
+ 
++/*
++ * FullPanel armed late (#716): its rules, included here and not with the
++ * other headers above, so the later patches' context there stays as it is.
++ */
++#include "ui/omacvm-fullpanel-late.h"
++/*
++ * The panel this start's notch was measured on (OMACVM_FULLPANEL_PANEL,
++ * omacvm-cocoa-fullpanel-late-arm.patch): a full screen armed late takes
++ * the strip only on a display of that size.
++ */
++static bool omacvm_fullpanel_panel_given;
++static double omacvm_fullpanel_panel_w, omacvm_fullpanel_panel_h;
++
+ static char omacvm_fullpanel_state_key;
+ static char omacvm_fullpanel_titlebar_context;
+ static char omacvm_fullpanel_options_context;
+@@ -4036,10 +4052,22 @@
+ - (bool)claimsStrip
+ {
+     return window && omacvm_fp_claims(inside, armed, rejected, lost, omacvm_fullpanel_menu_failed,
+-                                      omacvm_fullpanel_notch(window));
++                                      omacvm_fullpanel_notch(window)) && [self lateFits];
+ }
+ 
+ /*
++ * A full screen armed late is on a display of the panel this start's
++ * notch was measured on (omacvm_fp_late_fits); any other full screen fits.
++ */
++- (bool)lateFits
++{
++    NSRect f = [[window screen] frame];
++
++    return omacvm_fp_late_fits(late, omacvm_fullpanel_panel_given, omacvm_fullpanel_panel_w,
++                               omacvm_fullpanel_panel_h, f.size.width, f.size.height);
++}
++
++/*
+  * Before AppKit lays the window out for full screen (every way in posts
+  * it first, before the reservation question): this full screen's parts.
+  */
+@@ -4048,18 +4076,33 @@
+     NSScreen *screen = [window screen];
+     double notch = screen ? [screen safeAreaInsets].top : 0;
+     bool always = [[NSUserDefaults standardUserDefaults] boolForKey:@"AppleMenuBarVisibleInFullscreen"];
+-    OmacVMFPFallback fallback;
++    bool in_the_way = omacvm_fp_menu_bar_in_the_way(always, immersive_mode_enabled);
++    bool main_window = ![window isKindOfClass:objc_getClass("OmacVMHeadWindow")];
++    bool beside = omacvm_fullpanel_beside_builtin(window);
++    OmacVMFPFallback fallback, with_housing;
++    OmacVMFPEntry entry;
+ 
+     [self releaseSystemState];
+     [self endFullScreen];
+     inside = true;
+-    fallback = omacvm_fp_fallback(notch, omacvm_fp_menu_bar_in_the_way(always, immersive_mode_enabled),
+-                                  notch > 0 && omacvm_fullpanel_install_reservation(),
++    fallback = omacvm_fp_fallback(notch, in_the_way, notch > 0 && omacvm_fullpanel_install_reservation(),
+                                   omacvm_fullpanel_skylight() && !omacvm_fullpanel_menu_failed);
+-    if (fallback != OMACVM_FP_OK) {
++    /*
++     * The main window on a display without a camera housing (the lid
++     * closed, or an external display beside the open MacBook): what a
++     * display with one would say, for the late arm (#716).
++     */
++    with_housing = fallback;
++    if (fallback == OMACVM_FP_NO_NOTCH && main_window) {
++        with_housing = omacvm_fp_fallback(1, in_the_way, omacvm_fullpanel_install_reservation(),
++                                          omacvm_fullpanel_skylight() && !omacvm_fullpanel_menu_failed);
++    }
++    entry = omacvm_fp_entry(fallback, with_housing, main_window);
++    if (entry == OMACVM_FP_ENTRY_NORMAL) {
++        fallback = omacvm_fp_entry_why(fallback, with_housing, main_window);
+         if (!fallback_logged) {
+             fallback_logged = true;
+-            if (omacvm_fp_fallback_checked(fallback, omacvm_fullpanel_beside_builtin(window))) {
++            if (omacvm_fp_fallback_checked(fallback, beside)) {
+                 fprintf(stderr, "omacvm: full panel: %s: normal full screen\n",
+                         omacvm_fp_fallback_text(fallback));
+             } else {
+@@ -4070,12 +4113,30 @@
+     }
+     armed = true;
+     reveal = !immersive_mode_enabled;
++    if (entry == OMACVM_FP_ENTRY_LATE) {
++        /*
++         * Armed late: normal full screen on this display, as one a display
++         * change moved here (released, a display change with its own
++         * tries); the resume and the retake take the strip once AppKit has
++         * its Space on a display with a housing. Not a line omacvm check
++         * warns about.
++         */
++        late = released = true;
++        [self retakeNewChange];
++        fallback_logged = true;
++        if (beside) {
++            fprintf(stderr, "omacvm: full panel: a window on another display than the built-in one: macOS's own full screen there\n");
++        } else {
++            fprintf(stderr, "omacvm: full panel: in full screen on a display without a camera housing (the MacBook's display is off): the strip is taken once the window is on the MacBook's display\n");
++        }
++    }
+ }
+ 
+ /* Everything of the last full screen forgotten (the logs may come again). */
+ - (void)endFullScreen
+ {
+     inside = armed = entered = accepted = rejected = lost = released = reveal = false;
++    late = false;
+     own_known = false;
+     covered_logged = reveal_logged = fallback_logged = options_logged = false;
+     displaced = display_changed = lost_tile = retake_pending = retake_asked = retake_given_up = false;
+@@ -4102,6 +4163,8 @@
+     if (verdict == OMACVM_FP_ACCEPTED) {
+         accepted = true;
+         accepted_display = [[window screen] frame];
++        /* A late one has the strip: an ordinary FullPanel full screen from here. */
++        late = false;
+         return;
+     }
+     accepted = false;
+@@ -4118,7 +4181,8 @@
+ - (void)didEnterFullScreen:(NSNotification *)notification
+ {
+     [self verify:true];
+-    if (!armed || !accepted) {
++    /* Armed late counts as entered too: the retake and the frame sorting need it. */
++    if (!omacvm_fp_entered(armed, accepted, late)) {
+         return;
+     }
+     entered = true;
+@@ -4625,10 +4689,20 @@
+         [self releaseSystemState];
+         fprintf(stderr, "omacvm: full panel: the full screen is on a display without a camera housing: normal full screen there\n");
+         [self relayout];
++    } else if (late && !rejected && omacvm_fp_screen_resumes(released, full, omacvm_fullpanel_notch(window)) &&
++               ![self lateFits]) {
++        /* Armed late, on a display of another size than this start's notch was measured on. */
++        rejected = true;
++        released = displaced = false;
++        fprintf(stderr, "omacvm: full panel: the MacBook's display is %.0fx%.0f now, this start's notch was measured at %.0fx%.0f: normal full screen; start the VM again for the strip\n",
++                [screen frame].size.width, [screen frame].size.height,
++                omacvm_fullpanel_panel_w, omacvm_fullpanel_panel_h);
+     } else if (omacvm_fp_screen_resumes(released, full, omacvm_fullpanel_notch(window))) {
+         /* On a display with a housing again: the next displacement is a new display change. */
+         released = displaced = false;
+         covered_logged = false;
++        /* omacvm check warns about this until "strip covered" (also when AppKit gives it at once). */
++        fprintf(stderr, "omacvm: full panel: display change: the full screen is on a display with a camera housing again; the strip comes back once the displays settle\n");
+         [self relayout];
+         [self comeBack];
+     } else if (full) {
+@@ -5109,6 +5183,8 @@
+         return;
+     }
+     fprintf(stderr, "omacvm: full panel: asked for (OMACVM_FULLPANEL=1)\n");
++    omacvm_fullpanel_panel_given = omacvm_fp_panel(getenv("OMACVM_FULLPANEL_PANEL"),
++                                                   &omacvm_fullpanel_panel_w, &omacvm_fullpanel_panel_h);
+     (void)omacvm_fullpanel_install_reservation();
+     (void)omacvm_fullpanel_skylight();
+     [[NSNotificationCenter defaultCenter]

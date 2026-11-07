@@ -63,7 +63,7 @@ if [[ -n $SKIP && $SKIP != "$(notch_skip "$d")" ]]; then
 fi
 
 choice=$(notch_choice "$d")
-mac=$(mac_tool mac-notch 2>/dev/null || echo none)
+mac=$(notch_mac_state)
 full=0; notch_app_full_screen && full=1
 next=$(notch_next_start "$d" "$mac" "$full")
 last=$(notch_this_start "$d")

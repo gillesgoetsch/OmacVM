@@ -816,6 +816,48 @@ extension Mac {
         return g.valid ? g : nil
     }
 
+    /// No built-in display online (CoreGraphics' online list: active,
+    /// mirrored or asleep): a MacBook with its lid closed and external
+    /// displays only, or a Mac without one. A built-in display that is on,
+    /// mirrored or at a resolution below the notch is not off (such a start
+    /// stays native). Test builds: OMACVM_TEST_BUILTIN_OFF=1 counts it as off,
+    /// so a hidden VM on a notched Mac takes the remembered notch. src/display/
+    /// mac-notch.swift's `builtin` says the same for the command line.
+    static var builtinOff: Bool {
+        if TestHooks.value("OMACVM_TEST_BUILTIN_OFF", bundleID: Bundle.main.bundleIdentifier) == "1" { return true }
+        var n: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &n) == .success else { return false }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(n))
+        guard CGGetOnlineDisplayList(n, &ids, &n) == .success else { return false }
+        return !ids.prefix(Int(n)).contains { CGDisplayIsBuiltin($0) != 0 }
+    }
+
+    /// This Mac's key for its remembered notch (NotchHousing); nil when the
+    /// Mac's hardware UUID cannot be read (then nothing is remembered).
+    static let notchKey: String? = hardwareID == "unknown" ? nil : NotchHousing.macKey(hardwareID: hardwareID)
+
+    /// Keeps the notch measured now for starts with the built-in display off
+    /// (#716): at the app's launch, a display change and each VM start.
+    /// Main thread (NSScreen).
+    @MainActor static func rememberNotch() {
+        guard let key = notchKey, let g = notchGeometry else { return }
+        let e = NotchHousing.entry(g, mac: key)
+        if UserDefaults.standard.string(forKey: NotchHousing.key) != e {
+            UserDefaults.standard.set(e, forKey: NotchHousing.key)
+        }
+    }
+
+    /// What this Mac's built-in display gives a start now (NotchArea.start):
+    /// its notch now, or with the display off the one remembered for this Mac.
+    /// Main thread (NSScreen).
+    @MainActor static var notch: MacNotch {
+        rememberNotch()
+        let off = builtinOff
+        let stored = UserDefaults.standard.string(forKey: NotchHousing.key)
+        return MacNotch.of(live: off ? nil : notchGeometry, builtinOff: off,
+                           remembered: notchKey.flatMap { NotchHousing.remembered(stored, mac: $0) })
+    }
+
     /// A display that can show HDR (EDR headroom above SDR white: the XDR
     /// panel of a MacBook Pro, a Pro Display XDR, an HDR external). Macs
     /// without one (MacBook Air, SDR monitors) keep the 8-bit SDR path.

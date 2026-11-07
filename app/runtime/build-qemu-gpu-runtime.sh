@@ -1054,6 +1054,14 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-ret
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-retake.patch"
 "$native_dir/Tests/display/test-fullpanel-retake.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: FullPanel does not take the strip again as tested (test-fullpanel-retake.sh)"
+# FullPanel for a full screen entered without the notch (#716: the lid
+# closed at the start): the main window is armed late and takes the strip
+# through the resume and the retake once its Space is on the MacBook's
+# display. After the retake pair. Its rules' test, then the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-late-arm-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-late-arm.patch"
+"$native_dir/Tests/display/test-fullpanel-late-arm.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: FullPanel does not arm a full screen late as tested (test-fullpanel-late-arm.sh)"
 # OmacVM: the sound on its own real-time thread (OMACVM_AUDIO_THREAD=1): the
 # HDA's DMA and the mixer no longer wait for the main loop (virgl).
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-audio-own-thread.patch"

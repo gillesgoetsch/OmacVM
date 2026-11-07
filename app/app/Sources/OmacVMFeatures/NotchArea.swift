@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// How a VM uses the strip beside the notch in OmacVM.app's full screen
@@ -112,13 +113,87 @@ public struct NotchGeometry: Equatable, Sendable {
             strip >= 10 && strip <= 100 && width >= 800 && height > strip * 5
     }
 
+    /// "LxRxHxWxD", one decimal, no spaces (NotchArea.geometry(text:) reads it back).
+    public var text: String {
+        [left, right, strip, width, height].map { String(format: "%.1f", $0) }.joined(separator: "x")
+    }
+
     /// The SMBIOS OEM string for the guest ("omacvm.fullpanel=L x R x H x W x D",
     /// one decimal, no spaces); omacvm-app-host puts it into
     /// /run/omacvm/host.env as OMACVM_FULLPANEL=..., which the bar and
     /// notchcast read.
-    public var smbios: String {
-        "omacvm.fullpanel=" + [left, right, strip, width, height]
-            .map { String(format: "%.1f", $0) }.joined(separator: "x")
+    public var smbios: String { "omacvm.fullpanel=" + text }
+
+    /// The panel's size for QEMU (OMACVM_FULLPANEL_PANEL, "WxD" in points): a
+    /// full screen entered on another display takes the strip later only on
+    /// a display of this size (omacvm-cocoa-fullpanel-late-arm.patch).
+    public var panel: String { String(format: "%.1fx%.1f", width, height) }
+}
+
+/// This Mac's built-in display and its notch for one start (#716).
+public enum MacNotch: Equatable, Sendable {
+    /// The built-in display has a notch now: as measured.
+    case now(NotchGeometry)
+    /// The built-in display is off (the lid closed, external displays only):
+    /// its notch as last measured on this Mac (NotchHousing).
+    case remembered(NotchGeometry)
+    /// No notch to use: a Mac without one, the built-in display on at a
+    /// resolution below the notch or mirrored, or off with nothing remembered.
+    case none
+
+    /// live: measured now; builtinOff: no built-in display online
+    /// (CoreGraphics); remembered: this Mac's NotchHousing value. A built-in
+    /// display that is on never takes the remembered notch.
+    public static func of(live: NotchGeometry?, builtinOff: Bool, remembered: NotchGeometry?) -> MacNotch {
+        if let g = live, g.valid { return .now(g) }
+        if builtinOff, let g = remembered, g.valid { return .remembered(g) }
+        return .none
+    }
+
+    /// The notch a start may use, either way.
+    public var geometry: NotchGeometry? {
+        switch self {
+        case .now(let g), .remembered(let g): return g
+        case .none: return nil
+        }
+    }
+
+    /// The word src/lib/notch.sh uses for it (notch_mac_state).
+    public var word: String {
+        switch self {
+        case .now: return "notch"
+        case .remembered: return "remembered"
+        case .none: return "none"
+        }
+    }
+}
+
+/// The built-in display's notch as last measured on this Mac, for a start
+/// with the lid closed (#716). Kept in the app's settings (`builtinNotch`,
+/// org.omacvm.app; the test identity's own domain) as "<mac> LxRxHxWxD":
+/// <mac> is this Mac's key (NotchHousing.macKey), so a settings file moved to
+/// another Mac, or a VM folder copied there, never uses this Mac's notch.
+/// Written whenever the app measures a notch (its launch, a display change,
+/// a VM start); `defaults delete org.omacvm.app builtinNotch` forgets it.
+public enum NotchHousing {
+    public static let key = "builtinNotch"
+
+    /// The first 16 hex digits of the SHA-256 of the Mac's IOPlatformUUID (the
+    /// UUID itself is not stored); src/lib/notch.sh's notch_mac_key says the same.
+    public static func macKey(hardwareID: String) -> String {
+        SHA256.hash(data: Data(hardwareID.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The value to keep for this Mac's notch.
+    public static func entry(_ g: NotchGeometry, mac: String) -> String {
+        "\(mac) \(g.text)"
+    }
+
+    /// The remembered notch when it is this Mac's and one a MacBook can have; else nil.
+    public static func remembered(_ stored: String?, mac: String) -> NotchGeometry? {
+        guard let parts = stored?.split(separator: " ", omittingEmptySubsequences: false), parts.count == 2,
+              !mac.isEmpty, parts[0] == mac else { return nil }
+        return NotchArea.geometry(text: String(parts[1]))
     }
 }
 
@@ -129,9 +204,12 @@ public struct NotchStart: Equatable, Sendable {
     /// For qemu.log ("OmacVM: notch area: ..."), which omacvm check and
     /// `omacvm notch` read: starts with "fullpanel" or "native".
     public var record: String
+    /// The notch a FullPanel start gives the guest (SMBIOS) and QEMU (its
+    /// panel's size); nil for a native start.
+    public var geometry: NotchGeometry?
 
-    public init(fullPanel: Bool, record: String) {
-        self.fullPanel = fullPanel; self.record = record
+    public init(fullPanel: Bool, record: String, geometry: NotchGeometry? = nil) {
+        self.fullPanel = fullPanel; self.record = record; self.geometry = geometry
     }
 }
 
@@ -170,11 +248,12 @@ public enum NotchArea {
         }
     }
 
-    /// A made-up notch for tests on a Mac without one ("LxRxHxWxD" in points,
-    /// as the SMBIOS string; the app's OMACVM_TEST_NOTCH_GEOMETRY, test builds
-    /// only); nil when malformed or not a notch a MacBook can have.
-    public static func geometry(test text: String?) -> NotchGeometry? {
-        guard let parts = text?.split(separator: "x").map({ Double($0) }), parts.count == 5,
+    /// A notch as text ("LxRxHxWxD" in points, as the SMBIOS string): the
+    /// remembered one (NotchHousing), or a made-up one for tests on a Mac
+    /// without one (the app's OMACVM_TEST_NOTCH_GEOMETRY, test builds only);
+    /// nil when malformed or not a notch a MacBook can have.
+    public static func geometry(text: String?) -> NotchGeometry? {
+        guard let parts = text?.split(separator: "x", omittingEmptySubsequences: false).map({ Double($0) }), parts.count == 5,
               let l = parts[0], let r = parts[1], let h = parts[2], let w = parts[3], let d = parts[4] else { return nil }
         let g = NotchGeometry(left: l, right: r, strip: h, width: w, height: d)
         return g.valid ? g : nil
@@ -193,10 +272,11 @@ public enum NotchArea {
     public static let notReady = "Including notch needs Omanotch on in the VM and an update first (Update VM); until then it starts with the notch via Omanotch."
 
     /// One start: FullPanel only with the setting on, a full-screen start, a
-    /// notched built-in display now (its geometry valid) and the VM's side
-    /// ready; else native, and the record says why. Native also means
-    /// Omanotch as the VM's features say (on by default with a notch).
-    public static func start(mode: NotchMode, fullScreen: Bool, notch: NotchGeometry?, guestReady: Bool) -> NotchStart {
+    /// notch (the built-in display's now, or with that display off its notch
+    /// as last measured on this Mac, #716) and the VM's side ready; else
+    /// native, and the record says why. Native also means Omanotch as the
+    /// VM's features say (on by default with a notch).
+    public static func start(mode: NotchMode, fullScreen: Bool, notch: MacNotch, guestReady: Bool) -> NotchStart {
         guard mode == .fullpanel else { return NotchStart(fullPanel: false, record: "native") }
         guard guestReady else {
             return NotchStart(fullPanel: false, record: "native (including notch is set, but the VM is not ready for it: Omanotch on, then Update VM or omacvm apply)")
@@ -204,11 +284,16 @@ public enum NotchArea {
         guard fullScreen else {
             return NotchStart(fullPanel: false, record: "native (including notch is set, but the app starts VMs in a window)")
         }
-        guard let g = notch, g.valid else {
+        switch notch {
+        case .now(let g) where g.valid:
+            return NotchStart(fullPanel: true, record: String(format: "fullpanel (Omanotch off for this start; notch %.1f-%.1f, strip %.1f of %.0fx%.0f points)",
+                                                             g.left, g.right, g.strip, g.width, g.height), geometry: g)
+        case .remembered(let g) where g.valid:
+            return NotchStart(fullPanel: true, record: String(format: "fullpanel (Omanotch off for this start; the built-in display is off, its notch as last seen: notch %.1f-%.1f, strip %.1f of %.0fx%.0f points)",
+                                                             g.left, g.right, g.strip, g.width, g.height), geometry: g)
+        default:
             return NotchStart(fullPanel: false, record: "native (including notch is set, but this Mac's built-in display has no notch now)")
         }
-        return NotchStart(fullPanel: true, record: String(format: "fullpanel (Omanotch off for this start; notch %.1f-%.1f, strip %.1f of %.0fx%.0f points)",
-                                                         g.left, g.right, g.strip, g.width, g.height))
     }
 }
 
