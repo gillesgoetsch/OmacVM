@@ -202,11 +202,15 @@ commit 82927e9. Changes here:
   indexed register on; the rest stay single `vec4`s. The VM's Mesa sends clip
   distances written in a loop that way, and `temp18[i].x` on a plain `vec4` did
   not compile on the Mac ("Swizzle of non-vector primitive float"), so those draws
-  were skipped (#589). Indexed writes use the address register they name. In such a
-  loop the VM's Mesa still copies only distances 0..3 back to their output (a patch
-  for OmacVM's own guest Mesa build, `src/app/guest/mesa/`, #692). Checked
+  were skipped (#589). Indexed writes use the address register they name. Checked
   by `Tests/virgl/test-core-glsl-shaders.c` and `Tests/virgl/test-whole-program-shapes.c`
   (L rows)
+- `patches/virgl-shader-clip-copyback.patch`: in such a loop the VM's Mesa copies
+  only the first temp (distances 0..3) back to its output (`MOV OUT[1], TEMP[18]`),
+  so 4..7 were undefined. After that copy the GLSL also sets distances 4..7 from the
+  next temp, while the shader never writes that output itself (#692; the same copy
+  as OmacVM's own guest Mesa build, `src/app/guest/mesa/`, #694). Checked by
+  `Tests/virgl/test-core-glsl-shaders.c`
 - `patches/virgl-shader-vs-tcs-clip-varyings.patch`: a vertex shader before a
   tessellation control shader passes its clip distances as plain varyings
   (`omacvm_vclip0`/`omacvm_vclip1`, no location) instead of `gl_ClipDistance` in its
