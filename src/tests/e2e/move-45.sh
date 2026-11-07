@@ -55,12 +55,12 @@ delete       Delete the old backup after a move: the folder goes, the space show
 net-cut      the internet goes during the download (default route out in the VM): the move stops resumable, Resume finishes it
 link-cut     the VM's network link goes for 90 s during the download (SSH too): the move goes on or resumes, then done
 kill-early   QEMU killed (-9) before the package switch: interrupted, Resume finishes it
-kill-commit  QEMU killed (-9) inside the package switch: Undo only, and Undo restores the disk exactly
+kill-commit  QEMU killed (-9) inside the package switch once pacman changed packages (the guest's marker): Resume refused (the guest: half, Undo only), and Undo restores the disk exactly
 kill-pre     QEMU killed (-9) right after Update VM and at the worst moment of protect, initramfs, keyring, repos and download, once each: every Resume boots and goes on to done, then the moved checks and Omarchy's second update
 kill-post    QEMU killed (-9) at the worst moment of each step after the switch (commit's end, platform, mpv, vulkan, kernel, update, report), once each: Resume asks the VM and goes on to done, then the moved checks and the second update
 app-quit     the app quits mid-move (SIGTERM to move-vm.sh): it stops at a step boundary, Resume finishes it
-power-loss   move-vm.sh and QEMU killed (-9) together in the package switch (the Mac loses power): interrupted, Undo exact
-power-backup move-vm.sh killed (-9) while it makes the backup: interrupted, Undo (or Resume) leaves the VM as before
+power-loss   move-vm.sh, its children and QEMU killed (-9) together in the package switch once pacman changed packages (the Mac loses power): interrupted, Resume refused (half), Undo exact
+power-backup every process of the move (move-vm.sh, its children, QEMU) stopped and killed (-9) at once while move-vm.sh makes the backup (the Mac loses power): interrupted, nothing starts, Undo leaves the VM as before
 app-crash    the app crashes mid-download (move-vm.sh killed -9, its headless QEMU runs on): Resume and Undo still work
 disk-pending a disk change not finished (a shrink's journal, a grow): refused before anything changes, plan says why
 busy         while the move runs: Update VM (omacvm apply / update), a second move, Undo and Delete are refused; the move goes on
@@ -220,11 +220,23 @@ mvm_bg() { mvm "$@" & MV_PID=$!; }
 mvm_wait() { wait "$MV_PID"; local rc=$?; MV_PID=""; return $rc; }
 descendants() { local c; for c in $(pgrep -P "$1"); do echo "$c"; descendants "$c"; done; }
 power_off_all() {   # everything of this move at once, no traps (the Mac loses power): move-vm.sh, its children, QEMU
-  local all; all="$MV_PID $(descendants "$MV_PID") $(qemu_pid)"
-  kill -STOP $all 2>/dev/null; kill -9 $all 2>/dev/null
+  # FIRST (pids taken before the moment): this row's move-vm.sh and its subshell stop at once, so they start
+  # nothing new (rc 02e3a4e4: a list taken first, killed after, missed the QEMU move-vm.sh started meanwhile).
+  # Then the tree again until no new pid shows (a child forked between two looks), and this VM's QEMU by its
+  # disk (the clone's path: never another VM's). SIGSTOP cannot be caught: no trap runs, as in a power cut.
+  local all=" ${*:-} $MV_PID " p more i
+  kill -STOP $all 2>/dev/null
+  for ((i = 0; i < 20; i++)); do
+    more=""
+    for p in $(descendants "$MV_PID") $(qemu_pid); do [[ $all == *" $p "* ]] || more+="$p "; done
+    [[ -z $more ]] && break
+    kill -STOP $more 2>/dev/null; all+="$more"
+  done
+  kill -9 $all 2>/dev/null
   wait "$MV_PID" 2>/dev/null; MV_PID=""
   # The power comes back: nothing of it runs any more (a killed process can take a moment to go).
-  local i; for ((i = 0; i < 50; i++)); do [[ -z $(qemu_pid) ]] && ! kill -0 $all 2>/dev/null && break; sleep 0.2; done
+  for ((i = 0; i < 50; i++)); do [[ -z $(qemu_pid) ]] && ! kill -0 $all 2>/dev/null && break; sleep 0.2; done
+  POWER_PIDS=$(echo $all)
 }
 mv_script_pid() { pgrep -P "$MV_PID" -f move-vm.sh | head -1; }   # move-vm.sh itself (MV_PID is its subshell)
 wait_until() {   # SECONDS CMD...: poll CMD every 3 s
@@ -561,20 +573,113 @@ row_kill_early() {
   local p; p=$(qemu_pid); log "kill -9 QEMU $p in $(gstat phase)"; kill -9 "$p"
   fault_then_resume
 }
+# kill-commit, power-loss: the cut must land in a HALF switch (contract v5: pacman changed packages, not all of
+# them: Undo only). A timer cannot say that (rc 02e3a4e4: QEMU killed 10 s into commit landed before pacman had
+# changed anything, cut-before, and Resume rightly went on). So the kill waits for the guest's own marker:
+# entries of pacman's local database written after the switch's commit-before, while the move's pacman still
+# runs; the guest syncs them to its disk first (as its file system's next commit would), then the kill.
+# The guest decides at Resume (it reads pacman's database: half, cut-before or cut-done). A cut that still
+# landed outside half (cut-before / cut-done: Resume goes on, as it should) is a retry of the kill's timing:
+# Undo (exact), then the move again; never a PASS, never a product FAIL. At most CUT_TRIES moves; all of them
+# outside half = "kit timing" (the row JSON says retry).
+CUT_TRIES=${MOVE45_CUT_TRIES:-3}
+HALF_MIN=3   # changed entries in pacman's local database before the cut
+switch_half_now() {   # (move running) N > 0 once pacman's database has N new entries, synced, the switch still on
+  g "j=$GJ; [[ -e \$j/commit-before && -e \$j/commit-started && ! -e \$j/commit-done ]] || { echo 0; exit; }
+    n=\$(find /var/lib/pacman/local -mindepth 1 -maxdepth 1 -newer \$j/commit-before | wc -l)
+    (( n >= $HALF_MIN )) || { echo 0; exit; }
+    sync
+    [[ ! -e \$j/commit-done ]] && pgrep -x pacman >/dev/null && echo \$n || echo 0" 2>/dev/null | tail -1
+}
+cut_half() {   # qemu|power: the move (started) cut once pacman changed packages; 1 = no cut (CUT_WHY says why)
+  local n=0 end=$(( $(date +%s) + 3600 )) sp
+  CUT_WHY=""
+  wait_until 3600 committing || { CUT_WHY="did not reach the package switch (phase $(gstat phase))"; return 1; }
+  while (( $(date +%s) < end )); do
+    kill -0 "$MV_PID" 2>/dev/null || { CUT_WHY="the move ended before pacman changed $HALF_MIN packages"; return 1; }
+    n=$(switch_half_now); [[ $n =~ ^[1-9][0-9]*$ ]] && break
+    sp=$(gstat phase); [[ -n $sp && $sp != commit ]] && { CUT_WHY="the switch was over before the marker (phase $sp)"; return 1; }
+    sleep 1
+  done
+  [[ $n =~ ^[1-9][0-9]*$ ]] || { CUT_WHY="no marker in 60 min"; return 1; }
+  if [[ $1 == power ]]; then
+    sp=$(mv_script_pid); power_off_all $sp
+    log "power loss in the switch after the guest's marker ($n packages in pacman's database changed, synced): move-vm.sh, its children and QEMU (pids $POWER_PIDS) killed (-9) at once"
+  else
+    sp=$(qemu_pid); kill -9 $sp 2>/dev/null
+    log "kill -9 QEMU $sp in the switch after the guest's marker ($n packages in pacman's database changed, synced)"
+  fi
+  CUT_N=$n
+}
+# How the guest saw the cut at Resume: its word in the Mac's journal (guest_switch; set when it refused), else
+# the line its move logged when it went on (copied to the VM folder's logs).
+cut_landed() {
+  local gl=$VD/logs/move-4.5.log
+  if grep -q "the switch was cut off before pacman changed anything" "$gl" 2>/dev/null; then echo cut-before
+  elif grep -q "the switch was cut off after pacman wrote all of it" "$gl" 2>/dev/null; then echo cut-done
+  else J guest_switch | grep . || echo unknown; fi
+}
+undo_exact_try() {   # TRY WHAT: Undo between two tries; it must give back the VM from before exactly (a real check)
+  local rc d e r
+  vm_off; mvm undo; rc=$?
+  d=$(sha "$VD/disk.img"); e=$(sha "$VD/efi-vars.fd"); r=$(records)
+  check "try $1 ($2): Undo after the move: disk, NVRAM and records as before" \
+    $([[ $rc == 0 && $d == "$PRE_DISK" && $e == "$PRE_EFI" && $r == "$PRE_REC" && ! -e $VD/before-omarchy-4.5 ]] && echo 1 || echo 0) "exit $rc, disk $d"
+  (( rc == 0 )) && [[ $d == "$PRE_DISK" && $e == "$PRE_EFI" && $r == "$PRE_REC" ]]
+}
+# One row's move, cut in a half switch (KIND qemu|power), up to CUT_TRIES moves. Returns 0 with the checks of
+# the cut and Resume made; 1 = no row to judge (the checks say why).
+half_cut_row() {
+  local kind=$1 try rc rr gs
+  for ((try = 1; try <= CUT_TRIES; try++)); do
+    rm -f "$VD/logs/move-4.5.log"
+    mvm_bg run
+    if ! cut_half "$kind"; then
+      mvm_wait; rc=$?
+      # The move went through its switch with no cut (pacman faster than the marker's look): timing, not a result.
+      if (( rc == 0 )); then
+        log "RETRY $try: no cut ($CUT_WHY), the move ended done: Undo, then the move again"
+        undo_exact_try "$try" "no cut" || return 1
+        continue
+      fi
+      check "the move reached a half switch to cut" 0 "try $try: $CUT_WHY; move-vm.sh exit $rc: $(J reason | cut -c1-160)"
+      return 1
+    fi
+    if [[ $kind == qemu ]]; then
+      mvm_wait; rc=$?
+      check "stopped" $((rc != 0)) "exit $rc"
+      check "journal: Undo only (not resumable)" $([[ $(J resumable) == 0 ]] && echo 1 || echo 0) "state=$(J state) step=$(J step) resumable=$(J resumable)"
+    else
+      power_gone
+      local jp; jp=$(J pid)
+      # Nobody wrote the journal: "running" with a dead pid, which the app shows as interrupted.
+      check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && ! kill -0 "${jp:-0}" 2>/dev/null && echo 1 || echo 0) "state=$(J state) pid=$jp commit_started=$(J commit_started)"
+    fi
+    nothing_starts
+    mvm run; rr=$?
+    gs=$(cut_landed)
+    log "try $try: Resume exit $rr, the guest: switch $gs"
+    if (( rr != 0 )); then
+      check "Resume refused" 1 "exit $rr: $(J reason | cut -c1-160)"
+      check "the guest at Resume: its switch was cut half way (Undo only)" $([[ $gs == half ]] && echo 1 || echo 0) "switch $gs ($CUT_N packages changed before the cut, try $try)"
+      return 0
+    fi
+    if [[ $gs != cut-before && $gs != cut-done ]]; then
+      check "Resume refused" 0 "exit 0: the move went on, the guest's switch: $gs ($CUT_N packages changed before the cut)"
+      return 0
+    fi
+    # The cut landed outside half (the guest said so): Resume went on to done, as contract v5 says. Back to the
+    # VM from before (Undo must still be exact), then the move again with a new cut.
+    log "RETRY $try: the cut landed at $gs, not half way (Resume went on, as the guest said it may): Undo, then the move again"
+    undo_exact_try "$try" "cut at $gs" || return 1
+  done
+  check "kit timing: a cut landed in a half switch in $CUT_TRIES moves" 0 "every cut landed outside half (cut-before / cut-done): a retry of the kill's timing, not a result"
+  return 1
+}
 row_kill_commit() {
   pre_hash
-  mvm_bg run
-  wait_until 3600 committing || { check "reached the package switch" 0 "phase $(gstat phase)"; mvm_wait; return; }
-  sleep 10
-  local p ph; ph=$(gstat phase); p=$(qemu_pid); kill -9 "$p"; log "kill -9 QEMU $p in phase '$ph'"
-  check "killed inside the package switch" $([[ $ph == commit ]] && echo 1 || echo 0) "phase $ph"
-  mvm_wait; local rc=$?
-  check "stopped" $((rc != 0)) "exit $rc"
-  check "journal: Undo only (not resumable)" $([[ $(J resumable) == 0 ]] && echo 1 || echo 0) "state=$(J state) step=$(J step) resumable=$(J resumable)"
-  nothing_starts
-  mvm run; rc=$?
-  check "Resume refused" $((rc != 0)) "exit $rc"
-  mvm undo; rc=$?
+  half_cut_row qemu || return
+  mvm undo; local rc=$?
   check "Undo" $((rc == 0)) "exit $rc"
   same_as_before
   boots_40
@@ -673,36 +778,47 @@ fault_then_resume_after_quit() {
 }
 row_power_loss() {
   pre_hash
-  mvm_bg run
-  wait_until 3600 committing || { check "reached the package switch" 0 ""; mvm_wait; return; }
-  sleep 10
-  local ph; ph=$(gstat phase)
-  power_off_all
-  log "power loss in phase '$ph': move-vm.sh, its children and QEMU killed (-9) at once"
-  check "power lost inside the package switch" $([[ $ph == commit ]] && echo 1 || echo 0) "phase $ph"
-  # Nobody wrote the journal: "running" with a dead pid, which the app shows as interrupted.
-  local jp; jp=$(J pid)
-  check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && ! kill -0 "${jp:-0}" 2>/dev/null && echo 1 || echo 0) "state=$(J state) pid=$jp commit_started=$(J commit_started)"
-  nothing_starts
-  mvm run; local rr=$?
-  check "Resume refused inside the switch" $((rr != 0)) "exit $rr"
+  half_cut_row power || return
   mvm undo; local rc=$?
   check "Undo" $((rc == 0)) "exit $rc"
   same_as_before
   boots_40
 }
+# All of the move gone at once (power_off_all): no pid of it alive, no QEMU of this VM, no move-vm.sh for it.
+power_gone() {
+  local left="" p
+  for p in $POWER_PIDS; do kill -0 "$p" 2>/dev/null && left+="$p "; done
+  left+="$(qemu_pid) $(LC_ALL=C pgrep -f "move-vm.sh $VD " | tr '\n' ' ')"
+  check "the power cut stopped every process of the move (move-vm.sh, its children, QEMU)" $([[ -z $(echo $left) ]] && echo 1 || echo 0) "pids $POWER_PIDS; alive: ${left// /}"
+}
+# power-backup: the Mac loses power while move-vm.sh makes the backup (step 3). The pids of move-vm.sh and its
+# subshell are taken before, and stopped first the moment the backup folder shows (power_off_all), so the cut
+# lands in step 3 (rc 02e3a4e4: a list taken late let move-vm.sh reach step 4 and start QEMU). A cut that still
+# lands after step 3 is a retry of the timing (Undo exact, the move again), never a result.
 row_power_backup() {
   pre_hash
-  mvm_bg run
-  # As soon as the backup folder shows (the clone takes moments: the kill lands in it or right after).
-  local i; for ((i = 0; i < 6000; i++)); do [[ -e $VD/before-omarchy-4.5 ]] && break; sleep 0.05; done
-  power_off_all
-  log "killed at step $(J step), backup_at '$(J backup_at)'"
-  check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && echo 1 || echo 0) "state=$(J state) step=$(J step)"
-  nothing_starts
-  mvm undo; local rc=$?
-  check "Undo" $((rc == 0)) "exit $rc"
-  same_as_before
+  local try i sp st rc
+  for ((try = 1; try <= CUT_TRIES; try++)); do
+    mvm_bg run
+    sp=""; for ((i = 0; i < 200; i++)); do sp=$(mv_script_pid); [[ -n $sp ]] && break; sleep 0.05; done
+    for ((i = 0; i < 6000; i++)); do [[ -e $VD/before-omarchy-4.5 ]] && break; sleep 0.05; done
+    power_off_all $sp
+    st=$(J step)
+    log "try $try: power cut at step $st (backup_at '$(J backup_at)'): move-vm.sh $sp, its children and QEMU (pids $POWER_PIDS) killed (-9) at once"
+    power_gone
+    if [[ $st == 3 ]]; then
+      check "power cut while move-vm.sh made the backup (step 3)" 1 "try $try, backup_at '$(J backup_at)'"
+      check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && echo 1 || echo 0) "state=$(J state) step=$st"
+      nothing_starts
+      mvm undo; rc=$?
+      check "Undo" $((rc == 0)) "exit $rc"
+      same_as_before
+      return
+    fi
+    log "RETRY $try: the cut landed at step $st, not in the backup: Undo, then the move again"
+    undo_exact_try "$try" "cut at step $st" || return
+  done
+  check "kit timing: a power cut landed in the backup (step 3) in $CUT_TRIES moves" 0 "every cut landed after step 3: a retry of the timing, not a result"
 }
 row_app_crash() {
   pre_hash
