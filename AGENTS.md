@@ -819,8 +819,9 @@ The less obvious ones, with causes and where the fix lives, are in
   needed, and add the current naga, Tint, glslang and Zink output to
   `spirv-corpus/pass` at every SPIR-V version each writes (a new spirv-val rule
   refused every naga app, #710; a rule is relaxed only by ADR 0065's bar); when the MoltenVK pin moves, ADR 0065's
-  SPIRV-Cross check (`pinned-runtime-bottles.sh`) and the corpus for `mvk`
-  and `mvk11`; when the Mesa (KosmicKrisp) pin moves, the corpus for `kk`.
+  SPIRV-Cross check (`pinned-runtime-bottles.sh`; with its 3.3.1 cite:
+  `mark_packable_structs` still lays out no Function or Private struct) and
+  the corpus for `mvk` and `mvk11`; when the Mesa (KosmicKrisp) pin moves, the corpus for `kk`.
   On either driver's bump, check that it still reads a primary's secondaries
   inside `vkQueueSubmit` on the calling thread (MoltenVK's
   `MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS` default, KosmicKrisp's immediate
