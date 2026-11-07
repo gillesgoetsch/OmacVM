@@ -1502,11 +1502,13 @@ EXCLUSION
         if (moved) notchRemapSettle.restart()
       }
       // When the notch park ends (the role leaves "parked"), unmap for a
-      // moment too (#727). The parked copy is 1 px tall and off screen; on a
-      // 4.0 VM its window could stay at that size after the unpark, so the
-      // bar stayed hidden. Mapping it again gives it the unparked size and
-      // margin. Only the end of the notch park: Omarchy's own bar toggle and
-      // the NOTCH or FullPanel bars keep their fast path (margins only).
+      // moment too (#727). The parked copy is 1 px tall and off screen. Qt
+      // sends its new size and margin only with its next frame, and that
+      // frame waits for the compositor's answer to the last one, which comes
+      // only when the display is drawn again for something else; on a 4.0 VM
+      // the bar could stay hidden that way. A new map does not wait. Only
+      // the end of the notch park: Omarchy's own bar toggle and the NOTCH or
+      // FullPanel bars keep their fast path (margins only).
       property string roleWas: ""
       function notchParkEnd() {
         if (roleWas === "parked" && barWindow.notchRole !== "parked") remapping = true
