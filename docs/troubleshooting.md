@@ -1695,11 +1695,9 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 
 - **Symptom:** in Chrome (or another app), every pinch zoom on the Mac's
   trackpad starts with a right click: a context menu opens, then the page
-  zooms. Also a right click from a quick, still two-finger touch, two right
-  clicks from one two-finger tap with the Mac's tap to click on, and a
-  middle-click paste from a three-finger tap. Trackpad gestures and scroll
-  momentum on, in full screen, on Omarchy 4.5 (a new VM, or one moved from
-  4.0). Up to 3.4.0.
+  zooms. Also a middle-click paste from a three-finger tap. Trackpad
+  gestures and scroll momentum on, in full screen, on Omarchy 4.5 (a new
+  VM, or one moved from 4.0). Up to 3.4.0.
 - **Cause:** Omarchy 4.5 leaves Hyprland's tap-to-click on (omarchy-mac's
   4.0 had it off). OmacVM's virtual trackpad gets the Mac's fingers, and
   with scroll momentum it keeps two fingers still at the start of a pinch,
