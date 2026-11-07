@@ -1228,11 +1228,12 @@ layout_units(void)
                   "%pI = OpTypePointer UniformConstant %I\n%v = OpVariable %pI UniformConstant\n",
                   "", " %v", false, "VUID-StandaloneSpirv-None-10684");
    }
-   /* MoltenVK under a Vulkan 1.1 app takes SPIR-V up to 1.4: 1.5 and 1.6 stay too new */
+   /* MoltenVK under a Vulkan 1.1 app takes SPIR-V up to 1.4: 1.5 and 1.6 stay too new
+    * (spirv-val: "Invalid SPIR-V binary version 1.6 for target environment ...") */
    layout_case("function-offset-1.6", "mvk11", SPV_ENV_UNIVERSAL_1_6, offset, fn_s, fn_var, "",
-               false, NULL);
+               false, "version");
    layout_case("function-offset-1.5", "mvk11", SPV_ENV_UNIVERSAL_1_5, offset, fn_s, fn_var, "",
-               false, NULL);
+               false, "version");
    layout_case("function-offset-1.4", "mvk11", SPV_ENV_UNIVERSAL_1_4, offset, fn_s, fn_var, "",
                true, NULL);
 }

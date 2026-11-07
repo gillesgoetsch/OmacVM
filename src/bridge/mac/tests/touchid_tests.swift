@@ -31,7 +31,7 @@ final class MockAuth: TouchIDAuthenticator {
 
 struct MockMac: TouchIDMacState {
   var locked = false
-  var frontType: String? = "parallels"
+  var frontType: String? = "app"
 }
 
 func json(_ o: Any) -> String {
@@ -95,22 +95,25 @@ func value(_ r: Result<TouchIDRequest, PolicyError>) -> TouchIDRequest? { if cas
 
     // ---- which app is in front ----
     check(vmTypeOfExecutable("/Applications/OmacVM.app/Contents/Resources/runtime/bin/OmacVM") == "app", "OmacVM.app")
-    check(vmTypeOfExecutable("/Applications/Parallels Desktop.app/Contents/MacOS/prl_client_app") == "parallels", "Parallels")
-    check(vmTypeOfExecutable("/Applications/UTM.app/Contents/MacOS/UTM") == "utm", "UTM")
-    check(vmTypeOfExecutable("/Applications/VMware Fusion.app/Contents/MacOS/VMware Fusion") == "fusion", "Fusion")
+    // The retired routes' VM apps (3.4.0) are other apps: no dialog for their VMs.
+    let retiredApps = ["Parallels Desktop.app/Contents/MacOS/prl_client_app", "UTM.app/Contents/MacOS/UTM", "VMware Fusion.app/Contents/MacOS/VMware Fusion"]
+    for app in retiredApps { let retired = "/Applications/" + app
+      check(vmTypeOfExecutable(retired) == nil, "a retired route's VM app is another app: \((retired as NSString).lastPathComponent)")
+    }
     check(vmTypeOfExecutable("/Applications/Safari.app/Contents/MacOS/Safari") == nil, "another app")
     // OmacVM.app's QEMU started through Contents/MacOS/OmacVM-VM (DockIdentity): LaunchServices names the
     // app's own executable, the kernel the runtime: the kernel's path counts.
     check(vmTypeOfFront(kernelPath: "/Applications/OmacVM.app/Contents/Resources/runtime/bin/OmacVM",
                         launchServicesPath: "/Applications/OmacVM.app/Contents/MacOS/OmacVM") == "app", "OmacVM.app's QEMU as one Dock app")
-    check(vmTypeOfFront(kernelPath: nil, launchServicesPath: "/Applications/UTM.app/Contents/MacOS/UTM") == "utm", "no kernel path: LaunchServices")
+    check(vmTypeOfFront(kernelPath: nil, launchServicesPath: "/Applications/OmacVM.app/Contents/Resources/runtime/bin/OmacVM") == "app",
+          "no kernel path: LaunchServices")
     check(vmTypeOfFront(kernelPath: "/Applications/OmacVM.app/Contents/MacOS/OmacVM",
                         launchServicesPath: "/Applications/OmacVM.app/Contents/MacOS/OmacVM") == nil, "OmacVM.app's launcher has no VM")
     check(vmTypeOfFront(kernelPath: nil, launchServicesPath: nil) == nil, "nothing in front")
 
     // ---- the order of the checks ----
     let t0 = Date(timeIntervalSince1970: 1_800_000_000)
-    func decide(_ a: MockAuth, _ m: MockMac = MockMac(), on: Bool = true, vm: String = "parallels/A", type: String = "parallels",
+    func decide(_ a: MockAuth, _ m: MockMac = MockMac(), on: Bool = true, vm: String = "app/A", type: String = "app",
                 at: Date, fallback: Bool = false, d: TouchIDDecider? = nil) -> TouchIDOutcome {
       (d ?? TouchIDDecider(auth: a, mac: m)).decide(vm: vm, type: type, on: on, request: sudo!, vmLabel: nil, passwordFallback: fallback, now: at)
     }
@@ -125,7 +128,7 @@ func value(_ r: Result<TouchIDRequest, PolicyError>) -> TouchIDRequest? { if cas
     check(decide(a, on: false, at: t0) == .no(.off) && a.asked.isEmpty, "off: no dialog")
     check(decide(a, MockMac(locked: true), at: t0) == .no(.locked) && a.asked.isEmpty, "locked: no dialog")
     check(decide(a, MockMac(frontType: nil), at: t0) == .no(.notFront) && a.asked.isEmpty, "another app in front: no dialog")
-    check(decide(a, MockMac(frontType: "utm"), at: t0) == .no(.notFront) && a.asked.isEmpty, "another VM app in front: no dialog")
+    check(decide(a, MockMac(frontType: "other"), at: t0) == .no(.notFront) && a.asked.isEmpty, "another VM app in front: no dialog")
     a.notThere = .noTouchID
     check(decide(a, at: t0) == .no(.noTouchID) && a.asked.isEmpty, "no sensor: no dialog")
     a.notThere = .lockout
@@ -136,7 +139,7 @@ func value(_ r: Result<TouchIDRequest, PolicyError>) -> TouchIDRequest? { if cas
     let d = TouchIDDecider(auth: a, mac: MockMac())
     check(decide(a, at: t0, d: d) == .yes, "first")
     check(decide(a, at: t0.addingTimeInterval(1), d: d) == .no(.rate), "again within 2 s")
-    check(decide(a, vm: "parallels/B", at: t0.addingTimeInterval(1), d: d) == .yes, "another VM has its own limit")
+    check(decide(a, vm: "app/B", at: t0.addingTimeInterval(1), d: d) == .yes, "another VM has its own limit")
     var n = 0
     for i in 0..<12 where decide(a, at: t0.addingTimeInterval(Double(2 + i * 2)), d: d) == .yes { n += 1 }
     check(n == 9, "10 a minute (got \(n + 1))")
@@ -188,20 +191,20 @@ func value(_ r: Result<TouchIDRequest, PolicyError>) -> TouchIDRequest? { if cas
     // ---- timeout and a client that goes away (real time, short) ----
     a = MockAuth(); a.waits = true
     let d4 = TouchIDDecider(auth: a, mac: MockMac()); d4.timeout = 0.2
-    check(d4.decide(vm: "v", type: "parallels", on: true, request: sudo!, vmLabel: nil, passwordFallback: false) == .no(.timeout), "timeout")
+    check(d4.decide(vm: "v", type: "app", on: true, request: sudo!, vmLabel: nil, passwordFallback: false) == .no(.timeout), "timeout")
     let d5 = TouchIDDecider(auth: a, mac: MockMac()); d5.timeout = 5
     let start = Date()
     var gone = false
     DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { gone = true }
-    check(d5.decide(vm: "v", type: "parallels", on: true, request: sudo!, vmLabel: nil, passwordFallback: false, gone: { gone }) == .no(.cancelled)
+    check(d5.decide(vm: "v", type: "app", on: true, request: sudo!, vmLabel: nil, passwordFallback: false, gone: { gone }) == .no(.cancelled)
           && Date().timeIntervalSince(start) < 1, "client gone: dialog closed")
     // Two at once: the second is busy while the first dialog is up.
     let d6 = TouchIDDecider(auth: a, mac: MockMac()); d6.timeout = 0.5
     var first: TouchIDOutcome?
     let g = DispatchGroup(); g.enter()
-    DispatchQueue.global().async { first = d6.decide(vm: "v1", type: "parallels", on: true, request: sudo!, vmLabel: nil, passwordFallback: false); g.leave() }
+    DispatchQueue.global().async { first = d6.decide(vm: "v1", type: "app", on: true, request: sudo!, vmLabel: nil, passwordFallback: false); g.leave() }
     Thread.sleep(forTimeInterval: 0.1)
-    check(d6.decide(vm: "v2", type: "parallels", on: true, request: sudo!, vmLabel: nil, passwordFallback: false) == .no(.busy), "busy")
+    check(d6.decide(vm: "v2", type: "app", on: true, request: sudo!, vmLabel: nil, passwordFallback: false) == .no(.busy), "busy")
     g.wait()
     check(first == .no(.timeout), "the first one ran to its end")
 
@@ -224,7 +227,7 @@ func value(_ r: Result<TouchIDRequest, PolicyError>) -> TouchIDRequest? { if cas
     let good = verifyControlAuth(header: hdr(touchIDRequestLabel), key: key, vm: "x", method: "POST", path: touchIDPath, proto: "1",
                                  body: body, now: now, nonces: &nonces, label: touchIDRequestLabel)
     check(good == .success(nonce), "Touch ID label taken")
-    check(touchIDKeyName(type: "parallels", name: "A") == vmKeyName(type: "parallels", name: "A") + ".touchid", "key file name")
+    check(touchIDKeyName(type: "app", name: "A") == vmKeyName(type: "app", name: "A") + ".touchid", "key file name")
 
     // ---- the test identity's stand-in (touchid-test file) ----
     check(touchIDTestAnswer("yes\n") == .yes, "stand-in: yes")
@@ -259,8 +262,8 @@ func value(_ r: Result<TouchIDRequest, PolicyError>) -> TouchIDRequest? { if cas
     let stale = VMEntry(name: "Omarchy", type: "app", state: "stopped", ip: "", omacvm: "3.0.4", setup: true)
     check(touchIDRelayVM("Omarchy", list: [stale], hasKey: keyed)?.name == "Omarchy",
           "a list from before the VM started: still the VM (it asks through its running app)")
-    let parallels = VMEntry(name: "Omarchy", type: "parallels", state: "running", ip: "10.211.55.3", omacvm: "3.0.4", setup: true)
-    check(touchIDRelayVM("Omarchy", list: [parallels], hasKey: keyed)?.type == "app", "a Parallels VM of that name is not it")
+    let other = VMEntry(name: "Omarchy", type: "other", state: "running", ip: "192.168.77.3", omacvm: "3.0.4", setup: true)
+    check(touchIDRelayVM("Omarchy", list: [other], hasKey: keyed)?.type == "app", "a VM of another type with that name is not it")
     check(touchIDRelayVM("Other", list: [], hasKey: keyed) == nil, "no Touch ID key for that name: the list decides")
     check(touchIDRelayVM("", list: [], hasKey: { _ in true }) == nil, "no name: nothing")
     check(touchIDListWait > VMListCache.unknownWait && touchIDListWait < 35,

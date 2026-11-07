@@ -1,10 +1,10 @@
 // omacvm-bridge (Mac side): exposes this Mac's Wi-Fi and audio state to the
-// Omarchy VM in Parallels, which only sees a virtual Ethernet NIC and a virtual
+// Omarchy VM in OmacVM.app, which only sees a virtual Ethernet NIC and a virtual
 // sound card. Wi-Fi is read-only (stage 1); audio can be controlled (stage 1b);
 // media keys go to the VM's own popup while it is full screen (stage 1c).
 //
-// HTTP/1.1 on port 47831 of the Mac's address on each VM network (10.211.55.2
-// for Parallels, 192.168.64.1 for UTM, .1 of VMware Fusion's NAT network; never 0.0.0.0). Every request needs "Authorization: Bearer <token>",
+// HTTP/1.1 on port 47831 of 127.0.0.1 (an OmacVM.app VM's 10.0.2.2) and
+// 192.168.77.1 (its fast network); never 0.0.0.0. Every request needs "Authorization: Bearer <token>",
 // except the one the VM makes first, to check it talks to the Bridge before it sends the token:
 //   GET  /proof?nonce=N    {"proof": HMAC-SHA256(token, "omacvm-bridge mac <addr> N")}, N 32 hex digits,
 //                          <addr> the Mac address the request came in on
@@ -31,20 +31,16 @@
 //   POST /bluetooth/connect    {"address": "AA:BB:CC:DD:EE:FF"}   (also /disconnect, /forget)
 //   POST /bluetooth/settings   opens the Mac's Bluetooth settings (pairing)
 //   POST /wallpaper        image body: the Mac's wallpaper (and lock-screen background)
-//   GET  /battery          the Mac's battery (battery.swift), for UTM and VMware Fusion VMs
 //   GET  /timezone         {"zone": "Europe/Zurich"}: the Mac's time zone, which the VM follows (omacvm-timezone)
-//   GET  /camera           the connection then carries the Mac's camera (camera.swift): the VM
-//                          sends {"type":"start"|"stop"} lines, the Bridge 1280x720 NV12 frames
-//                          while started (macOS asks for the camera permission the first time)
-//   GET  /camera/status    {"permission", "camera", "on", "readers", "connections"}
-//                          (both camera paths: 403 from 127.0.0.1 and the Mac's own addresses)
 //   /omacvm/...            the control centre's requests (control.swift, docs/adr/0031): hello, status,
 //                          updates, updates/check, settings/update-checks, jobs, jobs/<id>; OmacVM.app
 //                          relays its VMs' ones on the Unix socket omacvm-bridge/relay.sock (owner only)
-//   GET  /events           Server-Sent Events: "wifi", "audio", "display", "bluetooth", "battery" and "timezone" on every change
+//   GET  /events           Server-Sent Events: "wifi", "audio", "display", "bluetooth" and "timezone" on every change
 //                          (RSSI is re-read every 5 s), "scan" when new scan
 //                          results exist, "osd" on volume/mute/brightness/keyboard
 //                          light changes (keys.swift), ": ping" every 15 s
+// The Mac's address on the retired Parallels, UTM and VMware Fusion networks
+// answers only that the route is retired (retired.swift).
 // Token: ~/Library/Application Support/omacvm-bridge/token (created on first run).
 // SSIDs/BSSIDs are only readable once Location Services is granted to the app.
 import AppKit
@@ -73,28 +69,13 @@ func logToFile() {
   if fd > 2 { close(fd) }
 }
 logToFile()
-// The Mac's address on each VM network: Parallels' shared network, UTM's
-// shared network (vmnet) and VMware Fusion's NAT network (vmnet8, when Fusion
-// is installed), and for OmacVM.app 127.0.0.1 (its VMs reach it as 10.0.2.2)
-// and 192.168.77.1 (its fast network, src/net/mac). One listener per
-// address; never 0.0.0.0.
-let listenAddrs = (env["OMACVM_BRIDGE_ADDRS"] ?? (["10.211.55.2", "192.168.64.1"] + [fusionHost()].compactMap { $0 } + ["127.0.0.1", "192.168.77.1"])
-  .joined(separator: ",")).split(separator: ",").map(String.init)
-
-/// Fusion picks its NAT subnet at install time; the Mac is .1 there (the guests' gateway is .2).
-/// The first VNET_8_HOSTONLY_SUBNET line, and only a private address (as fusion_host in src/lib/mac.sh).
-func fusionHost() -> String? {
-  guard let s = try? String(contentsOfFile: "/Library/Preferences/VMware Fusion/networking", encoding: .utf8) else { return nil }
-  for line in s.split(separator: "\n") {
-    let f = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-    guard f.count >= 3, f[0] == "answer", f[1] == "VNET_8_HOSTONLY_SUBNET" else { continue }
-    let o = f[2].split(separator: ".").compactMap { UInt8($0) }
-    guard o.count == 4, o[0] == 10 || (o[0] == 172 && (16...31).contains(o[1])) || (o[0] == 192 && o[1] == 168) else { return nil }
-    let host = "\(o[0]).\(o[1]).\(o[2]).1"
-    return ["10.211.55.2", "192.168.64.1", "192.168.77.1"].contains(host) ? nil : host
-  }
-  return nil
-}
+// The Mac's address for OmacVM.app's VMs: 127.0.0.1 (they reach it as
+// 10.0.2.2) and 192.168.77.1 (the fast network, src/net/mac). One listener
+// per address; never 0.0.0.0. OMACVM_BRIDGE_ADDRS: a test Bridge's own.
+let listenAddrs = (env["OMACVM_BRIDGE_ADDRS"] ?? "127.0.0.1,192.168.77.1").split(separator: ",").map(String.init)
+/// The retired routes' addresses (retired.swift): the move text only.
+let retiredListenAddrs = (env["OMACVM_BRIDGE_RETIRED_ADDRS"]
+  ?? retiredAddrsOnThisMac().joined(separator: ",")).split(separator: ",").map(String.init).filter { !listenAddrs.contains($0) }
 let listenPort = UInt16(env["OMACVM_BRIDGE_PORT"] ?? "") ?? (testIdentity ? 47931 : 47831)
 let tickSeconds = 5.0        // RSSI refresh + listener check
 let pingSeconds = 15.0       // SSE keepalive when nothing changed
@@ -173,17 +154,19 @@ let hub = Hub([
   Feed(event: "audio", delay: 0.05, read: { audio.state() }, describe: describeAudio),
   Feed(event: "display", delay: 0.1, read: { displayState() }, describe: describeDisplay),
   Feed(event: "bluetooth", delay: 0.3, read: { bluetooth.state() }, describe: describeBluetooth),
-  Feed(event: "battery", delay: 0.3, read: { batteryState() }, describe: describeBattery, coarse: coarseBattery),
   // Also re-read every tick while a VM listens: a change macOS did not tell about.
   Feed(event: "timezone", delay: 0.1, read: { timeZoneState() }, describe: describeTimeZone),
 ])
 let scanner = Scanner(wifi: wifi, hub: hub, location: location)
 let servers = listenAddrs.map { addr in Server(addr: addr) { fd, peer in handle(fd, peer: peer) } }
+let retiredStreams = RetiredStreams()
+let retiredServers = retiredListenAddrs.map { addr in
+  Server(addr: addr, retired: true) { fd, _ in serveRetired(fd, at: localAddress(fd), token: token, streams: retiredStreams) }
+}
 // OmacVM.app's relay (server.swift). A second Bridge on this Mac (tests) sets
 // OMACVM_BRIDGE_RELAY_SOCKET: two Bridges on one path remove each other's socket.
 let relaySocket = RelaySocket(path: env["OMACVM_BRIDGE_RELAY_SOCKET"] ?? supportDir + "/relay.sock")
 let osdEvents = OSDEvents()
-let camera = CameraHub { log("camera: \($0)") }
 let mediaKeys = MediaKeys()
 let externalBrightness = ExternalBrightness(unsafeFile: supportDir + "/ddc-unsafe.json") { config.externalBrightness }
 let menuBar = MenuBar()
@@ -194,7 +177,6 @@ wifi.onEvent = { why in why == "scan-cache" ? scanner.cacheUpdated() : hub.chang
 audio.onChange = { why in hub.changed("audio", why: why); osdEvents.audioChanged() }
 NightShift.onChange { hub.changed("display", why: "night-shift") }
 bluetooth.onChange = { why in hub.changed("bluetooth", why: why) }
-watchPowerSources { hub.changed("battery", why: "power") }
 NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main) { _ in
   hub.changed("timezone", why: "zone")
 }
@@ -205,7 +187,7 @@ bluetooth.start()
 hub.start()
 control.start()
 osdEvents.start()   // before the listeners: it hooks into the hub
-servers.forEach { $0.check() }
+(servers + retiredServers).forEach { $0.check() }
 relaySocket.check()
 mediaKeys.start()
 externalBrightness.onKey = { value, name in osdEvents.externalBrightnessSet(value, display: name, source: "keys") }
@@ -217,7 +199,7 @@ log("config \(config.path): capture_keys=\(config.captureKeys) menu_bar_icon=\(c
 log("keyboard light: \(KeyboardLight.get() != nil ? "found" : "none on this Mac")")
 let listenerTimer = DispatchSource.makeTimerSource(queue: .main)
 listenerTimer.schedule(deadline: .now() + tickSeconds, repeating: tickSeconds, leeway: .seconds(1))
-listenerTimer.setEventHandler { servers.forEach { $0.check() }; relaySocket.check() }
+listenerTimer.setEventHandler { (servers + retiredServers).forEach { $0.check() }; relaySocket.check() }
 listenerTimer.resume()
 
 let ws = NSWorkspace.shared.notificationCenter
@@ -225,11 +207,10 @@ ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .
 ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
   log("system woke up: re-subscribing to CoreWLAN, re-binding listener")
   wifi.subscribe()
-  servers.forEach { $0.check(rebind: true) }
+  (servers + retiredServers).forEach { $0.check(rebind: true) }
   for delay in [2.0, 10.0] {
     DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
       hub.changed("wifi", why: "wake"); hub.changed("audio", why: "wake"); hub.changed("bluetooth", why: "wake")
-      hub.changed("battery", why: "wake")
     }
   }
 }

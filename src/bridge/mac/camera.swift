@@ -1,6 +1,6 @@
-// The Mac's camera for Linux apps in the VM. Shared by OmacVM Bridge (frames
-// over TCP to UTM and VMware Fusion VMs, GET /camera) and OmacVM.app (over a
-// virtio port; app/app/Sources/OmacVM/camera.swift is a link to this file).
+// The Mac's camera for Linux apps in the VM, for OmacVM.app (over a virtio
+// port; app/app/Sources/OmacVM/camera.swift is a link to this file; the
+// Bridge no longer carries it). Tested by ../test-camera.sh.
 // Capture, frame size and wire format from try-omarchy
 // (github.com/omacom/try-omarchy, macos/Sources/OmarchyVMHelper/NativeCameraBridge.swift),
 // MIT, (c) Try Omarchy contributors.

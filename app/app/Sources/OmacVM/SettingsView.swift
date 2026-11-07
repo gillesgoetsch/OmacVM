@@ -31,6 +31,17 @@ struct ReadyView: View {
     }
 
     private var running: Bool { preview?.running ?? state.vmRunning() }
+    /// A move to Omarchy 4.5 that is not over: Start and Update VM wait for Resume or Undo.
+    private var moveOpen: Bool {
+        if let m = preview?.move {
+            switch m.card {
+            case .failed, .interrupted, .running, .stopping, .undoing: return true
+            default: return false
+            }
+        }
+        _ = state.tick
+        return MoveFiles.journal(state.config)?.open == true
+    }
     /// Is this Mac set up for the VM (MacSetup): the window pictures' own.
     private var macSetup: MacSetup? { preview?.macSetup ?? state.macSetup }
 
@@ -39,6 +50,8 @@ struct ReadyView: View {
             header
         } notices: {
             UpdateBanner(updater: updater, running: running) { sheet = .whatsNew }
+            // One blue banner at a time: the app's update first, the move's offer quiet meanwhile.
+            OmarchyMoveCard(state: state, running: running, preview: preview?.move, quiet: UpdateBanner.shows(updater))
             notices
         } content: {
             SettingsSections(state: state, preview: preview, running: running) { vm in
@@ -106,7 +119,7 @@ struct ReadyView: View {
                 .help(behind
                       ? "OmacVM in this VM is \(state.config.guestVersion.map { "\($0)" } ?? "from an older app"); this app has \(app ?? ""). Update VM starts the VM without a window, updates OmacVM in it and its helpers on the Mac (a few minutes) and shuts it down. Your files and settings in Omarchy stay."
                       : "\(macSetup?.title(vm: state.config.name) ?? ""). Update VM starts the VM without a window, sets up its helpers on this Mac and gives the VM this Mac's token (a few minutes), then shuts it down. Your files and settings in Omarchy stay.")
-                .disabled(state.storage.moving != nil || state.config.filesProblem != nil || running)
+                .disabled(state.storage.moving != nil || state.config.filesProblem != nil || running || moveOpen)
                 .layoutProbe("update-vm")
             }
             Button(running ? "Show" : "Start") {
@@ -114,7 +127,8 @@ struct ReadyView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(!running && (state.storage.moving != nil || state.config.filesProblem != nil))
+            .disabled(!running && (state.storage.moving != nil || state.config.filesProblem != nil || moveOpen))
+            .help(moveOpen ? MoveFiles.openWhy(state.config) ?? "" : "")
             .layoutProbe("start")
         }
     }
@@ -237,6 +251,7 @@ struct SettingsSections: View {
                 DiskRow(state: state, preview: preview?.disk)
                 StorageRows(storage: state.storage, selected: state.config.location == nil ? nil : state.config.folder,
                             open: { state.openExisting() }, delete: delete)
+                MoveBackupRow(state: state, running: running, preview: preview?.moveBackup)
                 CommandLineRow(preview: preview?.terminal)
                 UpdateRow(updater: Updater.shared, running: running)
             }
@@ -252,7 +267,7 @@ struct SettingsSections: View {
             Button("Delete VM…") { delete(state.config) }
                 .buttonStyle(.plain)
                 .foregroundStyle(Look.red)
-                .disabled(state.storage.moving != nil)
+                .disabled(state.storage.moving != nil || (preview == nil && MoveFiles.journal(state.config)?.state == .running))
                 .padding(.top, 14)
                 .padding(.leading, 4)
                 .layoutProbe("delete")

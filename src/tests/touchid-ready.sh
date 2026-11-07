@@ -41,12 +41,12 @@ expect "apply, a VM OmacVM.app 3.0.3 started: one restart" "Touch ID: on - resta
   "$(apply_end app off 'ready\n')"
 expect "apply, app VM not running: ready (the next start has the port)" "Touch ID is ready: try sudo -v in an Omarchy terminal" \
   "$(apply_end app off 'ready\n' 0)"
-expect "apply, Parallels: ready, and 1Password's own switch" \
+expect "apply, another VM type: ready, and 1Password's own switch" \
   "Touch ID is ready: try sudo -v in an Omarchy terminal|Touch ID: 1Password: turn on Settings › Security › Unlock using system authentication to use Touch ID" \
-  "$(apply_end parallels off 'ready\n1password\toff\t1Password\tturn on Settings › Security › Unlock using system authentication to use Touch ID\nbitwarden\ton\tBitwarden\tuses Touch ID\n' | paste -sd'|' -)"
+  "$(apply_end other off 'ready\n1password\toff\t1Password\tturn on Settings › Security › Unlock using system authentication to use Touch ID\nbitwarden\ton\tBitwarden\tuses Touch ID\n' | paste -sd'|' -)"
 expect "apply, the VM side did not set it up: said, no ready" "Touch ID: not set up in the VM (see above); the password keeps working" \
-  "$(apply_end utm off '')"
-expect "apply, Touch ID was on before (an update, another switch): nothing" "" "$(apply_end parallels on 'ready\n')"
+  "$(apply_end other off '')"
+expect "apply, Touch ID was on before (an update, another switch): nothing" "" "$(apply_end other on 'ready\n')"
 
 # ---- omacvm check: "Touch ID (Mac)" ----
 ck=$(part "$R/src/cmd/check.sh" '^# Touch ID .ADR 0041., the Mac.s side' '^FEATURE=omanotch   # the Mac links row below')
@@ -64,12 +64,12 @@ mac_check() {   # TYPE TOUCH_ID [BRIDGE-RUNNING]
     eval "$ck" )
 }
 printf '#!/bin/sh\necho "User 501:\t2 biometric template(s)"\necho "Operation performed successfully."\n' > "$T/bin/bioutil"; chmod +x "$T/bin/bioutil"
-expect "check, Touch ID off: no Mac line" "" "$(mac_check parallels off)"
+expect "check, Touch ID off: no Mac line" "" "$(mac_check other off)"
 expect "check: no key on the Mac: said how" "fail: no Touch ID key for this VM on the Mac: omacvm apply --vm NAME makes it, or omacvm enable touch-id" \
-  "$(mac_check parallels on)"
-echo k > "$T/keys/parallels-Omarchy.touchid"; echo k > "$T/keys/app-Omarchy.touchid"
-expect "check: the Bridge not running" "fail: OmacVM Bridge is not running, and it asks the Mac's Touch ID: omacvm update" "$(mac_check parallels on 0)"
-expect "check: all there" "ok: the VM's key, OmacVM Bridge and 2 fingerprint(s) ready" "$(mac_check parallels on)"
+  "$(mac_check other on)"
+echo k > "$T/keys/other-Omarchy.touchid"; echo k > "$T/keys/app-Omarchy.touchid"
+expect "check: the Bridge not running" "fail: OmacVM Bridge is not running, and it asks the Mac's Touch ID: omacvm update" "$(mac_check other on 0)"
+expect "check: all there" "ok: the VM's key, OmacVM Bridge and 2 fingerprint(s) ready" "$(mac_check other on)"
 expect "check, app: no relay socket" "fail: OmacVM Bridge has no socket for OmacVM.app's requests: omacvm update" "$(mac_check app on)"
 python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$T/support/relay.sock"
 port_line "Touch ID off"
@@ -83,9 +83,9 @@ expect "check, app with the port: ready, and this VM's last request" \
 printf '#!/bin/sh\necho "User 501:\t0 biometric template(s)"\n' > "$T/bin/bioutil"
 expect "check: no fingerprint on the Mac: for the person" \
   "fail: no fingerprint in this Mac's Touch ID (or no sensor): System Settings › Touch ID & Password; until then the VM asks for the password (person)" \
-  "$(mac_check parallels on)"
+  "$(mac_check other on)"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/bioutil"; : > "$T/bridge.log"
-expect "check: bioutil says nothing: no claim about fingerprints" "ok: the VM's key, OmacVM Bridge ready" "$(mac_check parallels on)"
+expect "check: bioutil says nothing: no claim about fingerprints" "ok: the VM's key, OmacVM Bridge ready" "$(mac_check other on)"
 
 # ---- the VM's check: "Touch ID last request" (journalctl -t omacvm-touchid) ----
 gk=$(part "$R/src/guest/check.sh" '^  # How the last request went' '^  # The Mac.s Touch ID panel draws')

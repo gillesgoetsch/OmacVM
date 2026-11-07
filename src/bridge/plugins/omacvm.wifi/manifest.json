@@ -4,7 +4,7 @@
   "name": "Mac Wi-Fi",
   "version": "1.0.0",
   "author": "OmacVM (based on Omarchy's network widget)",
-  "description": "The Mac host's Wi-Fi in a Parallels VM, via omacvm-bridge",
+  "description": "The Mac host's Wi-Fi in an OmacVM.app VM, via omacvm-bridge",
   "kinds": [
     "bar-widget"
   ],
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "Mac Wi-Fi",
-    "description": "The Mac host's Wi-Fi in a Parallels VM, via omacvm-bridge",
+    "description": "The Mac host's Wi-Fi in an OmacVM.app VM, via omacvm-bridge",
     "category": "Network",
     "allowMultiple": false
   },

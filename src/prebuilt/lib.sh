@@ -7,7 +7,6 @@ PREBUILT_NAME=Omarchy               # the VM's name inside the archive
 PREBUILT_DISK_GB=64                 # the image's disk; grown on install
 # Features of the image build; omacvm build --prebuilt then applies the chosen ones.
 PREBUILT_FEATURES="bridge=on wallpaper=on gestures=on scroll-momentum=off omanotch=off mac-clock=on camera=on battery=off external-brightness=on no-idle-lock=off autologin=off thp-kernel=off"
-UTM_DOCS=$HOME/Library/Containers/com.utmapp.UTM/Data/Documents
 
 PREBUILT_CACHE=$HOME/Library/Caches/omacvm/prebuilt
 
@@ -15,6 +14,8 @@ PREBUILT_CACHE=$HOME/Library/Caches/omacvm/prebuilt
 # version and a version up to this one (the first omacvm apply brings its
 # guest side to this version). Sets PB_TAG, PB_MANIFEST (local file), PB_SIZE
 # (bytes), PB_UNPACKED_KB, PB_OMARCHY, PB_VERSION, PB_SOURCE (base URL or folder).
+# From 3.4.0 only an image whose signed manifest says Omarchy 4.5 or later
+# (manifest.py OMARCHY_FLOOR): an older one is not offered, the VM is built here.
 # $OMACVM_PREBUILT_SOURCE: a folder with the files (tests);
 # $OMACVM_PREBUILT_TAG: only that release.
 prebuilt_lookup() {
@@ -59,6 +60,7 @@ PY2
   [[ $route == "$type" ]] || return 1
   PB_VERSION=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" omacvm) || return 1
   PB_OMARCHY=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" omarchy) || return 1
+  python3 "$R/src/prebuilt/manifest.py" fits "$version" "$PB_OMARCHY" || return 1
   PB_SIZE=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" size) || return 1
   PB_BUNDLE=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" bundle) || return 1
   PB_DISK_GB=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" disk_gb) || return 1
@@ -143,22 +145,6 @@ prebuilt_unpack() {
   [[ -d $to/$PB_BUNDLE ]] || die "the image did not unpack ($to/$PB_BUNDLE missing)"
 }
 
-# prebuilt_unpack_bundle WORK TYPE: the image's bundle into WORK (emptied
-# first). Only <bundle>/ comes out of the archive, and bundlecheck.py then
-# wants exactly the files that route's images hold, as plain files, and
-# settings and disks that name nothing outside the bundle: a link or a path
-# would have Parallels, UTM or Fusion use some other file on the Mac. Anything
-# else: WORK goes and the image is not used.
-prebuilt_unpack_bundle() {
-  local u=$1 type=$2 msg
-  [[ $PB_BUNDLE == "$PREBUILT_NAME$(case $type in (parallels) echo .pvm ;; (utm) echo .utm ;; (*) echo .vmwarevm ;; esac)" ]] ||
-    die "the image's bundle is not $PREBUILT_NAME for $type: not used"
-  rm -rf "$u"
-  ( prebuilt_unpack "$u" "$PB_BUNDLE" ) || { rm -rf "$u"; exit 1; }   # it said why
-  msg=$(python3 "$R/src/prebuilt/bundlecheck.py" "$type" "$u" "$PREBUILT_NAME" 2>&1) ||
-    { rm -rf "$u"; die "the image is not used: $(printf '%s' "${msg:-the check failed}" | printable | head -c 300)"; }
-}
-
 # Text from the VM on its way to a terminal: colour codes out, then only
 # printable ASCII and tabs (no other escape sequences: a guest could set the
 # window title or the Mac's clipboard), lines cut at 240 characters. Line by
@@ -212,7 +198,7 @@ prebuilt_cleanup() {   # the downloaded parts (kept with OMACVM_PREBUILT_KEEP=1)
 
 # prebuilt_seed ISO: the answers for the VM's first boot, on a small ISO
 # labelled OMACVM-SEED. Needs U FULL HASH HOST KB TZ_MAC LANG_VM TYPE (and
-# SEED_DISPLAY, SEED_NET); the root key is $KEY.pub. The answers hold the
+# SEED_NET); the root key is $KEY.pub. The answers hold the
 # password hash: only the user can read them, from the first byte (umask), and
 # the work folder goes however this ends (a subshell with its own trap).
 prebuilt_seed() (
@@ -226,7 +212,6 @@ prebuilt_seed() (
     echo "ROOT_KEY=$(b "$(cat "$KEY.pub")")"
     echo "HOSTNAME=$(b "$HOST")"; echo "KEYBOARD=$(b "$KB")"; echo "TIMEZONE=$(b "$TZ_MAC")"
     echo "LANG=$(b "$LANG_VM")"; echo "TYPE=$(b "$TYPE")"
-    if [[ -n ${SEED_DISPLAY:-} ]]; then echo "DISPLAY=$(b "$SEED_DISPLAY")"; fi
     if [[ -n ${SEED_NET:-} ]]; then echo "NET=$(b "$SEED_NET")"; fi
   } > "$d/seed.env"
   rm -f "$1"

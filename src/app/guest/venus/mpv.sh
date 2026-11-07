@@ -1,8 +1,8 @@
 #!/bin/bash
-# mpv.sh (as root, in an OmacVM.app or UTM VM): mpv's defaults for the VM, in a
+# mpv.sh (as root, in an OmacVM.app VM): mpv's defaults for the VM, in a
 # marked block of the system-wide mpv.conf. mpv reads the user's
 # ~/.config/mpv/mpv.conf after it, so a vo or gpu-api line there wins.
-# - vo=gpu in every app and UTM VM (both draw OpenGL with virgl, with the same
+# - vo=gpu in every app VM (it draws OpenGL with virgl, with the same
 #   Mesa and mpv). mpv's default output, gpu-next, leaks a GL fence per
 #   frame on OpenGL: mpv presents through its own swap_buffers, and libplacebo
 #   frees its frame fences only in pl_swapchain_swap_buffers, which mpv never
@@ -16,7 +16,10 @@
 #   mode). OpenGL (virgl) plays it.
 #   mpv.sh          write the block for the VM's graphics now
 #   mpv.sh --off    the same (older callers ran it when Vulkan was switched off)
-# The rest of the file is left as it is.
+# The rest of the file is left as it is. Omarchy 4.5's omarchy-settings ships
+# the file itself (hwdec=auto-safe) and its updates replace it: a pacman hook
+# (zz-omacvm-mpv.hook) runs this again after them. Nothing ships the file on
+# Omarchy 4.0, where the hook never fires.
 # Tests: src/tests/venus-driver.sh (offline).
 set -euo pipefail
 DEST=${OMACVM_MPV_ROOT:-}
@@ -25,6 +28,8 @@ ENVF=$DEST/etc/omacvm/env
 OURS=$DEST/etc/vulkan/icd.d/omacvm_venus_icd.json
 BEGIN='# OmacVM: begin (vo=gpu: gpu-next leaks a file per frame here; gpu-api=opengl: no video on Venus yet; ~/.config/mpv/mpv.conf wins)'
 END='# OmacVM: end'
+HOOK=$DEST/etc/pacman.d/hooks/zz-omacvm-mpv.hook
+SELF=/usr/local/share/omacvm/app/guest/venus/mpv.sh
 
 strip() {   # the file without our block
   [[ -f $CONF ]] || return 0
@@ -44,4 +49,17 @@ api=""
 strip
 mkdir -p "$(dirname "$CONF")"
 printf '%s\nvo=gpu%s\n%s\n' "$BEGIN" "$api" "$END" >> "$CONF"
+mkdir -p "$(dirname "$HOOK")"
+cat > "$HOOK" <<EOF
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = etc/mpv/mpv.conf
+
+[Action]
+Description = OmacVM: mpv's defaults for the VM (vo=gpu)
+When = PostTransaction
+Exec = /bin/sh -c '[ ! -x $SELF ] || $SELF >/dev/null'
+EOF
 echo "mpv: vo=gpu${api:+, OpenGL} (~/.config/mpv/mpv.conf can choose)"

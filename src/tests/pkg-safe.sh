@@ -215,6 +215,38 @@ out=$("$G" end 2>&1); rc=$?
 [[ $rc == 0 && $(cat "$T/calls") == "omarchy update -y" ]] && pass "system-update inside an install: end keeps the update" ||
   fail "end after a system update: rc $rc, calls '$(cat "$T/calls")', said '$out'"
 
+# A move to Omarchy 4.5 stopped before its package switch was done
+# (guest/omarchy-move.sh pending): no package changes, else a switch Resume
+# can finish becomes one only Undo can (src/tests/omarchy-move.sh: when).
+mkdir -p "$T/mv"; echo interrupted > "$T/mv/state"; echo commit > "$T/mv/phase"; echo download > "$T/mv/phase-done"
+: > "$T/mv/commit-started"
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$S" 2>&1); rc=$?
+[[ $rc == 1 && ! -s $T/calls && $out == *"not updated: the move to Omarchy 4.5 is not finished"* ]] &&
+  pass "system-update while the move's switch is not done: not updated, says why" ||
+  fail "system-update, move pending: rc $rc, calls '$(cat "$T/calls")', said '$out'"
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$P" jq 2>&1); rc=$?
+[[ $rc == 1 && ! -s $T/calls && $out == *"jq not installed: the move to Omarchy 4.5 is not finished"* ]] &&
+  pass "pkg-add while the move's switch is not done: nothing installed, says why" ||
+  fail "pkg-add, move pending: rc $rc, calls '$(cat "$T/calls")', said '$out'"
+# Keep This Disk (omarchy-move.sh keep, told by apply) on that switch: refused
+# (the VM is between 4.0 and 4.5), so they still change nothing.
+krc=0; OMACVM_MOVE_DIR=$T/mv src/guest/omarchy-move.sh keep >/dev/null 2>&1 || krc=$?
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$S" 2>&1); rc=$?
+[[ $krc == 3 && ! -e $T/mv/kept && $rc == 1 && ! -s $T/calls && $out == *"not updated: the move to Omarchy 4.5 is not finished"* ]] &&
+  pass "Keep on a switch not done: refused (3), system-update still not updated" ||
+  fail "keep, switch not done: keep $krc, system-update rc $rc, calls '$(cat "$T/calls")', said '$out'"
+: > "$T/mv/commit-done"
+# Kept once the switch is done: the move is over here; system-update as always.
+krc=0; OMACVM_MOVE_DIR=$T/mv src/guest/omarchy-move.sh keep >/dev/null 2>&1 || krc=$?
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$S" 2>&1); rc=$?
+[[ $krc == 0 && -e $T/mv/kept && $rc == 0 && $(cat "$T/calls") == "omarchy update -y" ]] &&
+  pass "Keep after the switch: kept, system-update updates" ||
+  fail "keep after the switch: keep $krc, system-update rc $rc, calls '$(cat "$T/calls")', said '$out'"
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$P" jq 2>&1); rc=$?
+[[ $rc == 0 && $(cat "$T/calls") == "pacman -S --noconfirm jq" ]] && pass "pkg-add after the move's switch: as always" ||
+  fail "pkg-add after the switch: rc $rc, calls '$(cat "$T/calls")', said '$out'"
+rm -rf "$T/mv"
+
 vm; : > "$T/update-fails"
 out=$("$S" 2>&1); rc=$?; rm -f "$T/update-fails"
 [[ $rc == 1 && $out == *"omarchy update stopped (exit 1"* && $(awk '$1 == "mesa"' "$T/db") == "mesa 1:26.2.3-1" ]] &&
@@ -264,19 +296,23 @@ printf '#!/bin/bash\n[[ -e $T/pacman-running ]] || exit 1\n[[ $1 != -ax ]] || ec
 # The unit is a background job; its -p and -E names go to $T/units.
 cat > "$T/bin/systemd-run" <<'EOF2'
 #!/bin/bash
-envs=() post="" out=/dev/null
+# The session held for the update: noted, and the user's bus appears.
+if [[ " $* " == *" --unit=omacvm-system-update-session "* ]]; then
+  echo "session: $*" >> "$T/units"; mkdir -p "$T/run/user/$(id -u)"; : > "$T/run/user/$(id -u)/bus"; exit 0
+fi
+envs=() posts=() out=/dev/null
 while (( $# )); do
   case $1 in
     --quiet|--unit=*|--uid=*|--gid=*) shift ;;
     -p) echo "-p $2" >> "$T/units"
-        case $2 in ExecStopPost=*) post=${2#ExecStopPost=+} ;; StandardOutput=append:*) out=${2#StandardOutput=append:} ;; esac
+        case $2 in ExecStopPost=*) p=${2#ExecStopPost=+}; posts+=("${p//\/usr\/bin\/systemctl/systemctl}") ;; StandardOutput=append:*) out=${2#StandardOutput=append:} ;; esac
         shift 2 ;;
     -E) echo "-E ${2%%=*}" >> "$T/units"; [[ $2 == PATH=* ]] && envs+=("$2:/bin") || envs+=("$2"); shift 2 ;;
     *) break ;;
   esac
 done
 # shellcheck disable=SC2086 # the stop command and its words
-( env "${envs[@]}" "$@" >>"$out" 2>&1 & echo $! > "$T/unit.cmd"; wait $!; $post ) >/dev/null 2>&1 </dev/null 9>&- &
+( env "${envs[@]}" "$@" >>"$out" 2>&1 & echo $! > "$T/unit.cmd"; wait $!; for c in "${posts[@]}"; do $c; done ) >/dev/null 2>&1 </dev/null 9>&- &
 echo $! > "$T/unit.pid"
 EOF2
 cat > "$T/bin/systemctl" <<'EOF2'
@@ -290,7 +326,8 @@ fi
 case $1 in
   is-active) alive; exit ;;
   show) if alive; then echo active; else echo inactive; fi ;;
-  stop) if alive; then c=$(cat "$T/unit.cmd"); kill $c $(/usr/bin/pgrep -P "$c"); while alive; do sleep 0.1; done; fi ;;
+  stop) [[ $2 == omacvm-system-update ]] || exit 0   # the session held for it: nothing runs here
+        if alive; then c=$(cat "$T/unit.cmd"); kill $c $(/usr/bin/pgrep -P "$c"); while alive; do sleep 0.1; done; fi ;;
 esac
 exit 0
 EOF2
@@ -309,6 +346,14 @@ out=$(unit); rc=$?; rm -f "$T/sudoers-seen" "$T/orphans"
    $out == *"up to date"* ]] &&
   pass "system-update unit: sudo only while it runs, a time limit, the session's Hyprland, its exit status" ||
   fail "system-update unit: rc $rc, calls '$(tr '\n' ' ' < "$T/calls")', left '$(left)', units '$(tr '\n' ' ' < "$T/units")', said '$out'"
+# The user's systemd for the whole update: a login session held while it runs (Omarchy 4.5's migrations and its
+# update state need it; one that had just ended went away in the middle), the update gets its bus, the session ends.
+[[ $(grep -c '^session: .*--uid=.*-p PAMName=login .*sleep infinity' "$T/units") == 1 &&
+   $(grep -c -e '^-E XDG_RUNTIME_DIR' -e '^-E DBUS_SESSION_BUS_ADDRESS' "$T/units") == 2 &&
+   $(grep -c '^systemctl stop omacvm-system-update-session' "$T/units") -ge 1 &&
+   $(grep -c '^-p ExecStopPost=+/usr/bin/systemctl stop --no-block omacvm-system-update-session' "$T/units") == 1 ]] &&
+  pass "system-update unit: a session of the user's held while omarchy update runs (its bus, its runtime folder), ended after" ||
+  fail "system-update unit, the user's session: units '$(tr '\n' ' ' < "$T/units")'"
 
 vm; : > "$T/bus-away"; : > "$T/update-slow"
 out=$(unit); rc=$?; rm -f "$T/update-slow"
@@ -351,7 +396,7 @@ sed -e "s#/var/log/#$T/#" -e '/^(( EUID == 0 )) ||/d' src/app/guest/venus/vulkan
 ours=$(cd "$V" && bash -c 'source ./PKGBUILD && echo "$epoch:$pkgver-$pkgrel"')
 printf '#!/bin/bash\nexit 0\n' > "$T/bin/chown"
 printf '#!/bin/bash\nwhile [[ $1 != -- ]]; do shift; done; shift; exec "$@"\n' > "$T/bin/runuser"
-printf '#!/bin/bash\n: > "$PKGDEST/vulkan-virtio-%s-aarch64.pkg.tar.zst"\n' "$ours" > "$T/bin/makepkg"
+printf '#!/bin/bash\n: > "$PKGDEST/omacvm-vulkan-virtio-%s-aarch64.pkg.tar.zst"\n' "$ours" > "$T/bin/makepkg"
 cat > "$T/bin/vercmp" <<'EOF'
 #!/usr/bin/env python3
 import re, sys
@@ -396,7 +441,7 @@ prebuilt
 out=$(OMACVM_SYSTEM_UPDATE_OK=1 vv "$OFF" --want); rc=$?
 c=$(cut -d' ' -f1-3 "$T/calls" | uniq | tr '\n' ',')
 [[ $rc == 0 && $c == "pacman -S --noconfirm,omarchy update -y,pacman -S --noconfirm,pacman -U --noconfirm,pacman -Rns --noconfirm," &&
-   $(awk '$1 == "vulkan-virtio"' "$T/db") == "vulkan-virtio $ours" && $(awk '$1 == "mesa"' "$T/db") == "mesa 1:26.2.4-1" &&
+   $(awk '$1 == "omacvm-vulkan-virtio"' "$T/db") == "omacvm-vulkan-virtio $ours" && $(awk '$1 == "mesa"' "$T/db") == "mesa 1:26.2.4-1" &&
    $out == *"updating the whole system first"*"up to date"*"building"*"ready for the VM's next start"* &&
    $out != *"Update the system with omarchy update"* ]] &&
   pass "Graphics Vulkan, old package list: system updated, then the driver built" ||
@@ -411,7 +456,7 @@ rm_=$(grep 'pacman -Rns' "$T/calls")
 # What the update installed itself (an Omarchy migration) is never removed after.
 prebuilt 26.2.4; : > "$T/update-adds"
 out=$(OMACVM_SYSTEM_UPDATE_OK=1 vv "$OFF" --want); rc=$?
-[[ $rc == 0 && $(awk '$1 == "vulkan-virtio"' "$T/db") == "vulkan-virtio $ours" && -n $(meson) &&
+[[ $rc == 0 && $(awk '$1 == "omacvm-vulkan-virtio"' "$T/db") == "omacvm-vulkan-virtio $ours" && -n $(meson) &&
    $(grep 'pacman -Rns' "$T/calls") != *meson* ]] &&
   pass "the update brings the distro's 26.2.4 and meson: ours built (WebGPU), meson stays" ||
   fail "update with 26.2.4 and meson: rc $rc, calls '$(cat "$T/calls")', said '$out'"
@@ -454,6 +499,8 @@ FU=src/prebuilt/guest/first-update
 printf '#!/bin/bash\necho "omarchy-targets $*" >> "$T/calls"\n' > "$T/bin/omarchy-targets"; chmod +x "$T/bin/omarchy-targets"
 mkdir -p "$T/modules/$(uname -r)/kernel"
 export OMACVM_OMARCHY_TARGETS=$T/bin/omarchy-targets OMACVM_SYSTEM_UPDATE=$PWD/$S OMACVM_MODULES=$T/modules
+export OMACVM_ARM_PACKAGE_SOURCES=$T/arm-package-sources.sh OMACVM_PREBUILT_KEYRING=$T/no-keyring-request
+: > "$OMACVM_ARM_PACKAGE_SOURCES"   # omarchy-mac 4.0's file (an Omarchy 4.5 image has none)
 image() {   # the image's system and package list; the mirrors have moved on (404s)
   vm; grep -vE '^(opencl-mesa|lldb) ' "$T/sync" | sed 's/^mesa 1:26.2.4-1/mesa 1:26.2.3-1/; s/^llvm-libs 23.1.1-1/llvm-libs 22.1.8-2/' > "$T/sync.n"
   printf '%s\n' "opencl-mesa 1:26.2.3-1 mesa llvm-libs" "clinfo 3.0.25-1" >> "$T/sync.n"; mv "$T/sync.n" "$T/sync"
@@ -470,6 +517,12 @@ out=$("$FU" 2>&1); rc=$?
    $(awk '$1 == "mesa"' "$T/db") == "mesa 1:26.2.4-1" ]] &&
   pass "first-update: ARM targets fixed, then omarchy update -y; same kernel: no restart" ||
   fail "first-update: rc $rc, calls '$(tr '\n' ' ' < "$T/calls")', said '$out'"
+image; rm -f "$OMACVM_ARM_PACKAGE_SOURCES"; : > "$T/calls"
+out=$("$FU" 2>&1); rc=$?
+[[ $rc == 0 && $(tr '\n' ' ' < "$T/calls") == "omarchy update -y " && $out != *"targets not fixed"* ]] &&
+  pass "first-update on an Omarchy 4.5 image: no omarchy-targets, omarchy update -y" ||
+  fail "first-update, 4.5: rc $rc, calls '$(tr '\n' ' ' < "$T/calls")', said '$out'"
+: > "$OMACVM_ARM_PACKAGE_SOURCES"
 out=$("$P" opencl-mesa clinfo 2>&1); rc=$?
 [[ $rc == 0 && $(awk '$1 == "opencl-mesa"' "$T/db") == "opencl-mesa 1:26.2.4-1" ]] &&
   pass "fresh prebuilt VM after first-update: opencl-mesa installs (the mirrors' version)" ||
@@ -525,8 +578,13 @@ grep -q '"$R/guest/gbm-guard" begin && GBM_GUARD=1' src/guest/install.sh &&
   fail "guest/install.sh does not run the GBM guard"
 bad=$(git grep -nE 'pacman +(-S[a-zA-Z]*|--sync)( |$)' -- 'src/**' ':!src/tests/**' ':!src/guest/pkg-add' ':!src/vm/**' \
   ':!**/*.md' ':!src/bench/**' | grep -vE '^[^:]+:[0-9]+:\s*#' |
-  grep -vE 'pacman -(Syu|Scc|Si) |\(pacman -S [a-z0-9 -]*\)|pacman -Q openssh [^|]*\|\| pacman -S |"\$k-headers"' || true)
-# Allowed above: a full update, cache cleaning and reads; "(pacman -S x)" in a
+  grep -vE '^src/guest/omarchy-move\.sh:[0-9]+:.*pacman -Syy --noconfirm|^src/guest/omarchy-move\.sh:[0-9]+:.*cmd_pacman -S --noconfirm --ask 4 .*commit-plan|pacman -(Syu|Sy?y?uuw?|Scc|Si|Slq|Sddp) |\(pacman -S [a-z0-9 -]*\)|pacman -Q openssh [^|]*\|\| pacman -S |"\$k-headers"' || true)
+# Allowed above: a full update (also -uu: the move to Omarchy 4.5 and its
+# install take the snapshot's versions; omarchy-move.sh's lists again before
+# one more try of the same transaction, and its download list; after a
+# switch cut off once pacman wrote it, the same packages at the same
+# versions again from the cache, for their hooks), cache
+# cleaning and reads (-Si, -Slq, -Sddp --print); "(pacman -S x)" in a
 # message; openssh only when missing; the kernel's own headers version (dkms.sh).
 [[ -z $bad ]] && pass "no pacman -S/-Sy in guest code outside guest/pkg-add" || { fail "pacman -S outside guest/pkg-add:"; echo "$bad"; }
 ! grep -q OMACVM_SYSTEM_UPDATE_OK src/app/guest/install.sh src/guest/install.sh src/cmd/apply.sh &&

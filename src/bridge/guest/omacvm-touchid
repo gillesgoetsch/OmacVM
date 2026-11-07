@@ -15,7 +15,7 @@ Keys (root, 0600, put there by omacvm apply): /etc/omacvm/touchid-key (this
 VM's Touch ID key, the Mac has the same) and /etc/omacvm/touchid-token (the
 Bridge token, only sent to a Bridge that proved it knows it).
 
-Parallels, UTM, Fusion: TCP to the Bridge. OmacVM.app: the virtio port
+OmacVM.app: the virtio port
 /dev/virtio-ports/org.omacvm.auth (root, 0600; every start of the VM has it
 from OmacVM.app 3.0.4, 3.0.2-3.0.3 only with touch-id on at the start), which
 the app passes on to the Bridge; there the app adds the token. Lines, one
@@ -558,7 +558,7 @@ def request():
         token = secret("touchid-token")
     except (OSError, ValueError):
         return password(WHY["token"])
-    host = E.get("OMACVM_TOUCHID_HOST") or env.get("OMACVM_HOST") or "10.211.55.2"
+    host = E.get("OMACVM_TOUCHID_HOST") or env.get("OMACVM_HOST") or "10.0.2.2"
     if not re.fullmatch(r"[0-9.]{7,15}", host):
         return password("no Mac address in /etc/omacvm/env: omacvm apply on the Mac")
 

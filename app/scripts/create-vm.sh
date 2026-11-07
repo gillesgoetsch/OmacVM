@@ -1,6 +1,7 @@
 #!/bin/bash
-# Build a new OmacVM VM from nothing: Arch Linux ARM + Omarchy (omarchy-mac) on
-# one raw disk that boots through UEFI and GRUB. 10-30 minutes, mostly downloads.
+# Build a new OmacVM VM from nothing: Arch Linux ARM + Omarchy 4.5 (Omarchy's
+# own aarch64 repos, the latest stable release) on one raw disk that boots
+# through UEFI and GRUB. 10-30 minutes, mostly downloads.
 #
 #   create-vm.sh VM_DIR        (OMACVM_CREATE_NO_MAC=1: without the Mac helpers;
 #                               OMACVM_CREATE_IMAGE=1: for a prebuilt image, nothing of this Mac)
@@ -66,7 +67,8 @@ vm_script() {
   if [[ ${OMACVM_PROGRESS:-} == 1 ]]; then cat "$OMACVM_SRC/vm/progress.sh"; fi
   cat "$OMACVM_SRC/vm/$1"
 }
-if ! run_logged "$LOG/base-install.log" vssh "bash -s" < <(vm_script base-install.sh); then
+ROUTE=$(omarchy_route) CH45=$(omarchy45_channel)
+if ! run_logged "$LOG/base-install.log" vssh "OMACVM_OMARCHY=$ROUTE OMARCHY_CHANNEL=$CH45 bash -s" < <(vm_script base-install.sh); then
   # pacstrap's full output is only in the live system: keep it with the log.
   { echo "---- /root/pacstrap.log ----"; vssh "cat /root/pacstrap.log" < /dev/null; } >> "$LOG/base-install.log" 2>&1 || true
   die "the Arch Linux ARM install failed (log: $LOG/base-install.log)"
@@ -82,13 +84,23 @@ qemu_headless system "${QEMU_UEFI[@]}" \
 wait_ssh 300 || die "the new system did not answer on SSH (log: $LOG/system-console.log)"
 
 # ---------- 4. Omarchy ----------
-step 4 "Installing Omarchy (omarchy-mac)"   # the window says how long it usually takes
-CHANNEL=$(omarchy_channel)
-# Omarchy's ARM package targets its repo has (omacom/omarchy-mac#741): omarchy-install.sh uses it.
-vssh "install -Dm755 /dev/stdin /usr/local/lib/omacvm/omarchy-targets.sh" < "$OMACVM_SRC/guest/omarchy-targets.sh" ||
-  die "could not copy omarchy-targets.sh into the VM"
-run_logged "$LOG/omarchy-install.log" vssh "OMARCHY_MAC_CHANNEL=$CHANNEL bash -s" < <(vm_script omarchy-install.sh) ||
-  die "Omarchy did not install (log: $LOG/omarchy-install.log)"
+if [[ $ROUTE == 4.5 ]]; then
+  step 4 "Installing Omarchy 4.5"   # the window says how long it usually takes
+  # omarchy-move.sh with Omarchy 4.5's repo files and package key (omarchy-45/).
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$OMACVM_SRC/guest" -cf - omarchy-move.sh omarchy-45 |
+    vssh "mkdir -p /usr/local/lib/omacvm && tar -C /usr/local/lib/omacvm --no-same-owner -xf -" ||
+    die "could not copy omarchy-move.sh into the VM"
+  run_logged "$LOG/omarchy-install.log" vssh "OMACVM_OMARCHY=4.5 OMARCHY_CHANNEL=$CH45 bash -s" < <(vm_script omarchy-install.sh) ||
+    die "Omarchy did not install (log: $LOG/omarchy-install.log)"
+else
+  step 4 "Installing Omarchy (omarchy-mac)"   # tests only (OMACVM_TEST_OMARCHY=4.0)
+  CHANNEL=$(omarchy_channel)
+  # Omarchy's ARM package targets its repo has (omacom/omarchy-mac#741): omarchy-install.sh uses it.
+  vssh "install -Dm755 /dev/stdin /usr/local/lib/omacvm/omarchy-targets.sh" < "$OMACVM_SRC/guest/omarchy-targets.sh" ||
+    die "could not copy omarchy-targets.sh into the VM"
+  run_logged "$LOG/omarchy-install.log" vssh "OMARCHY_MAC_CHANNEL=$CHANNEL bash -s" < <(vm_script omarchy-install.sh) ||
+    die "Omarchy did not install (log: $LOG/omarchy-install.log)"
+fi
 vssh "rm -f /root/omacvm.env"   # it holds the password hash
 
 # ---------- 5. OmacVM in the VM ----------

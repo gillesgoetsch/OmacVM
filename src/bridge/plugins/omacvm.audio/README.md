@@ -1,12 +1,12 @@
 # omacvm.audio
 
-Omarchy bar widget for the Mac host's audio in a Parallels VM. It is a clone of
+Omarchy bar widget for the Mac host's audio in an OmacVM.app VM. It is a clone of
 Omarchy's `omarchy.audio` (MIT, see `LICENSE`), driven by the Mac-side
 `omacvm-bridge` helper.
 
 - Volume, mute, input volume and mute, and output/input device switching all
   act on the **Mac** through `omacvm-bridge`.
-- The **input level meter** reads the VM side: Parallels feeds the Mac's
+- The **input level meter** reads the VM side: OmacVM.app feeds the Mac's
   current input into the VM, so PipeWire's default source carries exactly what
   apps in the VM hear. It uses Omarchy's own `PwNodePeakMonitor`.
 

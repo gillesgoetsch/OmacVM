@@ -257,8 +257,6 @@ def parse_mac_checks(items: list[dict]) -> list[Check]:
 
 def local_avail(f: Feature, vm_type: str) -> Avail | None:
     """What the VM knows by itself; None: only the Mac can tell."""
-    if "not-parallels" in f.tags and vm_type == "parallels":
-        return Avail(False, "Parallels does it itself")
     if "app-only" in f.tags and vm_type != "app":
         return Avail(False, "OmacVM.app only")
     return None

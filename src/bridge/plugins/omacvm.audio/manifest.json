@@ -4,7 +4,7 @@
   "name": "Mac Audio",
   "version": "1.0.0",
   "author": "OmacVM (based on Omarchy's audio widget)",
-  "description": "The Mac host's volume, mute and audio devices in a Parallels VM, via omacvm-bridge",
+  "description": "The Mac host's volume, mute and audio devices in an OmacVM.app VM, via omacvm-bridge",
   "kinds": [
     "bar-widget"
   ],
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "Mac Audio",
-    "description": "The Mac host's volume, mute and audio devices in a Parallels VM, via omacvm-bridge",
+    "description": "The Mac host's volume, mute and audio devices in an OmacVM.app VM, via omacvm-bridge",
     "category": "Audio",
     "allowMultiple": false
   },

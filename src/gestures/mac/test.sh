@@ -1,8 +1,9 @@
 #!/bin/bash
 # Offline test (no VM, no permissions) of the Mac helper's own handshake and
 # choice (test-gestures.c) against the guest daemon's own run() (omacvm-gestures):
-# 1. An OmacVM.app VM on its fast network (192.168.77.1) counts as the app's,
-#    never UTM's, and a UTM VM never as the app's.
+# 1. An OmacVM.app VM on its fast network (192.168.77.1) counts as the app's;
+#    the helper listens on OmacVM.app's addresses only (the retired routes'
+#    networks get nothing, 3.4.0); the VM named in the window title gets them.
 # 2. An app VM on the fast network as in the VM: the gateway is 192.168.77.1,
 #    so it connects there and both proofs name 192.168.77.1. Then the app moves
 #    it to the user network (the gateway becomes 10.0.2.2): it connects again
@@ -187,22 +188,27 @@ fail=0
 expect() { if grep -qxF "$2" "$1"; then echo "ok   $2"; else echo "FAIL $2" >&2; fail=1; fi; }
 reject() { if grep -qxF "$2" "$1"; then echo "FAIL not: $2" >&2; fail=1; else echo "ok   not: $2"; fi; }
 
-# 1. Which VM gets them: an app VM on the fast network's listener, a UTM VM on UTM's
-#    (both stay connected until the Mac side is done).
-mac "$T/out" 4 1   # NET_APP_FAST, NET_UTM
+# 1. Which VM gets them: an app VM on the fast network's listener, another on
+#    127.0.0.1 (both stay connected until the Mac side is done). The helper
+#    listens for OmacVM.app only: the retired routes' networks get nothing.
+mac "$T/out" 1 0   # NET_APP_FAST, NET_APP
 guest "App VM" app "" hold OMACVM_GESTURES_HOST=127.0.0.1 > "$T/guest1" 2>&1 &
 G1=$!; PIDS="$MAC $G1"
 for _ in $(seq 100); do grep -q "^accepted 1" "$T/out" && break; sleep 0.1; done
-guest "UTM VM" utm "" hold OMACVM_GESTURES_HOST=127.0.0.1 > "$T/guest2" 2>&1 &
+guest "Work VM" app "" hold OMACVM_GESTURES_HOST=127.0.0.1 > "$T/guest2" 2>&1 &
 G2=$!; PIDS="$MAC $G1 $G2"
 wait "$MAC" || { cat "$T/err" "$T/guest1" "$T/guest2" >&2; exit 1; }
 killtree "$G1" "$G2"; wait "$G1" "$G2" 2>/dev/null || true
-expect "$T/out" "client App VM: app"
-expect "$T/out" "client UTM VM: utm"
-expect "$T/out" "UTM in front, title Windows: UTM VM"   # no name match: every UTM VM, never the app VM
-expect "$T/out" "UTM in front, title UTM VM: UTM VM"
+expect "$T/out" "client App VM: app"   # the fast network's VM counts as the app's
+expect "$T/out" "client Work VM: app"
+expect "$T/out" "listen 127.0.0.1"
+expect "$T/out" "listen 192.168.77.1"
+for retired in 10.211.55.2 192.168.64.1; do reject "$T/out" "listen $retired"; done   # the retired routes' Mac addresses
+[[ $(grep -c '^listen ' "$T/out") == 2 ]] && echo "ok   two listeners, OmacVM.app's" || { echo "FAIL listeners: $(grep '^listen ' "$T/out" | tr '\n' ' ')" >&2; fail=1; }
+expect "$T/out" "app in front, title Work VM: Work VM"
 expect "$T/out" "app in front, title App VM: App VM"
-expect "$T/out" "app in front, title App VM, app VM gone:"
+expect "$T/out" "app in front, title Windows: App VM Work VM"   # no name match: every VM of the app
+expect "$T/out" "no VM app in front:"
 
 # The VM's default gateway: the card whose link is up, lowest metric (the
 # vmnet card's route, link just taken down, is still listed first).
@@ -253,7 +259,7 @@ default_gateway'; }
 done
 
 # 2. The fast network as in the VM, then the move to the user network.
-mac "$T/out2" 4,192.168.77.1,192.168.77.2 3   # first on 192.168.77.1 from the VM's lease, then via 127.0.0.1
+mac "$T/out2" 1,192.168.77.1,192.168.77.2 0   # first on 192.168.77.1 from the VM's lease, then via 127.0.0.1
 guest "App VM" app 192.168.77.1 loop > "$T/guest3" 2>&1 &
 GUEST=$!; PIDS="$MAC $GUEST"
 for _ in $(seq 100); do grep -q "^accepted 1" "$T/out2" && break; sleep 0.1; done
@@ -275,14 +281,14 @@ expect "$T/out2" "live App VM 127.0.0.1"         # one connection: the old one w
 reject "$T/out2" "live App VM 192.168.77.2"
 # 2c. The guest's connection ends: closed by the VM (it stopped), or reset (keepalive
 #     while the Mac slept): dropped at once and said so, not kept until a send fails.
-TEST_WAIT_GONE=1 mac "$T/out6" 3
+TEST_WAIT_GONE=1 mac "$T/out6" 0
 guest "App VM" app "" once OMACVM_GESTURES_HOST=127.0.0.1 > "$T/guest6" 2>&1 || true
 wait "$MAC" || true
 expect "$T/out6" "accepted 1"
 grep -q "guest disconnected: 127.0.0.1 (closed by the VM)" "$T/out6" && echo "ok   a connection the VM closed: dropped and logged" ||
   { echo "FAIL a connection the VM closed: not logged" >&2; fail=1; }
 reject "$T/out6" "live App VM 127.0.0.1"
-TEST_WAIT_GONE=1 mac "$T/out7" 3
+TEST_WAIT_GONE=1 mac "$T/out7" 0
 guest "App VM" app "" reset OMACVM_GESTURES_HOST=127.0.0.1 > "$T/guest7" 2>&1 || true
 wait "$MAC" || true
 grep -q "guest disconnected: 127.0.0.1 (connection reset)" "$T/out7" && echo "ok   a connection reset: dropped and logged" ||
@@ -292,7 +298,7 @@ reject "$T/out7" "live App VM 127.0.0.1"
 #     hello; where its swipes go ("E") is kept with its connection, and its "X left"
 #     (daemons 3.1.0-3.1.5) is read and acted on by the Mac (no VM in front here:
 #     ignored, and said so); with it off the guest never hears "X on".
-TEST_SWIPE_OUT=1 mac "$T/out4" 3
+TEST_SWIPE_OUT=1 mac "$T/out4" 0
 guest "App VM" app "" swipe OMACVM_GESTURES_HOST=127.0.0.1 > "$T/guest4" 2>&1 || true
 wait "$MAC" || true
 expect "$T/guest4" "guest: swipe out on 2"
@@ -300,16 +306,7 @@ grep -q 'swipe out to the left from "App VM": its VM is not the one in front: ig
   echo "ok   swipe out: the guest's X left reached the Mac over its connection (and was checked)" ||
   { echo "FAIL swipe out: the Mac did not read the guest's X left" >&2; cat "$T/out4" >&2; fail=1; }
 expect "$T/out4" "edges App VM 1 -1 ways 10 10"   # its "E right left" and "G 4lr", kept with its connection
-# ... the same on the other three routes (each on its own network's address).
-for r in "parallels 0 10.211.55.2" "utm 1 192.168.64.1" "fusion 2 172.16.5.1"; do
-  set -- $r
-  TEST_SWIPE_OUT=1 mac "$T/out-$1" "$2,$3"
-  guest "$1 VM" "$1" "" swipe OMACVM_HOST="$3" > "$T/guest-$1" 2>&1 || true
-  wait "$MAC" || true
-  expect "$T/guest-$1" "guest: swipe out on 2"
-  expect "$T/out-$1" "edges $1 VM 1 -1 ways 10 10"
-done
-mac "$T/out5" 3
+mac "$T/out5" 0
 guest "App VM" app "" swipe OMACVM_GESTURES_HOST=127.0.0.1 > "$T/guest5" 2>&1 || true
 wait "$MAC" || true
 reject "$T/guest5" "guest: swipe out on"
@@ -351,9 +348,6 @@ grep -E '^(ok|FAIL|skip) ' "$T/retry"
 # ... and install.sh's gesture lines: only for a count with no sideways gesture yet.
 bash "$HERE/../guest/test-install-gestures.sh" > "$T/install-gestures" 2>&1 || fail=1
 grep -E '^(ok|FAIL) ' "$T/install-gestures"
-# The pointer at rest over a full-screen VM: 0.5 s looks with the rest tap, else 20 Hz (cursor-rest.h).
-clang -O1 -Wall -o "$T/test-cursor-rest" "$HERE/test-cursor-rest.c" && "$T/test-cursor-rest" > "$T/cursor-rest" 2>&1 || fail=1
-grep -E '^(ok|FAIL) ' "$T/cursor-rest"
 # 6. Which scrolling scroll momentum takes.
 clang -O1 -Wall -Wno-unused-function -o "$T/test-scroll" "$HERE/test-scroll.c" "$HERE/scroll_ns.m" \
   -F/System/Library/PrivateFrameworks -framework MultitouchSupport -framework ApplicationServices -framework Carbon \

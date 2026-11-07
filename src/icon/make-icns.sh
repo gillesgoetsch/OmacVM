@@ -1,8 +1,8 @@
 #!/bin/bash
 # OmacVM's icon (icon/omacvm.svg: the ⌘ key's loops around Omarchy's mark) as
 # an .icns or a PNG, with macOS's own tools:
-#   icon/make-icns.sh <out.icns>        (app bundles, the Parallels VM)
-#   icon/make-icns.sh <out.png> [size]  (UTM's VM icon; default 512)
+#   icon/make-icns.sh <out.icns>        (app bundles)
+#   icon/make-icns.sh <out.png> [size]  (default 512)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 OUT=${1:?usage: make-icns.sh <out.icns|out.png> [size]}

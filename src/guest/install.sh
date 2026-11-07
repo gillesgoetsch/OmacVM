@@ -1,19 +1,18 @@
 #!/bin/bash
-# OmacVM, guest side: everything that makes Omarchy feel native in a VM on a
-# Mac, in Parallels or UTM. Run as root inside the VM from a copy of this
+# OmacVM, guest side: everything that makes Omarchy feel native in an
+# OmacVM.app VM on a Mac. Run as root inside the VM from a copy of this
 # repository's src/ (apply.sh puts it in /usr/local/share/omacvm):
-#   guest/install.sh --user NAME --keyboard "LAYOUT [VARIANT]" [--vm-type parallels|utm|fusion]
-#                    [--display WxH@Hz] [--display-scale N] [--feature NAME=on|off]... [--clock-format-b64 FMT]
+#   guest/install.sh --user NAME --keyboard "LAYOUT [VARIANT]" [--vm-type app]
+#                    [--feature NAME=on|off]... [--clock-format-b64 FMT]
 #                    [--vm-name-b64 NAME] [--only F,...] [--strict F,...|all]
-#                    [--graphics opengl|vulkan]   (--vm-type app: OmacVM.app) [--kernel-new build|keep]
+#                    [--graphics opengl|vulkan] [--kernel-new build|keep]
 # Features: the list in ../features.tsv (bridge, wallpaper, gestures, scroll-momentum,
 # omanotch, mac-clock, camera, no-idle-lock, autologin, thp-kernel, battery, external-brightness,
 # control-centre, fast-network, chromium-video, gpu-compute, vulkan, x86-apps, touch-id, mac-ime, drag-drop) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
 # so a later run without --feature keeps them.
-# --vm-type defaults to what the hardware says (Parallels or QEMU = UTM);
-# --display (UTM: the fixed mode, from display/mac-display.swift) is required on UTM.
-# --display-scale (Fusion, a new VM): the Mac display's scale (mac-display --scale).
+# --vm-type: app (OmacVM.app), the only one; anything else stops (exit 2):
+# 3.4.0 retired Parallels, UTM and VMware Fusion.
 # --vm-name-b64: the VM's name in its app, base64 (kept in /etc/omacvm/env): the
 # gestures daemon says it, so the Mac tells two VMs of one app apart.
 # Idempotent: run it again after an update of this repository.
@@ -21,6 +20,9 @@
 # system steps are skipped. --strict F,...|all: a part of these features that
 # could not be set up fails the run (exit 1, after the other parts); without
 # it, such a part is only logged.
+# Exit 5: a move to Omarchy 4.5 stopped here before its package switch was
+# done (guest/omarchy-move.sh pending): nothing was set up. The move's own
+# apply passes OMACVM_MOVE_RUN=1 and gets exit 0 then.
 # --graphics (OmacVM.app): what the VM's Graphics setting gives it on this Mac
 # (the Mac decides Automatic); vulkan builds its Venus driver ahead of the
 # start that gets Vulkan. Kept in /etc/omacvm/env.
@@ -31,7 +33,7 @@
 # Needs, for the bridge, the token from the Mac in ~/.config/omacvm-bridge/token.
 set -euo pipefail
 R=$(cd "$(dirname "$0")/.." && pwd)
-U=""; KB="us"; TYPE=""; MODE=""; DSCALE=""; CLOCK_FMT=""; NAME64=""; ONLY=""; STRICT=""; SOFT=(); GRAPHICS=""; KERNEL_NEW=keep
+U=""; KB="us"; TYPE=app; CLOCK_FMT=""; NAME64=""; ONLY=""; STRICT=""; SOFT=(); GRAPHICS=""; KERNEL_NEW=keep
 FEATURES=(); declare -A F=() NEEDS=() SET=()
 while IFS=$'\t' read -r name def _ _ needs _; do
   [[ -z $name || $name == \#* ]] && continue
@@ -43,10 +45,6 @@ while (( $# )); do
     --user) U=$2; shift 2 ;;
     --keyboard) KB=$2; shift 2 ;;
     --vm-type) TYPE=$2; shift 2 ;;
-    --display) MODE=$2; shift 2 ;;
-    --display-scale) [[ $2 =~ ^[1-4](\.[0-9]+)?$ ]] || { echo "guest/install.sh: --display-scale 1 to 4" >&2; exit 2; }
-                     DSCALE=$2; shift 2 ;;
-    --host) HOST_GIVEN=$2; shift 2 ;;
     --clock-format-b64) CLOCK_FMT=$(base64 -d <<<"$2"); shift 2 ;;
     --vm-name-b64) NAME64=$2; shift 2 ;;
     --feature) f=${2%%=*} v=${2#*=}
@@ -63,10 +61,33 @@ while (( $# )); do
   esac
 done
 [[ -n $U ]] && id "$U" >/dev/null || { echo "guest/install.sh: --user must be the desktop user" >&2; exit 2; }
+# The move to Omarchy 4.5 runs (guest/omarchy-move.sh, its journal and lock):
+# nothing of this meanwhile, it changes the same packages and files.
+MV=${OMACVM_MOVE_DIR:-/var/lib/omacvm/move-4.5}
+if [[ $(cat "$MV/state" 2>/dev/null) == running && -e $MV/lock ]] && ! flock -n "$MV/lock" true 2>/dev/null; then
+  echo "guest/install.sh: the move to Omarchy 4.5 runs in this VM; try again when it is done" >&2
+  exit 3
+fi
+# The move stopped before its package switch was done (a Resume's Update VM
+# runs first): no package may change (features install and remove some,
+# gbm-guard puts some back, pacman's lock would go), else a switch Resume
+# can finish turns into one only Undo can. Nothing of this now: the move's
+# own Update VM after the switch does it all (guest/omarchy-move.sh pending).
+# The move's own apply (OMACVM_MOVE_RUN=1) goes on (exit 0); any other one
+# fails (exit 5), so apply records no part of this OmacVM as installed.
+if why=$("$R/guest/omarchy-move.sh" pending 2>/dev/null); then
+  echo "OmacVM: $why"
+  if [[ ${OMACVM_MOVE_RUN:-} == 1 ]]; then
+    echo "OmacVM: the VM side waits for the move (its Update VM after the switch sets it up)"
+    exit 0
+  fi
+  echo "guest/install.sh: nothing was set up: the move to Omarchy 4.5 is not finished in this VM; Resume or Undo it in OmacVM.app" >&2
+  exit 5
+fi
 log() { LAST_STEP=$*; printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 # A run that stops says where (apply shows it as what failed).
-# One EXIT trap for everything that must run at the end (Fusion's DNS below).
-LAST_STEP="the start"; REPORTED=""; FUSION_DNS=0; GBM_GUARD=0
+# One EXIT trap for everything that must run at the end.
+LAST_STEP="the start"; REPORTED=""; GBM_GUARD=0
 on_exit() {
   local rc=$?
   # The desktop's graphics (GBM) must open after this run as they did before
@@ -76,7 +97,6 @@ on_exit() {
     (( rc )) || { echo "guest/install.sh: failed during: the graphics check (GBM)" >&2; REPORTED=1; rc=1; }
   fi
   (( rc == 0 || rc == 2 )) || [[ -n $REPORTED ]] || echo "guest/install.sh: failed during: $LAST_STEP" >&2
-  (( ! FUSION_DNS )) || "$R/fusion/guest/dns.sh" off || true
   exit "$rc"
 }
 trap on_exit EXIT
@@ -149,40 +169,9 @@ for f in "${FEATURES[@]}"; do
   [[ ${F[$n]} == on ]] || F[$f]=off
 done
 
-# Which VM, and where its Mac is: Parallels' Mac is 10.211.55.2 on its shared
-# network; on UTM's shared network the Mac is the default gateway; on VMware
-# Fusion's NAT network the gateway is .2 and the Mac is .1.
-if [[ -z $TYPE ]]; then
-  case $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) in
-    Parallels*) TYPE=parallels ;;
-    QEMU*) TYPE=utm ;;
-    VMware*) TYPE=fusion ;;
-    *) echo "guest/install.sh: unknown VM, pass --vm-type parallels|utm|fusion" >&2; exit 2 ;;
-  esac
-fi
-case $TYPE in
-  parallels) HOST=10.211.55.2 ;;
-  app) HOST=10.0.2.2 ;;   # OmacVM.app: QEMU's user network always puts the Mac there
-  utm) HOST=$(ip route show default | awk '{ print $3; exit }'); : "${HOST:=192.168.64.1}"
-       [[ -n $MODE ]] || { echo "guest/install.sh: UTM needs --display WxH@Hz" >&2; exit 2; } ;;
-  fusion) HOST=${HOST_GIVEN:-}   # from the Mac (apply.sh): the gateway's network may not be Fusion's
-          [[ $HOST =~ ^[0-9]+\.[0-9]+\.[0-9]+\.1$ ]] || { echo "guest/install.sh: VMware Fusion needs --host (the Mac's address on Fusion's network)" >&2; exit 2; }
-          [[ -n $MODE ]] || { echo "guest/install.sh: VMware Fusion needs --display WxH@Hz" >&2; exit 2; } ;;
-  *) echo "guest/install.sh: --vm-type parallels, utm, fusion or app" >&2; exit 2 ;;
-esac
-# Parallels gives the VM the Mac's battery itself.
-[[ $TYPE == parallels ]] && F[battery]=off
-# The fast network is OmacVM.app's (the other apps have vmnet themselves).
-[[ $TYPE == app ]] || F[fast-network]=off
-# Chromium's video through V4L2 needs OmacVM.app's VA-API decoding.
-[[ $TYPE == app ]] || F[chromium-video]=off
-[[ $TYPE == app ]] || F[vulkan]=off
-[[ $TYPE == app ]] || F[gpu-compute]=off
-[[ $TYPE == app ]] || F[mac-ime]=off
-[[ $TYPE == app ]] || F[drag-drop]=off
-# Fusion: the public DNS from fusion/guest/install.sh goes again also when a
-# later step fails.
-[[ $TYPE == fusion ]] && FUSION_DNS=1
+# Where its Mac is: QEMU's user network always puts the Mac at 10.0.2.2.
+[[ $TYPE == app ]] || { echo "guest/install.sh: OmacVM 3.4.0 retired Parallels, UTM and VMware Fusion: --vm-type app (OmacVM.app) only" >&2; exit 2; }
+HOST=10.0.2.2
 {
   printf 'OMACVM_VM_TYPE=%s\nOMACVM_HOST=%s\nOMACVM_USER=%s\n' "$TYPE" "$HOST" "$U"
   [[ -z $NAME64 ]] || printf 'OMACVM_VM_NAME_B64=%s\n' "$NAME64"
@@ -260,8 +249,7 @@ fi
 
 if system; then
   log "system: SSH from the Mac, bootable snapshots, DNS fallback"
-  # Omarchy's firewall denies everything inbound; the Mac (Parallels' shared
-  # network) may still reach SSH.
+  # Omarchy's firewall denies everything inbound; the Mac may still reach SSH.
   ufw allow from "${HOST%.*}.0/24" to any port 22 proto tcp comment "omacvm: ssh from the Mac" >/dev/null 2>&1 || true
   # OmacVM.app's fast network (vmnet): the Mac reaches SSH from 192.168.77.1
   # (only the Mac: other VMs on that network do not). For every app VM, since
@@ -309,9 +297,9 @@ if system && command -v grub-mkconfig >/dev/null; then
   # Snapshots (snapper, set up by omarchy-mac) appear in the GRUB menu.
   "$R/guest/pkg-add" grub-btrfs inotify-tools
   # Read-only snapshots picked in GRUB boot with a temporary writable overlay
-  # (Omarchy does this with Limine on x86; omarchy-mac uses GRUB).
-  printf '%s\n' '[[ " ${HOOKS[*]} " == *" grub-btrfs-overlayfs "* ]] || HOOKS+=(grub-btrfs-overlayfs)' \
-    > /etc/mkinitcpio.conf.d/zz-omacvm.conf
+  # (Omarchy does this with Limine on x86; omarchy-mac uses GRUB); Omarchy
+  # 4.5's Limine hook out (the file says why).
+  install -Dm644 "$R/guest/mkinitcpio-omacvm.conf" /etc/mkinitcpio.conf.d/zz-omacvm.conf
   systemctl enable --now grub-btrfsd >/dev/null 2>&1 || true
   # Arch Linux ARM's kernel under a name GRUB pairs with its initramfs.
   "$R/kernel/stock-kernel.sh"
@@ -395,7 +383,7 @@ fi
 
 # Sound, speakers and microphone, on every route: PipeWire's ALSA, PulseAudio
 # and JACK parts (omarchy-mac installs them only on Apple hardware; the VM's
-# card is Parallels', Intel HDA on UTM and OmacVM.app, HD Audio on Fusion).
+# card is Intel HDA).
 # pipewire-jack replaces jack2.
 if system && ! pacman -Q pipewire-alsa pipewire-pulse pipewire-jack rtkit >/dev/null 2>&1; then
   log "sound: PipeWire's ALSA, PulseAudio and JACK parts"
@@ -413,17 +401,9 @@ if system && ! cmp -s "$R/guest/sound/rtkit-no-canary.conf" /etc/systemd/system/
   systemctl daemon-reload || true
   systemctl try-restart rtkit-daemon.service 2>/dev/null || true
 fi
-system && case $TYPE in
-  parallels)
-    log "display";    "$R/display/guest/install.sh" "$U"
-    log "clipboard";  "$R/clipboard/guest/install.sh" "$U" ;;
-  utm)
-    log "UTM";        "$R/utm/guest/install.sh" "$U" "$MODE" ;;
-  app)
-    log "OmacVM.app"; "$R/app/guest/install.sh" "$U" ;;
-  fusion)
-    log "VMware Fusion"; "$R/fusion/guest/install.sh" "$U" "$MODE" ${DSCALE:+"$DSCALE"} ;;
-esac
+if system; then
+  log "OmacVM.app"; "$R/app/guest/install.sh" "$U"
+fi
 # Hyprland settings every route needs (omacvm_vm.lua, each says why): Hyprland
 # 0.57's quirks:skip_non_kms_dmabuf_formats off, else virtio-gpu leaves apps no
 # format with alpha and the shell's panels and notifications black out the
@@ -567,9 +547,9 @@ if want control-centre; then
     "$R/control/guest/install.sh" "$U" "${F[control-centre]}" "$TYPE" || not_set_up control-centre "control centre"
   fi
 fi
-# The Mac's camera: Parallels passes it itself; elsewhere /dev/video42.
+# The Mac's camera: /dev/video42.
 if want camera; then
-  if [[ ${F[camera]} == on && $TYPE != parallels ]]; then log "camera (Mac Camera)"; fi
+  if [[ ${F[camera]} == on ]]; then log "camera (Mac Camera)"; fi
   "$R/camera/guest/install.sh" "$U" "$TYPE" "${F[camera]}" || not_set_up camera "camera"
 fi
 if ! want wallpaper; then
@@ -622,8 +602,7 @@ elif [[ ${F[omanotch]} == on ]]; then
       log "Omanotch: installs at the first login"
     fi
   fi
-  # The Mac's address, so notchcast does not have to guess it (on VMware
-  # Fusion the gateway is Fusion's NAT, not the Mac).
+  # The Mac's address, so notchcast does not have to guess it.
   home_mkdir "$H/.config/systemd/user/notchcast.service.d"
   # OmacVM.app: its display sync already follows the window.
   # Also no start while notchcast is being built again: an older unit file
@@ -725,6 +704,7 @@ grub_old=$(sed -n 's/^grub //p' $BOOT_STAMP 2>/dev/null || true)
 if [[ $(sed -n 's/^initramfs //p' $BOOT_STAMP 2>/dev/null || true) != "$init_in" ]]; then
   init_ok=; grub_old=
   if mkinitcpio -P >/dev/null 2>&1; then init_ok=$init_conf; fi
+  sync   # /boot is FAT: an image the VM loses power over before it is written comes back broken
 else
   init_ok=$init_in
 fi
@@ -732,15 +712,31 @@ grub_digest() { echo "$(digest /etc/default/grub /etc/grub.d/*)-$(ls /boot | sha
 grub_in=$(grub_digest)
 [[ -f /boot/grub/grub.cfg ]] || grub_in=missing
 grub_ok=$grub_in
+# GRUB's menu written beside the old one, on the disk, then put in its place:
+# grub-mkconfig rewrites grub.cfg in place, and a VM that lost power right
+# after that found an empty menu (a GRUB prompt, 2026-11-06).
 if [[ $grub_old != "$grub_in" ]] && command -v grub-mkconfig >/dev/null; then
-  if grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1; then grub_ok=$(grub_digest); else grub_ok=; fi
+  rm -f /boot/grub/grub.cfg.omacvm-new
+  if grub-mkconfig -o /boot/grub/grub.cfg.omacvm-new >/dev/null 2>&1 && [[ -s /boot/grub/grub.cfg.omacvm-new ]] &&
+     sync && mv -f /boot/grub/grub.cfg.omacvm-new /boot/grub/grub.cfg; then
+    grub_ok=$(grub_digest)
+  else
+    rm -f /boot/grub/grub.cfg.omacvm-new; grub_ok=
+  fi
 fi
 printf 'initramfs %s\ngrub %s\n' "$init_ok" "$grub_ok" | install -Dm644 /dev/stdin $BOOT_STAMP
-[[ $TYPE == fusion ]] && "$R/fusion/guest/dns.sh" off   # back to Fusion's DNS, which follows the Mac's
 for f in ${SOFT[@]+"${SOFT[@]}"}; do
   if [[ $STRICT == ",all," || $STRICT == *",$f,"* ]]; then
     echo "guest/install.sh: $f was not set up (see above)" >&2
     REPORTED=1; exit 1
   fi
 done
+# Omarchy 4.5 removes orphans on every update: OmacVM's packages and all
+# they need now are installed on purpose (new VMs, prebuilt ones, a moved VM,
+# every Update VM; a 4.0 VM gets it in the move).
+om_v=$(pacman -Q omarchy 2>/dev/null | awk '{ print $2 }')
+if [[ $om_v =~ ^([0-9]+)\.([0-9]+) ]] && (( BASH_REMATCH[1] > 4 || (BASH_REMATCH[1] == 4 && BASH_REMATCH[2] >= 5) )); then
+  "$R/guest/keep-explicit" >/dev/null || echo "guest/install.sh: OmacVM's packages not all marked as installed on purpose" >&2
+fi
+sync   # everything above on the disk: the Mac may stop the VM right after (Update VM, the move to Omarchy 4.5)
 log "OmacVM guest side installed for $U (reboot to apply everything)"

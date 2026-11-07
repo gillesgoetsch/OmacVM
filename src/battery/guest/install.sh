@@ -1,6 +1,6 @@
 #!/bin/bash
-# The Mac's battery in Omarchy's bar (UTM, VMware Fusion, OmacVM.app; Parallels
-# gives the VM its own). Run as root inside the VM: ./install.sh on|off
+# The Mac's battery in Omarchy's bar (OmacVM.app passes it on its own port).
+# Run as root inside the VM: ./install.sh on|off
 #   on:  the omacvm-battery kernel module through DKMS (rebuilt by pacman's
 #        DKMS hook for every new kernel that comes with its headers),
 #        loaded at boot; the agent omacvm-battery.service that feeds it the

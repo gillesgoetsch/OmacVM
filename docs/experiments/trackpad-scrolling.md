@@ -10,6 +10,9 @@ switches below (`--scroll`, `OMACVM_SCROLL_*`) became the per-VM feature and
 MAX_RATE, HOLD, DEBUG, RECORD); the wheel mode, the boosts and the
 acceleration curves were dropped.
 
+A record from before 3.4.0: the VM app it was tested in is no longer one
+of OmacVM's routes; the feature works the same in OmacVM.app.
+
 Developed on the branch `experiment/trackpad-scrolling`. Tested on the
 production Parallels VM (Omarchy 4.0.3rc4, Hyprland 0.56.2, libinput 1.32.0,
 Chromium 153) on a MacBook Pro M4 Max, macOS 15.7.4, Parallels Desktop 27.0.2.

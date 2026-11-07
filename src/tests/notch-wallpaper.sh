@@ -136,7 +136,7 @@ function check(name, screens, want) {
 var V1 = S("Virtual-1", 0, 0, 1470, 923)
 check("Air, OmacVM.app: NOTCH right above Virtual-1",
       [V1, S("NOTCH", 0, -33, 1470, 33)], "Virtual-1>NOTCH NOTCH>Virtual-1")
-check("Parallels/UTM: NOTCH over Virtual-1's top edge",
+check("another VM type: NOTCH over Virtual-1's top edge",
       [V1, S("NOTCH", 0, 0, 1470, 33)], "Virtual-1>NOTCH NOTCH>Virtual-1")
 check("16\" with a 6K above (user's layout), NOTCH between them",
       [S("Virtual-2", 0, 0, 3008, 1692), S("Virtual-1", 492, 1735, 2056, 1286), S("NOTCH", 492, 1692, 2056, 43)],

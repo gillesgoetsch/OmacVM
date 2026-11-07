@@ -58,7 +58,7 @@ on = false
 var copies = 0
 let front = FrontWindows(app: NSRunningApplication.current) { copies += 1; return [] }
 check(copies == 0, "no copy before a question needs the windows")
-_ = front.windows; _ = VMScreens.front(windowed: false, front); _ = front.windows
+_ = front.windows; _ = VMScreens.front(front); _ = front.windows
 check(copies == 1, "the window list copied \(copies) times for one key event, want 1")
 
 if failed > 0 { print("\(failed) failed"); exit(1) }

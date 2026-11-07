@@ -88,7 +88,7 @@ def test_older_app(vm):
 
 
 def test_not_an_app_vm(vm):
-    p, reqs = vm(lambda r: (200, STATE), "--json", vm_type="parallels")
+    p, reqs = vm(lambda r: (200, STATE), "--json", vm_type="other")
     assert p.returncode == 3 and reqs == []
     p, _ = vm(None, "--json", port=False)
     assert p.returncode == 3

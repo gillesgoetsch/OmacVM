@@ -283,7 +283,7 @@ apply() {   # TYPE GESTURES [BRIDGE] -> the installer's gestures argument and wh
     eval "$mac"
     echo "${args[*]:-none} token=$tok" )
 }
-for t in utm fusion app; do
+for t in app; do
   expect "$t, gestures off: Mac side skips Gestures" "--skip-gestures token=no" "$(apply $t off)"
   expect "$t, gestures on: Mac side installs Gestures" "none token=yes" "$(apply $t on)"
   expect "$t, gestures off, Bridge features on: the token" "--skip-gestures token=yes" "$(apply $t off on)"
@@ -475,7 +475,7 @@ h="; turned on while the VM was running? shut it down and start it again"
 expect "guest hint: app, port" "$h" "$(hint app 10.0.2.2 port)"
 expect "guest hint: app, battery/camera port" "$h" "$(hint app 192.168.77.1)"
 expect "guest hint: app on the fast network, port: none" "" "$(hint app 192.168.77.1 port)"
-expect "guest hint: UTM: none" "" "$(hint utm 192.168.64.1 port)"
+expect "guest hint: another VM type: none" "" "$(hint other 192.168.64.1 port)"
 for r in '"gestures" "service runs but is not connected to $HOST:47830$(restart_hint port)"' \
          'omacvm check on the Mac says$(restart_hint port))"' "OmacVM's Bridge: omacvm update\$(restart_hint port))\"" \
          'with the camera (omacvm update$(restart_hint))"' 'older: omacvm update$(restart_hint))"'; do

@@ -3,8 +3,8 @@ import Foundation
 /// A connected guest, as far as picking the one for the strip goes.
 struct GuestCandidate: Equatable {
     let id: Int
-    /// The VM app it runs in ("Parallels Desktop", "UTM", "VMware Fusion",
-    /// "OmacVM"); nil: not said or unknown, could be any.
+    /// The VM app it runs in ("OmacVM" for OmacVM.app's VMs); nil: not said
+    /// or unknown, could be any.
     var owner: String?
 }
 
@@ -21,16 +21,6 @@ enum GuestPicker {
         let set = sure.isEmpty ? guests.filter { $0.owner == nil } : sure
         if let current, set.contains(where: { $0.id == current }) { return current }
         return set.last?.id
-    }
-
-    /// The VM app for the hypervisor in a guest's "hello" (first word).
-    static func owner(hello: String) -> String? {
-        switch hello.split(separator: " ").first {
-        case "parallels": return "Parallels Desktop"
-        case "qemu": return "UTM"
-        case "vmware": return "VMware Fusion"
-        default: return nil
-        }
     }
 
     /// The VM name from "vmname <base64>": UTF-8, at most 255 bytes, one line.

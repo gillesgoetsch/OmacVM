@@ -1,7 +1,7 @@
 #!/bin/bash
 # Turn a freshly built OmacVM VM into a prebuilt image. Runs as root in the
 # VM (make-image.sh copies this folder to /root/omacvm-prebuilt):
-#   generalize.sh --user PLACEHOLDER --type parallels|utm|fusion --audit-b64 LIST
+#   generalize.sh --user PLACEHOLDER --type app --audit-b64 LIST
 # --audit-b64: base64 of strings (one per line) that must not be anywhere in
 # the image: the build Mac's user, names, keys, token. A hit stops here.
 # Ends with the VM powering off.
@@ -26,9 +26,6 @@ else
   [[ -d $P/home ]] || { echo "generalize.sh: no user $U and no home template" >&2; exit 1; }
   H=""
 fi
-
-[[ -d /usr/lib/parallels-tools || -e /etc/init.d/prltoolsd || -e /usr/lib/systemd/system/prltoolsd.service ]] &&
-  { echo "generalize.sh: Parallels Tools are installed; an image must not contain them" >&2; exit 1; }
 
 # Omanotch's build tools (Mac-independent): omacvm apply only has to clone
 # and build it when the Mac has a notch.
@@ -94,8 +91,22 @@ for f in /var/log/*.log /var/log/btmp /var/log/wtmp /var/log/lastlog; do [[ -f $
 yes | pacman -Scc >/dev/null 2>&1 || true
 rm -rf /var/cache/omacvm /var/cache/pacman/pkg/*
 
+log "pacman's keyring (each VM makes its own at first boot: pacman-keyring)"
+# Omarchy's public package key goes with the image, for a VM without
+# omarchy-keyring; the keyring itself (its master key is secret) does not.
+KEY=40DFB630FF42BCFFB047046CF0134EE680CAC571
+mkdir -p "$P"
+rm -f "$P/omarchy-key.asc"
+if pacman-key --list-keys "$KEY" >/dev/null 2>&1; then
+  pacman-key --export "$KEY" > "$P/omarchy-key.asc" 2>/dev/null || rm -f "$P/omarchy-key.asc"
+fi
+gpgconf --homedir /etc/pacman.d/gnupg --kill all >/dev/null 2>&1 || true
+rm -rf /etc/pacman.d/gnupg
+: > "$P/keyring"
+
 log "first-boot service"
 install -Dm755 "$here/omacvm-firstboot" /usr/local/lib/omacvm/omacvm-firstboot
+install -Dm755 "$here/pacman-keyring" /usr/local/lib/omacvm/omacvm-pacman-keyring
 install -Dm644 "$here/omacvm-firstboot.service" /etc/systemd/system/omacvm-firstboot.service
 systemctl enable omacvm-firstboot.service >/dev/null 2>&1
 printf 'OMACVM_PREBUILT_TYPE=%s\nOMACVM_PREBUILT_USER=%s\nOMACVM_PREBUILT_DATE=%s\n' "$TYPE" "$U" "$(date -u +%F)" > "$P/image"
