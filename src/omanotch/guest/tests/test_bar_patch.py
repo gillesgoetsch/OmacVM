@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 37)
+        self.assertEqual(V, 38)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -852,6 +852,98 @@ SKIP = r"""
 function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) { BODY }
 console.log(JSON.stringify(CASES.map(function (c) { return place.apply(null, c) })));
 """
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class ParkEnd(unittest.TestCase):
+    """#727: the window is mapped again when the notch park ends, and only
+    then (not on Omarchy's own bar toggle, not on the NOTCH or FullPanel bars).
+    The patch's own notchRoleFor and notchParkEnd run per window as QML runs
+    them: notchParkEnd at the window's start and on each notchRoleChanged."""
+
+    JS = r"""
+const root = { position: "top", notchParked: false, notchParkedScreen: "Virtual-1",
+               notchPanelOn: false, notchPanelScreen: "Virtual-1", barHidden: false };
+function notchRoleFor(s) { with (root) { ROLE } }
+function win(name) {
+  const w = { screen: { name: name }, notchRole: "" };
+  const r = { remapping: false, roleWas: "", remaps: 0 };
+  r.notchParkEnd = function () { with (r) { const barWindow = w; PARKEND } };
+  w.update = function () {
+    const role = notchRoleFor(w.screen);
+    if (role === w.notchRole) return;
+    w.notchRole = role; r.remapping = false; r.notchParkEnd(); if (r.remapping) r.remaps++;
+  };
+  w.notchRole = notchRoleFor(w.screen); r.notchParkEnd();
+  return { w: w, r: r };
+}
+const steps = STEPS;
+const wins = {};
+for (const st of steps) {
+  if (st.window) { wins[st.window] = win(st.window); continue; }
+  Object.assign(root, st.set);
+  for (const k in wins) wins[k].w.update();
+}
+const out = {};
+for (const k in wins) out[k] = wins[k].r.remaps;
+console.log(JSON.stringify(out));
+"""
+
+    def remaps(self, steps, text=None):
+        text = text or patched()
+        js = (self.JS.replace("ROLE", function(text, "notchRoleFor")).replace("PARKEND", function(text, "notchParkEnd"))
+              .replace("STEPS", json.dumps(steps)))
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def test_the_notch_unpark_maps_the_bar_again(self):
+        out = self.remaps([{"window": "Virtual-1"}, {"window": "NOTCH"},
+                           {"set": {"notchParked": True}}, {"set": {"notchParked": False}},
+                           {"set": {"notchParked": True}}, {"set": {"notchParked": False}}])
+        self.assertEqual(out, {"Virtual-1": 2, "NOTCH": 0})
+
+    def test_a_bar_started_parked_too(self):
+        out = self.remaps([{"set": {"notchParked": True}}, {"window": "Virtual-1"}, {"set": {"notchParked": False}}])
+        self.assertEqual(out, {"Virtual-1": 1})
+
+    def test_not_on_omarchys_own_bar_toggle(self):
+        steps = [{"window": "Virtual-1"}, {"window": "Virtual-2"}, {"window": "NOTCH"}]
+        steps += [{"set": {"barHidden": h}} for h in (True, False, True, False)]
+        self.assertEqual(self.remaps(steps), {"Virtual-1": 0, "Virtual-2": 0, "NOTCH": 0})
+        # Hidden by Omarchy while the strip shows: the park's end alone remaps.
+        steps = [{"window": "Virtual-1"}, {"set": {"barHidden": True}}, {"set": {"notchParked": True}},
+                 {"set": {"barHidden": False}}, {"set": {"barHidden": True}}, {"set": {"notchParked": False}},
+                 {"set": {"barHidden": False}}]
+        self.assertEqual(self.remaps(steps), {"Virtual-1": 1})
+
+    def test_not_on_the_notch_or_fullpanel_bars(self):
+        steps = [{"window": "Virtual-1"}, {"window": "NOTCH"},
+                 {"set": {"notchPanelOn": True}}, {"set": {"notchPanelOn": False}},
+                 {"set": {"notchPanelOn": True}}, {"set": {"barHidden": True}}, {"set": {"barHidden": False}},
+                 {"set": {"notchPanelOn": False}}, {"set": {"notchParked": True}}]
+        self.assertEqual(self.remaps(steps), {"Virtual-1": 0, "NOTCH": 0})
+        # The park moving to another output ends it on the first one only.
+        steps = [{"window": "Virtual-1"}, {"window": "Virtual-2"}, {"set": {"notchParked": True}},
+                 {"set": {"notchParkedScreen": "Virtual-2"}}, {"set": {"notchParked": False}}]
+        self.assertEqual(self.remaps(steps), {"Virtual-1": 1, "Virtual-2": 1})
+
+    def test_wired_to_the_role_in_every_omarchy(self):
+        # The window's remap item runs it at its start and on each role change,
+        # and nothing else in the window remaps on a park change.
+        for bar in SHELLS:
+            with self.subTest(omarchy=bar.parts[-5]):
+                d = pathlib.Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, d)
+                f = d / "Bar.qml"
+                f.write_text(bar.read_text())
+                self.assertEqual(patch_file(f).returncode, 0)
+                full = f.read_text()
+                item = re.search(r"\n    Item \{\n      id: notchRemap\n(.*?)\n    \}\n", full, re.S).group(1)
+                self.assertIn("      Component.onCompleted: { note(); notchParkEnd() }\n", item)
+                self.assertIn("        target: barWindow\n        function onNotchRoleChanged() { notchRemap.notchParkEnd() }\n", item)
+                self.assertEqual(full.count("notchParkEnd()"), 3)   # its definition, the start, the role change
+                self.assertNotIn("onParkedChanged", full)
+                self.assertEqual(self.remaps([{"window": "Virtual-1"}, {"set": {"notchParked": True}},
+                                              {"set": {"notchParked": False}}], full), {"Virtual-1": 1})
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
