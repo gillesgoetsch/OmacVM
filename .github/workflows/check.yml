@@ -962,6 +962,11 @@ jobs:
       - name: Transparent panels on Hyprland 0.57 (#630) on every route; omacvm_vm.lua, its installer, its check line
         run: LUA=/tmp/lua-5.5.0/src/lua src/tests/dmabuf-alpha.sh
 
+      - name: No tap-to-click on the virtual trackpad (a pinch's start was a right click on Omarchy 4.5); input.lua parses as Lua 5.5; check's line
+        run: |
+          LUAC=/tmp/lua-5.5.0/src/luac src/gestures/guest/test-install-gestures.sh
+          src/tests/trackpad-taps.sh
+
       - name: omacvm check's HDR line says what Hyprland's SDR copy does (the check catches code without it)
         run: src/tests/hdr-copy-check.sh
 
