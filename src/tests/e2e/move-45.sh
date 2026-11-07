@@ -227,10 +227,10 @@ power_off_all() {   # everything of this move at once, no traps (the Mac loses p
   local all=" ${*:-} $MV_PID " p more i
   kill -STOP $all 2>/dev/null
   for ((i = 0; i < 20; i++)); do
-    more=""
-    for p in $(descendants "$MV_PID") $(qemu_pid); do [[ $all == *" $p "* ]] || more+="$p "; done
-    [[ -z $more ]] && break
-    kill -STOP $more 2>/dev/null; all+="$more"
+    more=" "
+    for p in $(descendants "$MV_PID") $(qemu_pid); do [[ $all$more == *" $p "* ]] || more+="$p "; done
+    [[ $more == " " ]] && break
+    kill -STOP $more 2>/dev/null; all+="${more# }"
   done
   kill -9 $all 2>/dev/null
   wait "$MV_PID" 2>/dev/null; MV_PID=""
@@ -583,13 +583,18 @@ row_kill_early() {
 # Undo (exact), then the move again; never a PASS, never a product FAIL. At most CUT_TRIES moves; all of them
 # outside half = "kit timing" (the row JSON says retry).
 CUT_TRIES=${MOVE45_CUT_TRIES:-3}
-HALF_MIN=3   # changed entries in pacman's local database before the cut
+HALF_MIN=3    # changed entries in pacman's local database before the cut
+HALF_LEFT=20  # and at least this many of the switch's packages still to come
+# After the sync, pacman must still be well short of its plan (commit-plan: one line per package it installs):
+# a sync under the switch's writes can take long, and a cut after pacman wrote all of it is cut-done (seen on the
+# mini: 229 entries at the look, cut-done at Resume).
 switch_half_now() {   # (move running) N > 0 once pacman's database has N new entries, synced, the switch still on
   g "j=$GJ; [[ -e \$j/commit-before && -e \$j/commit-started && ! -e \$j/commit-done ]] || { echo 0; exit; }
-    n=\$(find /var/lib/pacman/local -mindepth 1 -maxdepth 1 -newer \$j/commit-before | wc -l)
-    (( n >= $HALF_MIN )) || { echo 0; exit; }
+    new() { find /var/lib/pacman/local -mindepth 1 -maxdepth 1 -newer \$j/commit-before | wc -l; }
+    n=\$(new); (( n >= $HALF_MIN )) || { echo 0; exit; }
     sync
-    [[ ! -e \$j/commit-done ]] && pgrep -x pacman >/dev/null && echo \$n || echo 0" 2>/dev/null | tail -1
+    n=\$(new); t=\$(grep -c . \$j/commit-plan 2>/dev/null || echo 0)
+    [[ ! -e \$j/commit-done ]] && pgrep -x pacman >/dev/null && (( n + $HALF_LEFT <= t )) && echo \$n || echo 0" 2>/dev/null | tail -1
 }
 cut_half() {   # qemu|power: the move (started) cut once pacman changed packages; 1 = no cut (CUT_WHY says why)
   local n=0 end=$(( $(date +%s) + 3600 )) sp
@@ -661,7 +666,14 @@ half_cut_row() {
     log "try $try: Resume exit $rr, the guest: switch $gs"
     if (( rr != 0 )); then
       check "Resume refused" 1 "exit $rr: $(J reason | cut -c1-160)"
-      check "the guest at Resume: its switch was cut half way (Undo only)" $([[ $gs == half ]] && echo 1 || echo 0) "switch $gs ($CUT_N packages changed before the cut, try $try)"
+      # The guest's word: half. Or none: a half switched VM may not come up far enough to answer (mini, 07:36:
+      # NetworkManager failed to start, no SSH): Resume then stops at "did not come up" / "does not answer" and
+      # the Mac keeps Undo only (its last poll was inside the switch).
+      local why="switch $gs"
+      [[ $gs != half && $(J code) =~ ^(boot|no-boot|ask|ssh)$ && $(J resumable) == 0 ]] &&
+        why="no word from the VM: it did not come up or answer after the cut (code $(J code)); the Mac keeps Undo only"
+      check "the guest at Resume: its switch cut half way, or no word from a VM the cut left unable to answer (Undo only)" \
+        $([[ $gs == half || $why == "no word"* ]] && echo 1 || echo 0) "$why ($CUT_N packages changed before the cut, try $try)"
       return 0
     fi
     if [[ $gs != cut-before && $gs != cut-done ]]; then
