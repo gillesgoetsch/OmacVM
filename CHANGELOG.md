@@ -9,7 +9,7 @@ in more words.
   of the notch, and every one of them can be clicked. When the open drawer did not fit right of the
   notch, the tray jumped over the notch while the drawer slid open, closed and came back in a loop,
   so its icons showed only behind the notch. Items that move left of the notch also keep clear of
-  where Omarchy 4.5's hidden indicators open (bar patch v38). On a full bar the tray now stays left
+  where Omarchy 4.5's hidden indicators open (bar patch v39). On a full bar the tray now stays left
   of the notch even while closed, where its drawer has room to open. A tray in the centre section
   no longer moves the right side's items while its drawer slides open.
 - **Omanotch** on Omarchy 4.0 VMs: the bar on the built-in display could stay parked off screen
@@ -18,7 +18,7 @@ in more words.
   of an M1 Max, with HDR on and off). When the notch park ends, the bar's window is now mapped
   again, so it comes back at its full size without waiting for a redraw (checked on those hidden
   VMs). Omarchy's own bar toggle and the bars in the notch strip work as before. Update VM brings it
-  (bar patch v38).
+  (bar patch v39).
 
 ## 3.4.0
 

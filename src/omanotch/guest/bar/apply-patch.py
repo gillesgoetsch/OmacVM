@@ -73,7 +73,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 38
+VERSION = 39
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 

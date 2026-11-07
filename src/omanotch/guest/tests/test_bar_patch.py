@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 38)
+        self.assertEqual(V, 39)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -821,8 +821,10 @@ console.log(JSON.stringify(out))
             full = self.full(stock)
             bar, backup = self.dir / "Bar.qml", self.dir / "Bar.qml.before-notchbar"
             backup.write_text(stock)
-            # An older version (3.1.2 had v21), a version line alone, each piece missing.
-            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v21"), VERSION_LINE + "\n"]
+            # An older version (3.1.2 had v21; 3.4.0 v37; v38 = the test builds of
+            # #733 and #735 alone), a version line alone, each piece missing.
+            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v%d" % v) for v in (21, 37, 38)]
+            olds.append(VERSION_LINE + "\n")
             mod = load_patch()
             olds += [full.replace(p, "") for p in (mod.PIECES_45 if is_45(stock) else mod.PIECES)]
             for old in olds:
