@@ -51,6 +51,9 @@ What the patch adds:
     and a left click on the drawer's chevron opens or closes the drawer on
     both bars of the strip (it opens on hover, which the strip does not pass
     on); it closes when the pointer leaves the strip or the strip goes.
+    Omarchy 4.5's tray grows as its drawer slides open: Skip the notch
+    places it by its width with the drawer open, so the drawer opens in
+    place, clear of the housing, and the tray does not move while it slides.
 
 Omarchy's Bar.qml changed in October 2026 (upstream's notch floor from
 display-cutouts.json, a bar thickness per screen, the centre's hover area):
@@ -70,7 +73,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 37
+VERSION = 38
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -117,6 +120,8 @@ PIECES_45 = COMMON + [
     "(sections.notchLayout ? root.notchRight + Style.space(6) : ",           # 5.
     "            notchSlotIndex: moduleListRoot.keys.indexOf(modelData.key)\n",  # 8. lists
     "    readonly property real notchRest: {\n",                              # 8.
+    "          : more > 0 ? [c.width, c.width + more] : c.width\n",            # 8. a tray counts open
+    "      ? [beginList.notchRest, centerBox.width + endList.notchRest, beginList.notchPeekMore] : [0, 0]\n",  # 5. the peek's room
 ]
 
 
@@ -378,10 +383,12 @@ def centre_45(text):
     text = replace_once(text, '''    property bool besideRight: false
 ''', '''    property bool besideRight: false
     // omarchy-notch-bar: around the camera housing (bar coordinates: the
-    // sections fill the bar). The indicators' hidden ones count at rest.
+    // sections fill the bar). The indicators' hidden ones count at rest; the
+    // third number is the room they open into on a peek, left of the housing
+    // (Omarchy's peek widens centerBegin towards the bar's start).
     property bool notchLayout: false
     readonly property var notchBeside: notchLayout && active
-      ? [beginList.notchRest, centerBox.width + endList.notchRest] : [0, 0]
+      ? [beginList.notchRest, centerBox.width + endList.notchRest, beginList.notchPeekMore] : [0, 0]
 ''')
     text = replace_once(text, '''      x: root.vertical ? Math.round((sections.width - width) / 2) : centerBox.x - width
 ''', '''      x: root.vertical ? Math.round((sections.width - width) / 2)
@@ -415,14 +422,19 @@ def lists_45(text):
     // omarchy-notch-bar: Skip the notch: {items: [{x, hidden}], animate} on
     // a bar in the notch strip, null elsewhere; the items' widths by their
     // place in the list (Omarchy's indicators as [now, at rest, their hidden
-    // ones]), and the list's width at rest.
+    // ones]; Omarchy's tray as [now, with its drawer open]: it grows as the
+    // drawer slides open, so where it goes is decided by that width, and it
+    // opens in place and never moves from under the pointer), and the list's
+    // width at rest.
     property var notchShift: null
     readonly property var notchWidths: {
       var out = []
       for (var i = 0; i < children.length; i++) {
         var c = children[i]
         if (!c || !(c.notchSlotIndex >= 0)) continue
-        out[c.notchSlotIndex] = c.notchPeekFull > 0 ? [c.width, c.notchPeekRest, c.notchPeekFull] : c.width
+        var t = c.activeItem, more = t && root.notchIsTray(t) ? Number(t.drawerExtent) - Number(t.revealExtent) : 0
+        out[c.notchSlotIndex] = c.notchPeekFull > 0 ? [c.width, c.notchPeekRest, c.notchPeekFull]
+          : more > 0 ? [c.width, c.width + more] : c.width
       }
       for (var j = 0; j < out.length; j++) if (out[j] === undefined) out[j] = 0
       return out
@@ -431,6 +443,13 @@ def lists_45(text):
       var w = 0
       for (var i = 0; i < notchWidths.length; i++)
         w += Array.isArray(notchWidths[i]) ? notchWidths[i][1] : notchWidths[i]
+      return w
+    }
+    // How much wider the indicators' peek makes the list (their hidden ones).
+    readonly property real notchPeekMore: {
+      var w = 0
+      for (var i = 0; i < notchWidths.length; i++)
+        if (Array.isArray(notchWidths[i]) && notchWidths[i].length > 2) w += notchWidths[i][2]
       return w
     }
     // Where each module showed last on this bar: Omarchy makes the list's
@@ -890,7 +909,10 @@ def main():
   // each list's items left to right, each a width or [width now, width at
   // rest, peek] (Omarchy's indicators: at rest without their hidden ones,
   // peek the width those take when they show on hover), the housing [left,
-  // right], the width of the centre widgets beside it [before, after]
+  // right], the width of the centre widgets beside it [before, after, and
+  // on Omarchy 4.5 the room its indicators' peek opens into left of the
+  // housing, which the right side's overflow keeps clear of: the peek opens
+  // over what lies there and takes its hover]
   // (`edge` from it), the gap a jumped item keeps to the housing (or those
   // widgets) and the room it keeps from the other side's own items.
   // Everything is decided at rest, so a peek moves nothing across the notch:
@@ -916,6 +938,7 @@ def main():
     var W = Number(width), nl = Number(housing[0]), nr = Number(housing[1])
     if (!(W > 0 && nl > 0 && nr > nl && nr < W)) return null
     var before = beside && beside[0] > 0 ? beside[0] : 0, after = beside && beside[1] > 0 ? beside[1] : 0
+    var peekL = beside && beside[2] > 0 ? beside[2] : 0
     // Where each side ends: the housing, or the centre widgets beside it.
     var wallL = before > 0 ? nl - edge - before : nl
     var wallR = after > 0 ? nr + edge + after : nr
@@ -971,9 +994,10 @@ def main():
         if (L[i].w > 0) out.hidden++
       }
     }
-    // The right side's overflow: left of the housing, down to `keep` after
-    // the left side's own items.
-    at = wallL - gap
+    // The right side's overflow: left of the housing (and of the room the
+    // indicators' peek opens into there), down to `keep` after the left
+    // side's own items.
+    at = wallL - peekL - gap
     full = false
     for (i = keptR - 1; i >= 0; i--) {
       if (!full && at - R[i].r >= endL + keep + (st && i <= st.fullR ? more : 0)) {
