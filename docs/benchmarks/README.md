@@ -1,13 +1,38 @@
 # Benchmarks
 
-How OmacVM measures the four ways (Parallels, UTM, VMware Fusion, OmacVM.app)
-against the Mac itself, so anyone can run
-the same tests and get numbers that compare. The results so far are at the
-end. The tools are in [`src/bench/`](../../src/bench).
+How fast Omarchy runs in OmacVM.app against the Mac itself, how much power
+it draws, and how to run the same tests yourself. The tools are in
+[`src/bench/`](../../src/bench). Older rounds that also measured Parallels,
+UTM and VMware Fusion (retired in 3.4.0) are in
+[v3.3.0's copy of this page](https://github.com/gillesgoetsch/OmacVM/blob/v3.3.0/docs/benchmarks/README.md).
+
+## At a glance
+
+MacBook Pro 16" M4 Max, the Mac itself = 100 %:
+
+| Test | OmacVM.app |
+|---|---|
+| CPU, all cores: Geekbench 7 | 99 % |
+| CPU, one core: Geekbench 7 | 97 % |
+| Web apps: Speedometer 3.1 | 69 % |
+| Browser graphics: WebGL Aquarium, 30,000 fish | 39 % |
+| Browser overall: Basemark Web 3.0 | 77 % |
+| GPU compute: Geekbench 7 GPU, OpenCL (`omacvm enable vulkan`) | 45 % |
+
+Browser tests from [2026-10-09](#macbook-pro-m4-max-2026-10-09), Geekbench
+from [2026-10-03](#macbook-pro-m4-max-2026-10-03) and
+[2026-10-04](#gpu-compute-with-venus-2026-10-04). Power on a MacBook Air M2:
+[2026-10-07](#results-macbook-air-m2-2026-10-07).
+
+Video is where the VM and the Mac differ most: macOS decodes YouTube's 4K in
+hardware, and so does OmacVM.app. Google Chrome, Brave, Firefox, mpv, FFmpeg
+and GStreamer apps, and Omarchy's own Chromium (through a V4L2 decoder OmacVM
+adds), decode on the Mac's media engine
+([how](../video-decode.md)).
 
 ## What we measure
 
-| Test | What it tells you | Mac | VMs |
+| Test | What it tells you | Mac | VM |
 |---|---|---|---|
 | Geekbench 7 CPU | CPU, single-core and multi-core | ✓ | ✓ (Linux ARM preview) |
 | Speedometer 3.1 | web apps: browser and CPU together | ✓ | ✓ |
@@ -16,23 +41,18 @@ end. The tools are in [`src/bench/`](../../src/bench).
 | WebGL Aquarium, 30,000 fish | 3D in the browser, frames per second | ✓ | ✓ |
 | Basemark Web 3.0 | the GPU in the browser: WebGL, canvas, SVG, plus some JavaScript and page tests | ✓ | ✓ |
 | Scrolling (`browser-bench.py scroll`) | Chrome scrolls a long Wikipedia page with its own gesture at 1500 px/s: frames per second, frame-time percentiles and late frames | ✓ | ✓ |
-| Geekbench 7 GPU | GPU compute | ✓ (Metal, OpenCL) | only OmacVM.app with Venus, see below |
-| WebGPU matmul (`browser-bench.py webgpu`) | GPU compute in the browser, GFLOPS | ✓ | only OmacVM.app with Venus |
+| Geekbench 7 GPU | GPU compute | ✓ (Metal, OpenCL) | with Vulkan on (OpenCL) |
+| WebGPU matmul (`browser-bench.py webgpu`) | GPU compute in the browser, GFLOPS | ✓ | with Vulkan on |
 | glmark2 | OpenGL ES in the VM, absolute score | ✗ no macOS build | ✓ |
 
-**GPU compute needs Vulkan or OpenCL in the VM.** Parallels, UTM and VMware
-Fusion offer neither to a Linux guest: Geekbench 7's Linux ARM preview lists
-no GPU there, and `bench.sh` records that as "not available in this VM".
-OmacVM.app with the vulkan feature (`omacvm enable vulkan`, experimental)
-has both: OpenCL through
-rusticl and WebGPU in Firefox and in the "Chromium (WebGPU)" launcher (ADR
-0022). One locked batch on the M4 Max: Geekbench 7 GPU OpenCL 42486 in the
-VM vs 95380 for the Mac's own OpenCL; WebGPU matmul 5071 GFLOPS in the VM's
-Chromium vs 6038 in Chrome on the Mac. Geekbench 7 for Linux has no Vulkan
-backend, so the VM has no Metal-like score.
-The browser tests (MotionMark, WebGL Aquarium, Basemark Web 3.0) and glmark2
-measure graphics, not compute. glmark2 has no Mac version, so it has no Mac
-baseline: compare its score between the routes only.
+**GPU compute needs Vulkan or OpenCL in the VM**: OmacVM.app's vulkan feature
+(`omacvm enable vulkan`, experimental) gives both, OpenCL through rusticl and
+WebGPU in Firefox and in the "Chromium (WebGPU)" launcher (ADR 0022). One
+locked batch on the M4 Max: Geekbench 7 GPU OpenCL 42486 in the VM vs 95380
+for the Mac's own OpenCL; WebGPU matmul 5071 GFLOPS in the VM's Chromium vs
+6038 in Chrome on the Mac. Geekbench 7 for Linux has no Vulkan backend.
+glmark2 has no Mac version, so it has no Mac baseline: compare its score
+between OmacVM.app versions only.
 
 ## The setup
 
@@ -41,12 +61,12 @@ Do all of this, or the numbers won't compare:
 | | |
 |---|---|
 | Mac | MacBook Pro M4 Max, macOS 15.7.4 (ours; use yours and say which) |
-| Each VM | 16 CPUs, 48 GB memory. On Parallels that needs Pro or the trial: Standard stops at 4 CPUs and 8 GB |
-| One VM at a time | the VM under test runs alone. Quit the other VM apps, Parallels' background service included: `pgrep -l prl_` should print nothing while you test UTM or Fusion |
-| Full screen | the VM app in full screen on the built-in display. `bench.sh` also starts Chrome full screen, on the Mac without the toolbar, so the page is the same size everywhere (1728x1080 at 2x on a 16" MacBook Pro). In a VM that also has an external display (Parallels, Fusion), Chrome must open on the built-in one: move the focus there first (`hyprctl dispatch focusmonitor Virtual-1`) |
+| The VM | the same CPUs and memory in every run you compare (the rounds below say which) |
+| One VM at a time | the VM under test runs alone; no other VMs, builds or heavy apps |
+| Full screen | the VM in full screen on the built-in display. `bench.sh` also starts Chrome full screen, on the Mac without the toolbar, so the page is the same size everywhere (1728x1080 at 2x on a 16" MacBook Pro). With an external display, Chrome must open on the built-in one: move the focus there first (`hyprctl dispatch focusmonitor Virtual-1`) |
 | No screensaver | Omarchy's screensaver and lock off: `omacvm enable no-idle-lock --vm NAME`. It can start in the middle of a run otherwise |
-| Google Chrome everywhere | Google Chrome on the Mac and in the VM. Arch's Chromium is much slower than Chrome (Parallels: 35.4 with Chromium 153 vs about 45 with Chrome), so it would not compare |
-| Chrome's flags | in a VM, `bench.sh` starts Chrome with the flags in `/etc/chrome-flags.conf` and Omarchy's `~/.config/chrome-flags.conf`. On Fusion one of them must have `--ignore-gpu-blocklist` (OmacVM puts it in `/etc`), or Chrome draws in software ([why](../troubleshooting.md#2-fusion-browsers-draw-everything-in-software)) |
+| Google Chrome everywhere | Google Chrome on the Mac and in the VM. Arch's Chromium is slower than Chrome ([Chrome vs Chromium](#google-chrome-vs-omarchys-chromium-macbook-pro-m4-max-2026-10-25)), so it would not compare |
+| Chrome's flags | in a VM, `bench.sh` starts Chrome with the flags in `/etc/chrome-flags.conf` and Omarchy's `~/.config/chrome-flags.conf` |
 | Runs | 3 of each test (`bench.sh`'s default), report the median. Single runs land within 2 to 3 % of each other. The published [results](#results) say where they are single runs |
 
 ## Run it
@@ -80,18 +100,17 @@ OmacVM copies its tools into the VM, so they are in
 
    ```bash
    /usr/local/share/omacvm/bench/bench.sh \
-     --only geekbench,speedometer,motionmark,aquarium,basemark,gpu,glmark2 ~/fusion.jsonl
+     --only geekbench,speedometer,motionmark,aquarium,basemark,gpu,glmark2 ~/app.jsonl
    ```
 
    glmark2 is not in the default list, hence `--only`. Leave the VM alone until
    it prints `results:`. Chrome opens and closes by itself.
 
-4. Copy the file to the Mac. Name it after the route (`parallels`, `utm`,
-   `fusion`, `app` for OmacVM.app), because the report and chart use the file
-   names (OmacVM.app's SSH is `-P 52222 root@127.0.0.1`):
+4. Copy the file to the Mac as `app.jsonl` (the report and chart use the file
+   names):
 
    ```bash
-   scp -i ~/.ssh/omacvm root@<vm-ip>:/home/<user>/fusion.jsonl ~/bench/
+   scp -i ~/.ssh/omacvm -P 52222 root@127.0.0.1:/home/<user>/app.jsonl ~/bench/
    ```
 
 ### Options
@@ -112,7 +131,7 @@ runtime (QEMU, virglrenderer, their patches). With the VM running and its
 desktop user logged in, on the Mac:
 
 ```bash
-app/scripts/gpu-check.sh ~/Library/Application\ Support/OmacVM/VMs/<name> [RUNS]
+app/scripts/gpu-check.sh ~/OmacVM/<name> [RUNS]
 ```
 
 It installs Google Chrome in the VM when missing, runs WebGL Aquarium and
@@ -124,11 +143,11 @@ for good: that was Basemark's hang at test 5 in 2.6.0
 Each runtime build also compiles the shaders of that case with the Mac's
 OpenGL (`app/runtime/Tests/virgl/test-integer-sampler-shader.c`).
 
-### GPU panel (final round)
+### GPU throughput and compute
 
-The README chart's GPU panel comes from
-[`tests/bench/final-round`](../../tests/bench/final-round/README.md): the
-runbook and the scripts for the Mac and each VM. Two of its tests are new:
+Two tests for a GPU round, beside the browser tests above (the multi-app
+round's kit, `tests/bench/final-round`, and its GPU panel are in
+[v3.3.0](https://github.com/gillesgoetsch/OmacVM/tree/v3.3.0/tests/bench/final-round)):
 
 - [`tests/bench/gpu-throughput`](../../tests/bench/gpu-throughput/index.html):
   pure GPU work in WebGL 2, no network. One draw per frame into a fixed
@@ -136,36 +155,28 @@ runbook and the scripts for the Mac and each VM. Two of its tests are new:
   frame waits for the GPU before and after its draw (`gl.finish()`). Two ways
   to time it: GPU time from Chrome's timer queries (frames of 40 ms), or wall
   time of long frames (80 ms or more, made longer until the fixed cost of the
-  waits is under 2 % of a frame). Each system runs both; one row uses one
-  method for every system: the GPU timer where every system has a timer that
-  agrees with its own wall time, else wall time for all. The table and the
-  chart say which. Headline: a ray-march shader; also an ALU score (GFLOPS)
-  and a fill score (Gpixels/s). `run.py` runs it and prints JSON.
+  waits is under 2 % of a frame). Headline: a ray-march shader; also an ALU
+  score (GFLOPS) and a fill score (Gpixels/s). `run.py` runs it and prints JSON.
 - [`tests/bench/vkpeak`](../../tests/bench/vkpeak/vkpeak.sh): Vulkan compute
   peak with [vkpeak](https://github.com/nihui/vkpeak) (MIT, downloaded or
   built at run time, pinned). On the Mac through vkpeak's own MoltenVK 1.4.1;
-  in OmacVM.app through Venus. A VM with no GPU Vulkan device (none, or only
-  lavapipe) gets "not available".
-- Geekbench 7 GPU (OpenCL, Vulkan; the Mac: OpenCL, Metal), vkmark and
-  glmark2 run in the same round; Geekbench only on a real GPU device, never
-  PoCL or llvmpipe. glmark2 and vkmark have no macOS version: the panel shows
-  their scores between the VMs.
+  in OmacVM.app through Venus.
 
 ## Power draw and battery life
 
-How much power the whole Mac draws while Omarchy runs in a VM, against the
+How much power the whole Mac draws while Omarchy runs in the VM, against the
 same work on macOS, and what that means for the battery. Run on the Mac:
 
 ```bash
-src/bench/power-suite.sh ~/bench/power-mac.jsonl                      # macOS itself
-src/bench/power-suite.sh --vm root@<vm-ip> ~/bench/power-fusion.jsonl  # one VM doing the work
+src/bench/power-suite.sh ~/bench/power-mac.jsonl                    # macOS itself
+src/bench/power-suite.sh --vm root@<vm-ip> ~/bench/power-app.jsonl   # the VM doing the work
 ```
 
 | Load | What runs |
 |---|---|
 | idle | nothing: the desktop as you leave it |
 | light | Chrome scrolling a long text page, like reading (`src/bench/pages/reading.html`) |
-| video | YouTube 4K in Chrome (`video-bench.py`, below); in a VM also in Omarchy's Chromium |
+| video | YouTube 4K in Chrome (`video-bench.py`, below); in the VM also in Omarchy's Chromium |
 | cpu | every CPU core busy |
 | gpu | WebGL Aquarium with 30,000 fish in Chrome |
 
@@ -177,7 +188,7 @@ src/bench/power-suite.sh --vm root@<vm-ip> ~/bench/power-fusion.jsonl  # one VM 
 - **Battery life** is the battery's capacity over that draw: 52.6 Wh for the
   MacBook Air M2 in the README's chart, 100 Wh for the MacBook Pro 16" M4 Max. On the charger the numbers are the same: the Mac
   reports what the system uses, not what the charger delivers.
-- **Keep it quiet:** only the VM under test runs, its app in full screen on the
+- **Keep it quiet:** only the VM under test runs, in full screen on the
   built-in display, the same brightness for every run, no other apps, Bluetooth
   and Wi-Fi as usual. Don't touch the Mac while it measures. An agent running
   the tests must not poll during the windows either.
@@ -191,57 +202,34 @@ src/bench/video-bench.py --port 9222 --seconds 60   # Chrome started with --remo
 It plays a 4K video (YouTube's embed player inside a small local page, which
 YouTube needs), and reads from Chrome's media events which decoder plays it:
 `VideoToolboxVideoDecoder` on the Mac and `VaapiVideoDecoder` or
-`V4L2VideoDecoder` (OmacVM.app's chromium-video) in a VM mean hardware;
+`V4L2VideoDecoder` (OmacVM.app's chromium-video) in the VM mean hardware;
 `Dav1dVideoDecoder`, `VpxVideoDecoder` or `FFmpegVideoDecoder` mean the CPU.
 It also reports the resolution, frames per second and dropped frames. On
 the MacBook Pro M4 Max: AV1 3840x2160 at 60 fps in hardware, 0 % dropped; the
 MacBook Air M2 has no AV1 decoder, so YouTube sends it VP9.
 
-## Report and chart
+## Report and charts
 
-On the Mac, with all files in one folder:
+On the Mac, with both files in one folder:
 
 ```bash
 cd ~/bench
-~/.omacvm/src/bench/report.py mac.jsonl parallels.jsonl utm.jsonl fusion.jsonl app.jsonl --json results.json
-~/.omacvm/src/bench/chart.py ~/.omacvm/docs/benchmarks/chart.json ~/.omacvm/docs/images/benchmarks.svg \
-  "MacBook Pro M4 Max · macOS 15.7 · Google Chrome 155 · October 2026"
+~/.omacvm/src/bench/report.py mac.jsonl app.jsonl --json results.json
 ```
 
-- `report.py` prints a Markdown table: the median of each test, and each route
-  as a share of the first file (the Mac).
-- `chart.py` draws the bar chart for the README and
-  [compare.md](../compare.md): OmacVM.app first, then UTM, VMware Fusion and
-  Parallels, each as a share of the Mac (the dashed line at 100 %). Three
-  rows: Speedometer 3.1, WebGL Aquarium and Basemark Web 3.0. Tests without a
-  Mac value (glmark2, vkmark) are left out.
-- The chart's input is [`chart.json`](chart.json): the medians of one round,
-  the latest on the MacBook Pro
-  ([2026-10-09](#macbook-pro-m4-max-every-route-2026-10-09)), plain bars, no
-  version tags. `src/tests/bench-docs.sh` checks that every test comes from
-  that one round. Older rounds, with Geekbench and GPU compute, stay on this
-  page. (`chart.py` still stripes and tags numbers listed under
-  `"unreleased"`, for drafts.)
-- The power chart in the README (`docs/images/power.svg`) comes from the
-  `"power"` part of `chart.json`:
-  `chart.py --panel power docs/benchmarks/chart.json docs/images/power.svg "<subtitle>"`.
-  It shows one round only, the latest: the MacBook Air M2 round of
-  2026-10-07 ([Results, MacBook Air M2](#results-macbook-air-m2-2026-10-07)),
-  watts per load and hours on 52.6 Wh, which browser and decoder played the
-  video, and Aquarium's frame rate. Older rounds stay on this page.
-  `src/tests/bench-docs.sh` checks the SVG and the README's alt text.
-- The GPU progress chart on this page (`docs/images/gpu-progress.svg`)
-  comes from the `"gpu_progress"` part of `chart.json`:
-  `chart.py --panel progress docs/benchmarks/chart.json docs/images/gpu-progress.svg "<subtitle>"`.
-  Each test as a multiple of its oldest version measured, the runs' spread
-  as a thin line ([GPU progress](#gpu-progress-2026-10-07)).
-  `src/tests/bench-docs.sh` checks it the same way.
-- GPU compute in the chart: OmacVM.app with the vulkan feature (Venus on
-  MoltenVK, OpenCL through rusticl; experimental in 3.0.0). Geekbench 7 GPU OpenCL,
-  one locked batch on 2026-10-04: Mac 95,380
-  ([252722](https://browser.geekbench.com/v7/gpu/252722)), OmacVM.app 42,486
-  ([252731](https://browser.geekbench.com/v7/gpu/252731)), 45 %. Parallels, UTM
-  and Fusion offer no OpenCL or Vulkan to the VM.
+`report.py` prints a Markdown table: the median of each test, and the VM as
+a share of the first file (the Mac). The charts are drawn from
+[`chart.json`](chart.json) by `src/bench/chart.py`, never by hand:
+
+| Chart | Command | From |
+|---|---|---|
+| Speed, in the README | `chart.py docs/benchmarks/chart.json docs/images/benchmarks.svg "<subtitle>"` | `"medians"`: OmacVM.app as a share of the Mac, one bar per test |
+| Power, in the README | `chart.py --panel power docs/benchmarks/chart.json docs/images/power.svg "<subtitle>"` | `"power"`: watts and battery hours per load, OmacVM.app and macOS |
+| GPU progress, on this page | `chart.py --panel progress docs/benchmarks/chart.json docs/images/gpu-progress.svg "<subtitle>"` | `"gpu_progress"`: each test as a multiple of its oldest version |
+
+`src/tests/bench-docs.sh` checks that each SVG is `chart.py`'s output byte
+for byte, that the alt texts give every number, and that the speed chart's
+browser tests come from one round.
 
 **About Geekbench.** The free version uploads every result to
 browser.geekbench.com and prints only a link. `bench.sh` saves the link;
@@ -315,151 +303,117 @@ JetStream's page now and then stops with "Errors were encountered during page lo
 MacBook Pro; never on the Mac): `browser-bench.py` loads it once more, and a run that still fails counts as no
 result.
 
-### MacBook Pro M4 Max, every route (2026-10-09)
+<a name="macbook-pro-m4-max-every-route-2026-10-09"></a>
+
+### MacBook Pro M4 Max (2026-10-09)
 
 The round behind the README's speed chart. MacBook Pro 16" M4 Max, macOS
 15.7.4, at night with the screen locked and the display kept on
-(`caffeinate -d`). Each route alone: before every run a check that nothing
-else of ours ran (other VMs, VM apps, builds, CI runners paused), and the run
-counted only if the Mac's other load stayed below 250 % CPU and the page size
-was right.
+(`caffeinate -d`). The VM ran alone: before every run a check that nothing
+else of ours ran (other VMs, builds, CI runners paused), and the run counted
+only if the Mac's other load stayed below 250 % CPU and the page size was
+right.
 
 - OmacVM.app 3.0.9 as released (the zip, re-signed with a test app id so it
   runs next to the user's own app), Graphics on Automatic (OpenGL).
-  UTM 5.0.6, VMware Fusion 26.0.1, Parallels Desktop 27.0.2.
-- Every VM 6 CPUs and 8 GB, Omarchy 4.0.3rc4, kernel 7.2.8, Mesa 26.2.3,
+- The VM: 6 CPUs and 8 GB, Omarchy 4.0.3rc4, kernel 7.2.8, Mesa 26.2.3,
   Hyprland 0.56.2, Google Chrome 155.0.8059.39, glmark2 2023.01.
-- Each VM in a window on the built-in display (3456x2160, 120 Hz), sized so
+- The VM in a window on the built-in display (3456x2160, 120 Hz), sized so
   the guest's output is 2880x1800 at scale 2: Chrome's page is 1440x900 at
   2x, the same as on the Mac (Chrome 155.0.8059.40, a window with a
-  1440x900 page). Parallels stops at 2880x1780 (page 1440x890). UTM does not
-  resize the guest to its window, so its guest output was set to 2880x1800
-  in Hyprland and UTM scales it to the window.
+  1440x900 page).
 - `bench.sh --runs 1` per test, three rounds, median of 3. Aquarium with
   30,000 fish; glmark2 is `glmark2-es2-wayland --fullscreen` in the VM (no
   macOS version).
 
-| | Mac | OmacVM.app 3.0.9 | UTM | VMware Fusion | Parallels |
-|---|---|---|---|---|---|
-| Speedometer 3.1 | 61.5 (62.3, 61.5, 61.3) | 42.7 (43.1, 42.7, 42.4) · 69 % | 38.1 (37.4, 38.4, 38.1) · 62 % | 44.8 (45.4, 44.8, 44.8) · 73 % | 43.5 (43.5, 43.5, 42.6) · 71 % |
-| WebGL Aquarium, 30,000 fish (fps) | 111.8 (111.5, 112.5, 111.8) | 43.2 (43.2, 43.8, 42.1) · 39 % | 25.6 (25.6, 29.8, 25.6) · 23 % | 41.8 (41.8, 41.5, 42.2) · 37 % | 27.9 (27.9, 21.0, 28.1) · 25 % |
-| Basemark Web 3.0 | 3626 (3637, 3343, 3626) | 2801 (2895, 2801, 2489) · 77 % | 2667 (2812, 2637, 2667) · 74 % | 2511 (2417, 2526, 2511) · 69 % | 2680 (2732, 2680, 2557) · 74 % |
-| glmark2 (score) | no macOS version | 3058 (3018, 3062, 3058) | 1077 (1077, 1086, 1076) | 2785 (2781, 2785, 2788) | 8297 (8624, 8297, 8259) |
+| | Mac | OmacVM.app 3.0.9 |
+|---|---|---|
+| Speedometer 3.1 | 61.5 (62.3, 61.5, 61.3) | 42.7 (43.1, 42.7, 42.4) · 69 % |
+| WebGL Aquarium, 30,000 fish (fps) | 111.8 (111.5, 112.5, 111.8) | 43.2 (43.2, 43.8, 42.1) · 39 % |
+| Basemark Web 3.0 | 3626 (3637, 3343, 3626) | 2801 (2895, 2801, 2489) · 77 % |
+| glmark2 (score) | no macOS version | 3058 (3018, 3062, 3058) |
 
 Median first, then the three runs in order, then the share of the Mac.
 
-Notes:
-
-- Two routes were measured again later the same night, under the same
-  rules. VMware Fusion: its first start failed on a lock file a stopped VM
-  had left behind. UTM: its VM still had Chrome 154; it was measured again
-  with the other VMs' Chrome 155. The Chrome 154 runs are not used.
-
 ### Results, MacBook Air M2 (2026-10-07)
 
-Every route on one Mac on one day: the round behind the README's power
-chart. MacBook Air M2, 8 GB, macOS 26.6.2, the built-in 60 Hz display with
-a notch. Each VM had 4 CPUs and 4 GB, sat on the same external SSD, ran
-Omarchy 4.0.3rc4-2 and Google Chrome 155, and ran alone in native full
-screen on the built-in display at scale 2 (about 2940x1846 beside the
-notch). Every other VM app and its background service was quit.
+The round behind the README's power chart. MacBook Air M2, 8 GB, macOS
+26.6.2, the built-in 60 Hz display with a notch.
 
-| Route | Version | The VM |
-|---|---|---|
-| OmacVM.app | 3.0.3 (a test build of the v3.0.3 tag) | made by the app from the 3.0.0 image, guest updated to 3.0.3, kernel 7.2.8, Graphics Automatic (OpenGL) |
-| UTM | 5.0.6, settings as `omacvm build` sets them | full build, kept on the SSD with `omacvm build --vm-dir` ([#248](https://github.com/gillesgoetsch/omacvm/pull/248)), kernel 7.2.9, ANGLE on Metal |
-| VMware Fusion | 26.0.1, defaults | full build, kernel 7.2.9 |
-| Parallels Desktop | 27.0.2 Pro trial, defaults | full build, kernel 7.2.9 |
-| macOS | 26.6.2 | Google Chrome 155 on the Mac, 8 cores |
+- OmacVM.app 3.0.3 (a test build of the v3.0.3 tag). The VM: made by the
+  app from the 3.0.0 image, guest updated to 3.0.3, kernel 7.2.8, Graphics
+  Automatic (OpenGL), 4 CPUs and 4 GB on an external SSD, Omarchy
+  4.0.3rc4-2, Google Chrome 155, alone in native full screen on the
+  built-in display at scale 2 (about 2940x1846 beside the notch).
+- macOS 26.6.2: Google Chrome 155 on the Mac, 8 cores.
 
 How it ran:
 
-- **A quiet Mac.** Only Finder and Tailscale (the SSH link) besides the
-  route. No desktop widgets, a still wallpaper, True Tone, Night Shift and
+- **A quiet Mac.** Only Finder and Tailscale (the SSH link) besides the VM.
+  No desktop widgets, a still wallpaper, True Tone, Night Shift and
   automatic brightness off, no screensaver, no display or system sleep
   (`caffeinate`). On the charger, at 93 to 100 %.
 - **Brightness 50 %**, set and read back at the start and the end of every
   window. A window that read anything else, or saw a sleep, would have been
-  thrown away and repeated. None was: all 90 power windows and 57 browser
-  and glmark2 runs read 0.500 both times.
+  thrown away and repeated. None was: every window and run read 0.500 both
+  times.
 - **Power** comes from `power.sh` (the battery's telemetry, the whole Mac,
   display included): 30 seconds to settle, then a 3-minute window that
   starts and ends on a battery update. The loads took turns, 3 rounds, with
-  3 minutes to cool down between rounds (the Air has no fan). 12 of the 90
-  windows ended after 187 to 234 seconds instead of about 240, when the
-  battery's update came sooner.
+  3 minutes to cool down between rounds (the Air has no fan). Some windows
+  ended after 187 to 234 seconds instead of about 240, when the battery's
+  update came sooner.
 - **Hours** are 52.6 Wh, the Air M2's design capacity, over the draw. This
   Air's battery holds 89 % of that now (4057 of 4563 mAh), so this Mac gets
   about a tenth less.
-- **Browser tests** ran in Google Chrome 155 (155.0.8059.39 in the VMs,
-  .40 on the Mac) through `bench.sh`, the same 1470x923 page at 2x
-  everywhere. Median of 3.
+- **Browser tests** ran in Google Chrome 155 (155.0.8059.39 in the VM,
+  .40 on the Mac) through `bench.sh`, the same 1470x923 page at 2x on
+  both. Median of 3.
 - **Not run:** Geekbench 7 CPU. Its Linux preview runs out of memory in a
   4 GB VM (Multi-Core, Photo Editor).
 
 Power of the whole Mac in watts, median of 3 (range), and hours on 52.6 Wh:
 
-| Load | OmacVM.app 3.0.3 | UTM | VMware Fusion | Parallels | macOS |
-|---|---|---|---|---|---|
-| Idle | 6.13 (6.05-6.17), 8.6 h | 6.30 (6.30-6.33), 8.3 h | 6.21 (6.18-6.26), 8.5 h | 6.17 (6.14-6.25), 8.5 h | 5.20 (5.02-5.34), 10.1 h |
-| Reading: Chrome scrolling `reading.html` | 6.11 (6.03-6.13), 8.6 h | 7.43 (7.43-7.45), 7.1 h | 6.82 (6.76-6.83), 7.7 h | 6.68 (6.63-6.69), 7.9 h | 5.48 (5.29-5.56), 9.6 h |
-| YouTube 4K, the browser that played it best (below) | 10.10 (10.09-10.20), 5.2 h | 16.46 (16.38-16.59), 3.2 h | 16.14 (16.10-16.25), 3.3 h | 16.78 (16.50-16.82), 3.1 h | 6.07 (5.98-6.28), 8.7 h |
-| Every core busy (the VM's 4, the Mac's 8) | 21.01 (20.97-21.05), 2.5 h | 16.95 (16.90-17.06), 3.1 h | 18.16 (18.08-18.19), 2.9 h | 18.01 (17.90-18.10), 2.9 h | 19.69 (19.36-20.09), 2.7 h |
-| WebGL Aquarium, 30,000 fish | 17.11 (17.07-17.20), 3.1 h, 19 fps | 18.15 (17.83-18.15), 2.9 h, 21 fps | 20.64 (20.62-20.95), 2.5 h, 25 fps | 17.43 (17.37-17.90), 3.0 h, 17 fps | 17.34 (17.22-17.48), 3.0 h, 60 fps |
+| Load | OmacVM.app 3.0.3 | macOS |
+|---|---|---|
+| Idle | 6.13 (6.05-6.17), 8.6 h | 5.20 (5.02-5.34), 10.1 h |
+| Reading: Chrome scrolling `reading.html` | 6.11 (6.03-6.13), 8.6 h | 5.48 (5.29-5.56), 9.6 h |
+| YouTube 4K (below) | 10.10 (10.09-10.20), 5.2 h | 6.07 (5.98-6.28), 8.7 h |
+| Every core busy (the VM's 4, the Mac's 8) | 21.01 (20.97-21.05), 2.5 h | 19.69 (19.36-20.09), 2.7 h |
+| WebGL Aquarium, 30,000 fish | 17.11 (17.07-17.20), 3.1 h, 19 fps | 17.34 (17.22-17.48), 3.0 h, 60 fps |
 
 YouTube 4K is Big Buck Bunny, VP9 3840x2160 at 60 fps, SDR, played by
-`video-bench.py`. Every route played it at 60 fps. Each route ran it in
-Omarchy's Chromium 153 as installed and in Google Chrome 155; the chart
-takes the one that dropped fewer frames (Parallels: a tie, so the lower
-draw). Bold: the chart's row. Watts, median of 3:
+`video-bench.py` at 60 fps. The VM ran it in Omarchy's Chromium 153 as
+installed and in Google Chrome 155; the chart takes Chromium, the app's
+default. Bold: the chart's row. Watts, median of 3:
 
-| Route | Browser | Decoder | Dropped frames | Watts |
+| Where | Browser | Decoder | Dropped frames | Watts |
 |---|---|---|---|---|
 | **OmacVM.app** | **Chromium, chromium-video on (the default)** | **V4L2VideoDecoder: the Mac's media engine** | **2.6 %** | **10.10** |
 | OmacVM.app | Chromium, chromium-video off | VpxVideoDecoder (CPU) | 0.1 % | 16.45 |
 | OmacVM.app | Google Chrome | VaapiVideoDecoder: the Mac's media engine | 20.0 % | 8.97 |
-| **UTM** | **Chromium** | **VpxVideoDecoder (CPU)** | **0.8 %** | **16.46** |
-| UTM | Google Chrome | VpxVideoDecoder (CPU) | 2.5 % | 19.05 |
-| **VMware Fusion** | **Google Chrome** | **VpxVideoDecoder (CPU)** | **10.6 %** | **16.14** |
-| VMware Fusion | Chromium | VpxVideoDecoder (CPU) | 42.0 % | 17.24 |
-| **Parallels** | **Chromium** | **VpxVideoDecoder (CPU)** | **1.8 %** | **16.78** |
-| Parallels | Google Chrome | VpxVideoDecoder (CPU) | 1.8 % | 16.90 |
 | **macOS** | **Google Chrome** | **VideoToolboxVideoDecoder (hardware)** | **0.0 %** | **6.07** |
 
 Browser and graphics tests, median of 3 (range):
 
-| Test | OmacVM.app 3.0.3 | UTM | VMware Fusion | Parallels | macOS |
-|---|---|---|---|---|---|
-| Speedometer 3.1 | 30.4 (30.1-30.4) | 26.0 (25.3-26.3) | 28.5 (27.5-28.9) | 29.7 (29.6-29.8) | 47.1 (46.7-47.1) |
-| WebGL Aquarium, 30,000 fish (fps) | 18.8 (15.4-18.8) | 22.1 (22.0-22.1) | 36.5 (28.9-38.0) | 21.1 (16.4-21.2) | 60.0 (60.0-60.0) |
-| Basemark Web 3.0 | 1357 (1349-1537) | 1704 (1496-1739) | 1359 (1274-1362) | 1378 (1353-1584) | 1872 (1842-1960) |
-| glmark2 | 1790 (1774-1840) | 756 (755-758) | 378 (378-379) | 2020 (2005-2080) | no macOS version |
+| Test | OmacVM.app 3.0.3 | macOS |
+|---|---|---|
+| Speedometer 3.1 | 30.4 (30.1-30.4) | 47.1 (46.7-47.1) |
+| WebGL Aquarium, 30,000 fish (fps) | 18.8 (15.4-18.8) | 60.0 (60.0-60.0) |
+| Basemark Web 3.0 | 1357 (1349-1537) | 1872 (1842-1960) |
+| glmark2 | 1790 (1774-1840) | no macOS version |
 
 Before quoting these:
 
 - **Every core busy** loads the VM's 4 CPUs (400 % for the VM) and all 8
-  cores on macOS. At the same 400 %, OmacVM.app draws 3 to 4 W more than the
-  other VMs. We have not found why yet.
+  cores on macOS. At the same 400 %, OmacVM.app drew 3 to 4 W more than the
+  other VM apps measured that day. We have not found why yet.
 - **Aquarium** reaches the display's 60 Hz on macOS, so 60 fps is the
-  display's limit, not the Mac's. In the VMs each route draws its own frame
-  rate, so the WebGL watts are not an efficiency number. Fusion draws the
-  most frames (36.5 fps in the browser test, 25 in the power windows) and
-  the most watts.
+  display's limit, not the Mac's. The VM draws its own frame rate, so the
+  WebGL watts are not an efficiency number.
 - **OmacVM.app's Google Chrome** plays the video on the media engine too,
   at 8.97 W, but drops a fifth of the frames on this Air (59.7 fps). The
   chart uses Omarchy's Chromium, the app's default.
-- **Fusion** started the VM at scale 1 in full screen. We set scale 2 with
-  Omarchy's own `omarchy-hyprland-monitor-scaling 2`, like the other routes.
-  Two of Fusion's browser rounds were run again: Chrome took over 30 seconds
-  to start after glmark2, and `bench.sh` left that Chrome open when it gave
-  up.
-- **UTM idle** was 6.30 W here, like the others. The 15.2 W from the
-  2026-10-03 MacBook Pro round ([#32](https://github.com/gillesgoetsch/omacvm/issues/32))
-  did not show on the Air.
-- Parallels' background service (idle, 0 % CPU) was still running during
-  the UTM windows. It was off for the macOS and Fusion routes.
-- The OmacVM.app VM runs kernel 7.2.8 (the 3.0.0 image), the others 7.2.9
-  (full builds).
 
 Raw runs, in round order. Watts:
 
@@ -467,15 +421,6 @@ Raw runs, in round order. Watts:
   YouTube 4K in Chromium with chromium-video 10.20, 10.10, 10.09, without
   16.54, 16.38, 16.45, in Google Chrome 8.99, 8.75, 8.97; every core 21.01,
   21.05, 20.97; Aquarium 17.07, 17.11, 17.20.
-- UTM: idle 6.33, 6.30, 6.30; reading 7.43, 7.43, 7.45; YouTube 4K in
-  Chromium 16.59, 16.38, 16.46, in Google Chrome 19.27, 19.02, 19.05; every
-  core 17.06, 16.90, 16.95; Aquarium 18.15, 17.83, 18.15.
-- VMware Fusion: idle 6.26, 6.18, 6.21; reading 6.76, 6.82, 6.83; YouTube
-  4K in Google Chrome 16.10, 16.25, 16.14, in Chromium 17.35, 17.24, 17.21;
-  every core 18.16, 18.19, 18.08; Aquarium 20.95, 20.62, 20.64.
-- Parallels: idle 6.25, 6.14, 6.17; reading 6.68, 6.63, 6.69; YouTube 4K in
-  Chromium 16.50, 16.78, 16.82, in Google Chrome 16.90, 17.01, 16.88; every
-  core 17.90, 18.10, 18.01; Aquarium 17.37, 17.43, 17.90.
 - macOS: idle 5.34, 5.20, 5.02; reading 5.56, 5.48, 5.29; YouTube 4K 6.28,
   6.07, 5.98; every core 19.69, 19.36, 20.09; Aquarium 17.34, 17.48, 17.22.
 
@@ -483,113 +428,83 @@ Browser and graphics tests:
 
 - OmacVM.app 3.0.3: Speedometer 30.4, 30.1, 30.4; Aquarium 18.8, 15.4,
   18.8; Basemark 1357, 1349, 1537; glmark2 1840, 1790, 1774.
-- UTM: Speedometer 25.3, 26.0, 26.3; Aquarium 22.1, 22.1, 22.0; Basemark
-  1704, 1739, 1496; glmark2 756, 755, 758.
-- VMware Fusion: Speedometer 27.5, 28.5, 28.9; Aquarium 28.9, 36.5, 38.0;
-  Basemark 1274, 1359, 1362; glmark2 378, 378, 379.
-- Parallels: Speedometer 29.6, 29.8, 29.7; Aquarium 16.4, 21.1, 21.2;
-  Basemark 1378, 1353, 1584; glmark2 2080, 2020, 2005.
 - macOS: Speedometer 46.7, 47.1, 47.1; Aquarium 60.0, 60.0, 60.0; Basemark
   1872, 1960, 1842.
 
-### MacBook Pro M4 Max, every route (2026-10-03)
+<a name="macbook-pro-m4-max-every-route-2026-10-03"></a>
 
-The README's power chart showed this round before the MacBook Air round above replaced it.
+### MacBook Pro M4 Max (2026-10-03)
 
-2026-10-03, MacBook Pro 16" M4 Max, macOS 15.7.4, 16 CPUs and 48 GB per VM, in
-full screen on the built-in display (3456x2160 at 120 Hz), Google Chrome 154,
-OmacVM 2.3.0. Parallels Desktop 27.0.2 (Pro trial), UTM 5.0.6, VMware Fusion
-26.0.1, OmacVM.app (preview, QEMU 11.1.1 from try-omarchy). Speedometer is
-the median of 3 runs; Geekbench, MotionMark and glmark2 are single runs, so a
-median of 3 may differ a little.
+The CPU numbers of the README's speed chart. MacBook Pro 16" M4 Max, macOS
+15.7.4, 16 CPUs and 48 GB for the VM, in full screen on the built-in display
+(3456x2160 at 120 Hz), Google Chrome 154, OmacVM 2.3.0, OmacVM.app (preview,
+QEMU 11.1.1 from try-omarchy). Speedometer is the median of 3 runs;
+Geekbench, MotionMark and glmark2 are single runs, so a median of 3 may
+differ a little.
 
-| | Mac | Parallels | UTM | VMware Fusion | OmacVM.app |
-|---|---|---|---|---|---|
-| Geekbench 7 single-core (single run) | 3267 | 3164 | 2944 | 3054 | 3183 |
-| Geekbench 7 multi-core (single run) | 27290 | 26218 | 24414 | 27037 | 26984 |
-| Speedometer 3.1 (median of 3) | 62.9 | 42.4 | 32.9 | 44.4 | 43.8 |
-| MotionMark 1.3.1 (single run) | 5865 | no stable result | no stable result | 2368 | no stable result |
-| glmark2 (single run) | no macOS version | 7306 | 964 | 1813 | 1017 |
-| Geekbench 7 GPU | 207885 (Metal) | ✗ | ✗ | ✗ | ✗ |
-| YouTube 4K decoder | AV1, hardware | VP9, CPU | VP9, CPU | VP9, CPU (1.6 % dropped) | VP9, CPU |
+| | Mac | OmacVM.app (preview) |
+|---|---|---|
+| Geekbench 7 single-core (single run) | 3267 | 3183 · 97 % |
+| Geekbench 7 multi-core (single run) | 27290 | 26984 · 99 % |
+| Speedometer 3.1 (median of 3) | 62.9 | 43.8 |
+| MotionMark 1.3.1 (single run) | 5865 | no stable result |
+| glmark2 (single run) | no macOS version | 1017 |
+| Geekbench 7 GPU | 207885 (Metal) | ✗ (no OpenCL in the preview) |
+| YouTube 4K decoder | AV1, hardware | VP9, CPU |
 
 Power draw of the whole Mac (W), 3 minutes per load, brightness 50 %:
 
-| | Mac | Parallels | UTM | VMware Fusion | OmacVM.app |
-|---|---|---|---|---|---|
-| Idle | 6.1 | 5.7 | (15.2) | 5.5 | 6.2 |
-| Reading (light) | 6.6 | 7.3 | (19.3) | 5.9 | 6.8 |
-| YouTube 4K (SDR) | 8.0 | 24.2 | 39.2 | 20.4 | 21.3 |
-| Every core busy | 75.3 | 72.2 | 61.3 | 73.9 | 71.0 |
-| WebGL Aquarium, 30,000 fish | 35.6 | 27.4 | 29.1 | 37.3 | 27.2 |
+| | Mac | OmacVM.app (preview) |
+|---|---|---|
+| Idle | 6.1 | 6.2 |
+| Reading (light) | 6.6 | 6.8 |
+| YouTube 4K (SDR) | 8.0 | 21.3 (CPU decoding, before 2.7.0) |
+| Every core busy | 75.3 | 71.0 |
+| WebGL Aquarium, 30,000 fish | 35.6 | 27.2 |
 
 Notes:
 
-- The VMs' idle can be a little below the Mac's: on the Mac the desktop and
-  Terminal showed, in the VMs Omarchy's dark desktop, and this Mac's mini-LED
+- The VM's idle can be a little below the Mac's: on the Mac the desktop and
+  Terminal showed, in the VM Omarchy's dark desktop, and this Mac's mini-LED
   display draws less for dark content.
-- The WebGL row is not a GPU efficiency number: each route draws a different
-  number of frames per second.
+- The WebGL row is not a GPU efficiency number: the VM draws fewer frames
+  per second.
 - An HDR video would make the Mac's own run unfair: macOS drives the display
   brighter for HDR. `video-bench.py` uses an SDR video (16.4 W with HDR on the
   Mac, 8.0 W with SDR).
-- UTM's idle and reading numbers (in brackets) don't hold: a later check
-  showed about 5 W at idle, also with an app open. Something was probably
-  still busy in the VM during our run. They are being measured again
-  ([#32](https://github.com/gillesgoetsch/omacvm/issues/32),
-  [finding 15](../troubleshooting.md#15-utm-idle-power-is-being-measured-again)).
 - MotionMark: [finding 16](../notes/findings.md#16-motionmark-gives-no-stable-result).
 
 ### GPU (2026-10-04)
 
 The same Mac, macOS 15.7.4, Google Chrome 154, OmacVM 2.6.0 (release
-candidate). One VM at a time in full screen on the built-in display (3456x2160
+candidate). The VM alone in full screen on the built-in display (3456x2160
 at 120 Hz), the Mac otherwise idle, display brightness at its lowest (it does
-not change these numbers). An external display (3840x2400, 60 Hz, on its own
-power) was connected: in full screen, Parallels and Fusion give the VM a second
-monitor for it. Chrome ran on the built-in display's monitor everywhere, the
-page 1728x1080 at 2x (OmacVM.app: 1728x1085). Median of 3 runs; the share of
-the Mac in brackets.
+not change these numbers). Chrome's page 1728x1080 at 2x (OmacVM.app:
+1728x1085). Median of 3 runs; the share of the Mac in brackets.
 
-| | Mac | Parallels | UTM | VMware Fusion | OmacVM.app |
-|---|---|---|---|---|---|
-| Basemark Web 3.0 | 3247 | 2446 (75 %) | 2182 (67 %) | 2522 (78 %) | not measured yet |
-| WebGL Aquarium, 30,000 fish (fps) | 107.7 | 26.7 (25 %) | 28.1 (26 %) | 40.6 (38 %) | 23.9 (22 %) |
-| Geekbench 7 GPU, Metal | 204241 | ✗ | ✗ | ✗ | ✗ |
-| Geekbench 7 GPU, OpenCL | 117456 | ✗ | ✗ | ✗ | ✗ |
-
-Each run:
-
-| | Basemark Web 3.0 | WebGL Aquarium (fps) |
+| | Mac | OmacVM.app 2.6.0 RC |
 |---|---|---|
-| Mac | 3248, 3118, 3247 | 107.7, 108.5, 106.8 |
-| Parallels | 2586, 2446, 2423 | 21.9, 28.2, 26.7 |
-| UTM | 2182, 2174, 2780 | 25.0, 28.6, 28.1 |
-| VMware Fusion | 2478, 2578, 2522 | 38.9, 40.6, 40.9 |
-| OmacVM.app | no result (3 tries, before the fix) | 16.8, 24.1, 23.9 |
+| Basemark Web 3.0 | 3247 (3248, 3118, 3247) | no result (3 tries, before the fix) |
+| WebGL Aquarium, 30,000 fish (fps) | 107.7 (107.7, 108.5, 106.8) | 23.9 (16.8, 24.1, 23.9) (22 %) |
+| Geekbench 7 GPU, Metal | 204241 | ✗ |
+| Geekbench 7 GPU, OpenCL | 117456 | ✗ (with Vulkan on: [GPU compute](#gpu-compute-with-venus-2026-10-04)) |
 
 Notes:
 
-- **Geekbench GPU in a VM: not available.** Geekbench 7's Linux ARM preview
-  has no GPU test: `--gpu-list` lists nothing and `--gpu Vulkan` or
-  `--gpu OpenCL` only prints the help. No VM offers OpenCL, and none offers
-  Vulkan either (Fusion: `vulkaninfo` finds no driver; UTM's Vulkan is off in
-  OmacVM's setup). Tried once in each VM.
+- Geekbench 7's Linux ARM preview has no GPU test without OpenCL or Vulkan
+  in the VM: `--gpu-list` lists nothing and `--gpu Vulkan` or `--gpu OpenCL`
+  only prints the help.
 - Basemark mixes GPU tests (WebGL, canvas, SVG) with JavaScript and page tests,
   so it is not a pure GPU number. Each result is public on Basemark's
   Powerboard; `browser-bench.py` prints its link.
 - WebGL Aquarium on the Mac: 108 fps on a 120 Hz display, so close to the
-  display's limit. The VMs are far below it.
-- OmacVM.app: Basemark never finished in 3 tries (up to 15 minutes each). It stays
-  in its Geometry Stress Test, Chrome's page at full CPU. OmacVM.app's test VM
-  has 8 CPUs and 16 GB, the others 16 and 48. Cause and fix:
+  display's limit. The VM is far below it.
+- Basemark never finished in 3 tries (up to 15 minutes each). It stays in its
+  Geometry Stress Test, Chrome's page at full CPU. The test VM had 8 CPUs
+  and 16 GB. Cause and fix:
   [finding 23](../troubleshooting.md#23-app-chrome-hangs-in-basemark-web-30-the-screen-flickers).
   With the fix it finishes: 2157 in one run in the app's window (page
   1920x1200 at 2x, the other test VMs paused), not comparable with the table.
-  The full-screen run for the table is still to do.
-- Chrome must open on the built-in display's monitor: on Fusion it first
-  opened on the external one (page 1920x1200, 60 Hz) and gave 41 to 43 fps and
-  Basemark 2072 to 2596. Those runs are not in the table.
 
 ### OmacVM.app 2.9.0 release candidate (2026-10-05)
 
@@ -608,39 +523,27 @@ left out), range in brackets.
 | QEMU CPU during the session | 106 % | 130 % |
 | testufo on a virtual 120 Hz display, new frames a second | 88.8-90.6 | 116.6-119.6 |
 
-RC2's numbers are not in the chart: in a window, with another VM running,
-they are not taken the same way as the others. The 3.0.0 run below, in full
-screen with the VM alone, replaced them.
+RC2's numbers were taken in a window with another VM running, so they do
+not compare with the full-screen runs below.
 
 ### OmacVM.app 3.0.0 (2026-10-06)
 
-The chart's Speedometer, Aquarium and Basemark for OmacVM.app. Mac mini M4
-(macOS 27, LG 5K display at 60 Hz), Google Chrome, `bench.sh`, median of 3.
-Each VM alone in native full screen (guest 5120x2880, Chrome's page 2560x1440
-at 2x), 6 CPUs and 8 GB. OmacVM.app with v3.0.0's runtime and GPU path
-(test build 33fa0079), Graphics on Automatic (OpenGL). Parallels ran in the
-same session because it is also in the MacBook rounds above.
+Mac mini M4 (macOS 27, LG 5K display at 60 Hz), Google Chrome, `bench.sh`,
+median of 3. The VM alone in native full screen (guest 5120x2880, Chrome's
+page 2560x1440 at 2x), 6 CPUs and 8 GB. OmacVM.app with v3.0.0's runtime and
+GPU path (test build 33fa0079), Graphics on Automatic (OpenGL).
 
-| | Mac mini | OmacVM.app 3.0.0 | Parallels | OmacVM.app in the chart |
-|---|---|---|---|---|
-| Speedometer 3.1 | 56.95 | 33.9 (33.9, 34.3, 30.6) | 35.5 (36.5, 35.5, 35.5) | 40.5 (64 %) |
-| WebGL Aquarium, 30,000 fish (fps) | 60.0 | 19.1 (14.0, 19.1, 19.1) | 26.9 (21.0, 26.9, 26.9) | 19.0 (18 %) |
-| Basemark Web 3.0 | 2481 | 1730 (1730, 1650, 1743) | 1723 (1723, 1789, 1720) | 2456 (76 %) |
+| | Mac mini | OmacVM.app 3.0.0 |
+|---|---|---|
+| Speedometer 3.1 | 56.95 | 33.9 (33.9, 34.3, 30.6) |
+| WebGL Aquarium, 30,000 fish (fps) | 60.0 | 19.1 (14.0, 19.1, 19.1) |
+| Basemark Web 3.0 | 2481 | 1730 (1730, 1650, 1743) |
 
-The chart's number is Parallels' MacBook result times OmacVM.app / Parallels
-on the mini, for Speedometer 42.4 × 33.9 / 35.5 = 40.5. Scaling by the mini's
-own Chrome does not work: its Aquarium stops at the display's 60 Hz, and the
-6-CPU VMs lose more on the 10-core mini. Scaled that way, Parallels would get
-48.3 fps in Aquarium against the 26.7 it got on the MacBook.
-
-- Aquarium did not change: 19.1, the same as 2.9.0 RC2. UTM and Parallels
-  stay ahead.
-- Basemark: OmacVM.app's first full-screen run, level with Parallels.
-- The Mac mini's Speedometer is the median of 6 runs, 3 before the VMs and 3
+- Aquarium did not change: 19.1, the same as 2.9.0 RC2. The mini's own
+  Aquarium stops at the display's 60 Hz, so it is no fair baseline.
+- Basemark: OmacVM.app's first full-screen run.
+- The Mac mini's Speedometer is the median of 6 runs, 3 before the VM and 3
   after.
-- Geekbench 7 multi-core and GPU OpenCL in the chart are from the MacBook
-  rounds (2026-10-03 and 2026-10-04). The mini has no Geekbench, and the CPU
-  path did not change in 3.0.0. OpenCL needs `omacvm enable vulkan`.
 
 ### OmacVM.app 3.0.1 (2026-10-07)
 
@@ -649,30 +552,26 @@ id so it runs next to the user's own app. Its QEMU, virglrenderer, MoltenVK,
 KosmicKrisp and firmware are the release zip's (QEMU and virglrenderer differ
 only in the build paths inside them). The same Mac mini, LG 5K display, VM
 ("Bench OmacVM", 6 CPUs, 8 GB) and scripts as the 3.0.0 run above: Google
-Chrome 154, `bench.sh`, median of 3, each VM alone in native full screen
+Chrome 154, `bench.sh`, median of 3, the VM alone in native full screen
 (guest 5120x2880, Chrome's page 2560x1440 at 2x), Graphics on Automatic
-(OpenGL in 3.0.1), brightness 50 %, display sleep off. Parallels ran in the
-same session.
+(OpenGL in 3.0.1), brightness 50 %, display sleep off.
 
-| | Mac mini (before / after the VMs) | OmacVM.app 3.0.1 | Parallels | 3.0.1 scaled as in the chart | 3.0.0 in the chart |
-|---|---|---|---|---|---|
-| Speedometer 3.1 | 59.3 / 58.4 | 38.3 (38.3, 38.6, 38.3) | 38.6 (36.9, 38.6, 38.6) | 42.1 (67 %) | 40.5 (64 %) |
-| WebGL Aquarium, 30,000 fish (fps) | 60.0 / 60.0 | 20.0 (20.0, 19.9, 20.0) | 26.6 (26.9, 26.4, 26.6) | 20.1 (19 %) | 19.0 (18 %) |
-| Basemark Web 3.0 | 1968 / 2562 | 1761 (1761, 1710, 1781) | 1582 (1795, 1582, 1559) | 2723 (84 %) | 2456 (76 %) |
+| | Mac mini (before / after the VM) | OmacVM.app 3.0.1 | OmacVM.app 3.0.0 |
+|---|---|---|---|
+| Speedometer 3.1 | 59.3 / 58.4 | 38.3 (38.3, 38.6, 38.3) | 33.9 |
+| WebGL Aquarium, 30,000 fish (fps) | 60.0 / 60.0 | 20.0 (20.0, 19.9, 20.0) | 19.1 |
+| Basemark Web 3.0 | 1968 / 2562 | 1761 (1761, 1710, 1781) | 1730 |
 
-**The chart keeps 3.0.0's numbers.** None of the three moved because of
-3.0.1:
+None of the three moved because of 3.0.1:
 
-- Speedometer: Parallels rose about as much in the same session (35.5 on
-  2026-10-06, 38.6 now). OmacVM.app against Parallels went from 0.95 to
-  0.99. 3.0.1 changed nothing on the CPU or in the browser.
+- Speedometer: another VM measured in both sessions rose about as much
+  (OmacVM.app against it went from 0.95 to 0.99). 3.0.1 changed nothing on
+  the CPU or in the browser.
 - Aquarium: 20.0 here, but 18.85 (18.4 to 19.0) with the same app and VM an
   hour later, in the OpenGL rows of the A/B below. 3.0.0 had 19.1.
-- Basemark: OmacVM.app 1761 against 1730 for 3.0.0. The scaled number jumps
-  because Parallels' three runs spread from 1559 to 1795.
-- The Mac's own Basemark before the VMs (1836 to 2024) ran right after
-  another test on the mini had finished; after the VMs it gave 2499 to 2771.
-  The chart does not use the mini's Mac numbers.
+- Basemark: 1761 against 1730 for 3.0.0, within the noise.
+- The Mac's own Basemark before the VM (1836 to 2024) ran right after
+  another test on the mini had finished; after the VM it gave 2499 to 2771.
 
 A build with #173 that is not released yet (int-302 at 5c7fc40b; virgl binds
 a GL program only when it changes), the same VM and session: WebGL Aquarium
@@ -756,8 +655,7 @@ design capacity) over the draw.
   Bridge or Gestures helper. 3.0.1 ran both.
 - The external SSD with the VMs stayed plugged in, and Terminal and a
   status window were on screen in every row.
-- No macOS light row: this round compared each VM row with macOS idle. No
-  UTM row: the Air has no UTM.
+- No macOS light row: this round compared each VM row with macOS idle.
 
 The Mac mini ran no power tests: it has no battery for `power.sh` to read,
 and its disk setup differs from the MacBooks', so its numbers would not
@@ -854,8 +752,7 @@ tests as the MacBook measurement of 2026-10-04).
 
 - The fast network more than doubles VM → Mac, slirp's weak side (one QEMU
   thread does all of TCP/IP), at 40% less CPU per Gbit/s. Mac → VM is slower
-  than slirp on this Mac but still about 9 Gbit/s, about where Parallels' own
-  vmnet network was on the MacBook (7.7 to 8.7 Gbit/s). Internet speed does
+  than slirp on this Mac but still about 9 Gbit/s. Internet speed does
   not change: the link is the limit on both.
 - The MacBook measurement of the user network (busier Mac, other VMs
   running) was slower and less steady: VM → Mac 1.7 Gbit/s, Mac → VM 3.3 to
@@ -868,7 +765,7 @@ tests as the MacBook measurement of 2026-10-04).
   VM runs) cost a quarter of VM → Mac: 7.1 → 5.3 Gbit/s, Mac → VM unchanged
   (A/B on the mini, same VM headless, iperf3 10 s, single runs, no bench lock).
   The fallback therefore plugs in a second card instead. With it, in the
-  app (display on, a UTM VM running beside it): 6.9 / 6.3 Gbit/s VM → Mac,
+  app (display on, another VM running beside it): 6.9 / 6.3 Gbit/s VM → Mac,
   9.5 / 8.8 Mac → VM (1 / 4 streams).
 
 ## Graphics: Automatic (2026-10-05)
@@ -982,8 +879,7 @@ desktop answered and showed at the end, QEMU's memory stayed at 2.7-2.9 GB.
 
 ## GPU compute with Venus (2026-10-04)
 
-OmacVM.app with Venus only (the other routes have no Vulkan or OpenCL in the
-VM, see above). The VM runs OmacVM's guest Mesa (ADR 0022). Two Macs:
+OmacVM.app with Venus. The VM runs OmacVM's guest Mesa (ADR 0022). Two Macs:
 
 - **MacBook Pro M4 Max**, macOS 15.7.4, Venus on MoltenVK 1.4.2. Test VM with
   8 CPUs and 16 GB, in a window. Locked batches under the bench lock (other

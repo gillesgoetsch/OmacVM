@@ -12,7 +12,7 @@ struct APIError: Error {
 /// <addr> the Mac address the request came in on. The VM checks it, its own
 /// Mac address included, before it sends the token, so a program listening in
 /// the Bridge's place (on 127.0.0.1 any Mac program could) never gets it, not
-/// even by fetching a proof from the Bridge on 10.211.55.2.
+/// even by fetching a proof from the Bridge on 192.168.77.1.
 func proof(_ nonce: String, at addr: String) -> String {
   HMAC<SHA256>.authenticationCode(for: Data("omacvm-bridge mac \(addr) \(nonce)".utf8), using: SymmetricKey(data: token))
     .map { String(format: "%02x", $0) }.joined()
@@ -29,7 +29,7 @@ func localAddress(_ fd: Int32) -> String? {
 
 /// A connection from a program on this Mac rather than a VM: from 127.x, or
 /// from one of the Mac's own addresses (a Mac program that connects to
-/// 10.211.55.2 comes from 10.211.55.2, or from any address it binds to first).
+/// 192.168.77.1 comes from 192.168.77.1, or from any address it binds to first).
 func fromThisMac(_ fd: Int32, peer: String) -> Bool {
   if peer.hasPrefix("127.") || peer == localAddress(fd) { return true }
   var list: UnsafeMutablePointer<ifaddrs>?
@@ -244,7 +244,7 @@ final class Hub {
 
 // ---- HTTP ----
 let reasons = [200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 408: "Request Timeout", 405: "Method Not Allowed",
-               409: "Conflict", 413: "Payload Too Large", 500: "Internal Server Error", 501: "Not Implemented", 503: "Service Unavailable"]
+               409: "Conflict", 410: "Gone", 413: "Payload Too Large", 500: "Internal Server Error", 501: "Not Implemented", 503: "Service Unavailable"]
 
 func httpHead(_ code: Int, _ type: String, length: Int?, extra: String = "") -> Data {
   var h = "HTTP/1.1 \(code) \(reasons[code] ?? "Error")\r\nContent-Type: \(type)\r\nCache-Control: no-store\r\n"
@@ -318,7 +318,7 @@ func externalBrightnessRequest(_ query: [URLQueryItem], body: Data?) throws -> [
   // Windows and the front app: read on the main thread (this one is a connection's).
   let target: MacDisplay? = DispatchQueue.main.sync {
     if let box { return VMScreens.forBox(box) }
-    return VMScreens.front(windowed: true)?.display
+    return VMScreens.front()?.display
   }
   guard let t = target else { throw APIError(404, "no VM window in front on a display (or this output is not on one)") }
   switch OutputBrightness.route(builtin: t.builtin, externalOn: config.externalBrightness) {
@@ -437,8 +437,6 @@ func handle(_ fd: Int32, peer: String) {
     }
   case ("GET", "/bluetooth"):
     respond(fd, 200, hub.current("bluetooth"))
-  case ("GET", "/battery"):
-    respond(fd, 200, hub.current("battery"))
   case ("GET", "/timezone"):
     respond(fd, 200, hub.current("timezone"))
   case ("POST", let p) where p.hasPrefix("/bluetooth/"):
@@ -486,35 +484,20 @@ func handle(_ fd: Int32, peer: String) {
     } catch {
       respond(fd, 500, ["error": "\(error)"])
     }
-  // The camera is only for VMs. A Mac program could read the token file and
-  // would get frames under the Bridge's camera permission, without asking
-  // macOS itself. OmacVM.app's VMs use their virtio port, not 127.0.0.1.
-  case ("GET", let p) where (p == "/camera" || p == "/camera/status") && fromThisMac(fd, peer: peer):
-    log("403 \(logSafe(path)) from \(peer): the camera is only for VMs")
-    respond(fd, 403, ["error": "the camera is only for VMs, not for programs on this Mac"])
-  case ("GET", "/camera/status"):
-    respond(fd, 200, camera.status())
-  case ("GET", "/camera"):
-    // From here on the connection carries the camera (camera.swift): the VM
-    // says start and stop, the Bridge sends frames while it is started.
-    guard camera.canAttach else { respond(fd, 503, ["error": "too many camera connections"]); return }
-    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-omacvm-camera\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
-    guard writeAll(fd, Data(head.utf8)) else { close(fd); return }
-    var forever = timeval()
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &forever, socklen_t(MemoryLayout<timeval>.size))
-    camera.attach(fd: fd, label: peer, leftover: Data(buf[headEnd.upperBound...]))
   case ("POST", "/power"), ("POST", "/join"), ("POST", "/disconnect"):
     respond(fd, 501, ["error": "Wi-Fi control is not implemented yet (stage 2)"])
-  case (_, "/state"), (_, "/scan"), (_, "/audio"), (_, "/display"), (_, "/bluetooth"), (_, "/battery"), (_, "/timezone"), (_, "/wifi/password"), (_, "/events"),
-       (_, "/camera"), (_, "/camera/status"), (_, "/display/external"), (_, "/display/external-brightness"):
+  case (_, "/state"), (_, "/scan"), (_, "/audio"), (_, "/display"), (_, "/bluetooth"), (_, "/timezone"), (_, "/wifi/password"), (_, "/events"),
+       (_, "/display/external"), (_, "/display/external-brightness"):
     respond(fd, 405, ["error": "method not allowed"])
   default:
     respond(fd, 404, ["error": "not found"])
   }
 }
 
-// Listens on one address only. The VM network's bridge interface appears when
-// Parallels or UTM starts and can be recreated, so the listener follows it.
+// Listens on one address only. The address's interface (the fast network's
+// bridge) appears when the network starts and can be recreated, so the
+// listener follows it. `retired`: a retired route's address (retired.swift):
+// no VM list behind it, and its connections never ask for one.
 final class Server {
   private let q = DispatchQueue(label: "omacvm-bridge.listen")
   private var source: DispatchSourceRead?
@@ -522,9 +505,10 @@ final class Server {
   private var waitingLogged = false
   let onConnection: (Int32, String) -> Void
   let listenAddr: String
+  let retired: Bool
 
-  init(addr: String, onConnection: @escaping (Int32, String) -> Void) {
-    self.listenAddr = addr; self.onConnection = onConnection
+  init(addr: String, retired: Bool = false, onConnection: @escaping (Int32, String) -> Void) {
+    self.listenAddr = addr; self.retired = retired; self.onConnection = onConnection
   }
 
   func check(rebind: Bool = false) { q.async { self.checkLocked(rebind: rebind) } }
@@ -556,7 +540,9 @@ final class Server {
     }
     guard source == nil else { return }
     guard let owner else {
-      if !waitingLogged { log("listener: waiting for \(listenAddr) to appear (VM network not up yet)"); waitingLogged = true }
+      // A retired route's network is usually never up: nothing to say.
+      if !waitingLogged && !retired { log("listener: waiting for \(listenAddr) to appear (VM network not up yet)") }
+      waitingLogged = true
       return
     }
     let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -576,7 +562,7 @@ final class Server {
     }
     _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
     let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: q)
-    src.setEventHandler { [onConnection] in
+    src.setEventHandler { [onConnection, retired] in
       while true {
         var peer = sockaddr_in(), len = socklen_t(MemoryLayout<sockaddr_in>.size)
         let c = withUnsafeMutablePointer(to: &peer) {
@@ -584,10 +570,10 @@ final class Server {
         }
         if c < 0 { break }
         let who = ipv4String(peer.sin_addr)
-        let (key, known) = control.connectionKey(who)
+        let (key, known) = retired ? ("retired " + who, false) : control.connectionKey(who)
         guard gate.enter(key, known: known) else {
           close(c)
-          if !known { control.unknownTurnedAway() }   // never waits: a run goes in the background
+          if !known && !retired { control.unknownTurnedAway() }   // never waits: a run goes in the background
           logRefusal("busy \(key)", "busy: turned away a connection from \(who) (\(known ? "too many from this VM" : "too many from unknown addresses"))")
           continue
         }
@@ -597,7 +583,7 @@ final class Server {
     src.setCancelHandler { close(fd) }
     src.resume()
     source = src; boundInterface = owner; waitingLogged = false
-    log("listener: http://\(listenAddr):\(listenPort) on \(owner)")
+    log("listener: http://\(listenAddr):\(listenPort) on \(owner)\(retired ? " (a retired route's network: the move text only)" : "")")
   }
 }
 

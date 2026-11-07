@@ -2,12 +2,12 @@
 // Copyright (c) David Heinemeier Hansson. MIT License, see LICENSE.
 //
 // Controls the Mac's audio (via the omacvm-bridge helper) instead of the VM's
-// PipeWire graph: in a Parallels guest the VM's own volume is just a
+// PipeWire graph: in the VM the VM's own volume is just a
 // pass-through, and the loudness people hear is the Mac's. Layout, components
 // and keyboard model follow the native widget. The per-app list is left out:
 // it describes the VM's own streams, not the Mac's.
 //
-// The input meter is the one exception that reads the VM side: Parallels
+// The input meter is the one exception that reads the VM side: the VM app
 // feeds the Mac's current input into the VM, so PipeWire's default source
 // carries exactly what apps in the VM hear. It shows once PipeWire has that
 // source (pipewire-alsa/-pulse installed) and is left out otherwise.

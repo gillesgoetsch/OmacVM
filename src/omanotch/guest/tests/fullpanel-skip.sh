@@ -19,7 +19,7 @@ cmd=${line#/bin/sh -c \'}; cmd=${cmd%\'}
 cond() { /bin/sh -c "${cmd//\/run\/omacvm\/host.env/$T/host.env}"; }
 
 rm -f "$T/host.env"
-cond && ok "no host.env (UTM, Fusion, Parallels): notchcast starts" || bad "no host.env: skipped"
+cond && ok "no host.env (an older app, a retired VM app): notchcast starts" || bad "no host.env: skipped"
 printf 'OMACVM_NOTCHPOINTER=1\nOMACVM_VKWINDOWS=1\n' > "$T/host.env"
 cond && ok "a native OmacVM.app start: notchcast starts" || bad "native start: skipped"
 printf 'OMACVM_NOTCHPOINTER=1\nOMACVM_FULLPANEL=640.5x829.5x37.0x1470.0x956.0\n' > "$T/host.env"

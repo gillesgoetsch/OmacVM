@@ -475,26 +475,180 @@ Caret caretFor(const Rect &cursor, double scale, bool relative,
     return c;
 }
 
-std::optional<Rect> parseHyprWindow(std::string_view json) {
+namespace {
+
+// A coordinate or size from Hyprland: a number of sane size.
+bool coord(const Json *v, double &out) {
+    if (!v || v->type != Json::Type::Number || !(std::fabs(v->number) < 1e7)) {
+        return false;
+    }
+    out = v->number;
+    return true;
+}
+
+long pidOf(const Json *v) {
+    if (!v || v->type != Json::Type::Number || v->number <= 0 || v->number > 2147483647.0 ||
+        v->number != std::floor(v->number)) {
+        return -1;
+    }
+    return long(v->number);
+}
+
+// The caret's top left corner inside a box of that size (its own pixels).
+bool holds(const Rect &box, double x, double y) {
+    return x >= 0 && y >= 0 && x <= box.w && y <= box.h;
+}
+
+} // namespace
+
+std::optional<HyprWindow> parseHyprActive(std::string_view json) {
     Json j;
     if (json.size() > 256 * 1024 || !parseJson(json, j, 16) || j.type != Json::Type::Object) {
         return std::nullopt;
     }
     const Json *at = j.get("at"), *size = j.get("size");
     auto pair = [](const Json *v, double &a, double &b) {
-        if (!v || v->type != Json::Type::Array || v->array.size() != 2 ||
-            v->array[0].type != Json::Type::Number || v->array[1].type != Json::Type::Number) {
-            return false;
-        }
-        a = v->array[0].number;
-        b = v->array[1].number;
-        return std::fabs(a) < 1e7 && std::fabs(b) < 1e7;
+        return v && v->type == Json::Type::Array && v->array.size() == 2 &&
+               coord(&v->array[0], a) && coord(&v->array[1], b);
     };
-    Rect r;
-    if (!pair(at, r.x, r.y) || !pair(size, r.w, r.h) || r.w <= 0 || r.h <= 0) {
+    HyprWindow w;
+    if (!pair(at, w.box.x, w.box.y) || !pair(size, w.box.w, w.box.h) || w.box.w <= 0 || w.box.h <= 0) {
         return std::nullopt;
     }
-    return r;
+    w.pid = pidOf(j.get("pid"));
+    return w;
+}
+
+std::optional<Rect> parseHyprWindow(std::string_view json) {
+    auto w = parseHyprActive(json);
+    if (!w) {
+        return std::nullopt;
+    }
+    return w->box;
+}
+
+std::optional<std::vector<HyprLayer>> parseHyprLayers(std::string_view json) {
+    Json j;
+    if (json.size() > 256 * 1024 || !parseJson(json, j, 16) || j.type != Json::Type::Object) {
+        return std::nullopt;
+    }
+    std::vector<HyprLayer> out;
+    size_t seen = 0;
+    for (const auto &mon : j.object) {
+        const Json *levels = mon.second.get("levels");
+        if (!levels || levels->type != Json::Type::Object) {
+            return std::nullopt;
+        }
+        for (const auto &lv : levels->object) {
+            // The level is its key, "0" to "3"; never the object's order.
+            if (lv.first.size() != 1 || lv.first[0] < '0' || lv.first[0] > '3' ||
+                lv.second.type != Json::Type::Array) {
+                return std::nullopt;
+            }
+            size_t order = 0;
+            for (const Json &l : lv.second.array) {
+                if (++seen > kMaxLayers || l.type != Json::Type::Object) {
+                    return std::nullopt;
+                }
+                HyprLayer h;
+                h.level = lv.first[0] - '0';
+                h.order = order++;
+                h.pid = pidOf(l.get("pid"));
+                if (const Json *a = l.get("alpha")) {
+                    if (a->type != Json::Type::Number || !std::isfinite(a->number)) {
+                        return std::nullopt;
+                    }
+                    h.alpha = a->number;
+                }
+                if (!coord(l.get("x"), h.box.x) || !coord(l.get("y"), h.box.y) ||
+                    !coord(l.get("w"), h.box.w) || !coord(l.get("h"), h.box.h)) {
+                    return std::nullopt;
+                }
+                if (h.box.w > 0 && h.box.h > 0 && h.pid > 0) {
+                    out.push_back(h);
+                }
+            }
+        }
+    }
+    return out;
+}
+
+std::string exeName(std::string_view link) {
+    constexpr std::string_view deleted = " (deleted)";
+    if (link.size() > deleted.size() && link.substr(link.size() - deleted.size()) == deleted) {
+        link.remove_suffix(deleted.size());
+    }
+    size_t slash = link.rfind('/');
+    return std::string(slash == std::string_view::npos ? link : link.substr(slash + 1));
+}
+
+bool sameProgram(std::string_view program, const ProcName &proc) {
+    size_t slash = program.rfind('/');
+    if (slash != std::string_view::npos) {
+        program.remove_prefix(slash + 1);
+    }
+    if (program.empty()) {
+        return false;
+    }
+    // The kernel keeps 15 bytes of the name in comm.
+    return (!proc.exe.empty() && program == proc.exe) ||
+           (!proc.comm.empty() && program.substr(0, 15) == proc.comm);
+}
+
+bool layerCandidate(const Rect &cursor, bool relative, std::string_view program,
+                    const std::optional<HyprWindow> &window, const NameOf &nameOf) {
+    bool none = cursor.x == 0 && cursor.y == 0 && cursor.w == 0 && cursor.h == 0;
+    if (!relative || none || program.empty()) {
+        return false;
+    }
+    return !window || window->pid <= 0 || !sameProgram(program, nameOf(window->pid));
+}
+
+Caret caretOn(const Rect &cursor, double scale, bool relative, std::string_view program,
+              const std::optional<HyprWindow> &window,
+              const std::optional<std::vector<HyprLayer>> &layers, const NameOf &nameOf) {
+    std::optional<Rect> box;
+    if (window) {
+        box = window->box;
+    }
+    if (!layers || !layerCandidate(cursor, relative, program, window, nameOf)) {
+        return caretFor(cursor, scale, relative, box);
+    }
+    if (!(scale > 0) || !std::isfinite(scale)) {
+        scale = 1;
+    }
+    double x = cursor.x / scale, y = cursor.y / scale;
+    const HyprLayer *top = nullptr;
+    std::vector<std::pair<long, bool>> named;   // pid -> is that program
+    for (const HyprLayer &l : *layers) {
+        if (!(l.alpha > 0) || !holds(l.box, x, y)) {
+            continue;
+        }
+        if (top && (l.level < top->level || (l.level == top->level && l.order < top->order))) {
+            continue;
+        }
+        bool same = false, known = false;
+        for (const auto &n : named) {
+            if (n.first == l.pid) {
+                same = n.second;
+                known = true;
+            }
+        }
+        if (!known) {
+            same = sameProgram(program, nameOf(l.pid));
+            named.emplace_back(l.pid, same);
+        }
+        if (same) {
+            top = &l;
+        }
+    }
+    if (!top) {
+        return caretFor(cursor, scale, relative, box);
+    }
+    Caret c;
+    c.rect = Rect{top->box.x + x, top->box.y + y, cursor.w / scale, cursor.h / scale};
+    c.exact = true;
+    return c;
 }
 
 } // namespace omacvm_ime

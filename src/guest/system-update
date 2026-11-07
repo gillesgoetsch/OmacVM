@@ -25,8 +25,10 @@
 # systemd tests the unit's way).
 set -uo pipefail
 G=$(cd "$(dirname "$0")" && pwd)/gbm-guard
+KEEP=${G%/*}/keep-explicit
 LOG=${OMACVM_SYSTEM_UPDATE_LOG:-/var/log/omacvm-system-update.log}
 UNIT=omacvm-system-update
+SESSION=omacvm-system-update-session
 SUDOERS=/etc/sudoers.d/zz-omacvm-update
 TMPF=/etc/tmpfiles.d/omacvm-update-sudo.conf
 RUN=${OMACVM_SYSTEM_UPDATE_DIR:-/run/omacvm-system-update}   # wrapper, gum, status
@@ -70,6 +72,22 @@ EOF
     { [[ -z ${1:-} ]] || chown "$1:" "$RUN/rc"; }
 }
 
+# The user's own systemd for the whole update: Omarchy 4.5's migrations use
+# systemctl --user, and its update keeps state in the user's runtime folder.
+# With nobody logged in there is none, and right after a session ended (a
+# guest check, an SSH login as the user) there is one that logind stops
+# 10 s later, taking /run/user/UID with it in the middle of the update
+# (2026-11-06: Omarchy's update then refused its own state at its end). A
+# login session of the user's, without a terminal, held while the update
+# runs, keeps both; it ends with the update.
+hold_session() {   # USER UID
+  systemctl stop "$SESSION" >/dev/null 2>&1; systemctl reset-failed "$SESSION" >/dev/null 2>&1
+  systemd-run --quiet --unit="$SESSION" --uid="$1" -p PAMName=login -p StandardInput=null -p StandardOutput=null \
+    -p RuntimeMaxSec=$((MAX + 900)) sleep infinity >/dev/null 2>&1 || return 1
+  local i; for ((i = 0; i < 50; i++)); do [[ -e /run/user/$2/bus ]] && return 0; sleep 0.2; done
+  return 1
+}
+
 run_unit() {   # -> the update's exit status
   local u h uid path cmd g sig
   u=$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env 2>/dev/null | tail -1)
@@ -99,11 +117,12 @@ run_unit() {   # -> the update's exit status
   echo "r $SUDOERS" > "$TMPF"
   helpers "$u" || { rm -f "$SUDOERS" "$TMPF"; say "could not prepare omarchy update" >&2; return 1; }
   systemctl reset-failed "$UNIT" >/dev/null 2>&1
+  [[ -z $uid ]] || hold_session "$u" "$uid" || echo "OmacVM: no session of $u held for the update" >> "$LOG" 2>/dev/null
   local env=(-E HOME="$h" -E USER="$u" -E LOGNAME="$u" -E LANG=C.UTF-8 -E TERM=xterm-256color
              -E OMARCHY_PATH="$path" -E PATH="$RUN/bin:$path/bin:/usr/local/bin:/usr/bin")
-  # Logged in: the user's runtime folder (Omarchy's update lock is there, so
-  # an update the user starts meanwhile waits for this one), and the
-  # session's D-Bus and Hyprland for the restarts at the update's end.
+  # The user's runtime folder (Omarchy's update lock is there, so an update
+  # the user starts meanwhile waits for this one) and D-Bus; logged in also
+  # the session's Hyprland for the restarts at the update's end.
   if [[ -n $uid && -d /run/user/$uid ]]; then
     env+=(-E XDG_RUNTIME_DIR="/run/user/$uid" -E DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus")
     sig=$(ls -t "/run/user/$uid/hypr" 2>/dev/null | head -1)
@@ -116,7 +135,7 @@ run_unit() {   # -> the update's exit status
   systemd-run --quiet --unit="$UNIT" --uid="$u" --gid="$(id -g "$u")" -p WorkingDirectory="$h" \
     -p StandardInput=null -p "StandardOutput=append:$LOG" -p "StandardError=append:$LOG" \
     -p RuntimeMaxSec="$MAX" -p KillSignal=SIGINT -p TimeoutStopSec=300 \
-    -p "ExecStopPost=+/bin/rm -f $SUDOERS $TMPF" \
+    -p "ExecStopPost=+/bin/rm -f $SUDOERS $TMPF" -p "ExecStopPost=+/usr/bin/systemctl stop --no-block $SESSION" \
     "${env[@]}" "$RUN/run" "$cmd" -y || { rm -f "$SUDOERS" "$TMPF"; say "could not start omarchy update" >&2; return 1; }
   local t=0 p n size="" seen=$SECONDS
   # Only a unit systemd reports as ended ends the wait. While the update
@@ -135,6 +154,7 @@ run_unit() {   # -> the update's exit status
   done
   # Still stopping (its time was up, or the stop above): wait for it.
   systemctl stop "$UNIT" >/dev/null 2>&1
+  systemctl stop "$SESSION" >/dev/null 2>&1
   rm -f "$SUDOERS" "$TMPF"   # the unit does; also when it could not
   local rc; rc=$(cat "$RUN/rc" 2>/dev/null); rm -rf "$RUN"
   if ! [[ $rc =~ ^[0-9]+$ ]]; then
@@ -145,6 +165,11 @@ run_unit() {   # -> the update's exit status
 }
 
 [[ -n ${OMACVM_SYSTEM_UPDATE_RUN:-} ]] || (( EUID == 0 )) || { echo "system-update: run as root" >&2; exit 1; }
+# A move to Omarchy 4.5 stopped before its package switch was done: the
+# update would switch half of it (guest/omarchy-move.sh pending says why).
+if why=$("${G%/*}/omarchy-move.sh" pending 2>/dev/null); then
+  say "the VM's system is not updated: $why" >&2; exit 1
+fi
 # One at a time: a second run would delete the first one's helpers and sudoers.
 if ! { exec 9>>"$LOCK" && flock -n 9; } 2>/dev/null; then
   say "the VM's system is not updated: an update runs already: try again when it is done" >&2; exit 1
@@ -168,6 +193,10 @@ if [[ -z ${OMACVM_SYSTEM_UPDATE_RUN:-} ]]; then
   # A sudoers file left from an update cut off (the unit was not there to remove it).
   rm -f "$SUDOERS" "$TMPF"
 fi
+# OmacVM's packages and what they need, installed on purpose before and
+# after: Omarchy 4.5's update removes orphans (guest/keep-explicit).
+keep() { [[ -x $KEEP ]] && { "$KEEP" >/dev/null 2>>"$LOG" || say "OmacVM's packages not all marked as installed on purpose" >&2; }; }
+keep
 say "updating the VM's system with omarchy update (all packages at once; often 5-15 minutes, log $LOG)"
 { echo "== $(date '+%F %T') omarchy update -y (OmacVM)"; } >>"$LOG" 2>/dev/null
 if [[ -n ${OMACVM_SYSTEM_UPDATE_RUN:-} ]]; then
@@ -176,6 +205,7 @@ if [[ -n ${OMACVM_SYSTEM_UPDATE_RUN:-} ]]; then
   rc=$(cat "$RUN/rc" 2>/dev/null); rm -rf "$RUN"; [[ $rc =~ ^[0-9]+$ ]] || rc=1
 else run_unit; rc=$?; fi
 (( rc == 0 )) || say "omarchy update stopped (exit $rc; see $LOG)" >&2
+keep
 # Also after a stop: it may have changed some packages already.
 line=$("$G" test 2>&1); ok=$?
 if (( ok != 0 )); then

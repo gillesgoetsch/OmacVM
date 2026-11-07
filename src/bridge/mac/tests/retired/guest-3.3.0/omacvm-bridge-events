@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+# omacvm-bridge-events (guest side): one event stream from the Mac's Bridge for
+# the whole session. The bar widgets and the OSD follower run
+# `omacvm-bridge events`, which reads from here (a Unix socket in
+# $XDG_RUNTIME_DIR, opened by omacvm-bridge-events.socket) instead of the Mac:
+# one connection per VM instead of one per widget.
+#
+# - The Mac side is `omacvm-bridge events --direct` (proof and token as
+#   before), started for the first client and stopped 30 s after the last one.
+# - A new client first gets the latest event of each kind, as the Bridge sends
+#   them on connect, then everything that follows.
+# - `?osd=external` (omacvm-bridge events --external): the Mac stream is
+#   opened with it while such a client is connected.
+# - When the Mac stream ends or stays silent for 20 s (the Bridge pings every
+#   15 s), every client is closed, as the Mac would have; they reconnect after
+#   3 s and the next one starts the stream again (at most every 3 s).
+# The socket is the user's own (0600 in a 0700 directory), so no token here.
+import os
+import selectors
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+SOCK = os.environ.get("OMACVM_BRIDGE_EVENTS_SOCKET") or \
+    os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "omacvm-bridge-events.sock")
+CLIENT = os.environ.get("OMACVM_BRIDGE_CLIENT", "omacvm-bridge")
+SILENCE = 20.0     # no line from the Mac for this long: the stream is dead
+LINGER = 30.0      # keep the Mac stream this long after the last client left
+RETRY = 3.0        # at most one new Mac stream this often
+MAX_BUFFER = 1 << 20  # a client this far behind is dropped
+
+sel = selectors.DefaultSelector()
+
+
+def log(msg):
+    print(f"omacvm-bridge-events: {msg}", file=sys.stderr, flush=True)
+
+
+class Client:
+    def __init__(self, sock):
+        self.sock = sock
+        self.request = b""
+        self.out = bytearray()
+        self.streaming = False
+        self.external = False
+        self.since = time.monotonic()
+
+
+clients = {}           # fd -> Client
+cache = {}             # event name -> the last block of that kind (not osd)
+upstream = None        # the Popen of `omacvm-bridge events --direct`
+up_external = False
+up_buffer = b""
+up_block = []
+up_last = 0.0
+up_started = -RETRY
+up_live = False        # a line came from the Mac
+idle_since = None
+
+
+def listener():
+    # systemd socket activation, else our own socket (by hand, tests).
+    if os.environ.get("LISTEN_PID") == str(os.getpid()) and os.environ.get("LISTEN_FDS") == "1":
+        return socket.socket(fileno=3)
+    os.makedirs(os.path.dirname(SOCK), mode=0o700, exist_ok=True)
+    try:
+        os.unlink(SOCK)
+    except FileNotFoundError:
+        pass
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    old = os.umask(0o177)
+    s.bind(SOCK)
+    os.umask(old)
+    s.listen(16)
+    return s
+
+
+def want_external():
+    return any(c.external for c in clients.values() if c.streaming)
+
+
+def streaming():
+    return [c for c in clients.values() if c.streaming]
+
+
+def send(c, data):
+    c.out += data
+    if len(c.out) > MAX_BUFFER:
+        drop(c, "too far behind")
+        return
+    flush(c)
+
+
+def flush(c):
+    try:
+        while c.out:
+            n = c.sock.send(c.out)
+            del c.out[:n]
+    except BlockingIOError:
+        pass
+    except OSError:
+        drop(c)
+        return
+    sel.modify(c.sock, selectors.EVENT_READ | (selectors.EVENT_WRITE if c.out else 0), ("client", c))
+
+
+def drop(c, why=""):
+    fd = c.sock.fileno()
+    if clients.pop(fd, None) is None:
+        return
+    sel.unregister(c.sock)
+    c.sock.close()
+    if why:
+        log(f"client dropped: {why}")
+
+
+def start_upstream():
+    global upstream, up_external, up_buffer, up_block, up_last, up_started, up_live
+    up_external = want_external()
+    args = [CLIENT, "events", "--direct"] + (["--external"] if up_external else [])
+    upstream = subprocess.Popen(args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, start_new_session=True)
+    os.set_blocking(upstream.stdout.fileno(), False)
+    sel.register(upstream.stdout, selectors.EVENT_READ, ("upstream", None))
+    up_buffer, up_block, up_live = b"", [], False
+    up_last = up_started = time.monotonic()
+    log("stream from the Mac: connecting" + (" (with external OSD events)" if up_external else ""))
+
+
+def stop_upstream(why, close_clients):
+    global upstream
+    if upstream is None:
+        return
+    p, upstream = upstream, None
+    sel.unregister(p.stdout)
+    p.stdout.close()
+    # The whole group (its own session): the client's curl too, also a
+    # stopped one, and whatever is left after the client ended.
+    for sig in (signal.SIGTERM, signal.SIGCONT):
+        try:
+            os.killpg(p.pid, sig)
+        except OSError:
+            pass
+    try:
+        p.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    p.wait()
+    log(f"stream from the Mac: {why} (exit {p.returncode})")
+    cache.clear()
+    if close_clients:
+        for c in list(clients.values()):
+            if c.streaming:
+                flush(c)
+                drop(c)
+
+
+def upstream_block(lines):
+    # One SSE block from the Mac: comments (": ping") and events go to every
+    # client; "retry:" each client got on connect.
+    lines = [l for l in lines if not l.startswith(b"retry:")]
+    if not lines:
+        return
+    data = b"\n".join(lines) + b"\n\n"
+    name = next((l[6:].strip() for l in lines if l.startswith(b"event:")), None)
+    if name and name != b"osd":
+        cache[name] = data
+    for c in streaming():
+        send(c, data)
+
+
+def read_upstream():
+    global up_buffer, up_block, up_last, up_live
+    try:
+        chunk = os.read(upstream.stdout.fileno(), 65536)
+    except BlockingIOError:
+        return
+    if not chunk:
+        if up_block:
+            upstream_block(up_block)
+        stop_upstream("ended" if up_live else "no answer", True)
+        return
+    up_last = time.monotonic()
+    if not up_live:
+        up_live = True
+        log("stream from the Mac: connected")
+    up_buffer += chunk
+    *lines, up_buffer = up_buffer.split(b"\n")
+    for l in lines:
+        l = l.rstrip(b"\r")
+        if l:
+            up_block.append(l)
+        elif up_block:
+            upstream_block(up_block)
+            up_block = []
+
+
+def read_client(c):
+    try:
+        chunk = c.sock.recv(4096)
+    except BlockingIOError:
+        return
+    except OSError:
+        chunk = b""
+    if not chunk:
+        drop(c)
+        return
+    if c.streaming:
+        return  # nothing more is expected from a client
+    c.request += chunk
+    if b"\r\n\r\n" not in c.request:
+        if len(c.request) > 8192:
+            drop(c, "request too large")
+        return
+    first = c.request.split(b"\r\n", 1)[0].split()
+    target = first[1].decode("latin-1") if len(first) == 3 and first[0] == b"GET" else ""
+    path, _, query = target.partition("?")
+    if path != "/events":
+        send(c, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        drop(c)
+        return
+    c.streaming = True
+    c.external = "osd=external" in query.split("&")
+    send(c, b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n"
+            b"Connection: close\r\n\r\nretry: 3000\n\n" + b"".join(cache.values()))
+
+
+def next_wait(now, waiting):
+    """Seconds until the loop has something to do by itself: the Mac stream's
+    silence limit, its linger after the last client, a new stream's retry, a
+    client that never asked. None: nothing, wait for the next event (the Mac
+    pings every 15 s). It woke every second before."""
+    due = []
+    if upstream is not None:
+        due.append(up_last + SILENCE)
+        if not waiting and idle_since is not None:
+            due.append(idle_since + LINGER)
+    elif waiting:
+        due.append(up_started + RETRY)
+    due += [c.since + 5 for c in clients.values() if not c.streaming]
+    return max(0.05, min(due) - now) if due else None
+
+
+def main():
+    global idle_since
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    lsock = listener()
+    lsock.setblocking(False)
+    sel.register(lsock, selectors.EVENT_READ, ("listen", None))
+    log(f"listening on {lsock.getsockname() or SOCK}")
+    while True:
+        now = time.monotonic()
+        waiting = streaming()
+        if waiting:
+            idle_since = None
+        elif idle_since is None:
+            idle_since = now
+        if upstream is None and waiting and now - up_started >= RETRY:
+            start_upstream()
+        elif upstream is not None:
+            if waiting and want_external() != up_external:
+                # Reopened with or without ?osd=external; clients stay.
+                stop_upstream("reopening " + ("with" if want_external() else "without") + " external OSD events", False)
+            elif not waiting and idle_since is not None and now - idle_since >= LINGER:
+                stop_upstream("no clients", False)
+            elif now - up_last > SILENCE:
+                stop_upstream("silent for 20 s", True)
+        for c in [c for c in clients.values() if not c.streaming and now - c.since > 5]:
+            drop(c, "no request")
+        for key, mask in sel.select(timeout=next_wait(time.monotonic(), streaming())):
+            kind, c = key.data
+            if kind == "listen":
+                try:
+                    s, _ = lsock.accept()
+                except BlockingIOError:
+                    continue
+                s.setblocking(False)
+                c = Client(s)
+                clients[s.fileno()] = c
+                sel.register(s, selectors.EVENT_READ, ("client", c))
+            elif kind == "upstream":
+                if upstream is not None:
+                    read_upstream()
+            elif c.sock.fileno() in clients:
+                if mask & selectors.EVENT_WRITE:
+                    flush(c)
+                if mask & selectors.EVENT_READ and c.sock.fileno() in clients:
+                    read_client(c)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    finally:
+        if upstream is not None:
+            stop_upstream("stopping", False)

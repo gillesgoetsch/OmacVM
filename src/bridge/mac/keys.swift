@@ -1,5 +1,5 @@
-// Media keys (stage 1c): while a VM is in front (OmacVM.app full screen or in
-// a window; Parallels, UTM and Fusion full screen), the volume, brightness and
+// Media keys (stage 1c): while an OmacVM.app VM is in front (full screen or in
+// a window), the volume, brightness and
 // keyboard-backlight keys are swallowed (no macOS popup) and applied here
 // (Shift + brightness: the keyboard backlight, as in Omarchy); every change,
 // ours or not, goes out as an "osd" event so the VM can draw its own popup.
@@ -351,7 +351,7 @@ final class MediaKeys {
     // An OmacVM.app VM, also when LaunchServices names no executable for QEMU.
     let now: TapNow? = tap.map { !CFMachPortIsValid($0) ? .invalid : CGEvent.tapIsEnabled(tap: $0) ? .enabled : .disabled }
     let inputs = TapInputs(capture: config.captureKeys, vmFront: kind != nil,
-                           omacvmPid: kind == .omacvm ? front?.processIdentifier : nil,
+                           omacvmPid: kind != nil ? front?.processIdentifier : nil,
                            active: active, perms: perms, tap: now)
     if config.captureKeys { brightnessKeys.ensure() }
     // macOS's prompt, once, as soon as it is missing (also with no VM in front).
@@ -444,14 +444,11 @@ final class MediaKeys {
     if !tapOK || why != nil { tapOK = true; log(why.map { "media keys: event tap created again (\($0))" } ?? "media keys: event tap installed") }
   }
 
-  /// The VM app in front and the display it is on: OmacVM.app also in a
-  /// window, Parallels, UTM and VMware Fusion full screen (their VM window
-  /// spans a display below the menu bar or notch strip).
+  /// The OmacVM.app VM in front (full screen or in a window) and the display it is on.
   private func frontVM(_ front: FrontWindows) -> FrontVM? {
-    guard let app = front.app, let kind = VMApp.of(app), let t = VMScreens.front(windowed: false, front) else { return nil }
-    let omacvm = kind == .omacvm
-    return FrontVM(omacvm: omacvm, fullScreen: t.fullScreen, display: t.display.id, builtin: t.display.builtin,
-                   vmKeys: omacvm && vmKeys.socket(for: app.processIdentifier) != nil)
+    guard let app = front.app, VMApp.of(app) != nil, let t = VMScreens.front(front) else { return nil }
+    return FrontVM(fullScreen: t.fullScreen, display: t.display.id, builtin: t.display.builtin,
+                   vmKeys: vmKeys.socket(for: app.processIdentifier) != nil)
   }
 
   /// The VM in front, the key after Shift and Option (BrightnessCombo, as in
@@ -523,8 +520,7 @@ final class MediaKeys {
   /// Option come from the keyboard too (HIDKeyboards: macOS's session does
   /// not see Shift while QEMU has the keyboard).
   private func keyboardBrightness(_ pressed: MediaKey, _ mods: KeyMods) {
-    guard config.captureKeys, let d = decide(pressed, mods, command: false, FrontWindows()),
-          d.vm.omacvm else { return }
+    guard config.captureKeys, let d = decide(pressed, mods, command: false, FrontWindows()) else { return }
     let (vm, key, route, fine) = d
     let display: CGDirectDisplayID?
     switch route {
@@ -710,8 +706,6 @@ final class MenuBar: NSObject, NSMenuDelegate {
     info("Accessibility: " + (AXIsProcessTrusted() ? "granted" : "not granted…"), #selector(openAccessibility))
     info("Location Services: " + (location.authorized ? "granted" : "not granted…"), #selector(openLocation))
     info("Bluetooth: " + (bluetooth.permission == "granted" ? "granted" : "not granted…"), #selector(openBluetooth))
-    info("Camera: " + (cameraPermission() == "granted" ? "granted" : cameraPermission() == "not-determined" ? "asked when a VM first uses it" : "not granted…"), #selector(openCamera))
-    info("Camera for VMs: \(camera.summary)")
     for s in servers { info(s.status) }
     info("VM event clients: \(hub.clientCount)")
     menu.addItem(.separator())
@@ -737,10 +731,6 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
   @objc private func openBluetooth() {
     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth")!)
-  }
-
-  @objc private func openCamera() {
-    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!)
   }
 
   @objc private func openLog() { NSWorkspace.shared.open(URL(fileURLWithPath: logPath)) }

@@ -89,8 +89,6 @@ qml() { printf 'import QtQuick\nimport qs.Commons\nItem { color: Color.bar.text 
 run_all() {
   ( cd "$G/workspaces/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
   ( cd "$G/keyboard/guest" && bash ./install.sh "$LU" us ) >/dev/null 2>&1
-  ( cd "$G/display/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
-  ( cd "$G/clipboard/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
   bash "$G/gestures/guest/glide.sh" "$LU" on >/dev/null 2>&1
   bash "$G/gestures/guest/glide.sh" "$LU" off >/dev/null 2>&1
   bash "$G/guest/hypr-vm.sh" "$LU" >/dev/null 2>&1
@@ -171,7 +169,6 @@ chown -R "$LU:" "$H/.config/hypr" "$H/.config/omarchy" "$H/.config/chromium-flag
 echo old > "$H/.local/state/omacvm/restart-shell"
 ( cd "$G/workspaces/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
 ( cd "$G/keyboard/guest" && bash ./install.sh "$LU" us ) >/dev/null 2>&1
-( cd "$G/display/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
 bash "$G/gestures/guest/glide.sh" "$LU" on >/dev/null 2>&1
 bash "$G/guest/hypr-vm.sh" "$LU" >/dev/null 2>&1
 bash "$G/clock/guest/clock.sh" "$LU" on "HH:mm" >/dev/null 2>&1
@@ -185,8 +182,6 @@ OMACVM_MAC_FOLDER_USER=$LU bash "$G/app/guest/omacvm-mac-folder" --stop >/dev/nu
 owner() { stat -c '%U' "$1" 2>/dev/null; }
 expect "plain home: per-display workspaces in bindings.lua" 1 "$(grep -c 'require("hypr.monitor_workspaces")' "$H/.config/hypr/bindings.lua")"
 expect "... keyboard layout in input.lua, the user's file" "1 $LU" "$(grep -c 'kb_layout = "us"' "$H/.config/hypr/input.lua") $(owner "$H/.config/hypr/input.lua")"
-expect "... monitors.lua keeps the scale, the user's, 644" "1 $LU 644" \
-  "$(grep -c '^local omarchy_monitor_scale = 1.5$' "$H/.config/hypr/monitors.lua") $(owner "$H/.config/hypr/monitors.lua") $(stat -c %a "$H/.config/hypr/monitors.lua")"
 expect "... Glide in hyprland.lua and the flags file" "1 1" \
   "$(grep -c 'require("hypr.omacvm_glide")' "$H/.config/hypr/hyprland.lua") $(grep -c -- '--disable-smooth-scrolling' "$H/.config/chromium-flags.conf")"
 expect "... OmacVM's Hyprland settings in hyprland.lua, the user's file" "1 $LU" \

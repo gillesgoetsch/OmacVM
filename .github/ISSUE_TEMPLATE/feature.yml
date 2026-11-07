@@ -20,18 +20,6 @@ body:
       description: What do you do today instead? What gets better?
     validations:
       required: true
-  - type: dropdown
-    id: route
-    attributes:
-      label: Route
-      description: Where do you need it?
-      multiple: true
-      options:
-        - All of them
-        - OmacVM.app
-        - UTM
-        - VMware Fusion
-        - Parallels Desktop
   - type: checkboxes
     id: help
     attributes:

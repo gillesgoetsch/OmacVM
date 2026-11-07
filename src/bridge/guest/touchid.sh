@@ -117,7 +117,7 @@ case ${1:-} in
     echo 'd /run/omacvm-touchid 0700 polkitd polkitd -' > "$TMPF"
     [[ -n $ROOT ]] || systemd-tmpfiles --create "$TMPF" 2>/dev/null || true
     host=$( { sed -n "s/^OMACVM_HOST=['\"]\{0,1\}\([0-9.]*\).*/\1/p" "$ROOT/etc/omacvm/env" 2>/dev/null || true; } | tail -1)
-    [[ $host =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || host=10.211.55.2   # the client's default too
+    [[ $host =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || host=10.0.2.2   # the client's default too
     mkdir -p "$(dirname "$DROPIN")"
     if is_app; then
       # OmacVM.app: no network, only the port (bound into its private /dev; "-": a VM

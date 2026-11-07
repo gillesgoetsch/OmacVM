@@ -144,7 +144,7 @@ static inline void geom_line(char *out, size_t size, const char *l, const char *
 //    (85-540 ms): two arrows on the way up, none on the way back. Never
 //    moved; hidden only when it did not get to NOTCH (notchcast checks).
 //  - HOST_CURSOR_HIDES: hidden for the strip, shown again at the exit point
-//    (Parallels, UTM, Fusion, older apps).
+//    (older apps, the retired VM apps).
 enum { HOST_CURSOR_HIDES = 0, HOST_CURSOR_STAYS = 1, HOST_CURSOR_PARKED = 2 };
 
 static inline int host_env_cursor(FILE *f) {

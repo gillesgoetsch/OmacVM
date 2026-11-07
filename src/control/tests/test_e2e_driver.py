@@ -133,7 +133,7 @@ def world(tmp_path):
     mac, checks = FakeMac(), FakeChecks()
     env = dict(os.environ, **vm_env(str(tmp_path), mac.port, checks.path), TERM="xterm-256color", LANG="en_US.UTF-8")
     envf = env["OMACVM_ENV"]
-    t = open(envf).read().replace("OMACVM_VM_TYPE=parallels", "OMACVM_VM_TYPE=app")
+    t = open(envf).read().replace("OMACVM_VM_TYPE=other", "OMACVM_VM_TYPE=app")
     open(envf, "w").write(t + "OMACVM_FEATURE_fast_network=off\nOMACVM_FEATURE_touch_id=off\n")
     mac.graphics = {"graphics": "auto", "next_start": "opengl", "this_start": "auto -> opengl"}
 

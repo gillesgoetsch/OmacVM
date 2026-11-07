@@ -59,6 +59,7 @@ lib=$HOME/.local/lib/omanotch
 mkdir -p "$lib/bar" "$lib/background" "$units"
 install -m 644 "$here/copies.py" "$lib/copies.py"
 install -m 644 "$here/bar/apply-patch.py" "$lib/bar/apply-patch.py"
+install -m 644 "$here/bar/workspaces-patch.py" "$lib/bar/workspaces-patch.py"
 install -m 644 "$here/background/apply-patch.py" "$lib/background/apply-patch.py"
 install -m 644 "$here/systemd/omanotch-copies.service" "$units/omanotch-copies.service"
 systemctl --user daemon-reload

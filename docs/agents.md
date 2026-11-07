@@ -8,8 +8,7 @@ Set up OmacVM on my Mac (github.com/gillesgoetsch/omacvm): Omarchy in a VM.
 Read https://raw.githubusercontent.com/gillesgoetsch/omacvm/main/AGENTS.md
 first (section 0) and follow it. Install it with
 curl -fsSL https://raw.githubusercontent.com/gillesgoetsch/omacvm/main/install.sh | bash -s -- --no-start
-then walk me through the build: ask me OmacVM.app, UTM, VMware Fusion or Parallels,
-how much of my Mac the VM gets and which features I want (explain each, scroll
+then walk me through the build in OmacVM.app: ask me how much of my Mac the VM gets and which features I want (explain each, scroll
 momentum is experimental), show me the plan, ask for my password, build it, and
 tell me the steps only I can do.
 ```
@@ -29,5 +28,4 @@ Other things to ask, for example: *"Turn on the scroll momentum for my VM
   0 done, 1 failed, 2 usage, 3 needs a person (installing an app, a macOS
   permission), and the message says what to do.
 
-The steps that need you (macOS permission prompts, one Parallels setting, your
-password) stay with you; the agent hands them over.
+The steps that need you (macOS permission prompts, your password) stay with you; the agent hands them over.

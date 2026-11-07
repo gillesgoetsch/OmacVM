@@ -3,22 +3,28 @@
 
   manifest.py write OUT.json --route R --omacvm V --omarchy V --bundle NAME
                     --unpacked KB --disk-gb N --teams JSON-LIST [--next-spare-key KEY]
-                    [--revoked-keys "KEY..."] PART...
+                    [--revoked-keys "KEY..."] [--commit SHA] PART...
                                            unsigned: make-image.sh signs it (OUT.json.sig);
                                            the keys: OMACVM_NEXT_SPARE_KEY and
                                            OMACVM_REVOKED_KEYS (docs/release-keys.md)
   manifest.py get MANIFEST KEY             one value (route, omacvm, omarchy, bundle,
-                                           size, unpacked_kb, disk_gb, created); the
-                                           manifest is checked first, exit 1 if it is bad
+                                           size, unpacked_kb, disk_gb, created, commit:
+                                           the OmacVM commit the image was made from, ""
+                                           in images before 3.4.0); the manifest is
+                                           checked first, exit 1 if it is bad
   manifest.py parts MANIFEST               one line per part: NAME SIZE SHA256
+  manifest.py check MANIFEST DIR           exit 0 when DIR's part files are exactly the signed
+                                           manifest's: the same names, sizes and SHA-256 sums
   manifest.py release RELEASES.json VERSION ROUTE
                                            from GitHub's release list: TAG URL IMAGE_VERSION
                                            of the newest image for ROUTE with the same
                                            major version, up to VERSION
   manifest.py local DIR VERSION ROUTE      the same from a folder: NAME IMAGE_VERSION
+  manifest.py fits VERSION OMARCHY         exit 0 when an image with this manifest
+                                           "omarchy" value suits app VERSION (OMARCHY_FLOOR)
   manifest.py asset RELEASES.json TAG NAME the download URL of one asset
 
-get and parts read nothing before MANIFEST.sig checks out: signed by one of
+get, parts and check read nothing before MANIFEST.sig checks out: signed by one of
 OmacVM's release keys (src/release/keys.py), "kind": "prebuilt-manifest",
 "devid_teams" listed. The parts' SHA-256 sums then come from that signed
 manifest.
@@ -67,6 +73,10 @@ def write(a):
         "parts": [{"name": os.path.basename(p), "size": os.path.getsize(p), "sha256": sha256(p)} for p in sorted(parts)],
         "devid_teams": keys.teams(json.loads(opts["teams"])),
     }
+    if opts.get("commit"):
+        if not COMMIT.fullmatch(opts["commit"]):
+            sys.exit("manifest.py: --commit is not a full commit id")
+        m["commit"] = opts["commit"]
     if opts.get("next-spare-key"):
         if not keys.key(opts["next-spare-key"]):
             sys.exit("manifest.py: --next-spare-key is not a public key")
@@ -89,6 +99,7 @@ ROUTE = re.compile(r"[a-z]{1,16}")
 VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
 TEXT = re.compile(r"[ -~]{1,80}")   # printable ASCII
 CREATED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+COMMIT = re.compile(r"[0-9a-f]{40}")
 INTS = {"disk_gb": (1, 4096), "size": (1, 1 << 40), "unpacked_kb": (1, 1 << 33)}
 
 
@@ -117,26 +128,95 @@ def checked(path):
         out[key] = v
     if out["bundle"] in (".", ".."):
         raise ValueError("bad bundle")
+    # The commit the image was made from (3.4.0 on; the release gate ties it to M): optional.
+    c = m.get("commit", "")
+    if not isinstance(c, str) or (c and not COMMIT.fullmatch(c)):
+        raise ValueError("bad commit")
+    out["commit"] = c
     for key in INTS:
         out[key] = plain_int(m, key)
     return out
+
+
+PART = re.compile(r"^omacvm-prebuilt-[0-9]+\.[0-9]+\.[0-9]+-app\.tar\.zst\.part-[a-z]{2,4}$")
+
+
+def parts(path):
+    """(name, size, sha256) of each part, from the signed manifest (exit if it is bad)."""
+    try:
+        m = signed(path)
+    except (ValueError, OSError) as e:
+        sys.exit("manifest.py: %s: %s" % (path, e))
+    out = []
+    # The names become file paths on the Mac: only our own part names.
+    for p in m.get("parts") or []:
+        size = p.get("size")
+        if (not PART.match(str(p.get("name"))) or not re.fullmatch(r"[0-9a-f]{64}", str(p.get("sha256")))
+                or type(size) is not int or not 0 < size <= 1 << 40):
+            sys.exit("manifest.py: unexpected part %r" % p.get("name"))
+        out.append((p["name"], size, p["sha256"]))
+    return out
+
+
+def check_dir(path, d):
+    """What in D differs from the signed manifest at PATH: its parts by name, size and SHA-256,
+    and no other part file of that image ([] when none)."""
+    want = parts(path)
+    if not want:
+        return ["the manifest lists no parts"]
+    base = os.path.basename(path)[:-len(".json")] if path.endswith(".json") else ""
+    bad = []
+    names = {n for n, _, _ in want}
+    for n in sorted(os.listdir(d)):
+        if n not in names and (n.startswith(base + ".tar.zst.part-") or PART.match(n)):
+            bad.append("%s is not in the manifest" % n)
+    for n, size, digest in want:
+        f = os.path.join(d, n)
+        if not os.path.isfile(f):
+            bad.append("%s is missing" % n)
+        elif os.path.getsize(f) != size:
+            bad.append("%s is %d bytes, the manifest says %d" % (n, os.path.getsize(f), size))
+        elif sha256(f) != digest:
+            bad.append("%s: SHA-256 is not the manifest's" % n)
+    return bad
 
 
 def vtuple(v):
     return tuple(int(x) for x in v.split("."))
 
 
+# From OmacVM 3.4.0 on, new VMs are Omarchy 4.5 or later (the official aarch64
+# repos); every image before prebuilt-3.4.0 is omarchy-mac 4.0. An app at or
+# above APP takes only images from IMAGE on whose manifest says Omarchy OMARCHY
+# or later; with none, the setup builds the VM here.
+OMARCHY_FLOOR = ((3, 4, 0), (3, 4, 0), (4, 5))   # APP, IMAGE, OMARCHY (major, minor)
+
+
+def image_floor(version):
+    """The oldest image version app VERSION takes (by name, before any download)."""
+    return OMARCHY_FLOOR[1] if vtuple(version) >= OMARCHY_FLOOR[0] else (0, 0, 0)
+
+
+def fits(version, omarchy):
+    """Does an image whose manifest says OMARCHY suit app VERSION?"""
+    if vtuple(version) < OMARCHY_FLOOR[0]:
+        return True
+    m = re.match(r"(\d{1,4})\.(\d{1,4})(?:[.\s]|$)", str(omarchy))
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= OMARCHY_FLOOR[2]
+
+
 def pick(cands, version, route):
     """cands: (tag, published, asset name, url) -> (VERSION, cand) of the best."""
     want = re.compile(r"^omacvm-prebuilt-(\d+\.\d+\.\d+)-%s\.json$" % re.escape(route))
     mine = vtuple(version)
+    floor = image_floor(version)
     best = None
     for c in cands:
         m = want.match(str(c[2]))
         if not m:
             continue
         v = vtuple(m.group(1))
-        if v[0] != mine[0] or v > mine:
+        if v[0] != mine[0] or v > mine or v < floor:
             continue
         key = (v, c[1])
         if best is None or key > best[0]:
@@ -159,18 +239,12 @@ def main(a):
             sys.exit("manifest.py: unknown key %r" % a[3])
         print(m[a[3]])
     elif cmd == "parts":
-        try:
-            m = signed(a[2])
-        except (ValueError, OSError) as e:
-            sys.exit("manifest.py: %s: %s" % (a[2], e))
-        # The names become file paths on the Mac: only our own part names.
-        ok = re.compile(r"^omacvm-prebuilt-[0-9]+\.[0-9]+\.[0-9]+-(parallels|utm|fusion|app)\.tar\.zst\.part-[a-z]{2,4}$")
-        for p in m["parts"]:
-            size = p.get("size")
-            if (not ok.match(str(p.get("name"))) or not re.fullmatch(r"[0-9a-f]{64}", str(p.get("sha256")))
-                    or type(size) is not int or not 0 < size <= 1 << 40):
-                sys.exit("manifest.py: unexpected part %r" % p.get("name"))
-            print(p["name"], size, p["sha256"])
+        for name, size, digest in parts(a[2]):
+            print(name, size, digest)
+    elif cmd == "check":
+        bad = check_dir(a[2], a[3])
+        if bad:
+            sys.exit("manifest.py: %s: not the signed manifest's parts: %s" % (a[3], "; ".join(bad)))
     elif cmd == "release":
         # The newest image for this route with the same major version and a
         # version up to ours (the first omacvm apply brings the guest side
@@ -193,6 +267,10 @@ def main(a):
         if not best:
             sys.exit(1)
         print(best[1][2], best[0])
+    elif cmd == "fits":
+        if not VERSION.fullmatch(a[2]):
+            sys.exit("manifest.py: bad version %r" % a[2])
+        sys.exit(0 if fits(a[2], a[3]) else 1)
     elif cmd == "asset":
         for r in json.load(open(a[2])):
             if r.get("tag_name") == a[3]:

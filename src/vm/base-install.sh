@@ -4,9 +4,14 @@
 #   OMA_USER OMA_FULLNAME OMA_HASH OMA_TZ OMA_LANG OMA_XKB_LAYOUT OMA_XKB_VARIANT OMA_HOSTNAME
 # plus /root/omacvm.pub (SSH key for root, used by build.sh).
 #
-# Layout: GPT, 2 GiB EFI (/boot) + btrfs with @, @home, @log (omarchy-mac adds
+# Layout: GPT, 2 GiB EFI (/boot) + btrfs with @, @home, @log (Omarchy adds
 # @factory and snapper); zstd:1, noatime, async discard. GRUB, because
 # omarchy-mac's snapshot restore/reset tooling expects it.
+# OMACVM_OMARCHY=4.5 (OmacVM.app's VMs): the new system comes from Omarchy's
+# snapshot of Arch Linux ARM (arm-$OMARCHY_CHANNEL-mirror.omarchy.org, the
+# one Omarchy 4.5's repo files name), so base and Omarchy match and nothing
+# goes back a version later. Else (omarchy-mac 4.0) Arch Linux ARM's own
+# mirrors, the fastest from here.
 set -euo pipefail
 source /root/omacvm.env
 log() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
@@ -75,6 +80,16 @@ done | sort -n | head -4 | awk '{ print $2 }' || true)
   echo 'Server = http://mirror.archlinuxarm.org/$arch/$repo'
 } > /etc/pacman.d/mirrorlist
 cat /etc/pacman.d/mirrorlist
+# The live system keeps those (its own tools); the new system's list:
+TARGET_MIRRORS=/etc/pacman.d/mirrorlist TARGET_AUR=1
+if [[ ${OMACVM_OMARCHY:-} == 4.5 ]]; then
+  c=${OMARCHY_CHANNEL:-stable}
+  case $c in stable|rc) h=arm-$c-mirror.omarchy.org ;; edge) h=arm-mirror.omarchy.org ;; *) die "unknown channel $c" ;; esac
+  TARGET_MIRRORS=/root/mirrorlist.omarchy TARGET_AUR=0
+  printf '%s\n' "# Omarchy's snapshot of Arch Linux ARM ($c), as Omarchy 4.5's mirrorlist-$c" \
+    "Server = https://$h/\$arch/\$repo" > "$TARGET_MIRRORS"
+  echo "new system: Omarchy's Arch Linux ARM snapshot ($h)"
+fi
 
 log "package signing keys"
 # The try-omarchy live system ships a set-up keyring. Create it if an image
@@ -110,7 +125,8 @@ mount -o "$O,subvol=@log" "${P}2" /mnt/var/log
 mount -o umask=0077 "${P}1" /mnt/boot
 
 log "pacstrap"
-cat > /root/pacman.alarm.conf <<'EOF'
+{
+  cat <<'EOF'
 [options]
 HoldPkg     = pacman glibc
 Architecture = aarch64
@@ -118,15 +134,12 @@ CheckSpace
 ParallelDownloads = 8
 SigLevel    = Required DatabaseOptional
 LocalFileSigLevel = Optional
-[core]
-Include = /etc/pacman.d/mirrorlist
-[extra]
-Include = /etc/pacman.d/mirrorlist
-[alarm]
-Include = /etc/pacman.d/mirrorlist
-[aur]
-Include = /etc/pacman.d/mirrorlist
 EOF
+  for r in core extra alarm aur; do
+    [[ $r == aur ]] && (( ! TARGET_AUR )) && continue   # Omarchy 4.5's files have no [aur]
+    printf '[%s]\nInclude = %s\n' "$r" "$TARGET_MIRRORS"
+  done
+} > /root/pacman.alarm.conf
 # pacstrap's full output goes to $PACLOG (and later into the new system's
 # /var/log); on screen only its tail. pacman's "failed to commit transaction
 # (unexpected error)" says nothing: the cause is in the lines above it, so on a
@@ -178,9 +191,9 @@ if ! pacstrap_run 1; then
   fi
 fi
 tail -3 "$PACLOG.try"
-cp /root/pacman.alarm.conf /mnt/etc/pacman.conf
+sed "s|$TARGET_MIRRORS|/etc/pacman.d/mirrorlist|" /root/pacman.alarm.conf > /mnt/etc/pacman.conf
 sed -i 's/^\[options\]/[options]\nColor\nVerbosePkgLists/' /mnt/etc/pacman.conf
-cp /etc/pacman.d/mirrorlist /mnt/etc/pacman.d/mirrorlist
+cp "$TARGET_MIRRORS" /mnt/etc/pacman.d/mirrorlist
 genfstab -U /mnt > /mnt/etc/fstab
 install -m644 "$PACLOG" /mnt/var/log/omacvm-pacstrap.log
 if [[ -s $PROXY_ENV ]]; then

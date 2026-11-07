@@ -43,10 +43,7 @@ else
   mkdir -p "$T/cfg" "$T/run" "$T/sys"
   XDG_CONFIG_HOME=$T/cfg XDG_RUNTIME_DIR=$T/run HOME=$T OMACVM_APP_LUA_SYS=$T/sys "$LUA" "$R/src/tests/omacvm_vm_test.lua" \
     "$SRC/guest/omacvm_vm.lua" \
-    "app=$(route_files $COMMON 'app/guest/*.sh')" \
-    "utm=$(route_files $COMMON 'utm/guest/*.sh')" \
-    "parallels=$(route_files $COMMON 'display/guest/*.sh' 'clipboard/guest/*.sh')" \
-    "fusion=$(route_files $COMMON 'fusion/guest/*.sh')" || fail=1
+    "app=$(route_files $COMMON 'app/guest/*.sh')" || fail=1
 fi
 
 # ---------- 2. guest/hypr-vm.sh ----------
@@ -119,7 +116,7 @@ else
   # clock), not now minus ps's etimes: after a Mac sleep the VM's uptime stood still and its
   # clock was set on. Here Hyprland started at 1000, omacvm_vm.lua was written at 3000, the
   # clock says 5000, etimes 500 (now - etimes = 4500 would read "started after the file").
-  awk '/^if \[\[ \$TYPE != fusion \]\]; then$/ {on=1} on {print} on && /^fi$/ {exit}' "$SRC/guest/check.sh" > "$T/blk.sh"
+  awk '/^hy=\$H\/\.config\/hypr; piece=/ {on=1} on {print} on && /^esac$/ {exit}' "$SRC/guest/check.sh" > "$T/blk.sh"
   S=$T/stub; mkdir -p "$S" "$T/bh/.config/hypr"
   printf 'require("hypr.looknfeel")\nrequire("hypr.omacvm_vm")\n' > "$T/bh/.config/hypr/hyprland.lua"
   echo "-- omacvm_vm.lua" > "$T/bh/.config/hypr/omacvm_vm.lua"
