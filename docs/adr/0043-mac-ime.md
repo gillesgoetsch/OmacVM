@@ -151,7 +151,14 @@ check says when.
 - `InputContextFocusIn/Out`, `InputContextCursorRectChanged`,
   `InputContextCapabilityChanged`: sends focus and rect (debounced to one
   per frame). A relative rectangle gets the origin of Hyprland's focused
-  window (`j/activewindow` on Hyprland's socket); any other (no rectangle:
+  window (`j/activewindow` on Hyprland's socket), or, when the input
+  context's program is not that window's process (or there is no window),
+  the origin of the topmost layer surface of that program's process that
+  holds the caret (`j/layers`: highest level, last in its level; #357,
+  3.4.1: Omarchy 4.5's menu is a quickshell layer). The program matches a
+  process by the file name of `/proc/PID/exe` (what Qt reports) or the 15
+  bytes of `/proc/PID/comm`; no match keeps the window's origin. Both
+  requests share one 150 ms budget in Fcitx5's loop. Any other (no rectangle:
   Wayland IM v2; X root coordinates: XIM, whose mapping to Hyprland's
   logical space depends on XWayland's scaling) sends the window's box with
   `exact:false`.
@@ -306,8 +313,15 @@ permission: AppKit's input context needs none.
   window-anchored in Chromium, Electron, foot, alacritty and XWayland apps
   until Hyprland gives the caret (and XIM's coordinates are mapped). A floating GTK window with client-side shadows
   is off by the shadow's width.
-- Text fields in layer surfaces (launcher, menus) anchor at the layer's
-  box at best.
+- Text fields in layer surfaces with a relative caret (Omarchy 4.5's menu,
+  Qt in quickshell) are exact from 3.4.1 (before: off by the window below,
+  none on an empty workspace). Hyprland's `j/layers` does not say which
+  layer has the keyboard: of the program's layers that hold the caret the
+  topmost is taken, so a field in a full-screen layer whose caret also
+  fits in the box of a smaller, higher layer of the same process gets that
+  one's origin (on Omarchy 4.5 the notifications column, 399 px wide at the
+  right of the output: a caret within 399 px of a lower layer's left edge;
+  4.0's layers all start at the output's origin).
 - macOS features that read the document (reconversion, context-aware
   prediction) do not work: the Mac never sees guest text.
 - Input-method shortcuts with Ctrl (Kotoeri's Ctrl+J/K/L) go to the VM,

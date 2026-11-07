@@ -37,7 +37,7 @@ private:
 };
 
 // A small strict JSON value: enough for this protocol and Hyprland's
-// j/activewindow. Depth and size are limited by the parser.
+// j/activewindow and j/layers. Depth and size are limited by the parser.
 struct Json {
     enum class Type { Null, Bool, Number, String, Array, Object };
     Type type = Type::Null;
@@ -104,7 +104,62 @@ struct Caret {
 Caret caretFor(const Rect &cursor, double scale, bool relative,
                const std::optional<Rect> &window);
 
-// Hyprland's j/activewindow: "at" and "size" (logical pixels).
+// Hyprland's j/activewindow: "at" and "size" (logical pixels) and "pid"
+// (-1 when missing). Nothing for no window or a broken answer.
+struct HyprWindow {
+    Rect box;
+    long pid = -1;
+};
+std::optional<HyprWindow> parseHyprActive(std::string_view json);
+// The box alone.
 std::optional<Rect> parseHyprWindow(std::string_view json);
+
+// Hyprland's j/layers: every layer surface (Omarchy's menu, bar, panels,
+// notifications; walker on Omarchy 4.0) of every monitor, in global logical
+// pixels. `level` is Hyprland's 0 background, 1 bottom, 2 top, 3 overlay,
+// read from its key; `order` is the place in its level's list, where the
+// last one is drawn on top. Layers without a size or a pid are left out;
+// nothing at all for a broken answer or more than kMaxLayers.
+constexpr size_t kMaxLayers = 512;
+struct HyprLayer {
+    Rect box;
+    long pid = -1;
+    int level = 0;
+    size_t order = 0;
+    double alpha = 1;   // the goal: 0 while it fades out
+};
+std::optional<std::vector<HyprLayer>> parseHyprLayers(std::string_view json);
+
+// The names a process goes by: /proc/PID/comm (cut to 15 bytes, from the
+// path it was started by: "qs" for quickshell started through its link)
+// and the file name of /proc/PID/exe (links resolved; what Qt reports).
+struct ProcName {
+    std::string comm;
+    std::string exe;
+};
+// readlink(/proc/PID/exe) -> its file name, without " (deleted)" (a binary
+// that an update replaced).
+std::string exeName(std::string_view link);
+// Fcitx5's program() of an input context (Qt: the file name of the resolved
+// executable; GTK: g_get_prgname()) is that process.
+bool sameProgram(std::string_view program, const ProcName &proc);
+
+using NameOf = std::function<ProcName(long pid)>;
+
+// Whether the caret may sit in a layer surface rather than in the window:
+// a relative caret of a program that is not the active window's (or with
+// no window at all). Only then is j/layers worth asking.
+bool layerCandidate(const Rect &cursor, bool relative, std::string_view program,
+                    const std::optional<HyprWindow> &window, const NameOf &nameOf);
+
+// The caret with layer surfaces (#357: Omarchy 4.5's menu is a layer; its
+// caret is relative to that layer, not to the window under it): for a
+// layerCandidate, the topmost layer of that program's process that holds
+// the caret (highest level, then last in its level; one fading out never),
+// its origin plus the caret, exact. Anything else, also no such layer or
+// no layers read: caretFor with the window's box, as before.
+Caret caretOn(const Rect &cursor, double scale, bool relative, std::string_view program,
+              const std::optional<HyprWindow> &window,
+              const std::optional<std::vector<HyprLayer>> &layers, const NameOf &nameOf);
 
 } // namespace omacvm_ime

@@ -408,11 +408,20 @@ nothing changes at all. Password fields always get plain keys.
   kitty. In apps that tell the input method only that they have the focus
   (Chromium, Electron apps, foot, alacritty, XWayland apps), at your last
   click in the VM, else at the bottom left of the window; the text you are
-  composing still shows at the cursor in the app. Omarchy's launcher and
-  menus: at the window below them.
+  composing still shows at the cursor in the app. Omarchy 4.5's menu
+  (Super+Space) and other Qt fields in Omarchy's shell: at the text cursor
+  (3.4.1; 3.4.0 put it off by the window below the menu, or at the last
+  click with no window open). Omarchy 4.0's menu reads keys, not composed
+  text.
 - **Your own input method in the VM** (Mozc, Rime, Hangul in Fcitx5) keeps
   working: with a plain layout on the Mac, keys go to the VM and Fcitx5
-  composes as before.
+  composes as before. Omarchy 4.5 installs Fcitx5 engines of its own
+  (Mozc, Hangul, Chinese, Chewing), cycles them with Super+I and switches
+  an engine on a lone left Shift (`AltTriggerKeys=Shift_L` in its Fcitx5
+  config). An OmacVM VM keeps only the keyboard in Fcitx5's group, so
+  nothing changes until you add an engine. With one added and this
+  feature on, a lone Shift in a text field reaches both (see below): your
+  Mac input method and the VM's engine each switch their mode.
 - **A lone Shift** (#357): while your input method has the keys in a VM
   text field, a Shift press and release also go to macOS (nothing else,
   and nothing with the feature off or a plain layout), so an input method

@@ -34,6 +34,14 @@ in more words.
   distances 1 to 4 to the output, so 5 to 8 were undefined: on the M4 a negative one did not clip.
   The app now copies the rest itself, for every VM; OmacVM's own guest Mesa build (#694) is no longer
   needed for it. Needs the app update (from the VM's next start).
+- **Mac input methods** (experimental): in Omarchy 4.5's menu (Super+Space) the Mac's candidate
+  window now opens at the menu's text cursor. 3.4.0 put it off by the origin of the window under the
+  menu, or at the last click when no window was open. The same rule covers text fields in other
+  layers of Omarchy's shell. Update VM builds the VM's Fcitx5 module again (its first change since
+  3.0.8); until then `omacvm check` says the module is older than this OmacVM. Found while checking
+  #357 by [@Vocllum](https://github.com/Vocllum) on Omarchy 4.5.
+- Docs: Omarchy 4.5's own Fcitx5 engines (Super+I) and their lone-Shift switch beside the Mac's
+  input method.
 
 ## 3.4.0
 
