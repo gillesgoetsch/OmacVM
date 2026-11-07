@@ -39,7 +39,8 @@ has "verdict: idle 20 s, never ours" "input 20 s ago, not ours" "$(person_verdic
 same "verdict: idle 3 s, ours until 2 s ago" "" "$(person_verdict 3 "" 9998 0 10000)"
 has "verdict: idle 3 s, ours until 60 s ago" "not ours" "$(person_verdict 3 "" 9940 0 10000)"
 has "verdict: a remote session, however long idle" "remote session: jump-desktop" "$(person_verdict 5000 jump-desktop 0 0 10000)"
-has "verdict: the watcher saw foreign input 100 s ago, ours after it" "not ours" "$(person_verdict 2 "" 9999 9900 10000)"
+has "verdict: the watcher saw foreign input 30 s ago, ours after it" "not ours" "$(person_verdict 2 "" 9999 9970 10000)"
+same "verdict: foreign input 100 s ago is past the 60 s default, ours after it" "" "$(person_verdict 2 "" 9999 9900 10000)"
 same "verdict: the watcher's foreign input 400 s ago" "" "$(person_verdict 400 "" 0 9600 10000)"
 same "verdict: OMACVM_E2E_IGNORE_IDLE=1" "" "$(OMACVM_E2E_IGNORE_IDLE=1 person_verdict 1 vnc-5900 0 0 10000)"
 

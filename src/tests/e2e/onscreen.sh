@@ -30,7 +30,7 @@
 # The window's header buttons (Start, Update VM) sit under its toolbar, where a click posted as an event
 # does nothing (macOS 15, tried): they get Accessibility's press; switches, the sidebar and the pointer
 # get real events.
-# On screen only while nobody uses the Mac (no input for 300 s but ours, no
+# On screen only while nobody uses the Mac (no input for 60 s but ours, no
 # Jump Desktop or Screen Sharing session, also one left alone, the screen
 # unlocked: person.sh). Before each row it looks again: while someone is
 # there it hides the app's windows (the VM's too), waits (at most PERSON_WAIT

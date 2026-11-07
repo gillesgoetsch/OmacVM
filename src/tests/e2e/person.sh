@@ -11,7 +11,7 @@
 #     or Jump Desktop (its rtcproxy / desktopproxy). Also a session left alone:
 #     a remote viewer may be watching the screen without touching it.
 #   - HID input that was not ours came in the last PERSON_IDLE_MIN seconds
-#     (default 300). Our own events (CGEventPostToPid, HID moves and clicks)
+#     (default 60). Our own events (CGEventPostToPid, HID moves and clicks)
 #     reset HIDIdleTime too, so a harness stamps them with person_posted.
 # person_watch_start samples in the background (every PERSON_TICK s, default 2)
 # and writes each foreign input and each change of the remote sessions with its
@@ -38,7 +38,7 @@
 #                             says why)
 # OMACVM_E2E_IGNORE_IDLE=1: never someone (working on a harness at the Mac).
 
-PERSON_IDLE_MIN=${PERSON_IDLE_MIN:-300}
+PERSON_IDLE_MIN=${PERSON_IDLE_MIN:-60}
 PERSON_WAIT=${PERSON_WAIT:-1800}
 PERSON_POLL=${PERSON_POLL:-10}
 PERSON_TICK=${PERSON_TICK:-2}
