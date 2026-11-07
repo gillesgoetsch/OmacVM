@@ -206,7 +206,7 @@ struct OmarchyMoveCard: View {
                 strip(icon: "arrow.up.circle.fill", tint: .accentColor, background: quiet ? Look.header : Look.banner,
                       line: quiet ? Look.hairline : Look.bannerLine,
                       title: "Omarchy 4.5 is available for this VM",
-                      text: problem ?? "Moves Omarchy to its official ARM packages, about 20-40 minutes. A backup of the disk is kept, so you can undo it.",
+                      text: problem ?? "Moves Omarchy to its official ARM packages: a few minutes for a small VM, about 45 minutes for a well-used VM with a large disk, backup included. A backup of the disk is kept, so you can undo it.",
                       textIsError: problem != nil) {
                     Button("Move to Omarchy 4.5…") { sheet = .move }
                         .buttonStyle(.borderedProminent)
@@ -445,7 +445,7 @@ struct MoveConfirmSheet: View {
         SheetFrame(title: "Move \(vm) to Omarchy 4.5?", width: 470) {
             VStack(alignment: .leading, spacing: 10) {
                 point("externaldrive.badge.checkmark", "A backup of the disk comes first. Until you delete it, Undo puts \(vm) back as it is now.")
-                point("arrow.up.circle", "Omarchy moves to 4.5 on its official ARM packages. The VM runs without a window, restarts once and shuts down. About 20-40 minutes; keep the Mac awake and online.")
+                point("arrow.up.circle", "Omarchy moves to 4.5 on its official ARM packages. The VM runs without a window, restarts once and shuts down. A few minutes for a small VM, about 45 minutes for a well-used VM with a large disk, backup included; keep the Mac awake and online.")
                 point("doc.on.doc", "Your files, apps and settings in Omarchy stay.")
                 point("internaldrive", "Needs up to \(DiskSize.text(need)) free on this drive" + (free.map { " (it has \(DiskSize.text($0)))." } ?? "."))
                 if running {

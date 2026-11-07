@@ -64,7 +64,8 @@ move it: **Move to Omarchy 4.5…** at the top of its settings in OmacVM.app
 - **The move:** a backup of the disk (an APFS clone: instant, it takes space
   only as the disk changes), then Update VM, then Omarchy's packages are
   switched to 4.5 with the VM running without a window. It restarts once and
-  shuts down. About 20-40 minutes, each step shown. A quit, a lost network
+  shuts down. A few minutes for a small VM, about 45 minutes for a well-used
+  VM with a large disk, backup included; each step shown. A quit, a lost network
   or a power cut stops it at a safe point: **Resume** goes on, **Undo** goes
   back. A cut in the middle of the package switch leaves Undo only.
 - **Undo** puts the old disk, firmware variables and records back exactly;
