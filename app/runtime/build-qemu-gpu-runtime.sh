@@ -1841,12 +1841,15 @@ grep -q 'if (!vkr_command_buffer_submit_ok(dispatch->data, submit->pCommandBuffe
   grep -q 'if (!vkr_cmd_secondaries_current(dispatch->data, cmd, "vkEndCommandBuffer"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'if (!vkr_context_check(ctx, cmd->device->physical_device->limits.moltenvk, call,' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_queue.c, vkr_command_buffer.c: a secondary recorded again or a command buffer not ended reaches the driver at the submit, or one MoltenVK could not record is refused (submit-state patch)"
-# A refusal's reason is logged whole, on one line: spirv-val's message runs to about 300 characters (#710).
+# A refusal's reason is logged whole, on one line: spirv-val's message runs to about 300 characters (#710),
+# and no byte below 0x20 of the reason or the guest's context name reaches it (#718).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-refusal-text.patch"
 [[ $(grep -c '^   char why\[512\];$' "$virgl_source/src/venus/vkr_pipeline.c") == 3 ]] && \
   grep -q 'char why\[512\]; /\* OmacVM (virgl-venus-refusal-text.patch) \*/' "$virgl_source/src/venus/vkr_context.c" && \
-  grep -q 'one refusal, one line \*/' "$virgl_source/src/venus/vkr_context.c" || \
-  die "vkr_pipeline.c, vkr_context.c: refusal reasons are cut at 192 bytes or span lines (refusal-text patch)"
+  grep -qF 'refusal, one line, no control bytes' "$virgl_source/src/venus/vkr_context.c" && \
+  [[ $(grep -cF 'if ((unsigned char)*c < 0x20)' "$virgl_source/src/venus/vkr_context.c") == 2 ]] && \
+  grep -qxF '              name, call, why,' "$virgl_source/src/venus/vkr_context.c" || \
+  die "vkr_pipeline.c, vkr_context.c: refusal reasons are cut at 192 bytes, span lines or keep control bytes (refusal-text patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
