@@ -658,6 +658,10 @@ The less obvious ones, with causes and where the fix lives, are in
 - Do not hard-code scales (Omarchy's scale menu writes
   `omarchy_monitor_scale`).
 - Omarchy 4's Hyprland config is **Lua**; `hyprland.conf` is ignored.
+- Do not let the virtual trackpad tap to click (`tap_to_click = false` for
+  `apple-inc.-magic-trackpad-(omacvm)`, gestures/guest/install.sh). Omarchy 4.5
+  keeps Hyprland's default (on): scroll momentum lifts the two still fingers when
+  macOS calls a pinch, a two-finger tap, so every pinch began with a right click.
 - Keep zram small and memory capped. OmacVM.app's QEMU gives what Linux frees back to the Mac
   (free page reporting, ADR 0059; from 3.2.12 it moves the old pages aside
   and advises them `MADV_FREE_REUSABLE`, ADR 0062; up to 3.2.11 macOS kept

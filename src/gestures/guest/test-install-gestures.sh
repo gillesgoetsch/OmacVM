@@ -48,4 +48,27 @@ check '[[ $(lines 3) == 0 && $(lines 4) == 1 ]]' "3 fingers snap windows (a tabl
 : > "$I"
 PATH="$T/bin:$PATH" bash "$T/src/gestures/guest/install.sh" u > /dev/null   # no python-evdev: the one-line check
 check '[[ $(lines 3) == 1 && $(lines 4) == 1 ]]' "... without the daemon's reader: the one-line check (misses that table)"
+
+# No tap-to-click on the virtual trackpad (Omarchy 4.5 leaves Hyprland's default on:
+# the start of a pinch was a two-finger tap, a right click). Once; the user's own kept.
+rm -f "$T/home/u/.config/hypr/"*.lua
+notap() { grep -cxF 'hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", tap_to_click = false })' "$I" || true; }
+: > "$I"
+run
+check '[[ $(notap) == 1 ]]' "tap-to-click off for the virtual trackpad"
+run
+check '[[ $(notap) == 1 ]]' "... run again: nothing more"
+printf '%s\n' 'hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", tap_to_click = true })' > "$T/home/u/.config/hypr/mine.lua"
+: > "$I"
+run
+check '[[ $(notap) == 0 ]]' "the user's own tap setting for it (another file): nothing added"
+rm -f "$T/home/u/.config/hypr/mine.lua"
+: > "$I"
+printf '%s\n' 'hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", accel_profile = "flat", natural_scroll = true,' \
+  '            scroll_factor = 0.656 })' > "$T/home/u/.config/hypr/omacvm_glide.lua"
+run
+check '[[ $(notap) == 1 ]]' "scroll momentum's settings for the trackpad (no tap there): added"
+if command -v luac > /dev/null 2>&1; then
+  check 'luac -p "$I"' "input.lua parses as Lua"
+fi
 exit $fail
