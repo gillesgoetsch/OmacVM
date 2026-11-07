@@ -217,8 +217,8 @@ func route(_ k: MediaKey, _ vm: FrontVM?, volume: Bool = true, mute: Bool = true
 // through DisplayServices), no built-in display, no keyboard light; audio
 // through a Focusrite Scarlett 2i2 (no software volume, no mute).
 let uf: UInt32 = 5
-let miniFull = FrontVM(omacvm: true, fullScreen: true, display: uf, builtin: false, vmKeys: true)
-let miniWin = FrontVM(omacvm: true, fullScreen: false, display: uf, builtin: false, vmKeys: true)
+let miniFull = FrontVM(fullScreen: true, display: uf, builtin: false, vmKeys: true)
+let miniWin = FrontVM(fullScreen: false, display: uf, builtin: false, vmKeys: true)
 for (vm, how) in [(miniFull, "full screen"), (miniWin, "windowed")] {
   check(route(.brightnessUp, vm, mac: uf, external: .works) == .external(uf), "mini \(how): brightness sets the UltraFine (its own control)")
   check(route(.brightnessDown, vm, mac: uf, external: .unknown) == .mac,
@@ -246,9 +246,9 @@ if case .macOS(let why) = route(.volumeUp, noKeys, volume: false) { check(why !=
 else { check(false, "VM without a control socket: volume to macOS, with why") }
 
 // A MacBook Pro (built-in 1, notch) with an external Pi-X9 (2, DDC/CI).
-let builtinFull = FrontVM(omacvm: true, fullScreen: true, display: 1, builtin: true, vmKeys: true)
-let builtinWin = FrontVM(omacvm: true, fullScreen: false, display: 1, builtin: true, vmKeys: true)
-let extFull = FrontVM(omacvm: true, fullScreen: true, display: 2, builtin: false, vmKeys: true)
+let builtinFull = FrontVM(fullScreen: true, display: 1, builtin: true, vmKeys: true)
+let builtinWin = FrontVM(fullScreen: false, display: 1, builtin: true, vmKeys: true)
+let extFull = FrontVM(fullScreen: true, display: 2, builtin: false, vmKeys: true)
 check(route(.brightnessUp, builtinFull, mac: 1) == .mac, "MacBook full screen: the built-in's brightness, by the Bridge (no macOS popup)")
 check(route(.brightnessUp, builtinWin, mac: 1) == .mac, "MacBook windowed on the built-in: the Bridge sets it (macOS's shortcuts are off while the VM has the keyboard)")
 check(route(.brightnessUp, extFull, mac: 1, external: .works) == .external(2), "MacBook, VM on the Pi-X9: DDC/CI")
@@ -256,11 +256,6 @@ check(route(.brightnessUp, extFull, mac: 1, external: .no("no DDC")) == .macOS("
 check(route(.brightnessUp, extFull, mac: 1, external: .off) != .mac, "MacBook: the built-in is never set for a VM on the external")
 check(route(.keyboardUp, builtinFull, light: true) == .mac, "MacBook: Shift+brightness, the keyboard light")
 check(route(.volumeUp, builtinWin) == .mac, "MacBook windowed: volume, the Mac's (with the VM's popup)")
-// Parallels, UTM, Fusion: full screen only, and no keys typed into them.
-let parFull = FrontVM(omacvm: false, fullScreen: true, display: 1, builtin: true, vmKeys: false)
-let parWin = FrontVM(omacvm: false, fullScreen: false, display: 1, builtin: true, vmKeys: false)
-check(route(.volumeUp, parFull) == .mac && route(.volumeUp, parWin) == .macOS(nil), "Parallels: the Mac's volume in full screen only")
-check(route(.play, parFull) == .macOS(nil), "Parallels: play stays as it was (its own)")
 // Command + a volume key (Cmd+F10/F11/F12 on Apple keyboards): Omarchy's
 // screenshot keys (Super + mute/volume down/volume up), whatever the output.
 func cmd(_ k: MediaKey, _ vm: FrontVM?, volume: Bool = true, mute: Bool = true) -> KeyRoute {
@@ -273,7 +268,6 @@ for (vm, how) in [(builtinFull, "MacBook full screen"), (builtinWin, "MacBook wi
   check(cmd(.volumeDown, vm, volume: false, mute: false) == .vm("volumedown"), "\(how): Command + volume down, output without a volume: the VM's too")
 }
 check(cmd(.volumeDown, noKeys) == .mac, "Command + volume, VM without a control socket: the Mac's volume as before")
-check(cmd(.volumeDown, parFull) == .mac && cmd(.volumeDown, parWin) == .macOS(nil), "Command + volume on Parallels: as without Command")
 check(cmd(.volumeDown, nil) == .macOS(nil), "Command + volume, no VM in front: macOS's")
 check(cmd(.brightnessUp, builtinFull) == .mac && cmd(.play, builtinFull) == .vm("audioplay"),
       "Command + brightness / play: unchanged")

@@ -21,10 +21,13 @@ done
 HERE=$(cd "$(dirname "$0")" && pwd)
 source "$HERE/vm-common.sh"
 vm_load "$VM_DIR"
-if ! err=$(vssh true < /dev/null 2>&1 >/dev/null); then
-  [[ $err != *"Permission denied"* ]] ||
-    die "$NAME doesn't let this Mac in over SSH: it does not know this VM folder's key. Start it once in the app (it adds the key as it starts), then try again."
-  die "$NAME does not answer over SSH (127.0.0.1:$SSH_PORT): it is not running, or still starting."
+# OMACVM_APPLY_SSH_SECONDS: how long a VM that just started or restarted may
+# take to let SSH in for good (move-vm.sh: 120); unset, one try.
+rc=0; ssh_ready "${OMACVM_APPLY_SSH_SECONDS:-0}" || rc=$?
+if (( rc == 2 )); then
+  die "$NAME doesn't let this Mac in over SSH: it does not know this VM folder's key. Start it once in the app (it adds the key as it starts), then try again."
+elif (( rc != 0 )); then
+  die "$NAME does not answer over SSH (127.0.0.1:$SSH_PORT): $SSH_WHY."
 fi
 
 # A copy of src/ only: the Mac installers build next to their sources, never

@@ -3,8 +3,8 @@
 # (src/memory/guest/90-omacvm-mm.tmpfiles), without a VM: the tmpfiles lines
 # applied to a stand-in /sys set page_reporting_order from the kernel's 9 to 6
 # and leave a kernel built without free page reporting alone (tmpfiles' "w"
-# writes only to a file that is there; Arch's kernel has it, so on Parallels,
-# UTM and Fusion 6 is written too and does nothing there: no balloon reports); install.sh installs the file and applies it
+# writes only to a file that is there; Arch's kernel has it, so a VM
+# without balloon reports gets 6 too and it does nothing there); install.sh installs the file and applies it
 # at once; omacvm check has its line on the app route.
 #   src/tests/memory-report-order.sh
 set -uo pipefail

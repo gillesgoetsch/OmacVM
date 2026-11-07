@@ -110,8 +110,8 @@ is "$rc:$out" "1:" "an older Bridge's 409 for the built-in display: no answer, n
 rm "$T/refuse-builtin"
 ddc --bus 2 setvcp 10 49 >/dev/null
 
-# 3. Parallels, UTM, Fusion: no box; only the focused output.
-TYPE=parallels
+# 3. Another VM type: no box; only the focused output.
+TYPE=other
 is "$(ddc --bus 2 getvcp 10 --brief)" "VCP 10 C 49 100" "elsewhere: the focused output asks"
 is "$(last)" "GET /display/external-brightness " "elsewhere: no box"
 n=$(wc -l < "$T/requests")

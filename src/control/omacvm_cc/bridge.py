@@ -83,7 +83,7 @@ def read_text(path: str) -> str:
 class Bridge:
     def __init__(self, env: dict[str, str], vm_version: str, token_file: str | None = None,
                  url: str | None = None):
-        host = env.get("OMACVM_HOST") or "10.211.55.2"
+        host = env.get("OMACVM_HOST") or "10.0.2.2"
         self.url = (url or os.environ.get("OMACVM_BRIDGE_URL") or f"http://{host}:{PORT}").rstrip("/")
         parts = urlsplit(self.url)
         self.host, self.port = parts.hostname or host, parts.port or PORT

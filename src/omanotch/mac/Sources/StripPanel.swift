@@ -22,7 +22,7 @@ final class StripPanel: NSPanel {
         isMovable = false
         animationBehavior = .none
         isReleasedWhenClosed = false
-        // Parallels and UTM keep an invisible window over the strip at level 26 and the
+        // VM apps may keep an invisible window over the strip at level 26 and the
         // menu bar sits at 24, so the panel must be at 27 or above.
         level = NSWindow.Level(27)
         // Belongs to the Space it is first shown on (the VM's full-screen
@@ -52,8 +52,8 @@ final class StripView: NSView {
     private var barHeight: CGFloat = 26
     private var barWidth: CGFloat = 0
     /// Guest logical px per strip point: 1 when the guest display matches the
-    /// Mac point for point (Parallels "Retina", UTM "Retina Mode" + resize to
-    /// window), anything else when it does not. The image is always drawn
+    /// Mac point for point (OmacVM.app at the display's own scale), anything
+    /// else when it does not. The image is always drawn
     /// across the full strip width and input is converted with this.
     private(set) var guestPerPoint: CGFloat = 1
     /// Called when guestPerPoint changes.
@@ -207,9 +207,9 @@ final class StripView: NSView {
         input?.stripHoverChanged(false, exit: (direction, min(max(p.x, 0), bounds.width - 1) * guestPerPoint))
         // (guestPerPoint, not drawScale: that x is a position on the VM display.)
         // Leaving into a VM window: show nothing, like the VM app does there
-        // (the guest draws its own cursor). Parallels does not reliably reset
-        // the cursor when the pointer comes from another app's window, which
-        // would leave a macOS arrow on top of the guest cursor.
+        // (the guest draws its own cursor). A VM app may not reset the cursor
+        // when the pointer comes from another app's window, which would leave
+        // a macOS arrow on top of the guest cursor.
         // Down: the strip is only shown right on top of the VM's full-screen
         // window (StripDetector), so that is where the pointer is now. The
         // window list is not asked: in macOS's full screen its (hidden) menu
@@ -236,7 +236,7 @@ final class StripView: NSView {
     }
 
     /// Owner names of the VM windows (set by the controller).
-    var vmOwners: Set<String> = ["Parallels Desktop", "UTM", "VMware Fusion", OmacVMApp.owner]
+    var vmOwners: Set<String> = [OmacVMApp.owner]
     /// The VM app whose guest feeds the strip (it draws its own cursor).
     var activeOwner: String?
 

@@ -1,5 +1,4 @@
-// The Mac's battery snapshot (both copies: the Bridge's battery.swift and
-// OmacVM.app's HostBattery.swift) from ioreg-like readings, offline
+// The Mac's battery snapshot (OmacVM.app's HostBattery.swift) from ioreg-like readings, offline
 // (src/tests/battery.sh). With a number: the snapshot's JSON for a made-up
 // battery (that many mA; above 0 charging), for the line test. With "live": this Mac's own
 // snapshot (IOKit, read only).
@@ -88,16 +87,6 @@ expect("JSON: no battery: present false, both null", j["present"] as? Bool == fa
 let a = HostBatterySnapshot(descriptions: [onBattery], details: HostBatteryDetails(properties: smart(-573)))
 let b = HostBatterySnapshot(descriptions: [onBattery], details: HostBatteryDetails(properties: smart(-600)))
 expect("a new current is a new snapshot (the app sends it)", a != b)
-
-#if BRIDGE
-// The Bridge sends current and power with the other readings: at most
-// every minorSeconds, not on every change.
-let coarse = coarseBattery(a.dictionary)
-expect("Bridge: current and power are minor readings",
-       coarse["currentMicroA"] == nil && coarse["powerMicroW"] == nil && coarse["state"] != nil)
-expect("Bridge: a new current alone is no coarse change",
-       NSDictionary(dictionary: coarseBattery(a.dictionary)) == NSDictionary(dictionary: coarseBattery(b.dictionary)))
-#endif
 
 print(failed ? "snapshot: FAILED" : "snapshot: all passed")
 exit(failed ? 1 : 0)

@@ -112,7 +112,7 @@ QEMU takes a device through libusb. On macOS, libusb can only use a part of
 a device that no macOS driver or app has open. Taking a part away from
 macOS needs Apple's `com.apple.vm.device-access` entitlement (or running
 QEMU as root, which OmacVM never does). Apple gives that entitlement to a
-developer team on request; UTM, VMware Fusion and Parallels have it.
+developer team on request; other VM apps have it.
 OmacVM does not have it yet. With it, the list could offer security keys,
 disks and serial adapters too.
 

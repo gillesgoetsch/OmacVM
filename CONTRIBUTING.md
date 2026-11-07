@@ -27,15 +27,15 @@ git clone https://github.com/gillesgoetsch/omacvm && cd omacvm
 Run `./omacvm` from your clone. `./install.sh` in a clone links that clone
 as your `omacvm` command, so the command on your PATH runs your changes.
 
-You need an Apple Silicon Mac (M1 or newer), Xcode Command Line Tools, and
-for UTM, Fusion and Parallels Homebrew's `zstd` and `e2fsprogs`.
+You need an Apple Silicon Mac (M1 or newer) with macOS 15 or newer, and
+Xcode Command Line Tools.
 
 ## Where things are
 
 | Path | What |
 |---|---|
 | `omacvm`, `src/cmd/` | The command and its subcommands (`build`, `apply`, `check`, ...) |
-| `src/lib/` | Mac-side shell libraries (finding VMs, the four apps, signing) |
+| `src/lib/` | Mac-side shell libraries (finding VMs, signing) |
 | `src/guest/` | The VM side: installer (`install.sh`) and checks (`check.sh`) |
 | `src/<feature>/` | One folder per feature, `mac/` and `guest/` inside. The list: `src/features.tsv` |
 | `app/` | OmacVM.app: Swift launcher, QEMU runtime and its patches |
@@ -65,10 +65,11 @@ src/tests/proxy.sh
 src/tests/mac-install.sh
 src/tests/feature-truth.sh && src/tests/upgrade-path.sh
 src/tests/release-keys.sh && src/tests/release-script.sh
-src/tests/prebuilt-manifest.sh && src/tests/prebuilt-routes.sh && src/tests/build-ctrlc.sh && src/tests/build-space.sh
+src/tests/prebuilt-manifest.sh && src/tests/build-ctrlc.sh && src/tests/build-space.sh
+src/tests/retired-routes.sh && src/tests/no-retired-routes.sh
 src/net/mac/test.sh
 src/gestures/mac/test.sh
-src/bridge/mac/test-models.sh && src/bridge/mac/test-hid.sh
+src/bridge/mac/test-models.sh && src/bridge/mac/test-hid.sh && src/bridge/mac/test-retired.sh
 src/bridge/mac/test-wallpaper.sh
 src/tests/venus-driver.sh
 src/tests/vulkan-feature.sh && src/tests/venus-build-tools.sh && src/tests/graphics-setting.sh && src/tests/pkg-safe.sh
@@ -103,26 +104,20 @@ or `${var,,}`.
 
 | You changed | Test with |
 |---|---|
-| Build questions, options | `./omacvm build --plan --json --vm-type app\|utm\|fusion\|parallels`: builds nothing |
+| Build questions, options | `./omacvm build --plan --json --vm-type app`: builds nothing |
 | VM side (`src/guest`, a feature's `guest/`) | `./omacvm apply --no-mac --vm "OmacVM Test-<topic>"`, then `./omacvm check --vm "OmacVM Test-<topic>"` |
 | A feature's off | `src/tests/features-off-vm.sh --vm "OmacVM Test-<topic>"`: nothing of an off feature runs or connects to the Mac |
 | Mac helpers (Bridge, Gestures, Omanotch) | `src/mac/install.sh --omanotch` (replaces the installed ones), then `./omacvm check` |
-| The build itself | `./omacvm build --no-mac --vm-type ROUTE --vm-name "OmacVM Test-<topic>"`: 30 to 70 minutes |
+| The build itself | `./omacvm build --no-mac --vm-type app --vm-name "OmacVM Test-<topic>"`: 10 to 30 minutes |
 | OmacVM.app | `cd app && scripts/build-app.sh`, then open `app/dist/OmacVM.app` |
 
-Per route:
+The first app build compiles QEMU; `src/` must be committed (the app carries
+it as committed). `--no-mac` on `build` and `apply` leaves your Mac's
+installed helpers alone.
 
-- **OmacVM.app**: needs macOS 15. The first app build compiles QEMU; `src/`
-  must be committed (the app carries it as committed).
-- **UTM**: UTM 5 (`brew install --cask utm@beta`). UTM 4 paints black windows.
-- **VMware Fusion**: Fusion 13 or newer, free with a Broadcom account. The build
-  compiles a patched Hyprland, so it takes about 15 minutes longer.
-- **Parallels**: Standard edition allows 4 CPUs and 8 GB per VM; the build
-  stays within your licence.
-
-`--no-mac` on `build` and `apply` leaves your Mac's installed helpers alone.
-`OMACVM_HEADLESS=1` starts test VMs without a window (UTM, Fusion, and
-Parallels Pro or trial).
+OmacVM is OmacVM.app only. Parallels, UTM and VMware Fusion were retired in
+3.4.0 and are not added back without the owner's explicit consent
+(`src/tests/no-retired-routes.sh` checks it).
 Delete test VMs when you're done.
 
 ## Pull requests
@@ -152,8 +147,7 @@ Delete test VMs when you're done.
 
 Look for [good first issue](https://github.com/gillesgoetsch/omacvm/labels/good%20first%20issue)
 and [help wanted](https://github.com/gillesgoetsch/omacvm/labels/help%20wanted).
-Labels `route:app`, `route:utm`, `route:fusion`, `route:parallels`, `gpu` and
-`docs` say where an issue lives.
+Labels `route:app`, `gpu` and `docs` say where an issue lives.
 
 Most wanted:
 

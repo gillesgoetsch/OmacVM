@@ -100,9 +100,10 @@ int main(int argc, char **argv) {
         "test Gestures: OmacVM.app's VM is the other one's");
   check(vmNetOf("OmacVM", "/x/qemu-system-aarch64", NULL, &foreign) == NET_APP,
         "test Gestures: a VM without an OmacVM signature stays its own");
-  check(vmNetOf("UTM", PROD_QEMU, "org.omacvm.app.qemu", &foreign) == NET_UTM &&
-        vmNetOf("prl_client_app", NULL, NULL, &foreign) == 0 && vmNetOf("Safari", NULL, "com.apple.Safari", &foreign) < 0,
-        "Parallels, UTM and other apps as before");
+  // The retired routes' VM apps (3.4.0) are other apps: no gestures, no combo for them.
+  const char *retiredApps[] = { "UTM", "prl_client_app", "VMware Fusion" }; int retiredOurs = 0;
+  for (int i = 0; i < 3; i++) retiredOurs |= vmNetOf(retiredApps[i], PROD_QEMU, "org.omacvm.app.qemu", &foreign) >= 0;
+  check(!retiredOurs && vmNetOf("Safari", NULL, "com.apple.Safari", &foreign) < 0, "the retired routes' VM apps and other apps: not ours");
 
   // The kernel's signature of real processes, and a development build's QEMU
   // (a copy of this test outside any bundle: not OmacVM-signed) as every Gestures'.

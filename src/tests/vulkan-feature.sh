@@ -65,8 +65,8 @@ expect "guest, on: Mesa built (--force)" --force "$(guest on no)"
 expect "guest, on, Mesa there: install runs (it skips the build by its stamp)" --force "$(guest on yes)"
 expect "guest, off, Mesa there: removed" --remove "$(guest off yes)"
 expect "guest, off, no Mesa: nothing" "" "$(guest off no)"
-expect "guest, not OmacVM.app: forced off" yes \
-  "$(grep -qxF '[[ $TYPE == app ]] || F[vulkan]=off' "$R/src/guest/install.sh" && echo yes)"
+expect "guest, not OmacVM.app: install.sh stops (OmacVM.app only)" yes \
+  "$(grep -qF '[[ $TYPE == app ]] || { echo "guest/install.sh: OmacVM 3.4.0 retired' "$R/src/guest/install.sh" && echo yes)"
 
 # build.sh: on only after the build (it needs the app's vulkan file and a restart).
 expect "build.sh refuses vulkan=on" yes \

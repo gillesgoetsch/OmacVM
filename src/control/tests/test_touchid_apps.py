@@ -179,7 +179,7 @@ def test_next_start_only_for_an_app_vm_without_the_port(tmp_path, monkeypatch):
     monkeypatch.setenv("OMACVM_AUTH_PORT", str(tmp_path / "org.omacvm.auth"))
     assert L.next_start("app", {"touch-id": True}) == {"touch-id"}
     assert L.next_start("app", {"touch-id": False}) == set()
-    assert L.next_start("parallels", {"touch-id": True}) == set()
+    assert L.next_start("other", {"touch-id": True}) == set()
     (tmp_path / "org.omacvm.auth").symlink_to("../vport1p3")   # udev's link; root's alone, never opened here
     assert L.next_start("app", {"touch-id": True}) == set()
 
@@ -190,7 +190,7 @@ def test_mac_ime_from_the_next_start_without_its_port(tmp_path, monkeypatch):
     monkeypatch.setenv("OMACVM_IME_PORT", str(tmp_path / "org.omacvm.ime"))
     assert L.next_start("app", {"mac-ime": True}) == {"mac-ime"}
     assert L.next_start("app", {"mac-ime": False}) == set()
-    assert L.next_start("utm", {"mac-ime": True}) == set()
+    assert L.next_start("other", {"mac-ime": True}) == set()
     (tmp_path / "org.omacvm.ime").symlink_to("../vport5p8")
     assert L.next_start("app", {"mac-ime": True, "touch-id": True}) == {"touch-id"}
     # No extra question before switching it: the row says "from the next start" after.
@@ -204,7 +204,7 @@ def test_drag_drop_from_the_next_start_without_its_port(tmp_path, monkeypatch):
     monkeypatch.setenv("OMACVM_DROP_PORT", str(tmp_path / "org.omacvm.drop"))
     assert L.next_start("app", {"drag-drop": True}) == {"drag-drop"}
     assert L.next_start("app", {"drag-drop": False}) == set()
-    assert L.next_start("utm", {"drag-drop": True}) == set()
+    assert L.next_start("other", {"drag-drop": True}) == set()
     (tmp_path / "org.omacvm.drop").symlink_to("../vport6p10")
     assert L.next_start("app", {"drag-drop": True, "mac-ime": True}) == {"mac-ime"}
 

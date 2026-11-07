@@ -3,7 +3,7 @@
 #   omacvm features [--vm NAME] [--json]     list them; in a terminal, switch them
 #   omacvm features [--vm NAME] --in-vm      open the control centre on the VM's desktop
 #                                            (one window; in front if it is open already)
-#   (--vm-type parallels|utm|fusion|app when two apps have a VM of that name)
+#   (--vm-type app: the only one, kept for scripts)
 #   omacvm enable FEATURE... [--vm NAME] [--yes] [--transaction] [--allow-downgrade]
 #   omacvm disable FEATURE... [--vm NAME] [--yes] [--transaction] [--allow-downgrade]
 # Features (src/features.tsv): bridge wallpaper gestures scroll-momentum omanotch

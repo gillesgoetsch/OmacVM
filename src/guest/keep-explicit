@@ -1,0 +1,68 @@
+#!/bin/bash
+# keep-explicit (root, in the VM): OmacVM's packages and everything they
+# need, marked as installed on purpose. Omarchy 4.5 removes orphans on every
+# update (omarchy-update-orphan-pkgs -y): a package there only as a
+# dependency of one that goes would go too.
+#   keep-explicit          marks the keep set's packages that are installed
+#                          as dependencies; prints the ones it marked
+#   keep-explicit --list   prints the whole keep set, changes nothing
+# The keep set: guest/keep-packages.txt (OmacVM's own packages, what its
+# guest scripts install with pkg-add, OmacVM's builds) and, from pacman's
+# database as it is now, everything those depend on, again and again (a
+# dependency is the package of that name or every one that provides it).
+# So it follows the VM: a new dependency of a new version is in it after
+# the next run. Run by the move (guest/omarchy-move.sh, before and after the
+# package switch), at the end of every guest/install.sh on Omarchy 4.5 (new
+# VMs, prebuilt ones, Update VM, a switched feature) and around every
+# guest/system-update. Exit 1 only when pacman could not mark them.
+# Tests: src/tests/omarchy-move.sh, src/tests/omarchy-move-pacman.sh.
+set -uo pipefail
+export LC_ALL=C
+D=$(cd "$(dirname "$0")" && pwd)
+LIST=${OMACVM_KEEP_LIST:-$D/keep-packages.txt}
+PACDB=${OMACVM_PACMAN_DB:-${OMACVM_MOVE_ROOT:-}/var/lib/pacman}
+
+roots() { grep -v '^#' "$LIST" 2>/dev/null | awk 'NF { print $1 }'; }
+
+# pacman's local database: one desc file per package (%NAME%, %DEPENDS%,
+# %PROVIDES%). The roots that are installed, then their dependencies, by
+# name or by what provides them, until nothing new comes.
+closure() {
+  local descs=("$PACDB"/local/*/desc)
+  [[ -f ${descs[0]} ]] || { roots; return; }   # no database to read: the list as it is
+  awk -v roots="$(roots | tr '\n' ' ')" '
+    FNR == 1 { sec = "" }
+    /^%[A-Z]+%$/ { sec = $0; next }
+    /^$/ { sec = ""; next }
+    sec == "%NAME%" { name = $0; have[name] = 1; next }
+    sec == "%DEPENDS%" { d = $0; sub(/[<>=:].*/, "", d); deps[name] = deps[name] " " d; next }
+    sec == "%PROVIDES%" { d = $0; sub(/[<>=:].*/, "", d); prov[d] = prov[d] " " name; next }
+    END {
+      n = split(roots, r, " ")
+      for (i = 1; i <= n; i++) if (r[i] in have && !(r[i] in keep)) { keep[r[i]] = 1; q[++t] = r[i] }
+      for (h = 1; h <= t; h++) {
+        m = split(deps[q[h]], ds, " ")
+        for (j = 1; j <= m; j++) {
+          d = ds[j]; if (d == "") continue
+          c = (d in have) ? d : ""
+          if (d in prov) c = c prov[d]
+          k = split(c, cs, " ")
+          for (l = 1; l <= k; l++) if (cs[l] != "" && !(cs[l] in keep)) { keep[cs[l]] = 1; q[++t] = cs[l] }
+        }
+      }
+      for (x in keep) print x
+    }' "${descs[@]}" | sort
+}
+
+set_=$(closure)
+if [[ ${1:-} == --list ]]; then
+  [[ -z $set_ ]] || echo "$set_"
+  exit 0
+fi
+[[ -n $set_ ]] || exit 0
+# shellcheck disable=SC2086 # one package per word
+dep=$(pacman -Qqd $set_ 2>/dev/null) || true
+[[ -n $dep ]] || exit 0
+# shellcheck disable=SC2086
+pacman -D --asexplicit $dep >/dev/null || exit 1
+echo "$dep"

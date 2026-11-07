@@ -114,7 +114,7 @@ enum TapAction: Equatable {
 /// What check() sees (main thread).
 struct TapInputs {
   var capture = true          // capture_keys
-  var vmFront = false         // a VM app is in front (OmacVM.app, Parallels, UTM, Fusion)
+  var vmFront = false         // an OmacVM.app VM is in front
   var omacvmPid: pid_t?       // ... and it is this OmacVM VM process
   var active = true           // awake, and this login session is the one in front
   var perms: TapPermissions = [.accessibility, .inputMonitoring, .postEvent]
@@ -282,12 +282,10 @@ struct KeyHold {
   mutating func up(_ k: MediaKey) -> KeyMods? { held.removeValue(forKey: k) }
 }
 
-/// The VM app in front as the key path sees it. `omacvm`: an OmacVM.app VM
-/// (also windowed); Parallels, UTM and Fusion count only full screen.
-/// `display`: the Mac display it is on, `builtin` whether that is the
-/// built-in one. `vmKeys`: keys can be typed into it (OmacVM.app's QMP).
+/// The OmacVM.app VM in front as the key path sees it (full screen or in a
+/// window). `display`: the Mac display it is on, `builtin` whether that is
+/// the built-in one. `vmKeys`: keys can be typed into it (OmacVM.app's QMP).
 struct FrontVM: Equatable {
-  var omacvm: Bool
   var fullScreen: Bool
   var display: UInt32
   var builtin: Bool
@@ -320,7 +318,7 @@ enum MediaRoute {
   static func route(_ key: MediaKey, vm: FrontVM?, volumeSettable: Bool, muteSettable: Bool,
                     macBrightness: UInt32?, external: ExternalState, keyboardLight: Bool,
                     command: Bool = false) -> KeyRoute {
-    guard let vm, vm.omacvm || vm.fullScreen else { return .macOS(nil) }   // no VM in front: macOS's keys
+    guard let vm else { return .macOS(nil) }   // no VM in front: macOS's keys
     switch key {
     case .volumeUp, .volumeDown, .mute:
       // Command + a volume key is a shortcut, not a volume change: Omarchy's
@@ -329,18 +327,16 @@ enum MediaRoute {
       // QEMU already holds Super in the VM for the Command key, so only the key
       // itself is typed. Without this a Mac output with a volume (the MacBook's
       // speakers) took the key and Omarchy never saw it.
-      if command && vm.omacvm && vm.vmKeys, let q = key.qcode { return .vm(q) }
+      if command && vm.vmKeys, let q = key.qcode { return .vm(q) }
       if key == .mute ? muteSettable : volumeSettable { return .mac }
       // No software volume on the Mac's output: the VM's own volume (its
       // popup), never macOS's greyed-out panel.
-      if vm.omacvm && vm.vmKeys, let q = key.qcode { return .vm(q) }
-      return .macOS(vm.omacvm ? "the VM takes no keys from the Bridge (QEMU's control socket not found)"
-                              : "the Mac's output has no volume macOS can set, and only OmacVM.app VMs take keys")
+      if vm.vmKeys, let q = key.qcode { return .vm(q) }
+      return .macOS("the VM takes no keys from the Bridge (QEMU's control socket not found)")
     case .play, .next, .previous, .fast, .rewind:
       // To the VM's players (Omarchy's media keys), not macOS's Now Playing:
       // with the VM in front the key never reaches macOS, so the app's Now
       // Playing claim (AirPods and media controls) does not get it twice.
-      guard vm.omacvm else { return .macOS(nil) }
       if vm.vmKeys, let q = key.qcode { return .vm(q) }
       return .macOS("the VM takes no keys from the Bridge (QEMU's control socket not found)")
     case .brightnessUp, .brightnessDown:
@@ -351,7 +347,7 @@ enum MediaRoute {
       // too: while it has the keyboard, macOS's own shortcuts are off (they go
       // to the VM), so the Bridge sets the brightness itself rather than rely
       // on macOS for it.
-      if macBrightness == vm.display && (vm.fullScreen || !vm.builtin || vm.omacvm) { return .mac }
+      if macBrightness == vm.display { return .mac }
       if vm.builtin { return .macOS(nil) }
       switch external {
       case .no(let why): return .macOS(why)

@@ -90,14 +90,13 @@ int main(int argc, char **argv) {
                                                             clients[i].ways[0], clients[i].ways[1]);
   for (int i = 0; i < MAX_CLIENTS; i++)
     if (clients[i].fd >= 0)
-      printf("client %s: %s\n", clients[i].name, clients[i].net == NET_APP ? "app" : clients[i].net == NET_UTM ? "utm" : "other");
-  say("UTM in front, title Windows", targetsFor(NET_UTM, "Windows"));
-  say("UTM in front, title UTM VM", targetsFor(NET_UTM, "UTM VM"));
+      printf("client %s: %s\n", clients[i].name, clients[i].net == NET_APP ? "app" : "other");
+  // The addresses the helper listens on: OmacVM.app's only (the retired
+  // routes' networks get nothing, 3.4.0).
+  for (size_t i = 0; i < sizeof listenAddrs / sizeof *listenAddrs; i++) printf("listen %s\n", listenAddrs[i]);
+  say("app in front, title Work VM", targetsFor(NET_APP, "Work VM"));
   say("app in front, title App VM", targetsFor(NET_APP, "App VM"));
-  // The app VM's own client gone: a UTM VM whose name is in the app's title
-  // must not take its place.
-  for (int i = 0; i < MAX_CLIENTS; i++)
-    if (clients[i].fd >= 0 && clients[i].net == NET_APP) { close(clients[i].fd); clients[i].fd = -1; }
-  say("app in front, title App VM, app VM gone", targetsFor(NET_APP, "App VM"));
+  say("app in front, title Windows", targetsFor(NET_APP, "Windows"));
+  say("no VM app in front", targetsFor(-1, "App VM"));
   return 0;
 }

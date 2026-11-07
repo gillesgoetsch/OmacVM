@@ -10,7 +10,7 @@
 //    shows no "Monitor NOTCH overlaps" warning. Only under OmacVM.app: it
 //    maps its pointer by the outputs the guest reports (omacvm-displays),
 //    so a layout that grows by the strip keeps the pointer exact.
-//  - OVER the output's top edge (the old place): Parallels, UTM and Fusion
+//  - OVER the output's top edge (the old place): the retired VM apps
 //    map their absolute pointer onto the box around all outputs, which must
 //    not change; and the fallback when the place above is taken (another
 //    display there with no gap for the strip).

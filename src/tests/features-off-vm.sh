@@ -2,7 +2,7 @@
 # Off means off, in a running VM: for every feature the VM has switched off,
 # nothing of it runs in the VM, the VM tries no connection to the Mac for it
 # (counted for a while with an nftables counter), and omacvm check says "off"
-# for it. Any route (Parallels, UTM, VMware Fusion, OmacVM.app). Read-only
+# for it. Read-only
 # but for the counter table, which goes again. The desktop user must be logged in.
 #   src/tests/features-off-vm.sh --vm NAME [--vm-type TYPE] [--seconds 30]
 # Exits 1 if anything that is off still runs, connects or checks as on.
@@ -52,11 +52,11 @@ proc_off() {   # FEATURE PATTERN: no such process
 }
 
 # Who may talk to the Mac on which port: Omanotch 47811, Gestures 47830,
-# Bridge 47831 (UTM and Fusion: also the camera and the battery).
+# Bridge 47831.
 want=()
 [[ $(f omanotch) == on ]] && want+=(47811)
 [[ $(f gestures) == on ]] && want+=(47830)
-if [[ $(f bridge) == on ]] || { [[ $TYPE == utm || $TYPE == fusion ]] && [[ $(f camera) == on || $(f battery) == on ]]; }; then want+=(47831); fi
+if [[ $(f bridge) == on ]]; then want+=(47831); fi
 
 [[ $(f gestures) == off ]] && { sys_off gestures omacvm-gestures; proc_off gestures "omacvm-gestures"; }
 if [[ $(f omanotch) == off ]]; then
@@ -123,7 +123,7 @@ off_row() {   # FEATURE CHECK-NAME
 [[ $(f gestures) == off ]] && off_row gestures "trackpad gestures"
 [[ $(f omanotch) == off ]] && off_row omanotch Omanotch
 [[ $(f camera) == off ]] && off_row camera camera
-[[ $(f battery) == off && $TYPE != parallels ]] && off_row battery battery
+[[ $(f battery) == off ]] && off_row battery battery
 [[ $(f wallpaper) == off && $(f bridge) == on ]] && off_row wallpaper wallpaper
 [[ $(f mac-clock) == off ]] && off_row mac-clock "the Mac's clock"
 [[ $(f fast-network) == off && $TYPE == app ]] && off_row fast-network "fast network"

@@ -3,8 +3,8 @@ import Foundation
 import Network
 
 /// A host-side address of a VM network: the Mac's end of the network the
-/// guest is on (Parallels: 10.211.55.2 on a vnic/bridge interface, UTM's
-/// shared network: 192.168.64.1 on bridge100).
+/// guest is on (OmacVM.app: 127.0.0.1, and 192.168.77.1 on a bridgeN for its
+/// fast network).
 struct VMInterface: Hashable {
     let name: String
     let address: UInt32  // host byte order

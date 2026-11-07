@@ -13,7 +13,7 @@ bsdtar -xf chrome.deb
 rm -rf /opt/google/chrome
 tar -xf data.tar.* -C / ./opt/google/chrome
 # Google's launcher reads no flags file. This one reads /etc/chrome-flags.conf,
-# then ~/.config/chrome-flags.conf, as Arch's chromium does (on Fusion,
+# then ~/.config/chrome-flags.conf, as Arch's chromium does (on another VM app,
 # /etc/chrome-flags.conf has --ignore-gpu-blocklist). Unlike Arch's launcher it
 # splits on whitespace only (no quotes) and skips only whole-line comments.
 rm -f /usr/local/bin/google-chrome-stable

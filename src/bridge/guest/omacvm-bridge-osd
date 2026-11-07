@@ -32,5 +32,5 @@ while true; do
       "data: "*) [[ $event == osd ]] && show "${line#data: }" ;;
     esac
   done < <(omacvm-bridge events "${EXT[@]}" 2>/dev/null)
-  sleep 3   # Mac asleep, helper restarting, or Parallels network down: reconnect
+  sleep 3   # Mac asleep, helper restarting, or the VM's network moving: reconnect
 done

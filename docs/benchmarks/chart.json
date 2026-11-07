@@ -1,10 +1,10 @@
 {
  "baseline": "mac",
  "sources": {
-  "geekbench-cpu-multi": "2026-10-03 round, single runs",
-  "speedometer": "2026-10-09 MacBook Pro M4 Max round, median of 3 (docs/benchmarks/README.md, MacBook Pro M4 Max, every route (2026-10-09))",
-  "aquarium": "2026-10-09 MacBook Pro M4 Max round, median of 3 (docs/benchmarks/README.md, MacBook Pro M4 Max, every route (2026-10-09))",
-  "basemark": "2026-10-09 MacBook Pro M4 Max round, median of 3 (docs/benchmarks/README.md, MacBook Pro M4 Max, every route (2026-10-09))",
+  "geekbench-cpu-multi": "2026-10-03 MacBook Pro M4 Max round, single runs (docs/benchmarks/README.md, MacBook Pro M4 Max (2026-10-03))",
+  "speedometer": "2026-10-09 MacBook Pro M4 Max round, median of 3 (docs/benchmarks/README.md, MacBook Pro M4 Max (2026-10-09))",
+  "aquarium": "2026-10-09 MacBook Pro M4 Max round, median of 3 (docs/benchmarks/README.md, MacBook Pro M4 Max (2026-10-09))",
+  "basemark": "2026-10-09 MacBook Pro M4 Max round, median of 3 (docs/benchmarks/README.md, MacBook Pro M4 Max (2026-10-09))",
   "geekbench-gpu-opencl": "2026-10-04, one locked batch (Mac 252722, VM 252731 on browser.geekbench.com); OmacVM.app with omacvm enable vulkan (experimental in 3.0.0)"
  },
  "medians": {
@@ -21,43 +21,23 @@
    "aquarium": 43.2,
    "basemark": 2801,
    "geekbench-gpu-opencl": 42486
-  },
-  "utm": {
-   "geekbench-cpu-multi": 24414,
-   "speedometer": 38.1,
-   "aquarium": 25.6,
-   "basemark": 2667
-  },
-  "fusion": {
-   "geekbench-cpu-multi": 27037,
-   "speedometer": 44.8,
-   "aquarium": 41.8,
-   "basemark": 2511
-  },
-  "parallels": {
-   "geekbench-cpu-multi": 26218,
-   "speedometer": 43.5,
-   "aquarium": 27.9,
-   "basemark": 2680
   }
  },
  "note": [
-  "Each VM alone in a window, 6 CPUs and 8 GB, Chrome's page 1440x900 at 2x. Median of 3 runs.",
-  "CPU and GPU compute (Geekbench 7) from the 2026-10-03/04 rounds; GPU compute with omacvm enable vulkan.",
-  "glmark2 has no macOS version: see docs/benchmarks."
+  "The VM 6 CPUs and 8 GB in a window; Chrome's page 1440x900 at 2x on both. Browser tests 2026-10-09, median of 3 runs.",
+  "Geekbench: CPU 2026-10-03 (single run), GPU compute 2026-10-04 with omacvm enable vulkan. Raw runs: docs/benchmarks."
  ],
  "power": {
   "sources": {
-   "main": "2026-10-07 round on the MacBook Air M2 8 GB (macOS 26.6.2, 52.6 Wh design capacity): every route on the same Mac, each VM 4 CPUs and 4 GB on the same external SSD, median of 3 per load, on the charger. Raw runs: docs/benchmarks/README.md, Results, MacBook Air M2 (2026-10-07)."
+   "main": "2026-10-07 round on the MacBook Air M2 8 GB (macOS 26.6.2, 52.6 Wh design capacity): OmacVM.app 3.0.3 and macOS on the same Mac, the VM 4 CPUs and 4 GB on an external SSD, median of 3 per load, on the charger. Raw runs: docs/benchmarks/README.md, Results, MacBook Air M2 (2026-10-07)."
   },
   "battery_wh": 52.6,
   "digits": 2,
-  "bar_width": 400,
   "labels": {
    "app": "OmacVM.app 3.0.3"
   },
   "loads": {
-   "video": "60 fps, SDR, in the browser that played it best",
+   "video": "VP9, SDR, 60 fps; both on the Mac's media engine",
    "cpu": "every core at 100 %: the VM's 4, the Mac's 8"
   },
   "watts": {
@@ -74,54 +54,21 @@
     "video": 10.1,
     "cpu": 21.01,
     "gpu": 17.11
-   },
-   "utm": {
-    "idle": 6.3,
-    "light": 7.43,
-    "video": 16.46,
-    "cpu": 16.95,
-    "gpu": 18.15
-   },
-   "fusion": {
-    "idle": 6.21,
-    "light": 6.82,
-    "video": 16.14,
-    "cpu": 18.16,
-    "gpu": 20.64
-   },
-   "parallels": {
-    "idle": 6.17,
-    "light": 6.68,
-    "video": 16.78,
-    "cpu": 18.01,
-    "gpu": 17.43
    }
   },
   "extra": {
    "mac": {
-    "video": "Chrome, hardware",
+    "video": "Google Chrome",
     "gpu": "60 fps, the display's limit"
    },
    "app": {
-    "video": "Chromium, Mac's media engine",
+    "video": "Omarchy's Chromium",
     "gpu": "19 fps"
-   },
-   "utm": {
-    "video": "Chromium, CPU",
-    "gpu": "21 fps"
-   },
-   "fusion": {
-    "video": "Chrome, CPU, 11 % dropped",
-    "gpu": "25 fps"
-   },
-   "parallels": {
-    "video": "Chromium, CPU",
-    "gpu": "17 fps"
    }
   },
   "note": [
-   "The whole Mac, display included, from the battery's own telemetry; brightness 50 %; each VM alone in native full screen; on the charger.",
-   "Median of 3 per load, each load on its own scale. Hours: the Air's 52.6 Wh over the draw."
+   "The whole Mac, display included, from the battery's own telemetry; brightness 50 %; the VM alone in native full screen; on the charger.",
+   "Median of 3 per load, each load on its own scale. Hours: the Air's 52.6 Wh over the draw. Raw runs: docs/benchmarks."
   ]
  },
  "gpu_progress": {
@@ -246,16 +193,5 @@
    "Same MacBook Air and VM for every version; only the app changes. Graphics OpenGL (what Automatic picks in each), vkmark with Vulkan.",
    "Median of 3 boots; the thin line runs from the lowest to the highest run. 3.0.0's Aquarium: the slowdown #173 fixed in 3.0.2."
   ]
- },
- "missing": {
-  "utm": {
-   "geekbench-gpu-opencl": "not available (no OpenCL or Vulkan)"
-  },
-  "fusion": {
-   "geekbench-gpu-opencl": "not available (no OpenCL or Vulkan)"
-  },
-  "parallels": {
-   "geekbench-gpu-opencl": "not available (no OpenCL or Vulkan)"
-  }
  }
 }

@@ -14,8 +14,15 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # Stand-ins for pacman and vercmp (pacman's own version order for these cases).
 cat > "$T/pacman" <<'EOF'
 #!/bin/bash
-[[ $1 == -Q && -n ${HAVE:-} ]] && { echo "vulkan-virtio $HAVE"; exit 0; }
-exit 1
+# HAVE: the installed driver's version; OmacVM's build (a version with "omacvm")
+# is omacvm-vulkan-virtio, or vulkan-virtio with OLDNAME=1 (3.3 and older).
+[[ $1 == -Q && -n ${HAVE:-} ]] || exit 1
+rc=1
+for n in "${@:2}"; do
+  if [[ $HAVE == *omacvm* && -z ${OLDNAME:-} ]]; then [[ $n == omacvm-vulkan-virtio ]] && { echo "$n $HAVE"; rc=0; }
+  else [[ $n == vulkan-virtio ]] && { echo "$n $HAVE"; rc=0; }; fi
+done
+exit $rc
 EOF
 cat > "$T/vercmp" <<'EOF'
 #!/usr/bin/env python3
@@ -63,6 +70,11 @@ expect "ours (26.2.4 + WebGPU patch)"    "$V" "$O"           ok
 expect "ours before 3.0.11 (omacvm1)"    "$V" "1:26.2.4.omacvm1-1" update
 [[ $(PATH="$T:$PATH" OMACVM_VENUS_PROBE=$V HAVE=1:26.2.4.omacvm1-1 "$D/vulkan-virtio.sh" --status) == *"has newer fixes"* ]] &&
   pass "ours before 3.0.11: says the new build has fixes" || fail "ours before 3.0.11: wrong reason"
+# 3.3 and older built it as vulkan-virtio: Omarchy 4.5's snapshot (26.2.5)
+# would replace it, so it is built again as omacvm-vulkan-virtio.
+out=$(PATH="$T:$PATH" OMACVM_VENUS_PROBE=$V HAVE=$O OLDNAME=1 "$D/vulkan-virtio.sh" --status)
+[[ $out == "update vulkan-virtio $O: OmacVM's build gets a name of its own (omacvm-vulkan-virtio)"* ]] &&
+  pass "ours under the distro's name (3.3 and older): built again as omacvm-vulkan-virtio" || fail "ours under the old name: '$out'"
 expect "ours from 3.0.0 (26.2.4-0.1)"    "$V" "1:26.2.4-0.1" update
 expect "the distro's 26.2.4"             "$V" "1:26.2.4-1"   update
 expect "a distro rebuild of 26.2.4"      "$V" "1:26.2.4-3"   update
@@ -145,12 +157,17 @@ CALLS=$P/calls PULLS=spirv-tools PATH="$P:$PATH" OMACVM_VENUS_PROBE="$V" OMACVM_
 # the distro's builds of the same Mesa, a newer Mesa replaces it.
 eval "$(bash -c "source $D/PKGBUILD"' && declare -p pkgname epoch pkgver pkgrel _mesaver source sha256sums')"
 fixed=$(sed -n 's/^FIXED=\([^ ]*\).*/\1/p' "$D/vulkan-virtio.sh")
-[[ $pkgname == vulkan-virtio && "$epoch:$_mesaver" == "$fixed" && $pkgver == "$_mesaver".omacvm* ]] &&
+eval "$(bash -c "source $D/PKGBUILD"' && declare -p provides conflicts')"
+[[ " ${provides[*]} " == *" vulkan-virtio=$epoch:$pkgver "* && ${conflicts[*]} == vulkan-virtio ]] &&
+  pass "PKGBUILD: omacvm-vulkan-virtio provides vulkan-virtio and takes its place (no repo update replaces it)" ||
+  fail "PKGBUILD provides '${provides[*]}', conflicts '${conflicts[*]}'"
+[[ $pkgname == omacvm-vulkan-virtio && "$epoch:$_mesaver" == "$fixed" && $pkgver == "$_mesaver".omacvm* ]] &&
   pass "PKGBUILD is $epoch:$pkgver (Mesa ${fixed#*:})" || fail "PKGBUILD $pkgname $epoch:$pkgver vs FIXED $fixed"
+# package() checks its files against the list with the package's own name (the license folder).
+grep -qF './usr/share/licenses/$pkgname/license.rst' "$D/PKGBUILD" && ! grep -q 'licenses/vulkan-virtio/' "$D/PKGBUILD" &&
+  pass "PKGBUILD: the file list names the license folder by the package's name" || fail "PKGBUILD: the file list has another package's license folder"
 [[ $("$T/vercmp" "$epoch:$pkgver-$pkgrel" "$epoch:$_mesaver-9") == 1 ]] && pass "ours stays over the distro's $_mesaver-x" ||
   fail "the distro's $_mesaver-9 would replace ours"
-[[ $("$T/vercmp" "$epoch:$pkgver-$pkgrel" "$epoch:26.3.0-1") == -1 ]] && pass "a newer Mesa replaces ours" ||
-  fail "ours would hold back a newer Mesa"
 sum() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 [[ ${#source[@]} == 3 && ${source[1]} == mesa-venus-opaque-fd-semaphores.patch &&
    ${source[2]} == mesa-venus-tls-after-unload.patch &&
@@ -258,7 +275,7 @@ grep -q '^OCL_ICD_VENDORS=$CLONLY$' "$D/install.sh" && grep -q 'cp "$CLICD" "$CL
 
 # WebGPU (venus/webgpu.sh): the launcher and Firefox's switch; --off keeps them while gpu-compute
 # gives them (Graphics Vulkan) or the vulkan feature's Mesa is there.
-grep -q '"WebGPU in Chromium"' src/guest/check.sh && grep -qF 'pacman -Q vulkan-virtio 2>/dev/null) == *omacvm*' src/guest/check.sh &&
+grep -q '"WebGPU in Chromium"' src/guest/check.sh && grep -qF 'pacman -Q omacvm-vulkan-virtio vulkan-virtio 2>/dev/null) == *omacvm*' src/guest/check.sh &&
   pass "check has the WebGPU row for Graphics Vulkan" || fail "no WebGPU check row for Graphics Vulkan"
 grep -q './webgpu.sh --off' "$D/install.sh" && ! grep -q 'FFPREF' "$D/install.sh" && pass "vulkan feature off leaves the launcher and Firefox's switch to webgpu.sh" ||
   fail "venus/install.sh --remove deletes the launcher or Firefox's switch itself"
@@ -313,11 +330,6 @@ grep -qx 'venus/mpv.sh || echo .*' src/app/guest/install.sh && ! grep -q 'mpv.sh
 grep -q 'app/guest/venus/mpv.sh' src/cmd/graphics.sh && pass "omacvm graphics sets mpv's default" || fail "omacvm graphics skips mpv"
 grep -q '"mpv" "vo=gpu' src/guest/check.sh && grep -q 'mpv_row; fi' src/guest/check.sh &&
   pass "check has the mpv row for every app VM" || fail "no mpv check row for every app VM"
-# UTM VMs draw with virgl too (virtio-gpu-gl): the same mpv.sh from UTM's install, and the check row.
-grep -qx '\.\./\.\./app/guest/venus/mpv\.sh || echo .*' src/utm/guest/install.sh &&
-  pass "UTM install sets mpv's defaults (the app's mpv.sh)" || fail "UTM install does not run app/guest/venus/mpv.sh"
-awk '/^utm\)/ { s = 1 } /^app\)/ { s = 0 } s' src/guest/check.sh | grep -qx '  mpv_row ;;' &&
-  pass "check has the mpv row for UTM VMs" || fail "no mpv check row for UTM VMs"
 M=$T/mpvroot; MC=$M/etc/mpv/mpv.conf; mkdir -p "$M/etc/omacvm"
 mp() { OMACVM_MPV_ROOT=$M "$D/mpv.sh" "$@" >/dev/null 2>&1; }
 blocks() { grep -c '^# OmacVM: begin' "$MC" 2>/dev/null || true; }
@@ -338,8 +350,14 @@ printf 'OMACVM_GRAPHICS=opengl\nOMACVM_FEATURE_vulkan=on\n' > "$M/etc/omacvm/env
 [[ $(lines) == 'vo=gpu gpu-api=opengl ' ]] && pass "mpv.sh: gpu-api=opengl with the vulkan feature" || fail "mpv.sh with the vulkan feature: $(lines)"
 echo OMACVM_GRAPHICS=opengl > "$M/etc/omacvm/env"; mkdir -p "$M/etc/vulkan/icd.d"; : > "$M/etc/vulkan/icd.d/omacvm_venus_icd.json"; mp
 [[ $(lines) == 'vo=gpu gpu-api=opengl ' ]] && pass "mpv.sh: gpu-api=opengl while OmacVM's Venus driver is there" || fail "mpv.sh with the Venus ICD: $(lines)"
-rm -f "$M/etc/vulkan/icd.d/omacvm_venus_icd.json"; printf 'OMACVM_VM_TYPE=utm\nOMACVM_FEATURE_vulkan=off\n' > "$M/etc/omacvm/env"; mp
-[[ $(blocks) == 1 && $(lines) == 'vo=gpu ' ]] && pass "mpv.sh in a UTM VM: vo=gpu only" || fail "mpv.sh in a UTM VM wrote: $(lines)"
+rm -f "$M/etc/vulkan/icd.d/omacvm_venus_icd.json"; printf 'OMACVM_VM_TYPE=app\nOMACVM_FEATURE_vulkan=off\n' > "$M/etc/omacvm/env"; mp
+[[ $(blocks) == 1 && $(lines) == 'vo=gpu ' ]] && pass "mpv.sh, vulkan off: vo=gpu only" || fail "mpv.sh, vulkan off, wrote: $(lines)"
+# Omarchy 4.5's omarchy-settings ships mpv.conf and its updates replace it: a pacman hook runs
+# mpv.sh again after them (inert on 4.0, where nothing ships the file).
+HK=$M/etc/pacman.d/hooks/zz-omacvm-mpv.hook
+[[ $(grep -cxE 'Target = etc/mpv/mpv.conf|When = PostTransaction|Operation = (Install|Upgrade)' "$HK" 2>/dev/null) == 4 ]] &&
+  grep -qxF "Exec = /bin/sh -c '[ ! -x /usr/local/share/omacvm/app/guest/venus/mpv.sh ] || /usr/local/share/omacvm/app/guest/venus/mpv.sh >/dev/null'" "$HK" &&
+  pass "mpv.sh: pacman hook for mpv.conf from a package (Omarchy 4.5)" || fail "mpv.sh: hook missing or wrong: $(cat "$HK" 2>&1)"
 OMACVM_MPV_ROOT=$M "$D/mpv.sh" --nonsense >/dev/null 2>&1; [[ $? == 2 ]] && pass "mpv.sh: unknown option: usage" || fail "mpv.sh: unknown option accepted"
 if (( EUID != 0 )); then
   out=$("$D/mpv.sh" 2>&1); rc=$?

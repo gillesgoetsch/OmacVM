@@ -3,7 +3,7 @@
 #   ./install.sh [--prebuilt APP] [--keys-only] [-v] [--record]
 # --prebuilt: that copy (OmacVM.app's, signed with OmacVM's Developer ID)
 # instead of building one here.
-# --keys-only: trackpad gestures stay with macOS for every VM; on UTM, Cmd
+# --keys-only: trackpad gestures stay with macOS for every VM; Cmd
 # still reaches Omarchy as Super. Otherwise each VM chooses gestures and scroll momentum
 # for itself. Diagnostics: -v logs more, --record writes the trackpad's frames
 # and macOS's scroll events to ~/Library/Logs/omacvm-input.tsv (scroll momentum analysis,
