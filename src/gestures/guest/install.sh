@@ -43,6 +43,15 @@ if (( ${#missing[@]} )); then
     done
   } | home_append "$I"
 fi
+# The virtual trackpad never taps: a tap or click on the Mac's trackpad comes
+# through the VM app's pointer, as macOS's own settings make it. Omarchy 4.5
+# leaves tap-to-click at Hyprland's default (on; omarchy-mac's 4.0 had it off),
+# so the two still fingers at the start of a pinch, lifted when macOS calls it a
+# pinch, were a two-finger tap there: a right click. Unless you set it yourself.
+if ! grep -Eq 'magic-trackpad-\(omacvm\).*tap_to_click' < <(home_run cat -- "$H"/.config/hypr/*.lua 2>/dev/null); then
+  printf '%s\n' '-- OmacVM trackpad: no tap-to-click on the virtual trackpad (the Mac'"'"'s taps and clicks still count).' \
+    'hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", tap_to_click = false })' | home_append "$I"
+fi
 # Omarchy turns the workspace animation off, so a swipe jumped to the next
 # workspace when the fingers lifted. Slide like Spaces, unless you set your own.
 if ! grep -q 'leaf *= *"workspaces"' < <(home_run cat -- "$H"/.config/hypr/*.lua 2>/dev/null); then
