@@ -332,9 +332,11 @@ Resume must finish a move that stopped resumable; Undo must give back
 exactly the VM from before. The cuts inside the switch (`kill-commit`,
 `power-loss`) wait for the guest's marker (pacman's database changed,
 synced to the VM's disk) and must leave it half switched: Resume refused
-(the guest says `half`), Undo exact. A cut the guest still calls
+(the guest says `half`, or nothing at all when the cut left the VM unable
+to come up or answer), Undo exact. A cut the guest still calls
 `cut-before` or `cut-done` (Resume rightly goes on) is a retry of the
-timing: Undo, the move again, at most 3 times; a row whose only failed
+timing: Undo, the move again, at most 3 times (a Resume that fails after
+such an answer is a FAIL); a row whose only failed
 check is "kit timing: ..." is RETRY, never PASS or FAIL. A power cut
 (`power-loss`, `power-backup`) stops move-vm.sh first, then every process
 under it and the VM's QEMU, then kills them all. After a move OmacVM's guest check runs with the

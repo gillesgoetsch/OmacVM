@@ -668,9 +668,10 @@ half_cut_row() {
       check "Resume refused" 1 "exit $rr: $(J reason | cut -c1-160)"
       # The guest's word: half. Or none: a half switched VM may not come up far enough to answer (mini, 07:36:
       # NetworkManager failed to start, no SSH): Resume then stops at "did not come up" / "does not answer" and
-      # the Mac keeps Undo only (its last poll was inside the switch).
+      # the Mac keeps Undo only (its last poll was inside the switch). Never when the guest did answer with
+      # cut-before or cut-done (it went on): a Resume that then fails is a FAIL, not "no word".
       local why="switch $gs"
-      [[ $gs != half && $(J code) =~ ^(boot|no-boot|ask|ssh)$ && $(J resumable) == 0 ]] &&
+      [[ $gs != half && $gs != cut-before && $gs != cut-done && $(J code) =~ ^(boot|no-boot|ask|ssh)$ && $(J resumable) == 0 ]] &&
         why="no word from the VM: it did not come up or answer after the cut (code $(J code)); the Mac keeps Undo only"
       check "the guest at Resume: its switch cut half way, or no word from a VM the cut left unable to answer (Undo only)" \
         $([[ $gs == half || $why == "no word"* ]] && echo 1 || echo 0) "$why ($CUT_N packages changed before the cut, try $try)"

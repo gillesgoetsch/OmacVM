@@ -356,13 +356,17 @@ hcrun() {   # SCENARIO KIND -> the row's checks as "ok|FAIL name", one per line
     # The guest's word at Resume, per try: half (refused), cut-before / cut-done (went on, its log line), or
     # "lie": refused while the guest says cut-before (a product FAIL).
     word() { case $SCEN in half) echo half ;; before) echo cut-before ;; done) echo cut-done ;; lie) echo lie ;; noboot) echo noboot ;;
+               before-noboot) echo cut-before-fail ;; done-noboot) echo cut-done-fail ;;
                before-half) (( $(t) == 1 )) && echo cut-before || echo half ;; esac; }
-    J() { case $1 in resumable) echo 0 ;; state) echo running ;; pid) echo 999999 ;; code) [[ $SCEN == noboot ]] && echo boot ;;
+    J() { case $1 in resumable) echo 0 ;; state) echo running ;; pid) echo 999999 ;; code) [[ $SCEN == *noboot ]] && echo boot ;;
             guest_switch) case $(word) in half) echo half ;; lie) echo cut-before ;; noboot) echo running ;; *) echo done ;; esac ;; *) echo ;; esac; }
     mvm() { case $1 in
               run) case $(word) in
                      cut-before) echo "OmacVM: the switch was cut off before pacman changed anything: it runs again" > "$VD/logs/move-4.5.log"; return 0 ;;
                      cut-done) echo "OmacVM: the switch was cut off after pacman wrote all of it: its packages again" > "$VD/logs/move-4.5.log"; return 0 ;;
+                     # The guest answered (went on), then the VM did not come up again: Resume stops at "boot".
+                     cut-before-fail) echo "OmacVM: the switch was cut off before pacman changed anything: it runs again" > "$VD/logs/move-4.5.log"; return 4 ;;
+                     cut-done-fail) echo "OmacVM: the switch was cut off after pacman wrote all of it: its packages again" > "$VD/logs/move-4.5.log"; return 4 ;;
                      *) return 4 ;;
                    esac ;;
               undo) return 0 ;;
@@ -380,6 +384,10 @@ expect "cut-before at the first try, half at the second: Undo exact between, no 
 expect "cut-before at every try: only the kit-timing check fails (three tries)" "FAIL kit timing: a cut landed in a half switch in 3 moves" "$(hcrun before qemu | grep '^FAIL')"
 expect "cut-done at every try: only the kit-timing check fails" 1 "$(hcrun done power | grep -c '^FAIL kit timing:')"
 expect "Resume refused while the guest says cut-before: a FAIL of the product, not timing" 1 "$(hcrun lie qemu | grep -c '^FAIL the guest at Resume: its switch cut half way')"
+# "No word" only when the guest said nothing: a guest that answered cut-before / cut-done went on, and a Resume
+# that then stopped at "did not come up" is a FAIL (x34b-kitfix-rev: it passed as "no word").
+expect "the guest said cut-before, then Resume failed (boot): a FAIL, not no word" 1 "$(hcrun before-noboot qemu | grep -c '^FAIL the guest at Resume: its switch cut half way')"
+expect "the guest said cut-done, then Resume failed (boot): a FAIL, not no word" 1 "$(hcrun done-noboot power | grep -c '^FAIL the guest at Resume: its switch cut half way')"
 # A row whose only failures are kit timing is a RETRY: not passed, not failed.
 D=$T/retry; full "$D"
 printf 'Undo\t1\t\nkit timing: a cut landed in a half switch in 3 moves\t0\tevery cut landed outside half\n' |
