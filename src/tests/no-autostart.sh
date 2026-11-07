@@ -28,7 +28,6 @@ EOF
 printf '#!/bin/bash\necho none\n' > "$B/swift"
 printf '#!/bin/bash\nexit 0\n' > "$B/sleep"   # app_ip's wait for an address: at once
 printf '#!/bin/bash\necho "$*" >> "%s/ssh"\nexit 255\n' "$T" > "$B/ssh"
-printf '#!/bin/bash\nexit 1\n' > "$B/utmctl"
 # ps: the app launchers that are open (the file "launchers"), else the real one.
 printf '#!/bin/bash\nif [[ "$*" == "-axo comm=" ]]; then cat "%s/launchers" 2>/dev/null; exit 0; fi\nexec /bin/ps "$@"\n' "$T" > "$B/ps"
 chmod +x "$B"/*
@@ -49,7 +48,7 @@ echo "bridge=on gestures=off scroll-momentum=off omanotch=on" > "$V/features"
 
 om() {   # ARGS...: omacvm in the throwaway HOME, the production identity
   env -u OMACVM_TEST_IDENTITY -u OMACVM_APP_RUNTIME -u OMACVM_APP_COPY HOME="$H" PATH="$B:$PATH" \
-    PRLCTL=/nonexistent UTMCTL="$B/utmctl" OMACVM_SYSTEM_APPS="$SYS" OMACVM_FUSION_DIR="$T/fusion" \
+    OMACVM_SYSTEM_APPS="$SYS" \
     "$R/omacvm" "$@" < /dev/null 2>&1
 }
 started() { [[ -s $T/opened ]] && cat "$T/opened" | paste -sd'|' - || echo none; }

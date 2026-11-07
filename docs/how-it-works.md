@@ -6,19 +6,22 @@ build, every VM setting and the dead ends we hit are in
 
 ## A full Omarchy, not a demo
 
-OmacVM installs [omarchy-mac](https://github.com/omacom/omarchy-mac), the Arch
-Linux ARM port of Omarchy, onto the VM's own disk: the real system, with your
-user, `omarchy update` and everything Omarchy ships. It uses omarchy-mac's
-**release candidate** (`rc`) packages for now. Once omarchy-mac publishes a
-`stable` lane, new builds take it automatically; VMs built before stay on `rc`
-(#479).
+OmacVM installs Omarchy 4.5 onto the VM's own disk: the real system, with
+your user, `omarchy update` and everything Omarchy ships. New VMs take
+Omarchy's official aarch64 repositories, always the latest stable release:
+Omarchy's own packages from pkgs.omarchy.org (stable) and Arch Linux ARM from
+Omarchy's snapshot of it, arm-stable-mirror.omarchy.org, so the two always
+match. VMs built before OmacVM 3.4.0 run Omarchy 4.0 from
+[omarchy-mac](https://github.com/omacom/omarchy-mac) and stay on it until you
+click **Move to Omarchy 4.5** in OmacVM.app
+([how](features.md#move-to-omarchy-45)).
 
 [try-omarchy](https://github.com/omacom/try-omarchy) is something else: a
 pinned, try-it-out image. OmacVM only boots it once, as the temporary
 installer that puts Arch Linux ARM onto the disk, and then removes it.
 
 <p align="center">
-  <img src="images/build.svg" alt="A terminal running omacvm: live installer, Arch Linux ARM, Omarchy from omarchy-mac, OmacVM on the Mac and in the VM, then the Omarchy desktop." width="100%">
+  <img src="images/build.svg" alt="A terminal running omacvm: live installer, Arch Linux ARM, Omarchy 4.5 from Omarchy's aarch64 repositories, OmacVM on the Mac and in the VM, then the Omarchy desktop." width="100%">
 </p>
 
 ## The Mac and the VM
@@ -27,11 +30,8 @@ installer that puts Arch Linux ARM onto the disk, and then removes it.
   <img src="images/bridge.svg" alt="The Mac's menu bar and Omarchy's bar connected over the VM network: Wi-Fi signal, AirPods connecting and Night Shift travel across as events." width="100%">
 </p>
 
-The VM and the Mac talk over the VM's private network: the Mac is `10.211.55.2`
-for Parallels, `192.168.64.1` for UTM and the `.1` of Fusion's NAT network
-(Fusion picks it when installed). Nothing listens anywhere else, and the VM
-needs a token. OmacVM.app uses QEMU's own network instead
-([how](routes/app.md#how-it-talks-to-the-mac)).
+The VM and the Mac talk over the VM's private network, and the VM needs a
+token ([how](routes/app.md#how-it-talks-to-the-mac)).
 
 - **OmacVM Bridge** (`src/bridge/`) is a small menu-bar app. It reads the Mac's
   Wi-Fi (CoreWLAN), Bluetooth (IOBluetooth), audio (CoreAudio) and display
@@ -46,16 +46,14 @@ needs a token. OmacVM.app uses QEMU's own network instead
   the Mac's pointer, so only Omarchy's shows.
 - **The camera** (`src/camera/`): in the VM, `/dev/video42` (*Mac Camera*,
   v4l2loopback) looks like any webcam. `omacvm-camera` watches who opens it
-  and only then asks the Mac for frames: from the Bridge over the VM network
-  on UTM and Fusion, from OmacVM.app over a virtio port. The Mac sends 1280×720
-  frames while an app reads, and turns the camera off when the last one
-  stops. Parallels passes the camera itself. The code comes from
+  and only then asks OmacVM.app for frames over a virtio port. The Mac sends
+  1280×720 frames while an app reads, and turns the camera off when the last
+  one stops. The code comes from
   [try-omarchy](https://github.com/omacom/try-omarchy)'s camera bridge.
-- **The Mac's battery** (`src/battery/`, UTM, VMware Fusion and OmacVM.app on a
-  MacBook): a small kernel module shows it to the VM as a real battery, which
-  UPower and Omarchy's bar read; the Bridge (or OmacVM.app itself) sends every
-  change. [How it works](../src/battery/README.md).
-- **AirPods and Control Center** (OmacVM.app): AirPods and Control Center send
+- **The Mac's battery** (`src/battery/`, on a MacBook): a small kernel module
+  shows it to the VM as a real battery, which UPower and Omarchy's bar read;
+  OmacVM.app sends every change. [How it works](../src/battery/README.md).
+- **AirPods and Control Center**: AirPods and Control Center send
   no keys; macOS gives their play and pause to its Now Playing app. While a
   player in the VM plays, OmacVM.app is that app: `omacvm-media` in the VM
   reads the players on Linux's MPRIS and tells the app what plays, and the
@@ -74,24 +72,20 @@ windows: `notchcast` in the VM streams the bar to Omanotch.app on the Mac,
 which shows it beside the notch.
 
 It is part of OmacVM (`src/omanotch/`, with its own history; it used to be a
-separate repo) and works on Parallels, UTM, VMware Fusion and OmacVM.app.
-OmacVM sets it up as a feature on a MacBook with a notch (`omacvm enable
+separate repo). OmacVM sets it up as a feature on a MacBook with a notch (`omacvm enable
 omanotch` on an existing VM): Omanotch.app on the Mac next to the Bridge and
 Gestures, `notchcast` in the VM.
 
 ## Displays, kernel and memory
 
-- **Displays** (`src/display/`, Parallels): Parallels tells the guest the size,
-  refresh rate and position of every display, but Hyprland never applies it;
-  `parallels-dynres` does. On UTM (`src/utm/`) the display mode is the Mac's
-  built-in display below the notch, set from boot. Fusion:
-  [its own page](routes/vmware-fusion.md).
+- **Displays**: OmacVM.app gives the VM one output per Mac display, at its
+  size, refresh rate and place in your macOS arrangement
+  ([every Mac display](routes/app.md#every-mac-display)).
 - **The memory-optimized kernel** (`src/kernel/`, opt-in) is Arch Linux ARM's
   own `linux-aarch64`, rebuilt with transparent huge pages always on and
   MGLRU; the stock kernel stays in GRUB as a fallback.
-- **Memory** (`src/memory/`): Parallels, UTM and Fusion never hand back memory
-  the VM touched while it runs, so the guest keeps a small zram and reclaims
-  smoothly instead of hoarding. In OmacVM.app what the VM frees leaves QEMU's
+- **Memory** (`src/memory/`): the guest keeps a small zram and reclaims
+  smoothly instead of hoarding. What the VM frees leaves QEMU's
   footprint, the number Activity Monitor shows, in 256 KiB blocks
   (`page_reporting_order` 6; the kernel's default is 2 MiB blocks, which
   leaves most of a freed page cache in it). From 3.2.12 it also goes back to

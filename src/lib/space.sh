@@ -1,8 +1,7 @@
 # Free space for omacvm build, on the drives the build writes to (sourced;
 # macOS's bash 3.2). A build peaks at about 25 GB: the try-omarchy download
-# and the temporary installer (in the downloads folder, about 15 GB at most,
-# build-live.sh's own check) and the VM's new disk; a finished VM takes 10-12
-# GB and grows as it is used.
+# and the temporary installer (in the downloads folder, about 15 GB at most)
+# and the VM's new disk; a finished VM takes 10-12 GB and grows as it is used.
 #
 #   space_targets TYPE DIR SOURCE   "FOLDER<tab>GB" lines: where the build writes, how much it needs there
 #   space_problem TYPE DIR SOURCE   a reason the build does not fit, or nothing
@@ -11,7 +10,7 @@
 
 SPACE_VM_GB=30      # the VM's folder (with the downloads when they share its drive)
 SPACE_CACHE_GB=15   # the downloads folder, when it is on another drive
-SPACE_CACHE=$HOME/Library/Caches/omacvm   # build-live.sh's work folder is in here
+SPACE_CACHE=$HOME/Library/Caches/omacvm   # an OmacVM.app before 3.0.2 downloads in here
 
 # FOLDER, or the nearest folder above it that exists (a VMs folder not made yet).
 space_existing() {
@@ -46,18 +45,11 @@ drive_name() {
 space_targets() {
   local type=$1 dir=$2 src=$3 label
   label=$(sed "s|^$HOME|~|" <<<"$dir")
-  case $type in
-    # The app's create script keeps the downloads beside the VMs on another
-    # drive, else in the Mac's caches (vm-common.sh downloads_dir): one drive.
-    # An OmacVM.app before 3.0.2 keeps them in the Mac's caches
-    # (SPACE_APP_CACHE=mac): as for Parallels below.
-    app) [[ ${SPACE_APP_CACHE:-} == mac ]] || { printf '%s\t%s\t%s\n' "$dir" "$SPACE_VM_GB" "$label"; return; } ;;
-    # --vm-dir: the installer is made in that folder too. Else UTM's library,
-    # in its container in the home folder (measured there: the container
-    # itself is UTM's, macOS asks before others look into it).
-    utm) if [[ -n $dir ]]; then printf '%s\t%s\t%s\n' "$dir" "$SPACE_VM_GB" "$label"; return; fi
-         dir=$HOME; label="UTM's library" ;;
-  esac
+  # The app's create script keeps the downloads beside the VMs on another
+  # drive, else in the Mac's caches (vm-common.sh downloads_dir): one drive.
+  # An OmacVM.app before 3.0.2 keeps them in the Mac's caches
+  # (SPACE_APP_CACHE=mac): the caches' drive is checked too.
+  [[ ${SPACE_APP_CACHE:-} == mac ]] || { printf '%s\t%s\t%s\n' "$dir" "$SPACE_VM_GB" "$label"; return; }
   printf '%s\t%s\t%s\n' "$dir" "$SPACE_VM_GB" "$label"
   # A prebuilt VM's download: prebuilt_space_ok checks it with the image's size.
   [[ $src == prebuilt ]] && return

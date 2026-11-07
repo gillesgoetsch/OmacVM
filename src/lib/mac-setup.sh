@@ -3,9 +3,7 @@
 # features to Mac helpers for omacvm apply (what it installs), omacvm check
 # (its "Mac setup" line) and OmacVM.app (src/mac/install.sh --status: the
 # message before a start and in the window).
-#   mac_helper_of FEATURE   MAC_HELPER: the helper it needs ("": none). TYPE:
-#                           the VM's route (the Bridge serves UTM and Fusion
-#                           VMs the Mac's battery and camera)
+#   mac_helper_of FEATURE   MAC_HELPER: the helper it needs ("": none)
 #   mac_helpers_needed      MAC_NEEDED: "|NAME|NAME|", the helpers of the
 #                           features on in FV (features_fix first)
 #   mac_needs NAME          true when MAC_NEEDED has it
@@ -38,7 +36,6 @@ mac_helper_of() {   # FEATURE
   MAC_HELPER=""
   case $1 in
     bridge|control-centre) MAC_HELPER="OmacVM Bridge" ;;   # the control centre asks the Mac through it
-    camera|battery) [[ ${TYPE:-} == utm || ${TYPE:-} == fusion ]] && MAC_HELPER="OmacVM Bridge" ;;
     gestures|scroll-momentum) MAC_HELPER="OmacVM Gestures" ;;
     omanotch) MAC_HELPER=Omanotch ;;
   esac

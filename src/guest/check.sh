@@ -89,7 +89,7 @@ restart_hint() {
 }
 # Where Omanotch's hidden NOTCH output sits next to the built-in display $2,
 # from `hyprctl monitors all -j` ($1); $3 is the VM type. Prints "over" (on
-# the display's top edge: Parallels, UTM, Fusion, and the app's fallback),
+# the display's top edge: the app's fallback),
 # "above" (right above it, touching its top edge: OmacVM.app, notchcast's
 # notch-place.h) or nothing when NOTCH is anywhere else.
 notch_spot() {
@@ -120,6 +120,47 @@ section "Session ($TYPE VM, the Mac is $HOST)"
 if pgrep -u "$U" -x Hyprland >/dev/null; then ok "Hyprland" "running for $U"
 else bad "Hyprland" "not running for $U: log in first, the checks below need the session"; fi
 check "Omarchy shell" "answers" as_user omarchy-shell shell ping
+# Which Omarchy, from where (3.4.0): Omarchy 4.5 on Omarchy's own aarch64
+# repos, platform aarch64 (never Apple's files); a 4.0 VM from omarchy-mac
+# moves in OmacVM.app (guest/omarchy-move.sh, whose journal says how far).
+om_v=$(pacman -Q omarchy 2>/dev/null | awk '{ print $2 }'); om_v=${om_v%-*}
+om_c=$(sed -n 's|^Server = https://pkgs.omarchy.org/\([a-z]*\)/.*|\1|p' /etc/pacman.conf 2>/dev/null | head -1)
+om_mv=$(cat /var/lib/omacvm/move-4.5/state 2>/dev/null)
+[[ $om_mv == running ]] && flock -n /var/lib/omacvm/move-4.5/lock true 2>/dev/null && om_mv=interrupted
+# Stopped after its package switch and kept as it was (OmacVM.app's Keep This
+# Disk, omarchy-move.sh keep): the move is over, the checks of 4.5 below.
+[[ $om_mv =~ ^(failed|interrupted|stopped)$ && -e /var/lib/omacvm/move-4.5/kept ]] && om_mv=kept
+if [[ $om_mv == running ]]; then warn "Omarchy" "${om_v:-?}: the move to Omarchy 4.5 runs now ($(cat /var/lib/omacvm/move-4.5/phase 2>/dev/null))"
+elif [[ $om_mv == failed || $om_mv == interrupted || $om_mv == stopped ]]; then
+  warn "Omarchy" "${om_v:-?}: the move to Omarchy 4.5 stopped at '$(cat /var/lib/omacvm/move-4.5/phase 2>/dev/null)': Resume or Undo in OmacVM.app"
+elif [[ $om_v =~ ^([0-9]+)\.([0-9]+) ]] && (( BASH_REMATCH[1] > 4 || (BASH_REMATCH[1] == 4 && BASH_REMATCH[2] >= 5) )); then
+  om_p=$(omarchy-hw-platform 2>/dev/null)
+  if grep -qiE 'asahi|aarch64-apple|^\[omarchy-aarch64\]' /etc/pacman.conf /etc/pacman.d/mirrorlist 2>/dev/null; then
+    bad "Omarchy" "$om_v, but pacman.conf names Apple's or omarchy-mac's repos (Update VM)"
+  elif [[ $om_p != aarch64 ]]; then bad "Omarchy" "$om_v, platform '${om_p:-unknown}', not aarch64"
+  else ok "Omarchy" "$om_v, Omarchy's aarch64 repos (${om_c:-?}), platform aarch64"; fi
+  # omarchy-mac 4.0's factory snapshot: the move removes it (Omarchy 4.5's
+  # Factory Reset would put 4.0 back; the move's journal says what it found);
+  # the 4.5 route makes none.
+  if om_sv=$(btrfs subvolume list / 2>/dev/null); then
+    om_f=$(cat /var/lib/omacvm/move-4.5/factory 2>/dev/null)
+    if ! sed -n 's/^ID [0-9]* .* path //p' <<<"$om_sv" | sed 's|^<FS_TREE>/||' | grep -qx '@factory'; then
+      ok "factory reset" "no factory snapshot: Omarchy's Factory Reset has nothing to go back to and changes nothing"
+    elif [[ $om_f == kept ]]; then
+      ok "factory reset" "a factory snapshot of Omarchy 4.5 (@factory, not OmacVM's): Omarchy's Factory Reset goes back to it"
+    elif [[ $om_f == left ]]; then
+      warn "factory reset" "omarchy-mac 4.0's factory snapshot (@factory) is still there (the move could not remove it, /var/log/omacvm-move-45.log): Omarchy's Factory Reset would go back to Omarchy 4.0"
+    else
+      warn "factory reset" "a factory snapshot (@factory) is there: Omarchy's Factory Reset goes back to the Omarchy it holds, which may be older than ${om_v}"
+    fi
+  fi
+elif grep -q '^\[omarchy-aarch64\]' /etc/pacman.conf 2>/dev/null; then
+  om_l=$(awk '/^\[omarchy-aarch64\]/ { s = 1; next } /^\[/ { s = 0 } s && /^Server/ { n = split($0, p, "/"); print p[n]; exit }' /etc/pacman.conf)
+  if [[ $TYPE == app ]]; then warn "Omarchy" "${om_v:-?} from omarchy-mac (${om_l:-?}): Move to Omarchy 4.5 in OmacVM.app"
+  else ok "Omarchy" "${om_v:-?} from omarchy-mac (${om_l:-?})"; fi
+else
+  skip "Omarchy" "${om_v:-no omarchy package} (repos: neither Omarchy's aarch64 nor omarchy-mac's)"
+fi
 # Omarchy's shell colours (#376). Qt 6.12's QtQuick has a Color of its own,
 # which hides Omarchy's in every file that imports both: each colour the shell
 # reads is undefined (these lines in its log), and its bar, menus, OSD and
@@ -183,31 +224,28 @@ dmabuf_alpha_line() {
     *) printf 'skip\t%s\n' "no answer from Hyprland about $what" ;;
   esac
 }
-# Not on Fusion: vmwgfx's display plane takes formats with alpha.
-if [[ $TYPE != fusion ]]; then
-  hy=$H/.config/hypr; piece=""; hstart=""; ufile=""
-  if [[ -f $hy/omacvm_vm.lua ]] && grep -qxF 'require("hypr.omacvm_vm")' "$hy/hyprland.lua" 2>/dev/null; then
-    piece=$(stat -c %Y "$hy/omacvm_vm.lua" 2>/dev/null)
-  fi
-  # Hyprland's start: the time in its instance signature (the clock, like the file's
-  # mtime). Not now minus ps's etimes: etimes counts the VM's uptime, which stands still
-  # while the Mac sleeps, and the VM's clock is set to the Mac's after waking. No time: skip.
-  hp=$(pgrep -n -u "$U" -x Hyprland)
-  if [[ $hp =~ ^[0-9]+$ ]]; then
-    hstart=$(as_user hyprctl instances -j 2>/dev/null | jq -r --argjson p "$hp" '.[] | select(.pid == $p) | .time' 2>/dev/null | head -1)
-    [[ $hstart =~ ^[0-9]+$ ]] || hstart=""
-  fi
-  for f in hyprland looknfeel input bindings autostart envs monitors monitor_workspaces; do
-    if [[ -f $hy/$f.lua ]] && sed 's/--.*$//' "$hy/$f.lua" | grep -qF skip_non_kms_dmabuf_formats; then ufile=$f.lua; break; fi
-  done
-  IFS=$'\t' read -r ds dt < <(dmabuf_alpha_line "$(as_user hyprctl getoption quirks:skip_non_kms_dmabuf_formats 2>/dev/null)" "$piece" "$hstart" "$ufile")
-  case $ds in
-    ok) ok "transparent panels" "$dt" ;;
-    warn) warn "transparent panels" "$dt" ;;
-    human) warn "transparent panels" "$dt" human ;;
-    *) skip "transparent panels" "$dt" ;;
-  esac
+hy=$H/.config/hypr; piece=""; hstart=""; ufile=""
+if [[ -f $hy/omacvm_vm.lua ]] && grep -qxF 'require("hypr.omacvm_vm")' "$hy/hyprland.lua" 2>/dev/null; then
+  piece=$(stat -c %Y "$hy/omacvm_vm.lua" 2>/dev/null)
 fi
+# Hyprland's start: the time in its instance signature (the clock, like the file's
+# mtime). Not now minus ps's etimes: etimes counts the VM's uptime, which stands still
+# while the Mac sleeps, and the VM's clock is set to the Mac's after waking. No time: skip.
+hp=$(pgrep -n -u "$U" -x Hyprland)
+if [[ $hp =~ ^[0-9]+$ ]]; then
+  hstart=$(as_user hyprctl instances -j 2>/dev/null | jq -r --argjson p "$hp" '.[] | select(.pid == $p) | .time' 2>/dev/null | head -1)
+  [[ $hstart =~ ^[0-9]+$ ]] || hstart=""
+fi
+for f in hyprland looknfeel input bindings autostart envs monitors monitor_workspaces; do
+  if [[ -f $hy/$f.lua ]] && sed 's/--.*$//' "$hy/$f.lua" | grep -qF skip_non_kms_dmabuf_formats; then ufile=$f.lua; break; fi
+done
+IFS=$'\t' read -r ds dt < <(dmabuf_alpha_line "$(as_user hyprctl getoption quirks:skip_non_kms_dmabuf_formats 2>/dev/null)" "$piece" "$hstart" "$ufile")
+case $ds in
+  ok) ok "transparent panels" "$dt" ;;
+  warn) warn "transparent panels" "$dt" ;;
+  human) warn "transparent panels" "$dt" human ;;
+  *) skip "transparent panels" "$dt" ;;
+esac
 mon=$(as_user hyprctl monitors -j 2>/dev/null | jq -r 'max_by(.width * .height) | "\(.width)x\(.height)@\(.refreshRate | round) scale \(.scale)"' 2>/dev/null)
 if [[ -z $mon ]]; then bad "display" "no monitor from hyprctl"
 elif [[ $mon == 1160x768* ]]; then bad "display" "$mon: still the firmware mode (monitors.lua not applied)"
@@ -317,7 +355,7 @@ if [[ $BRIDGE == on ]]; then
   # Mac's side shows only with a finger, so not asked here.
   FEATURE=touch-id
   if [[ $TOUCH_ID != on ]]; then skip "Touch ID" "off (omacvm enable touch-id)"
-  elif [[ ! -s /etc/omacvm/touchid-key || ( $TYPE != app && ! -s /etc/omacvm/touchid-token ) ]]; then bad "Touch ID" "no key in the VM (omacvm apply on the Mac, with the VM by name and without --no-token)"
+  elif [[ ! -s /etc/omacvm/touchid-key ]]; then bad "Touch ID" "no key in the VM (omacvm apply on the Mac, with the VM by name and without --no-token)"
   elif ! grep -qs 'pam_exec.so .*omacvm-touchid' /etc/pam.d/sudo; then bad "Touch ID" "not in /etc/pam.d/sudo (omacvm apply)"
   elif ! grep -qs 'pam_exec.so .*omacvm-touchid' /etc/pam.d/polkit-1; then bad "Touch ID" "not in /etc/pam.d/polkit-1 (omacvm apply)"
   elif [[ ! -f /etc/polkit-1/rules.d/00-omacvm-touchid.rules || ! -x /usr/lib/omacvm/omacvm-touchid-note ]]; then bad "Touch ID" "the polkit rule is missing (omacvm apply)"
@@ -384,12 +422,7 @@ else skip "Bridge" "off (chosen at setup): Omarchy's own Wi-Fi and audio widgets
 
 section "Camera and microphone"
 FEATURE=camera
-if [[ $CAMERA == on && $TYPE == parallels ]]; then
-  # Parallels' own camera sharing: a USB camera in the VM.
-  cams=$(cat /sys/class/video4linux/video*/name 2>/dev/null | sort -u | paste -sd, -)
-  if [[ -n $cams ]]; then ok "camera" "Parallels' own: $cams"
-  else bad "camera" "no camera in the VM: turn on camera sharing in the VM's settings in Parallels Desktop (it shares the Mac's camera as a USB camera)"; fi
-elif [[ $CAMERA == on ]]; then
+if [[ $CAMERA == on ]]; then
   campkg=$(missing_pkgs dkms v4l2loopback-dkms)
   if [[ $(cat /sys/class/video4linux/video42/name 2>/dev/null) == "Mac Camera" ]]; then ok "camera device" "/dev/video42, Mac Camera"
   elif [[ -n $campkg ]]; then bad "camera device" "no /dev/video42: $campkg"
@@ -398,23 +431,14 @@ elif [[ $CAMERA == on ]]; then
   elif [[ -n $campkg ]]; then bad "camera service" "not set up: $campkg"
   else bad "camera service" "omacvm-camera.service not running: omacvm apply"; fi
   cs=$(as_user /usr/local/bin/omacvm-camera --status 2>/dev/null)
-  if [[ $TYPE == app ]]; then
-    if jq -e .port <<<"$cs" >/dev/null 2>&1; then ok "camera from the Mac" "OmacVM.app's camera port"
-    else bad "camera from the Mac" "no camera port: start the VM from an OmacVM.app with the camera (omacvm update$(restart_hint))"; fi
-  else
-    case $(jq -r '.permission // empty' <<<"$cs" 2>/dev/null) in
-      granted|test) ok "camera from the Mac" "OmacVM Bridge: $(jq -r '.camera // "no camera"' <<<"$cs"), $(jq -r 'if .on then "on, \(.readers) reading" else "off" end' <<<"$cs")" ;;
-      not-determined) skip "camera from the Mac" "macOS asks for OmacVM Bridge the first time a Linux app uses the camera" human ;;
-      denied|restricted) bad "camera from the Mac" "camera not allowed for OmacVM Bridge (System Settings > Privacy & Security > Camera)" human ;;
-      *) bad "camera from the Mac" "the Bridge does not answer /camera/status: $(jq -r '.error // "no answer"' <<<"$cs" 2>/dev/null) (omacvm update)" ;;
-    esac
-  fi
+  if jq -e .port <<<"$cs" >/dev/null 2>&1; then ok "camera from the Mac" "OmacVM.app's camera port"
+  else bad "camera from the Mac" "no camera port: start the VM from an OmacVM.app with the camera (omacvm update$(restart_hint))"; fi
 elif user_active omacvm-camera.service; then bad "camera" "off, but omacvm-camera runs and asks the Mac: omacvm apply"
 else skip "camera" "off (chosen at setup)"; fi
 FEATURE=""
 mic=$(as_user pactl list short sources 2>/dev/null | awk '$2 !~ /\.monitor$/ { print $2; exit }')
 if [[ -n $mic ]]; then ok "microphone" "$mic"
-else bad "microphone" "PipeWire has no input: no sound card in the VM? (UTM, Fusion: shut it down, then omacvm apply --vm NAME starts it with one)"; fi
+else bad "microphone" "PipeWire has no input: no sound card in the VM? (shut it down and start it again)"; fi
 # PipeWire's sound threads run real-time (RTKit, install.sh); at normal
 # priority the sound breaks whenever the VM is busy.
 pw=$(pgrep -u "$U" -x pipewire | head -1)
@@ -425,10 +449,7 @@ else bad "sound priority" "PipeWire runs at normal priority, so the sound breaks
 
 section "The Mac's battery"
 FEATURE=battery
-if [[ $TYPE == parallels ]]; then
-  if compgen -G '/sys/class/power_supply/BAT*' >/dev/null; then skip "battery" "Parallels gives the VM the Mac's battery itself"
-  else skip "battery" "none: this Mac has no battery (on a MacBook Parallels passes it itself)"; fi
-elif [[ $BATTERY == on ]]; then
+if [[ $BATTERY == on ]]; then
   if [[ -w /sys/devices/platform/omacvm-battery/state ]]; then
     ok "battery module" "omacvm_battery $(cat /sys/module/omacvm_battery/version 2>/dev/null) loaded"
   else bad "battery module" "not loaded on $(uname -r) (reboot after omacvm apply; log /var/lib/omacvm/battery-build.log)"; fi
@@ -498,11 +519,9 @@ if [[ $GLIDE == on && $GESTURES == on ]]; then
   else bad "scroll settings" "omacvm_glide.lua missing or not loaded from hyprland.lua (omacvm enable scroll-momentum)"; fi
 else skip "scroll momentum" "off (omacvm enable scroll-momentum turns it on: trackpads only)"; fi
 FEATURE=""
-if [[ $TYPE == utm || $TYPE == fusion || $TYPE == app ]]; then
-  if [[ $GESTURES == on ]]; then
-    check "Cmd as Super" "OmacVM keyboard (Mac shortcuts)" ev_device "OmacVM keyboard (Mac shortcuts)"
-  else skip "Cmd as Super" "comes with trackpad gestures, which are off (omacvm enable gestures)"; fi
-fi
+if [[ $GESTURES == on ]]; then
+  check "Cmd as Super" "OmacVM keyboard (Mac shortcuts)" ev_device "OmacVM keyboard (Mac shortcuts)"
+else skip "Cmd as Super" "comes with trackpad gestures, which are off (omacvm enable gestures)"; fi
 check "Cmd+V paste" "Universal paste binding" grep -qs '"Universal paste"' "$H/.config/hypr/bindings.lua"
 [[ $TYPE != app ]] || check "globe key binding" "XF86Launch3: Omarchy's emoji picker" grep -qs '"Emojis (Mac globe key)"' "$H/.config/hypr/bindings.lua"
 kb=$(as_user hyprctl getoption input:kb_layout -j 2>/dev/null | jq -r '.str // empty' 2>/dev/null)
@@ -644,7 +663,7 @@ ghostty_running() {
   [[ $c == ghostty ]] && printf '%s\n' "$1"
   return 0
 }
-# mpv's defaults in app and UTM VMs (app/guest/venus/mpv.sh): vo=gpu (gpu-next leaks a file per
+# mpv's defaults (app/guest/venus/mpv.sh): vo=gpu (gpu-next leaks a file per
 # frame on virgl and stops drawing after ~17 s), and OpenGL while the VM has Venus (on Vulkan mpv
 # shows no video yet).
 mpv_row() {   # mpv_row [vulkan]
@@ -654,33 +673,6 @@ mpv_row() {   # mpv_row [vulkan]
   else ok "mpv" "vo=gpu${1:+ with OpenGL} (gpu-next stops drawing after ~17 s here${1:+; on Vulkan no video yet})"; fi
 }
 case $TYPE in
-parallels)
-  section "Parallels"
-  check "Parallels Tools" "prltoolsd" systemctl is-active -q prltoolsd
-  check "dynamic resolution" "parallels-dynres" test -x /usr/local/bin/parallels-dynres
-  check "clipboard VM -> Mac" "parallels-clip-out" test -x /usr/local/bin/parallels-clip-out ;;
-utm)
-  section "UTM"
-  check "SPICE daemon" "spice-vdagentd" systemctl is-active -q spice-vdagentd
-  if user_active omacvm-vdagent.service; then ok "clipboard + pointer" "omacvm-vdagent"
-  else bad "clipboard + pointer" "omacvm-vdagent.service not running"; fi
-  user_active spice-vdagent.service && bad "stock SPICE agent" "running: the pointer stops halfway"
-  w=$(as_user hyprctl monitors -j 2>/dev/null | jq -r 'max_by(.width * .height) | .width' 2>/dev/null)
-  tab=$(python3 - 2>/dev/null <<'EOF'
-import evdev
-for p in evdev.list_devices():
-    d = evdev.InputDevice(p)
-    if d.name == "spice vdagent tablet":
-        print(dict(d.capabilities(absinfo=True)[3])[0].max + 1)
-EOF
-)
-  if [[ -z $tab ]]; then skip "pointer range" "no SPICE tablet yet (UTM window not open?)"
-  elif [[ $tab == "$w" ]]; then ok "pointer range" "${tab} px, the whole screen"
-  else bad "pointer range" "tablet $tab px vs screen $w px"; fi
-  check "QEMU guest agent" "utmctl ip-address/exec" systemctl is-active -q qemu-guest-agent
-  check "virtio-gpu settings" "90-omacvm-utm.conf" test -f /etc/environment.d/90-omacvm-utm.conf
-  check "GPU for browsers" "virgl-msaa.so preloaded" bash -c 'test -s /usr/local/lib/omacvm/virgl-msaa.so && grep -qx /usr/local/lib/omacvm/virgl-msaa.so /etc/ld.so.preload'
-  mpv_row ;;
 app)
   section "OmacVM.app"
   check "display follows the window" "omacvm-display-sync" pgrep -u "$U" -f omacvm-display-sync
@@ -731,10 +723,10 @@ app)
     # WebGPU in Chromium: the launcher, on a Venus driver with shared semaphores (OmacVM's vulkan-virtio build).
     if [[ ! -x /usr/local/bin/omacvm-chromium-webgpu ]]; then
       bad "WebGPU in Chromium" "no \"Chromium (WebGPU)\" launcher: omacvm apply"
-    elif [[ $(pacman -Q vulkan-virtio 2>/dev/null) == *omacvm* ]]; then
+    elif [[ $(pacman -Q omacvm-vulkan-virtio vulkan-virtio 2>/dev/null) == *omacvm* ]]; then
       ok "WebGPU in Chromium" "\"Chromium (WebGPU)\" in the menu (omacvm-chromium-webgpu)"
     else
-      skip "WebGPU in Chromium" "after OmacVM's Venus driver build ($(pacman -Q vulkan-virtio 2>/dev/null || echo "no vulkan-virtio") now; the VM builds it after its next start)"
+      skip "WebGPU in Chromium" "after OmacVM's Venus driver build ($(pacman -Q omacvm-vulkan-virtio 2>/dev/null || pacman -Q vulkan-virtio 2>/dev/null || echo "no vulkan-virtio") now; the VM builds it after its next start)"
     fi
   elif [[ ${OMACVM_GRAPHICS:-} == vulkan ]]; then
     # Graphics Vulkan and gpu-compute on, but venus/opencl.sh did not get
@@ -1016,34 +1008,6 @@ app)
     bad "drag and drop" "off, but its helper or service is still installed: omacvm apply"
   else skip "drag and drop" "off (experimental: omacvm enable drag-drop)"; fi
   FEATURE="" ;;
-fusion)
-  section "VMware Fusion"
-  check "graphics driver" "vmwgfx" test -d /sys/module/vmwgfx
-  hv=$(pacman -Q hyprland 2>/dev/null | awk '{ print $2 }')
-  vst=$(cat /var/lib/omacvm/hyprland-vmwgfx 2>/dev/null)
-  if [[ $vst == "$hv $(sha256sum /usr/bin/Hyprland | awk '{ print $1 }')" ]]; then
-    ok "Hyprland" "$hv with the vmwgfx fix"
-  elif [[ $vst == "$hv none" || $vst == "$hv none "* ]]; then   # "<version> none <commit> <patch set>" from 3.2.16
-    bad "Hyprland" "no vmwgfx fix for Hyprland $hv yet (black screen at the next login): omacvm update brings one"
-  else bad "Hyprland" "$hv without the vmwgfx fix (black screen at the next login): omacvm apply builds it"; fi
-  check "Hyprland after updates" "pacman hook rebuilds it" test -f /etc/pacman.d/hooks/zz-omacvm-hyprland.hook
-  check "GPU in Chromium and Chrome" "--ignore-gpu-blocklist in /etc/chromium-flags.conf, /etc/chrome-flags.conf" \
-    bash -c 'grep -qx -- --ignore-gpu-blocklist /etc/chromium-flags.conf && grep -qx -- --ignore-gpu-blocklist /etc/chrome-flags.conf'
-  if command -v brave >/dev/null; then
-    check "GPU in Brave" "--ignore-gpu-blocklist in ~/.config/brave-flags.conf (omacvm apply)" grep -qx -- --ignore-gpu-blocklist "$H/.config/brave-flags.conf"
-  fi
-  if command -v firefox >/dev/null; then
-    check "GPU in Firefox" "omacvm-fusion.js (vmwgfx allowed)" test -f /usr/lib/firefox/defaults/pref/omacvm-fusion.js
-  fi
-  check "DNS" "Fusion's own, which follows the Mac (public DNS only while OmacVM installs)" test ! -f /etc/NetworkManager/conf.d/90-omacvm-fusion.conf
-  check "VMware Tools" "vmtoolsd (Fusion's display layout)" systemctl is-active -q vmtoolsd
-  if user_active omacvm-fusion-displays.service; then
-    n=$(/usr/local/share/omacvm/fusion/guest/omacvm-fusion-layout 2>/dev/null | grep -c .)
-    ok "displays" "omacvm-fusion-displays follows Fusion's layout ($n output(s) now)"
-  else bad "displays" "omacvm-fusion-displays.service not running: omacvm apply"; fi
-  if user_active omacvm-fusion-clipboard.service && pgrep -u "$U" -f 'vmtoolsd -n vmusr' >/dev/null; then
-    ok "copy and paste" "VMware's agent + omacvm-fusion-clipboard"
-  else bad "copy and paste" "omacvm-fusion-clipboard.service or VMware's agent not running: omacvm apply"; fi ;;
 esac
 
 section "Speed and safety"
@@ -1077,7 +1041,8 @@ fi
 z=$(swapon --show=NAME,SIZE --noheadings 2>/dev/null | awk '/zram/ { print $2; exit }')
 [[ -n $z ]] && ok "zram swap" "$z" || bad "zram swap" "none (reboot after omacvm apply?)"
 if command -v grub-mkconfig >/dev/null; then
-  if ! systemctl is-active -q grub-btrfsd; then bad "bootable snapshots" "grub-btrfsd is not running"
+  if ! command -v snapper >/dev/null; then bad "bootable snapshots" "snapper is not installed (pacman -S snapper)"
+  elif ! systemctl is-active -q grub-btrfsd; then bad "bootable snapshots" "grub-btrfsd is not running"
   elif [[ ! -s /boot/grub/grub-btrfs.cfg ]] && btrfs subvolume list -s / 2>/dev/null | grep -q .; then
     bad "bootable snapshots" "no snapshots menu in GRUB: it finds no kernel with an initramfs (omacvm apply)"
   else ok "bootable snapshots" "grub-btrfsd, snapshots menu in GRUB"; fi

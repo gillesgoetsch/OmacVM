@@ -29,7 +29,7 @@ func touchIDRelayVM(_ name: String, list: [VMEntry], hasKey: (VMEntry) -> Bool) 
 }
 
 /// How long a Touch ID request from an address the VM list does not have
-/// waits for a fresh list (Parallels, UTM, Fusion; the control centre waits
+/// waits for a fresh list (a VM that asks over the network; the control centre waits
 /// VMListCache.unknownWait). The person waits for a prompt anyway, and the
 /// client gives the Mac 35 s: a slow `omacvm vms` must not mean the password.
 let touchIDListWait: Double = 10
@@ -157,13 +157,7 @@ func vmTypeOfFront(kernelPath: String?, launchServicesPath: String?) -> String? 
 
 func vmTypeOfExecutable(_ path: String) -> String? {
   let name = (path as NSString).lastPathComponent
-  if path.hasSuffix("/runtime/bin/OmacVM") || name == "qemu-system-aarch64" { return "app" }
-  switch name {
-  case "prl_client_app": return "parallels"
-  case "UTM": return "utm"
-  case "VMware Fusion": return "fusion"
-  default: return nil
-  }
+  return path.hasSuffix("/runtime/bin/OmacVM") || name == "qemu-system-aarch64" ? "app" : nil
 }
 
 /// One dialog at a time on the Mac; per VM one request every 2 s, 10 a

@@ -5,17 +5,10 @@
 // (default NOTCH), shared-memory buffer. A capture request blocks until
 // Hyprland re-renders the output, so an idle bar costs nothing.
 //
-// Stream: TCP client to the Mac on port $NOTCHBAR_PORT (default 47811). The
-// Mac is found by itself on the hypervisors' shared (NAT) networks: the
-// default gateway (UTM, where the gateway is the Mac) and address .2 of that
-// network (Parallels, where .1 is its NAT and the Mac is .2) are tried in turn
-// (VMware Fusion: .1 of the gateway's network, see host_candidates),
-// but only when that network is a known VM network ($NOTCHBAR_VM_NETS, default
-// 192.168.64.0/24 10.211.55.0/24 10.37.129.0/24): on a bridged network the
-// gateway is a real router. $NOTCHBAR_HOST (one address or a comma-separated
-// list) sets the Mac's address explicitly. Each
-// change is sent as the bounding box of changed pixels, LZ4-compressed. A full
-// frame is sent after every (re)connect.
+// Stream: TCP client to the Mac on port $NOTCHBAR_PORT (default 47811), at
+// $NOTCHBAR_HOST (one address or a comma-separated list; omacvm apply sets
+// 10.0.2.2). Each change is sent as the bounding box of changed pixels,
+// LZ4-compressed. A full frame is sent after every (re)connect.
 // OmacVM.app's VMs (OMACVM_VM_TYPE=app) reach the Mac's 127.0.0.1 (QEMU's
 // user network, 10.0.2.2), where any Mac program could listen, or on the app's
 // fast network (vmnet) the Mac's 192.168.77.1: there both sides first prove
@@ -439,21 +432,6 @@ static void send_cursors(void) {
     send_cursor("pointer", hand, nominal);
 }
 
-// VMware Fusion moves the Mac's pointer when the guest moves its cursor, so
-// on Fusion the guest cursor is never moved from here: that pulled the Mac's
-// pointer straight back out of the strip.
-static int on_vmware(void) {
-    static int v = -1;
-    if (v >= 0) return v;
-    char vendor[64] = "";
-    FILE *f = fopen("/sys/class/dmi/id/sys_vendor", "r");
-    if (f) {
-        if (!fgets(vendor, sizeof vendor, f)) vendor[0] = 0;
-        fclose(f);
-    }
-    return v = strstr(vendor, "VMware") != NULL;
-}
-
 // How the guest's cursor goes for the strip (notchrule.h, host_env_cursor;
 // /run/omacvm/host.env is fixed for the VM's run).
 static int cursor_mode(void) {
@@ -487,10 +465,6 @@ static void apply_guest_cursor_visible(int visible) {
     atomic_store(&cursor_hidden_at, visible ? 0 : (long long)now_ms() + 1);
     if (visible) {
         hypr_eval("hl.config({ cursor = { invisible = false } })");
-        return;
-    }
-    if (on_vmware()) {
-        hypr_eval("hl.config({ cursor = { invisible = true } })");
         return;
     }
     // Hyprland applies `invisible` only at its next repaint, and nothing
@@ -559,13 +533,12 @@ static void set_guest_cursor_visible(int visible) {
 // Shows the guest cursor again where the pointer leaves the strip: just below
 // the top edge of the built-in display ("down"), or just above it on the
 // display arranged above ("up"). Without this the cursor would reappear where
-// it was hidden and jump once Parallels reports the next position.
+// it was hidden and jump once the VM app reports the next position.
 static void show_guest_cursor_at_exit(const char *dir, double strip_x, double depth) {
     hover_off();
-    // Fusion already puts the cursor where the Mac's pointer is; under
-    // OmacVM.app it was never hidden and QEMU's next move places it (moving
-    // it here would land after QEMU's newer positions: a stale jump).
-    if (on_vmware() || cursor_stays()) {
+    // Under OmacVM.app it was never hidden and QEMU's next move places it
+    // (moving it here would land after QEMU's newer positions: a stale jump).
+    if (cursor_stays()) {
         set_guest_cursor_visible(1);
         return;
     }
@@ -943,8 +916,8 @@ static int handshake(int fd, const char *tok, const char *addr) {
     return send_text_fd(fd, msg);
 }
 
-// Tells the helper which hypervisor this guest runs in, so it only takes this
-// VM app's full-screen window for the strip ("hello qemu", "hello parallels"),
+// Tells the helper which hypervisor this guest runs in ("hello qemu"; the
+// helper takes an OmacVM.app VM's by the network it came in on),
 // and the VM's name for its log and to spot a rebooted OmacVM.app VM
 // ("vmname <base64>"; older helpers ignore it).
 static void send_hello(void) {
@@ -955,8 +928,7 @@ static void send_hello(void) {
         if (!fgets(vendor, sizeof vendor, f)) vendor[0] = 0;
         fclose(f);
     }
-    const char *hv = strstr(vendor, "QEMU") ? "qemu" : strstr(vendor, "Parallels") ? "parallels"
-                   : strstr(vendor, "VMware") ? "vmware" : strstr(vendor, "Apple") ? "apple" : "unknown";
+    const char *hv = strstr(vendor, "QEMU") ? "qemu" : strstr(vendor, "Apple") ? "apple" : "unknown";
     snprintf(msg, sizeof msg, "hello %s", hv);
     send_text(msg);
     if (vm_name_b64(name, sizeof name)) {
@@ -1254,25 +1226,6 @@ static void *worker_thread(void *unused) {
     return NULL;
 }
 
-// Whether an address (network byte order) lies in one of the VM shared
-// networks: $NOTCHBAR_VM_NETS, a space- or comma-separated list of a.b.c.d/nn.
-static int on_vm_network(uint32_t addr_be) {
-    const char *nets = getenv("NOTCHBAR_VM_NETS");
-    char buf[512];
-    snprintf(buf, sizeof buf, "%s", nets && *nets ? nets : "192.168.64.0/24 10.211.55.0/24 10.37.129.0/24");
-    uint32_t a = ntohl(addr_be);
-    for (char *save = NULL, *tok = strtok_r(buf, ", ", &save); tok; tok = strtok_r(NULL, ", ", &save)) {
-        char *slash = strchr(tok, '/');
-        int bits = slash ? atoi(slash + 1) : 32;
-        if (slash) *slash = 0;
-        struct in_addr net;
-        if (inet_pton(AF_INET, tok, &net) != 1 || bits < 0 || bits > 32) continue;
-        uint32_t mask = bits ? 0xffffffffu << (32 - bits) : 0;
-        if ((a & mask) == (ntohl(net.s_addr) & mask)) return 1;
-    }
-    return 0;
-}
-
 // The default gateway (network byte order), 0 if none: the lowest metric
 // among the default routes whose card has a link. When OmacVM.app takes the
 // fast network's card down, its route stays listed (first) for a while.
@@ -1334,32 +1287,11 @@ static int host_candidates(struct in_addr *out, int max, int app) {
             if (inet_pton(AF_INET, tok, &out[n]) == 1) n++;
         return n;
     }
-    uint32_t gw = default_gateway();
-    if (!gw) return 0;
-    // VMware Fusion: the gateway (.2) is Fusion's NAT, the Mac is .1, and the
-    // subnet is picked when Fusion is installed (any private network).
-    char vendor[64] = "";
-    FILE *v = fopen("/sys/class/dmi/id/sys_vendor", "r");
-    if (v) {
-        if (!fgets(vendor, sizeof vendor, v)) vendor[0] = 0;
-        fclose(v);
-    }
-    if (strstr(vendor, "VMware")) {
-        uint32_t g = ntohl(gw);
-        int priv = (g >> 24) == 10 || (g >> 20) == 0xAC1 || (g >> 16) == 0xC0A8;
-        if (!priv) return 0;
-        out[n++].s_addr = htonl((g & 0xffffff00u) | 1u);
-        return n;
-    }
-    if (!on_vm_network(gw)) {
-        static int warned;
-        if (!warned++) LOG("the default route is not on a VM shared network (bridged networking?): set NOTCHBAR_HOST");
-        return 0;
-    }
-    out[n++].s_addr = gw;
-    uint32_t two = (ntohl(gw) & 0xffffff00u) | 2u;
-    if (htonl(two) != gw && n < max) out[n++].s_addr = htonl(two);
-    return n;
+    // No address: nothing to try (the retired VM apps' shared networks are no
+    // longer searched, 3.4.0; omacvm apply always sets NOTCHBAR_HOST).
+    static int warned;
+    if (!warned++) LOG("no Mac address: set NOTCHBAR_HOST");
+    return 0;
 }
 
 // connect() with a timeout, so an address with nobody behind it (no ARP
@@ -1637,14 +1569,15 @@ static double bar_size(void) {
     return cached = v > 0 && v < 200 ? v : 26;
 }
 
-// UTM resizes the guest display to its window: the virtio-gpu connector gets
-// a new preferred mode. Hyprland neither picks that up (it even keeps the old
-// mode list) nor keeps it across a config reload that re-applies a fixed mode.
-// So once the preferred mode changes while running, the display is kept at it.
-// The preferred mode seen at startup is not trusted: UTM starts a VM with the
-// size of its previous run, which may not fit the window any more, and the
-// user's monitor configuration knows better. On QEMU (UTM) by default.
-// NOTCHBAR_FOLLOW_MODE=1/on or 0/off forces it (Parallels has its own tools).
+// A QEMU VM app that resizes the guest display to its window gives the
+// virtio-gpu connector a new preferred mode. Hyprland neither picks that up (it
+// even keeps the old mode list) nor keeps it across a config reload that
+// re-applies a fixed mode. So once the preferred mode changes while running,
+// the display is kept at it. The preferred mode seen at startup is not
+// trusted: such an app starts a VM with the size of its previous run, and the
+// user's monitor configuration knows better. On QEMU by default; OmacVM.app
+// sets NOTCHBAR_FOLLOW_MODE=0 (its own display handling, guest/install.sh).
+// NOTCHBAR_FOLLOW_MODE=1/on or 0/off forces it.
 static int follow_modes(void) {
     static int v = -1;
     if (v >= 0) return v;
@@ -1737,7 +1670,7 @@ static void follow_preferred_mode(const char *monitors_json) {
 // Which output is the built-in display: $NOTCHBAR_SCREEN if set; else the one
 // OmacVM.app names in $XDG_RUNTIME_DIR/omacvm/builtin (with external displays
 // it can be any Virtual-N: Virtual-1 is the main window's display); else
-// Virtual-1, the only one under Parallels, UTM and Fusion. Says when it changed.
+// Virtual-1 (a VM with one display). Says when it changed.
 static int update_screen(void) {
     if (getenv("NOTCHBAR_SCREEN")) return 0;
     char want[64] = "Virtual-1", path[512];
@@ -2273,7 +2206,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "-v")) verbose = 1;
     cfg_output = getenv("NOTCHBAR_OUTPUT") ? getenv("NOTCHBAR_OUTPUT") : "NOTCH";
-    cfg_host = getenv("NOTCHBAR_HOST");  // NULL: find the Mac by itself
+    cfg_host = getenv("NOTCHBAR_HOST");  // NULL: none to try (omacvm apply sets it)
     {
         // Start at the strip height of the last run, not at the bar's: no
         // resize flash while the helper has not said it again yet.

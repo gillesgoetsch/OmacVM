@@ -157,27 +157,27 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
 
     // ---- which VM ----
     let appA = VMEntry(name: "Omarchy", type: "app", state: "running", ip: "127.0.0.1:2222", omacvm: "2.9.0", setup: true)
-    let a = VMEntry(name: "A", type: "parallels", state: "running", ip: "10.211.55.5", omacvm: "2.9.0", setup: true)
-    let b = VMEntry(name: "B", type: "parallels", state: "running", ip: "10.211.55.6", omacvm: "2.9.0", setup: true)
-    let stranger = VMEntry(name: "C", type: "utm", state: "running", ip: "10.211.55.7", omacvm: "", setup: false)
-    let stopped = VMEntry(name: "D", type: "parallels", state: "stopped", ip: "10.211.55.8", omacvm: "2.9.0", setup: true)
-    if case .success(let v) = vmForPeer("10.211.55.6", [a, b]) { expect(v == b, "peer B") } else { expect(false, "peer B") }
-    if case .failure(let e) = vmForPeer("10.211.55.7", [a, stranger]) { expect(e.code == "unknown-vm", "not set up") } else { expect(false, "stranger") }
-    if case .failure(let e) = vmForPeer("10.211.55.8", [stopped]) { expect(e.code == "unknown-vm", "stopped") } else { expect(false, "stopped") }
-    let twin = VMEntry(name: "A2", type: "utm", state: "running", ip: "10.211.55.5", omacvm: "2.9.0", setup: true)
-    if case .failure(let e) = vmForPeer("10.211.55.5", [a, twin]) { expect(e.code == "ambiguous-vm", "two VMs on one address") } else { expect(false, "twin") }
+    let a = VMEntry(name: "A", type: "other", state: "running", ip: "192.168.77.5", omacvm: "2.9.0", setup: true)
+    let b = VMEntry(name: "B", type: "other", state: "running", ip: "192.168.77.6", omacvm: "2.9.0", setup: true)
+    let stranger = VMEntry(name: "C", type: "other", state: "running", ip: "192.168.77.7", omacvm: "", setup: false)
+    let stopped = VMEntry(name: "D", type: "other", state: "stopped", ip: "192.168.77.8", omacvm: "2.9.0", setup: true)
+    if case .success(let v) = vmForPeer("192.168.77.6", [a, b]) { expect(v == b, "peer B") } else { expect(false, "peer B") }
+    if case .failure(let e) = vmForPeer("192.168.77.7", [a, stranger]) { expect(e.code == "unknown-vm", "not set up") } else { expect(false, "stranger") }
+    if case .failure(let e) = vmForPeer("192.168.77.8", [stopped]) { expect(e.code == "unknown-vm", "stopped") } else { expect(false, "stopped") }
+    let twin = VMEntry(name: "A2", type: "other", state: "running", ip: "192.168.77.5", omacvm: "2.9.0", setup: true)
+    if case .failure(let e) = vmForPeer("192.168.77.5", [a, twin]) { expect(e.code == "ambiguous-vm", "two VMs on one address") } else { expect(false, "twin") }
     if case .failure(let e) = vmForPeer("127.0.0.1", [a]) { expect(e.status == 403, "127.0.0.1") } else { expect(false, "loopback") }
     if case .failure(let e) = vmForPeer("127.0.0.1", [appA]) { expect(e.code == "app-vm", "an app VM's address is no identity") } else { expect(false, "app loopback") }
 
     // ---- argv ----
-    expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .enable, features: ["gestures"]), vm: "My VM", type: "parallels", commit: nil)
-           == ["/c/omacvm", "enable", "gestures", "--vm", "My VM", "--vm-type", "parallels", "--yes", "--transaction"], "enable argv")
+    expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .enable, features: ["gestures"]), vm: "My VM", type: "other", commit: nil)
+           == ["/c/omacvm", "enable", "gestures", "--vm", "My VM", "--vm-type", "other", "--yes", "--transaction"], "enable argv")
     expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .update, features: []), vm: "V", type: "app", commit: String(repeating: "a", count: 40))
            == ["/c/omacvm", "update", "--vm", "V", "--vm-type", "app", "--transaction", "--yes", "--commit", String(repeating: "a", count: 40)],
            "update argv")
-    expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .reinstall, features: ["bridge"]), vm: "V", type: "utm", commit: nil)
-           == ["/c/omacvm", "apply", "--vm", "V", "--vm-type", "utm", "--transaction", "--yes", "--reinstall", "bridge"], "reinstall: that feature only")
-    expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .reinstall, features: ["gestures", "mac-clock"]), vm: "V", type: "utm", commit: nil).suffix(4)
+    expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .reinstall, features: ["bridge"]), vm: "V", type: "other", commit: nil)
+           == ["/c/omacvm", "apply", "--vm", "V", "--vm-type", "other", "--transaction", "--yes", "--reinstall", "bridge"], "reinstall: that feature only")
+    expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .reinstall, features: ["gestures", "mac-clock"]), vm: "V", type: "other", commit: nil).suffix(4)
            == ["--reinstall", "gestures", "--reinstall", "mac-clock"], "reinstall two")
     expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .graphics, features: ["vulkan"]), vm: "My VM", type: "app", commit: nil)
            == ["/c/omacvm", "graphics", "vulkan", "--vm", "My VM", "--vm-type", "app", "--yes"], "graphics argv")
@@ -274,13 +274,13 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(d.burst + d.perSecond * 2 * authWindow < Double(cap), "rate x window < cap")
     expect(logSafe("/omacvm/x\nFAKE line\r\u{1b}[31m") == "/omacvm/x?FAKE line??[31m", "log: no control characters")
     expect(logSafe("a\u{2028}b") == "a?b" && logSafe(String(repeating: "x", count: 500)).count == 200, "log: line separators, length")
-    // As lib/mac.sh vm_key_file: printf '%s/%s' parallels "My VM" | shasum -a 256 | cut -c1-32
-    expect(vmKeyName(type: "parallels", name: "My VM") == "6904477035f2e239f66f28d2d8ff406a", "key file name: \(vmKeyName(type: "parallels", name: "My VM"))")
+    // As lib/mac.sh vm_key_file: printf '%s/%s' other "My VM" | shasum -a 256 | cut -c1-32
+    expect(vmKeyName(type: "other", name: "My VM") == "2e63b7611addf0afb8a238900d8199ce", "key file name: \(vmKeyName(type: "other", name: "My VM"))")
 
     // ---- OmacVM.app's VMs (the app names them; its relay key) ----
     let appOff = VMEntry(name: "Off", type: "app", state: "stopped", ip: "", omacvm: "", setup: false)
     if case .success(let v) = vmForApp("Omarchy", [a, appA]) { expect(v == appA, "app VM by name") } else { expect(false, "app VM") }
-    if case .failure(let e) = vmForApp("A", [a, appA]) { expect(e.code == "unknown-vm", "a Parallels VM is no app VM") } else { expect(false, "type") }
+    if case .failure(let e) = vmForApp("A", [a, appA]) { expect(e.code == "unknown-vm", "a VM of another type is no app VM") } else { expect(false, "type") }
     if case .failure(let e) = vmForApp("Off", [appOff]) { expect(e.code == "unknown-vm", "stopped app VM") } else { expect(false, "stopped") }
 
     // ---- graphics memory (GET /omacvm/gpu-memory) ----
@@ -375,7 +375,7 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(err(route("GET", "/omacvm/app-update"))?.status == 405, "app-update: POST only")
     expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: true, release: "3.0.2", mac: "3.0.1") == nil, "app-update: newer")
     expect(appUpdateGate(viaApp: false, vmType: "app", macAppCopy: true, release: "3.0.2", mac: "3.0.1")?.code == "not-app", "not through the app")
-    expect(appUpdateGate(viaApp: true, vmType: "parallels", macAppCopy: true, release: "3.0.2", mac: "3.0.1")?.code == "not-app", "not an app VM")
+    expect(appUpdateGate(viaApp: true, vmType: "other", macAppCopy: true, release: "3.0.2", mac: "3.0.1")?.code == "not-app", "not an app VM")
     expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: false, release: "3.0.2", mac: "3.0.1")?.code == "not-app-copy", "a checkout")
     expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: true, release: nil, mac: "3.0.1")?.code == "no-update", "no manifest")
     expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: true, release: "3.0.1", mac: "3.0.1")?.code == "not-newer", "same")
@@ -500,13 +500,13 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     do {   // own scope: names of their own
     // ---- the VM list: never waited for (review round 4, point 3) ----
     let t0 = Date(timeIntervalSince1970: 1_800_000_000)
-    let vmA = VMEntry(name: "A", type: "parallels", state: "running", ip: "10.211.55.5", omacvm: "2.8.0", setup: true)
-    let vmB = VMEntry(name: "B", type: "parallels", state: "running", ip: "10.211.55.6", omacvm: "2.8.0", setup: true)
+    let vmA = VMEntry(name: "A", type: "other", state: "running", ip: "192.168.77.5", omacvm: "2.8.0", setup: true)
+    let vmB = VMEntry(name: "B", type: "other", state: "running", ip: "192.168.77.6", omacvm: "2.8.0", setup: true)
     var c = VMListCache()
     expect(c.shouldRefresh(known: false, now: t0), "empty cache: a run starts")
     expect(!c.shouldRefresh(known: false, now: t0) && !c.shouldRefresh(known: true, now: t0), "one run at a time")
     var r = c.finished([vmA], now: t0 + 2)
-    expect(r.changed == ["parallels/A"] && !r.again && c.list == [vmA], "run done: A is in, it changed")
+    expect(r.changed == ["other/A"] && !r.again && c.list == [vmA], "run done: A is in, it changed")
     expect(!c.shouldRefresh(known: true, now: t0 + 30), "known and fresh: no run")
     expect(c.shouldRefresh(known: false, now: t0 + 3) == false, "unknown address: at most every 10 s (one ran at t0)")
     expect(!c.shouldRefresh(known: false, now: t0 + 9), "unknown address: still within the 10 s")
@@ -525,17 +525,17 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(c2.shouldRefresh(known: true, now: t0 + 60), "known but a minute old: a run (the cache is served meanwhile)")
     expect(c2.list == [vmA], "the cache stays while the run goes")
     // A job ended while a run goes: that run's list may be from before the job.
-    expect(!c2.jobEnded(vm: "parallels/A", version: "2.8.1"), "job ended during a run: not a second run now")
+    expect(!c2.jobEnded(vm: "other/A", version: "2.8.1"), "job ended during a run: not a second run now")
     expect(c2.list.first?.omacvm == "2.8.1", "the job's VM has the Mac's OmacVM at once")
     r = c2.finished([vmA], now: t0 + 63)
     expect(r.again, "and a run again after the one going")
-    r = c2.finished([VMEntry(name: "A", type: "parallels", state: "running", ip: "10.211.55.5", omacvm: "2.8.1", setup: true)], now: t0 + 66)
-    expect(!r.again && r.changed == ["parallels/A"], "then done")
-    expect(c2.jobEnded(vm: "parallels/A", version: nil), "job ended, nothing running: a run now")
+    r = c2.finished([VMEntry(name: "A", type: "other", state: "running", ip: "192.168.77.5", omacvm: "2.8.1", setup: true)], now: t0 + 66)
+    expect(!r.again && r.changed == ["other/A"], "then done")
+    expect(c2.jobEnded(vm: "other/A", version: nil), "job ended, nothing running: a run now")
     _ = c2.finished(nil, now: t0 + 70)
     expect(!c2.shouldRefresh(known: false, now: t0 + 75) && !c2.shouldRefresh(known: true, now: t0 + 200 - 126),
            "a failed run: not again within 10 s")
-    expect(c2.vm(at: "10.211.55.5") == "parallels/A" && c2.vm(at: "10.211.55.99") == nil, "VM by address")
+    expect(c2.vm(at: "192.168.77.5") == "other/A" && c2.vm(at: "192.168.77.99") == nil, "VM by address")
 
     // ---- a VM the list does not have: a fresh run first, and the request waits for it ----
     let appVM = VMEntry(name: "Omarchy", type: "app", state: "running", ip: "127.0.0.1:52500", omacvm: "3.0.3", setup: true)
@@ -637,10 +637,10 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     // (no SSH) every 2 s does not start its back-off over (#528 review), so
     // status every 5 s for 10 minutes makes the looks of one episode only.
     expect(!appVMReady("Omarchy", [unreach]) && appVMReady("Omarchy", [appVM]), "ready: the app VM reachable, not only listed")
-    let reachA = VMEntry(name: "a", type: "parallels", state: "running", ip: "10.211.55.5", omacvm: "3.0.3", setup: true, reachable: true)
+    let reachA = VMEntry(name: "a", type: "other", state: "running", ip: "192.168.77.5", omacvm: "3.0.3", setup: true, reachable: true)
     var unreachA = reachA; unreachA.reachable = false
-    expect(peerReady("10.211.55.5", [reachA]) && !peerReady("10.211.55.5", [unreachA])
-           && !peerReady("10.211.55.9", [reachA]), "ready: by address too")
+    expect(peerReady("192.168.77.5", [reachA]) && !peerReady("192.168.77.5", [unreachA])
+           && !peerReady("192.168.77.9", [reachA]), "ready: by address too")
     var uc = VMListCache()
     _ = uc.unknown(now: t0, every: 1)
     _ = uc.finished([unreach], now: t0 + 1)
@@ -651,7 +651,7 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
       if s % 5 == 0, uc.refused(key: k, now: now).start { ccRuns += 1; _ = uc.finished([unreach], now: now + 0.5) }
     }
     expect(ccRuns <= 8, "control centre open on an unreachable VM for 10 minutes: at most 8 looks (got \(ccRuns))")
-    expect(peerListed("10.211.55.5", [vmA]) && !peerListed("10.211.55.9", [vmA]) && !peerListed("", [VMEntry(name: "x", type: "app", state: "running", ip: "", omacvm: "", setup: true)]),
+    expect(peerListed("192.168.77.5", [vmA]) && !peerListed("192.168.77.9", [vmA]) && !peerListed("", [VMEntry(name: "x", type: "app", state: "running", ip: "", omacvm: "", setup: true)]),
            "listed: by address, never an empty one")
     // jobEnded keeps whether the VM was reachable.
     var uj = VMListCache()
@@ -701,10 +701,10 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(!routeNeedsSSH(.job("0123456789abcdef")) && !routeNeedsSSH(.gpuMemory), "a job's state and graphics memory: no SSH needed")
     expect(routeNeedsSSH(.status) && routeNeedsSSH(.startJob(JobRequest(action: .enable, features: ["touch-id"]))),
            "checks and new jobs need SSH")
-    let lostPeer = VMEntry(name: "P", type: "parallels", state: "running", ip: "10.211.55.9", omacvm: "", setup: true, reachable: false,
-                           why: "OmacVM's SSH key did not get in at 10.211.55.9")
-    if case .failure(let e) = vmForPeer("10.211.55.9", [lostPeer]) {
-      expect(e.message == "the Mac cannot reach this VM: OmacVM's SSH key did not get in at 10.211.55.9", "unreachable VM at that address: said so, and why")
+    let lostPeer = VMEntry(name: "P", type: "other", state: "running", ip: "192.168.77.9", omacvm: "", setup: true, reachable: false,
+                           why: "OmacVM's SSH key did not get in at 192.168.77.9")
+    if case .failure(let e) = vmForPeer("192.168.77.9", [lostPeer]) {
+      expect(e.message == "the Mac cannot reach this VM: OmacVM's SSH key did not get in at 192.168.77.9", "unreachable VM at that address: said so, and why")
     } else { expect(false, "unreachable peer") }
     let offApp = VMEntry(name: "Off", type: "app", state: "stopped", ip: "", omacvm: "", setup: true, reachable: false)
     if case .failure(let e) = vmForApp("Off", [offApp]) {
@@ -737,18 +737,18 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     // ---- connection limits (final review point 2) ----
     var g = ConnectionGate()
     var held = 0
-    for _ in 0..<40 where g.enter("address 10.211.55.200", known: false) { held += 1 }
+    for _ in 0..<40 where g.enter("address 192.168.77.200", known: false) { held += 1 }
     expect(held == 8, "one unknown address: 8")
-    for _ in 0..<40 where g.enter("address 10.211.55.201", known: false) { held += 1 }
-    for _ in 0..<40 where g.enter("address 10.211.55.202", known: false) { held += 1 }
+    for _ in 0..<40 where g.enter("address 192.168.77.201", known: false) { held += 1 }
+    for _ in 0..<40 where g.enter("address 192.168.77.202", known: false) { held += 1 }
     expect(held == 16, "unknown addresses together: 16")
     // One guest holds all it can: its own 12 and the 16 unknown places.
     var inA = 0
-    for _ in 0..<40 where g.enter("vm parallels/A", known: true) { inA += 1 }
+    for _ in 0..<40 where g.enter("vm other/A", known: true) { inA += 1 }
     expect(inA == 12, "12 per VM (\(inA))")
     expect(g.sharedInUse == 8 + 16, "A's 8 past its own 4 and the 16 unknown share the 48 (\(g.sharedInUse))")
     var inB = 0, inMac = 0
-    for _ in 0..<40 where g.enter("vm parallels/B", known: true) { inB += 1 }
+    for _ in 0..<40 where g.enter("vm other/B", known: true) { inB += 1 }
     for _ in 0..<40 where g.enter("mac", known: true) { inMac += 1 }
     expect(inB == 12 && inMac == 12, "another VM and this Mac still get all theirs (\(inB), \(inMac))")
     // OmacVM.app's guests (all from 127.0.0.1, key "mac") hold all of theirs:
@@ -758,29 +758,29 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(!g.enter("mac", known: true) && inRelay == 12, "app guests full, the relay still gets 12 (\(inRelay))")
     // Many known VMs fill the shared places: each still has its own 4.
     var g2 = ConnectionGate()
-    for v in 0..<10 { for _ in 0..<12 { _ = g2.enter("vm parallels/V\(v)", known: true) } }
+    for v in 0..<10 { for _ in 0..<12 { _ = g2.enter("vm other/V\(v)", known: true) } }
     expect(g2.sharedInUse == 48, "the shared places are all taken")
-    expect(!g2.enter("vm parallels/V0", known: true) && !g2.enter("address 10.211.55.9", known: false),
+    expect(!g2.enter("vm other/V0", known: true) && !g2.enter("address 192.168.77.9", known: false),
            "nobody past their own places now")
     var own = 0
     for _ in 0..<10 where g2.enter("mac", known: true) { own += 1 }
-    for _ in 0..<10 where g2.enter("vm parallels/NEW", known: true) { own += 1 }
+    for _ in 0..<10 where g2.enter("vm other/NEW", known: true) { own += 1 }
     expect(own == 8, "the relay and a VM that comes later: their own 4 each (\(own))")
-    g2.leave("vm parallels/V3", known: true)
-    expect(g2.sharedInUse == 47 && g2.enter("address 10.211.55.9", known: false), "a shared place freed: anyone")
+    g2.leave("vm other/V3", known: true)
+    expect(g2.sharedInUse == 47 && g2.enter("address 192.168.77.9", known: false), "a shared place freed: anyone")
     // Leave gives back the right kind of place.
     var g3 = ConnectionGate()
-    for _ in 0..<6 { _ = g3.enter("vm parallels/A", known: true) }
+    for _ in 0..<6 { _ = g3.enter("vm other/A", known: true) }
     expect(g3.sharedInUse == 2, "6 in: 4 own + 2 shared")
-    for _ in 0..<6 { g3.leave("vm parallels/A", known: true) }
-    g3.leave("vm parallels/A", known: true)   // one too many: ignored
-    expect(g3.sharedInUse == 0 && g3.enter("vm parallels/A", known: true), "all back")
+    for _ in 0..<6 { g3.leave("vm other/A", known: true) }
+    g3.leave("vm other/A", known: true)   // one too many: ignored
+    expect(g3.sharedInUse == 0 && g3.enter("vm other/A", known: true), "all back")
     // Long requests: two at once per VM.
-    expect(g3.enterSlow("vm parallels/A") && g3.enterSlow("vm parallels/A") && !g3.enterSlow("vm parallels/A"),
+    expect(g3.enterSlow("vm other/A") && g3.enterSlow("vm other/A") && !g3.enterSlow("vm other/A"),
            "two long requests per VM")
-    expect(g3.enterSlow("vm parallels/B"), "another VM's long request")
-    g3.leaveSlow("vm parallels/A")
-    expect(g3.enterSlow("vm parallels/A"), "one ended: another")
+    expect(g3.enterSlow("vm other/B"), "another VM's long request")
+    g3.leaveSlow("vm other/A")
+    expect(g3.enterSlow("vm other/A"), "one ended: another")
 
     // ---- the relay socket's path ----
     expect(relaySocketPathOK("/Users/max/Library/Application Support/omacvm-bridge/relay.sock"), "the usual path")
@@ -907,15 +907,15 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(appRunnerPath(cli: "/a/../b/OmacVM.app/Contents/Resources/omacvm/omacvm", info: info, testIdentity: false, testApp: tApp) == nil, "..")
     expect(appRunnerPath(cli: "Applications/OmacVM.app/Contents/Resources/omacvm/omacvm", info: info, testIdentity: false, testApp: tApp) == nil, "relative")
 
-    let prl = VMEntry(name: "P", type: "parallels", state: "running", ip: "10.211.55.5", omacvm: "3.0.1", setup: true)
+    let otherVM = VMEntry(name: "P", type: "other", state: "running", ip: "192.168.77.5", omacvm: "3.0.1", setup: true)
     let inside = VMEntry(name: "In", type: "app", state: "running", ip: "127.0.0.1:52000", omacvm: "3.0.1", setup: true, dir: "/Users/max/VMs/In")
     let ext = VMEntry(name: "SD", type: "app", state: "running", ip: "127.0.0.1:52612", omacvm: "3.0.1", setup: true, dir: "/Volumes/SD/VMs/SD")
     let stale = VMEntry(name: "In", type: "app", state: "running", ip: "127.0.0.1:52000", omacvm: "3.0.0", setup: false, dir: "/Users/max/VMs/In")
-    expect(mergeVMLists(all: [prl, stale], app: [inside, ext]) == [prl, inside, ext], "app VMs from the app's run, the others from the Bridge's")
-    expect(mergeVMLists(all: [prl, inside], app: nil) == [prl, inside], "the app's run failed: the Bridge's list as it is")
+    expect(mergeVMLists(all: [otherVM, stale], app: [inside, ext]) == [otherVM, inside, ext], "app VMs from the app's run, the others from the Bridge's")
+    expect(mergeVMLists(all: [otherVM, inside], app: nil) == [otherVM, inside], "the app's run failed: the Bridge's list as it is")
     expect(mergeVMLists(all: nil, app: [ext]) == nil, "the Bridge's run failed: none (asked again)")
-    expect(mergeVMLists(all: [prl], app: []) == [prl], "the app has no VM")
-    expect(mergeVMLists(all: [prl], app: [prl, ext]) == [prl, ext], "the app's run lists only app VMs")
+    expect(mergeVMLists(all: [otherVM], app: []) == [otherVM], "the app has no VM")
+    expect(mergeVMLists(all: [otherVM], app: [otherVM, ext]) == [otherVM, ext], "the app's run lists only app VMs")
 
     expect(gpuMemoryFromApp(nil) == nil, "no header (an older app): the Bridge reads the file")
     expect(gpuMemoryFromApp("-") == .some(nil), "-: the app has no file")

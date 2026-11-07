@@ -82,6 +82,10 @@ enum VMDisk {
     /// without APFS clones (the copy kept while it shrinks). nil: it can.
     static func smallerBlocked(_ c: VMConfig) -> String? {
         if jobs(c).contains(.grow) { return "Omarchy grows into the last change first, when the VM starts." }
+        // The move's backup shares disk.img's blocks: a shrink would rewrite them all.
+        if FileManager.default.fileExists(atPath: c.folder.appendingPathComponent(OmarchyMove.backupName).path) {
+            return "the disk from before the move to Omarchy 4.5 is kept: delete the old backup or undo the move first."
+        }
         if (try? c.folder.resourceValues(forKeys: [.volumeSupportsFileCloningKey]))?.volumeSupportsFileCloning == false {
             return "making it smaller needs the VM on a Mac-formatted (APFS) drive."
         }
@@ -107,6 +111,9 @@ enum VMDisk {
     /// bounds again. Larger: done here. Smaller: a clone of disk.img and the
     /// plan; the VM's next start does the rest.
     static func change(_ c: VMConfig, to newGB: Int) throws -> Change {
+        // The move to Omarchy 4.5 not over (it may run between two of its VM
+        // starts, the disk not in use): its disk stays as it is.
+        if let why = MoveFiles.openWhy(c) { throw HelperError.io(why) }
         guard let now = info(c) else { throw HelperError.io("No disk.img in \(c.folder.path).") }
         guard resize(c) == nil else { throw HelperError.io("The last change of the disk is not finished.") }
         let currentGB = DiskSize.wholeGB(now.maxBytes)
@@ -248,6 +255,11 @@ enum VMDisk {
         let jobs = jobs(c)
         let step = resize(c)?.step
         guard !jobs.isEmpty || step == .shrink || step == .check else { return }
+        // Never in the middle of the move to Omarchy 4.5: they wait for its end (Resume or Undo).
+        if MoveFiles.journal(c)?.open == true {
+            log(c, "disk jobs wait: the move to Omarchy 4.5 is not over")
+            return
+        }
         Thread.detachNewThread {
             // The guest agent starts with Omarchy: up to ten minutes.
             let deadline = Date().addingTimeInterval(600)
@@ -391,7 +403,8 @@ struct DiskRow: View {
                     Text("No disk.img").font(.subheadline).foregroundStyle(.secondary)
                 }
                 Button("Change…") { open() }
-                    .disabled(info == nil || resize != nil || state.storage.moving != nil || editing)
+                    .disabled(info == nil || resize != nil || state.storage.moving != nil || editing
+                              || (preview == nil && MoveFiles.journal(state.config)?.open == true))
             }
             if let r = resize { resizeButtons(r) }
             if editing { editor }

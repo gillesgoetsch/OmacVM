@@ -42,5 +42,5 @@
 <text x="640" y="450" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#908caa" text-anchor="start">Only while the VM is full screen and in front.</text>
 <text x="640" y="468" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#908caa" text-anchor="start">If OmacVM Gestures stops, macOS gets its gestures back.</text>
 <text x="640" y="486" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#908caa" text-anchor="start">Setting: the monitor under the pointer, or all monitors.</text>
-<text x="500" y="528" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#6e6a86" text-anchor="middle">OmacVM.app, Parallels, UTM and VMware Fusion alike</text>
+<text x="500" y="528" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#6e6a86" text-anchor="middle">OmacVM.app in native full screen</text>
 </svg>

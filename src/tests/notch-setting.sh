@@ -132,6 +132,6 @@ expect "fullpanel and --skip off at once" "fullpanel off" "$(run --vm "Test notc
 out=$(run --vm "Test notch" --skip yes); [[ $out == *"--skip needs on or off"* ]] && ok "--skip yes: usage" || bad "--skip yes: $out"
 notch_set "$V" native
 out=$(run --vm "No such VM" --json); [[ $out == *"no OmacVM.app VM named"* ]] && ok "unknown VM: says so" || bad "unknown VM: $out"
-out=$(run --vm "Test notch" --vm-type utm); [[ $out == *"OmacVM.app's setting"* ]] && ok "another route: says Omanotch fills the strip there" || bad "utm: $out"
+out=$(run --vm "Test notch" --vm-type other); [[ $out == *"--vm-type app (the only one)"* ]] && ok "another VM type: refused, OmacVM.app only" || bad "other type: $out"
 
 exit $fail

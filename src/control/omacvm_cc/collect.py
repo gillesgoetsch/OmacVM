@@ -318,11 +318,9 @@ def mac_sections(omacvm: str, root: str, vm: str = "", what: str = "", vm_type: 
     chip = run(["sysctl", "-n", "machdep.cpu.brand_string"]).strip()
     mem = run(["sysctl", "-n", "hw.memsize"]).strip()
     mem = f"{int(mem) >> 30} GB" if mem.isdigit() else "?"
-    prl = run(["/usr/local/bin/prlctl", "--version"]).strip()
     app = run(["defaults", "read", "/Applications/OmacVM.app/Contents/Info", "CFBundleShortVersionString"]).strip()
     versions = "\n".join([f"OmacVM {ver} on the Mac" + (f" · OmacVM.app {app}" if app else ""),
-                          f"macOS {platform.mac_ver()[0]} · {chip} · {mem}",
-                          prl or "no Parallels Desktop"])
+                          f"macOS {platform.mac_ver()[0]} · {chip} · {mem}"])
     which = (["--vm", vm] if vm else []) + (["--vm-type", vm_type] if vm and vm_type else [])
     args = [omacvm, "check", "--json"] + which
     try:

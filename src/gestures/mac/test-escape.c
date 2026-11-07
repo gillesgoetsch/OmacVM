@@ -389,7 +389,7 @@ int main(void) {
   const CGEventFlags K = C | O;   // the escape combo (3.0.0); C|O|M is the old one, kept through 3.0.x
   const CGEventFlags FN = kCGEventFlagMaskSecondaryFn, PAD = kCGEventFlagMaskNumericPad;
   const int64_t HID = kCGEventSourceStateHIDSystemState, POSTED = kCGEventSourceStateCombinedSessionState;
-  pid_t terminal = child(), vm = child(), parallels = child(), safari = child();
+  pid_t terminal = child(), vm = child(), safari = child();
   finder = child();
 
   // ---- The user's binding, as macOS keeps it ----
@@ -855,38 +855,6 @@ int main(void) {
   settle(vm, NET_APP); sent();
   front = finder; world[0].cur = 401;
   frontChanged(finder, -1, 0, "", 0, 1); sent();
-
-  // ---- Parallels: the same way out and back; no Mission Control either ----
-  layout(1, mini, 2, NULL, 0);
-  owner[101] = terminal; winOn[101] = 11; owner[102] = parallels; winOn[102] = 55;
-  pointer = CGPointMake(1000, 700); world[0].cur = 101; front = terminal;
-  frontChanged(terminal, -1, 0, "", 11, 1);
-  world[0].cur = 102; front = parallels;
-  frontChanged(parallels, 0, 1, "Omarchy", 55, 0); sent();
-  check(press(K, HID, 0) == 1 && spaceKeys == 1 && world[0].cur == 101 && front == terminal, "Parallels VM: moved out");
-  frontChanged(terminal, -1, 0, "", 11, 1);
-  check(press(K, HID, 0) == 1 && spaceKeys == 1 && world[0].cur == 102 && front == parallels, "... and into the Parallels VM again");
-  frontChanged(parallels, 0, 1, "Omarchy", 55, 0); sent();
-  keysIgnored = 1;
-  check(press(K, HID, 0) == 1 && !mcKeys && world[0].cur == 102 && !hidden,
-        "Parallels, nothing moves: no Mission Control, nothing hidden");
-  keysIgnored = 0;
-  press(K, HID, 0); frontChanged(parallels, 0, 1, "Omarchy", 55, 0); sent();
-
-  // The same VM app in front in a window (it left full screen): the combo is the VM's, as before.
-  frontChanged(parallels, 0, 0, "", 55, 0);
-  check(press(K, HID, 0) == 0 && !went && !keys, "the VM's app in front in a window: the combo passes to it");
-
-  // Parallels outlives its VM: its window gone, the combo in macOS is macOS's again.
-  front = terminal; world[0].cur = 101;
-  frontChanged(parallels, 0, 1, "Omarchy", 55, 0); frontChanged(terminal, -1, 0, "", 11, 1); sent();
-  vmAlive = 0;
-  check(press(K, HID, 0) == 0 && !went && !keys, "the VM's window is gone (app still running): the combo passes");
-  vmAlive = 1;
-
-  // The VM has quit: the combo in macOS is macOS's again.
-  end(parallels);
-  check(press(K, HID, 0) == 0 && !went && !keys, "the last VM has quit: the combo passes in macOS");
 
   // Back in when the VM's Space is not right beside: its window to the front.
   const uint64_t far[] = { 101, 103, 102 };

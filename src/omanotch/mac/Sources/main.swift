@@ -26,33 +26,17 @@ struct Settings {
     var listenHost: String? { defaults.string(forKey: "listenHost") }
     /// 47811; a test Omanotch's from its launch arguments only (TestEndpoint).
     var port: UInt16 { TestEndpoint.port(arguments: TestEndpoint.arguments) }
-    /// Interfaces that carry VM networks: Parallels and UTM (vmnet) use
-    /// bridgeNNN, older Parallels versions vnicN.
-    var interfacePrefixes: [String] { defaults.stringArray(forKey: "vmInterfacePrefixes") ?? ["bridge", "vnic"] }
-    /// The VM shared networks: UTM (vmnet), Parallels shared and host-only,
-    /// and VMware Fusion's NAT network (its subnet is picked at install time).
-    var vmSubnets: [String] {
-        defaults.stringArray(forKey: "vmSubnets") ?? ["192.168.64.0/24", "10.211.55.0/24", "10.37.129.0/24"] + [Settings.fusionSubnet()].compactMap { $0 }
-    }
-    /// Owner names (app names) of the VM windows: Parallels Desktop, UTM, VMware Fusion, OmacVM (OmacVM.app).
+    /// Interfaces that carry VM networks: OmacVM.app's fast network (vmnet) is on a bridgeN.
+    var interfacePrefixes: [String] { defaults.stringArray(forKey: "vmInterfacePrefixes") ?? ["bridge"] }
+    /// Other VM networks to serve, besides OmacVM.app's own (127.0.0.1 and its
+    /// fast network, always): none. The retired routes' networks are not
+    /// served since 3.4.0 (AGENTS.md).
+    var vmSubnets: [String] { defaults.stringArray(forKey: "vmSubnets") ?? [] }
+    /// Owner names (app names) of the VM windows: OmacVM (OmacVM.app).
     var vmOwners: Set<String> {
         if let list = defaults.stringArray(forKey: "vmOwners"), !list.isEmpty { return Set(list) }
         if let one = defaults.string(forKey: "vmOwner") { return [one] }
-        return ["Parallels Desktop", "UTM", "VMware Fusion", OmacVMApp.owner]
-    }
-
-    /// VMware Fusion's NAT network (vmnet8) as "a.b.c.0/24": the first
-    /// VNET_8_HOSTONLY_SUBNET line of its settings, private addresses only.
-    static func fusionSubnet() -> String? {
-        guard let s = try? String(contentsOfFile: "/Library/Preferences/VMware Fusion/networking", encoding: .utf8) else { return nil }
-        for line in s.split(separator: "\n") {
-            let f = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-            guard f.count >= 3, f[0] == "answer", f[1] == "VNET_8_HOSTONLY_SUBNET" else { continue }
-            let o = f[2].split(separator: ".").compactMap { UInt8($0) }
-            guard o.count == 4, o[0] == 10 || (o[0] == 172 && (16...31).contains(o[1])) || (o[0] == 192 && o[1] == 168) else { return nil }
-            return "\(o[0]).\(o[1]).\(o[2]).0/24"
-        }
-        return nil
+        return [OmacVMApp.owner]
     }
 }
 
@@ -434,8 +418,7 @@ final class Controller: NSObject, NSApplicationDelegate, StripInputDelegate {
             let hv = String(text.dropFirst("hello ".count))
             // An app that is not a VM app here (vmOwners) could be any of them.
             // OmacVM.app's VMs (QEMU too) come in on 127.0.0.1 or its fast network.
-            guest.owner = link.viaOmacVMApp(guest.id) ? OmacVMApp.owner
-                : GuestPicker.owner(hello: hv).flatMap { settings.vmOwners.contains($0) ? $0 : nil }
+            guest.owner = link.viaOmacVMApp(guest.id) ? OmacVMApp.owner : nil
             Log.info("guest \(guest.id) runs in \(hv) (\(guest.owner ?? "any VM app"))")
             return true
         } else if text.hasPrefix("vmname ") {

@@ -13,13 +13,13 @@ Firefox decodes in hardware too, but its VM stays at about 0.9 cores.
 
 ## What works
 
-| | OmacVM.app | UTM | Parallels | VMware Fusion |
-|---|---|---|---|---|
-| H.264 | yes | patch tested, see below | no | no |
-| VP9 (YouTube) | yes | patch tested, see below | no | no |
-| AV1 (YouTube) | yes: Google Chrome (Brave not tested since 1.96) | – | no | no |
-| HEVC | yes: mpv, FFmpeg, GStreamer, Chrome | – | no | no |
-| 10-bit (VP9 profile 2, HEVC Main 10, AV1) | yes | – | no | no |
+| Codec | In the VM |
+|---|---|
+| H.264 | yes |
+| VP9 (YouTube) | yes |
+| AV1 (YouTube) | yes: Google Chrome (Brave not tested since 1.96) |
+| HEVC | yes: mpv, FFmpeg, GStreamer, Chrome |
+| 10-bit (VP9 profile 2, HEVC Main 10, AV1) | yes |
 
 Browsers in an OmacVM.app VM:
 
@@ -742,45 +742,6 @@ Limits:
   `OMACVM_VIRGL_VIDEO_ABI=legacy` switches the backend to the old numbers.
   Upstream virglrenderer's copy of the numbers is the old one, so with a
   current Mesa, virgl video does not work on Linux hosts either.
-
-## UTM
-
-UTM ships its own virglrenderer (utmapp/virglrenderer). The same patch
-applies to UTM 5.0.6's version and was tested in UTM's own QEMU, run from a
-copy of UTM's frameworks (the installed UTM untouched): `vainfo` lists H.264
-and VP9, FFmpeg decodes 4K VP9 at 73 frames per second (CPU copy: UTM draws
-through ANGLE), Firefox decodes through VA-API. Google Chrome cannot use it
-there yet: in UTM, Chrome turns its GPU off completely (WebGL too), because
-UTM's virglrenderer reports one MSAA sample.
-
-What an upstream change in UTM would need:
-
-- the backend (`virgl_video_vt.c`, the `vrend_video.c` changes, meson's
-  `video` option on macOS), built with `-Dvideo=true`;
-- the video profile numbers of current Mesa (above);
-- virglrenderer turns video on only when QEMU asks (`VIRGL_RENDERER_USE_VIDEO`);
-  QEMU never does, so either QEMU passes the flag or virglrenderer turns it on
-  for VideoToolbox, as this patch does;
-- Chrome's GPU in UTM (the MSAA sample count) before Chrome benefits;
-- a frame-order issue seen only there: in a readback test 107 of 120 frames
-  matched (all 120 in OmacVM.app);
-- a bounds check virglrenderer's video code lacks on every host: it copies as
-  many bitstream bytes as the guest says into the bitstream buffer
+- **A bounds check** virglrenderer's video code lacks on every host: it
+  copies as many bitstream bytes as the guest says into the bitstream buffer
   (`vrend_video_decode_bitstream`); the patch clamps it to the buffer's size.
-
-## Parallels and VMware Fusion
-
-Both are closed source; nothing in the VM can add a decoder the host does not
-offer.
-
-- **VMware Fusion**: the VM's GPU driver is Mesa's `svga` (vmwgfx). That
-  driver has no video decoding at all (no `create_video_codec`), so there is
-  no VA-API, VDPAU or Vulkan video in the VM, whatever the host could do.
-- **Parallels** (checked with Parallels Desktop 27.0.2 and try-omarchy's
-  Arch Linux ARM, Mesa 26.2): the VM sees a virtio-gpu with virgl
-  (`virgl (Apple M4 Max (Compat))`), so Mesa's virgl VA-API driver loads, but
-  `vainfo` lists no decoder: Parallels' host side reports no video
-  capabilities in virgl's capability set. There is no V4L2 decoder either
-  (`/dev/video*` are the shared Mac camera and OmacVM's *Mac Camera*), Vulkan
-  is only llvmpipe (no Vulkan Video), and Mesa has no VDPAU drivers anymore.
-  Only Parallels can add it on the host side.

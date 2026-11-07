@@ -1,18 +1,16 @@
 #!/bin/bash
 # OmacVM, Mac side: Bridge (Wi-Fi, audio, media keys, display, wallpaper),
-# Gestures (trackpad, scroll momentum, Cmd as Super on UTM), clipboard (VM -> Mac),
-# Omanotch (the bar beside the notch, src/omanotch).
+# Gestures (trackpad, scroll momentum, Cmd as Super), Omanotch (the bar beside
+# the notch, src/omanotch).
 # Idempotent; `omacvm apply` runs it with what the VM's features need.
-#   src/mac/install.sh [--no-bridge] [--skip-gestures | --keys-only] [--skip-clip] [--omanotch] [--force]
+#   src/mac/install.sh [--no-bridge] [--skip-gestures | --keys-only] [--omanotch] [--force]
 #                      [--force-app NAME]... [--skip-failed [--retry-app NAME]...] [--quiet]
 # --no-bridge leaves OmacVM Bridge out (one already installed stays, other VMs
 # may use it). --skip-gestures leaves OmacVM Gestures out (likewise).
-# --skip-clip leaves the clipboard helper out (only Parallels VMs use it;
-# likewise kept when already installed).
 # --omanotch installs Omanotch too (without it, one already installed stays as
 # it is).
 # --keys-only installs Gestures keys-only for every VM: macOS keeps its trackpad
-# gestures, and on UTM Cmd still reaches Omarchy as Super. (Without it, each
+# gestures, and Cmd still reaches Omarchy as Super. (Without it, each
 # VM chooses for itself: gestures and scroll momentum are VM features.)
 # An app whose sources and options did not change since it was installed is
 # left as it is (--force rebuilds it; --force-app "OmacVM Gestures" only that
@@ -32,14 +30,13 @@
 # a start and says what to do (Update VM, System Settings).
 set -euo pipefail
 R=$(cd "$(dirname "$0")/.." && pwd)
-BRIDGE=1; GESTURES=1; CLIP=1; NOTCH=0; FORCE=0; QUIET=0; FORCE_APPS="|"; SKIP_FAILED=0; RETRY_APPS="|"; STATUS=""
+BRIDGE=1; GESTURES=1; NOTCH=0; FORCE=0; QUIET=0; FORCE_APPS="|"; SKIP_FAILED=0; RETRY_APPS="|"; STATUS=""
 while (( $# )); do
   case $1 in
     --status) STATUS=${2:?--status VM_DIR}; shift ;;
     --no-bridge) BRIDGE=0 ;;
     --keys-only) GESTURES=0 ;;
     --skip-gestures) GESTURES=-1 ;;
-    --skip-clip) CLIP=0 ;;
     --omanotch) NOTCH=1 ;;
     --force) FORCE=1 ;;
     --force-app) FORCE_APPS+="${2:?--force-app NAME}|"; shift ;;
@@ -85,11 +82,11 @@ if [[ ${OMACVM_TEST_IDENTITY:-} == 1 ]]; then
   rc=0
   (( BRIDGE )) && { test_helper "OmacVM Test Bridge" omacvm-test-bridge.log || rc=5; }
   (( GESTURES != -1 )) && { test_helper "OmacVM Test Gestures" omacvm-test-gestures.log || rc=5; }
-  (( CLIP || NOTCH )) && echo "==> test identity: no test clipboard helper or Omanotch (left out; a test Omanotch listens on 47911: src/omanotch/README.md)"
+  (( NOTCH )) && echo "==> test identity: no test Omanotch (left out; a test Omanotch listens on 47911: src/omanotch/README.md)"
   exit "$rc"
 fi
 STAMPS=~/Library/Application\ Support/omacvm/installed
-mkdir -p "$HOME/.local/share/omacvm/clip" "$STAMPS"
+mkdir -p "$STAMPS"
 # Up to 2.7, Gestures kept its list of VMs without a token here; nothing reads it now.
 rm -f ~/Library/Application\ Support/omacvm/gestures-legacy{,.new}
 
@@ -180,7 +177,6 @@ case $GESTURES in
   1) install_app "OmacVM Gestures" "$(omacvm_label gestures)" gestures/mac OmacVMGestures.app ;;
   0) install_app "OmacVM Gestures" "$(omacvm_label gestures)" gestures/mac OmacVMGestures.app --keys-only ;;
 esac
-(( CLIP )) && install_app "OmacVM clipboard" "$(omacvm_label clip-in)" clipboard/mac
 # Omanotch's own installer (it builds the app, or takes OmacVM.app's copy, and
 # starts it at login).
 (( NOTCH )) && install_app "Omanotch" "$(omacvm_label omanotch)" omanotch/mac Omanotch.app

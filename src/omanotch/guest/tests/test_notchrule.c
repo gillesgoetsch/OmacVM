@@ -149,7 +149,7 @@ int main(void) {
             CHECK(host_env_cursor(f) == c[i].mode, c[i].what);
             if (f) fclose(f);
         }
-        CHECK(host_env_cursor(NULL) == HOST_CURSOR_HIDES, "no host.env (Parallels, UTM, Fusion)");
+        CHECK(host_env_cursor(NULL) == HOST_CURSOR_HIDES, "no host.env (an older app, a retired VM app)");
     }
     // Parked: the pointer is on NOTCH (0,-33 1470x33 on the Air) or it is not.
     CHECK(pointer_on_box(735, -33, 0, -33, 1470, 33), "parked: NOTCH's top row, behind the camera");

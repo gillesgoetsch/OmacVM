@@ -1,28 +1,27 @@
 # OmacVM features: the one list that the setup questions, `omacvm features`,
 # `omacvm enable/disable`, the VM installer (guest/install.sh) and the checks
 # follow. One feature per line, tab-separated:
-#   name  default (on|off|notch: on with a notch|laptop: on with a battery, not on Parallels)  sides (mac,vm)  tags  needs  title  summary
+#   name  default (on|off|notch: on with a notch|laptop: on with a battery)  sides (mac,vm)  tags  needs  title  summary
 # Tags: experimental, slow (switching it on is a build in the VM: minutes to over an hour, by CPUs; shown in words while off, never as "slow"), notch (needs a MacBook with a notch),
-# laptop (needs a Mac with a battery), not-parallels (Parallels does it itself),
-# app-only (OmacVM.app's VMs only).
+# laptop (needs a Mac with a battery), app-only (OmacVM.app's VMs only; every VM is one since 3.4.0).
 bridge	on	mac,vm	-	-	OmacVM Bridge	the Mac's Wi-Fi, Bluetooth, audio, Night Shift and media keys in Omarchy's bar
 wallpaper	on	vm	-	bridge	Wallpaper on the Mac	Omarchy's wallpaper becomes the Mac's, following the theme
-gestures	on	mac,vm	-	-	Trackpad gestures	3/4-finger swipes and pinch in Omarchy while it is full screen (⌃⌥ Esc takes you back to macOS and into the VM again); on UTM, VMware Fusion and OmacVM.app also Cmd shortcuts as Super
+gestures	on	mac,vm	-	-	Trackpad gestures	3/4-finger swipes and pinch in Omarchy while it is full screen (⌃⌥ Esc takes you back to macOS and into the VM again), and Cmd shortcuts as Super
 scroll-momentum	on	mac,vm	experimental	gestures	macOS-native scroll momentum	two-finger scrolling on a trackpad (built-in or Magic Trackpad, also one connected later) with your Mac's own acceleration and momentum; mice scroll as before, one step per notch
 omanotch	notch	mac,vm	notch	-	Omanotch	Omarchy's bar beside the MacBook's notch
 mac-clock	on	mac,vm	-	-	The Mac's clock	the clock at the far right of the bar, formatted like the Mac's menu bar
-camera	on	mac,vm	-	-	The Mac's camera	Linux apps and video calls in the browser see it as Mac Camera; it is on only while one of them uses it (UTM and VMware Fusion: through OmacVM Bridge, installed for it also with the Bridge off)
-battery	laptop	mac,vm	laptop,not-parallels	-	The Mac's battery	its charge and charging state in Omarchy's bar, as on a laptop (UTM, VMware Fusion, OmacVM.app; Parallels shows it itself)
-external-brightness	on	mac,vm	-	bridge	External display brightness	the brightness keys set the external display the VM is in front on, over DDC/CI (a Studio Display or Pro Display XDR as macOS does), and so do Omarchy's own brightness keys and monitor panel, whose brightness slider also sets the Mac's built-in display (OmacVM.app also in a window; Parallels, UTM and VMware Fusion in full screen)
+camera	on	mac,vm	-	-	The Mac's camera	Linux apps and video calls in the browser see it as Mac Camera; it is on only while one of them uses it
+battery	laptop	mac,vm	laptop	-	The Mac's battery	its charge and charging state in Omarchy's bar, as on a laptop
+external-brightness	on	mac,vm	-	bridge	External display brightness	the brightness keys set the external display the VM is in front on, over DDC/CI (a Studio Display or Pro Display XDR as macOS does), and so do Omarchy's own brightness keys and monitor panel, whose brightness slider also sets the Mac's built-in display, in full screen and in a window
 chromium-video	on	vm	app-only	-	Chromium video on the Mac	Arch Linux ARM's Chromium decodes H.264 and VP9 on the Mac's media engine, like Chrome and Brave do on their own (OmacVM.app)
 no-idle-lock	off	vm	-	-	Screensaver and lock disabled	Omarchy's own screensaver and lock after idle stay off in the VM, the Mac's lock protects it (called idle-lock before 3.0.1, with on and off the other way round)
 autologin	off	vm	-	-	Autologin	straight into Omarchy, without its login screen
 thp-kernel	off	vm	slow	-	Memory-optimized kernel	Arch Linux ARM's kernel with transparent huge pages and MGLRU, for memory-heavy work (a kernel build in the VM to switch it on: about 10 minutes with 16 CPUs, over an hour with 4; a newer Arch Linux ARM kernel only when you say so)
 control-centre	on	mac,vm	-	-	OmacVM control centre	omacvm in Omarchy: switch, repair and update these features, and report a problem, from the menu or the bar
-fast-network	off	mac,vm	experimental,app-only	-	Fast network	the VM on macOS's own VM network (vmnet, as Parallels and UTM) instead of QEMU's built-in one: faster to and from the Mac, steady latency, an address of its own; a small system service, so macOS asks for your password once (OmacVM.app only)
+fast-network	off	mac,vm	experimental,app-only	-	Fast network	the VM on macOS's own VM network (vmnet) instead of QEMU's built-in one: faster to and from the Mac, steady latency, an address of its own; a small system service, so macOS asks for your password once (OmacVM.app only)
 gpu-compute	on	vm	app-only	-	WebGPU and GPU compute	OpenCL (darktable, ffmpeg, Geekbench) and WebGPU (Firefox, and Chromium from its "Chromium (WebGPU)" menu entry) on the Mac's GPU while the VM's Graphics gives it Vulkan (Automatic does on macOS 26 and newer); off removes them, and Vulkan stays as Graphics says (OmacVM.app only)
 vulkan	off	vm	experimental,app-only	-	OmacVM's own Mesa (macOS 15)	OmacVM's own Mesa for OpenCL and WebGPU where Graphics Automatic gives no Vulkan (macOS 15, MoltenVK); gives the VM Vulkan whatever its Graphics setting; the first time the VM builds that Mesa (about 3 minutes, a 140 MB download) (OmacVM.app only)
 x86-apps	off	vm	experimental,slow	-	x86 Linux apps	x86_64 Linux programs and AppImages run in the VM through box64, which translates them to ARM (slower than native ARM apps; the first time box64 builds in the VM, a few minutes)
-touch-id	off	mac,vm	-	bridge	Touch ID	unlock 1Password, sudo and system prompts in Omarchy with the Mac's Touch ID; your password keeps working (Parallels, UTM, VMware Fusion, OmacVM.app)
+touch-id	off	mac,vm	-	bridge	Touch ID	unlock 1Password, sudo and system prompts in Omarchy with the Mac's Touch ID; your password keeps working
 mac-ime	off	vm	experimental,app-only	-	Mac input: Chinese, Japanese…	type Chinese, Japanese, Korean, Vietnamese and other candidate-window languages in Omarchy with your Mac's own input methods: the Mac's candidate window at the caret, keys and shortcuts as before; set up in the VM the first time (under a minute), active from the VM's next start (OmacVM.app only)
 drag-drop	off	vm	experimental,app-only	-	Drag and drop files	drop files from the Finder onto the VM's window: they go into the app under the pointer, or into Downloads; read-only copies of just the files you drop, folders refused; from the VM's next start (OmacVM.app only)

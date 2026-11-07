@@ -17,7 +17,7 @@
 #   mac_tool NAME [ARG]   what src/*/NAME.swift prints: its app's built copy,
 #                         else the checkout's source with Swift, falling back to
 #                         the installed app if Swift is missing or fails
-#                         mac-notch, mac-display (src/display), mac-clock
+#                         mac-notch (src/display), mac-clock
 #                         (src/clock), mac-free-gb (src/lib)
 # OMACVM_STUB_BIN: where macOS's stubs are (/usr/bin; src/tests/no-clt.sh
 # points it at stand-ins).

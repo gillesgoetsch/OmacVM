@@ -8,7 +8,7 @@ import Quickshell.Io
 // the user, home or address is hard-coded here.
 //
 // The helper pushes a wifi event every few seconds, so silence means the Mac
-// is asleep or the Parallels network is gone: the watchdog drops the stream
+// is asleep or the VM's network is gone: the watchdog drops the stream
 // and the 3 s restart picks it back up once the Mac answers again.
 Item {
   id: bridge
