@@ -384,6 +384,142 @@ int main() {
         EXPECT(w && w->pid == -1, "j/activewindow: a pid that is no number: -1, the box still read");
     }
 
+    // ---------- the 4.5 row's real answers (#357) ----------
+    // Hyprland 0.56.2's j/activewindow and j/layers as the module read them
+    // in Omarchy 4.5.0-3 with Super+Space's menu open over foot (mini,
+    // 2026-11-07, work/open-1107/i357/build/raw-A). quickshell (pid 793:
+    // comm quickshell, exe /usr/bin/quickshell) gave the caret relative to
+    // the menu: (578,106) in the empty search line, (530,106) with "zhong"
+    // composed, where the screenshot shows the text. The rc's module sent
+    // [590,144] and [542,144] (foot's origin added), and no rect at all with
+    // no window open (j/activewindow "{}").
+    {
+        const char *active = R"({
+    "address": "0xaaaab5298ee0",
+    "mapped": true,
+    "hidden": false,
+    "visible": true,
+    "acceptsInput": true,
+    "at": [12, 38],
+    "size": [1296, 690],
+    "workspace": {
+        "id": 1,
+        "name": "1"
+    },
+    "floating": false,
+    "monitor": 0,
+    "class": "foot",
+    "title": "i357-foot",
+    "initialClass": "foot",
+    "initialTitle": "i357-foot",
+    "pid": 4962,
+    "xwayland": false,
+    "pinned": false,
+    "pinFullscreened": false,
+    "fullscreen": 0,
+    "fullscreenClient": 0,
+    "fullscreenHandler": "default",
+    "allowedOverFullscreen": true,
+    "grouped": [],
+    "tags": ["terminal*", "transparent-window*"],
+    "swallowing": "0x0",
+    "focusHistoryID": 0,
+    "inhibitingIdle": false,
+    "xdgTag": "",
+    "xdgDescription": "",
+    "contentType": "none",
+    "tearingHint": false,
+    "stableId": "18000008"
+})";
+        const char *layers = R"({
+"Virtual-1": {
+    "levels": {
+
+        "0": [
+                {
+                    "address": "0xaaaab472e580",
+                    "x": 0,
+                    "y": 0,
+                    "w": 1320,
+                    "h": 740,
+                    "alpha": 1,
+                    "namespace": "omarchy-background",
+                    "pid": 793
+                }
+        ],
+        "1": [
+],
+        "2": [
+                {
+                    "address": "0xaaaab478cd10",
+                    "x": 0,
+                    "y": 0,
+                    "w": 1320,
+                    "h": 740,
+                    "alpha": 1,
+                    "namespace": "omarchy-bar",
+                    "pid": 793
+                },                {
+                    "address": "0xaaaab5541ca0",
+                    "x": 0,
+                    "y": 533,
+                    "w": 1320,
+                    "h": 207,
+                    "alpha": 1,
+                    "namespace": "omarchy-dock",
+                    "pid": 793
+                }
+        ],
+        "3": [
+                {
+                    "address": "0xaaaab54f2e80",
+                    "x": 921,
+                    "y": 0,
+                    "w": 399,
+                    "h": 740,
+                    "alpha": 1,
+                    "namespace": "omarchy-notifications",
+                    "pid": 793
+                },                {
+                    "address": "0xaaaab473d2f0",
+                    "x": 0,
+                    "y": 0,
+                    "w": 1320,
+                    "h": 740,
+                    "alpha": 1,
+                    "namespace": "omarchy-menu",
+                    "pid": 793
+                }
+        ]
+    }
+}
+}
+)";
+        NameOf names = [](long pid) {
+            if (pid == 793) return ProcName{"quickshell", "quickshell"};
+            if (pid == 4962) return ProcName{"foot", "foot"};
+            return ProcName{};
+        };
+        auto w = parseHyprActive(active);
+        auto ls = parseHyprLayers(layers);
+        EXPECT(w && w->pid == 4962 && w->box.x == 12 && w->box.y == 38 && ls && ls->size() == 5 &&
+                   (*ls)[4].level == 3 && (*ls)[4].order == 1 && (*ls)[4].box.w == 1320 && (*ls)[3].box.x == 921,
+               "4.5 row: Hyprland 0.56.2's real answers parse (5 layers, the menu last at level 3)");
+        Caret c = caretOn(Rect{578, 106, 1, 22}, 1.0, true, "quickshell", w, ls, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 578 && c.rect->y == 106 && c.rect->h == 22,
+               "4.5 row: the empty search line at (578,106) (rc: [590,144])");
+        c = caretOn(Rect{530, 106, 1, 22}, 1.0, true, "quickshell", w, ls, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 530 && c.rect->y == 106,
+               "4.5 row: composing at (530,106), where the text shows (rc: [542,144])");
+        c = caretOn(Rect{530, 106, 1, 22}, 1.0, true, "quickshell", parseHyprActive("{}"), ls, names);
+        EXPECT(c.rect && c.exact && c.rect->x == 530 && c.rect->y == 106,
+               "4.5 row: the menu with no window open (rc: no rect)");
+        c = caretOn(Rect{21, 18, 1, 16}, 1.0, true, "", w, ls, names);
+        Caret old = caretFor(Rect{21, 18, 1, 16}, 1.0, true, w->box);
+        EXPECT(c.rect && old.rect && c.exact && c.rect->x == old.rect->x && c.rect->y == old.rect->y,
+               "4.5 row: ghostty's input context has no program name: the window's origin, as before");
+    }
+
     // ---------- fuzz: random and mutated input never crashes ----------
     {
         std::mt19937 rng(273);
