@@ -3,6 +3,20 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.2 (unreleased)
+
+- **x86 Linux apps** can be switched off again (#751). `omacvm disable x86-apps` and the control centre
+  ended with "x86 Linux apps was not set up" and put the feature back on (exit 4), on Omarchy 4.0 and
+  4.5: `pacman -R` was also given `box64`, a name OmacVM's package `omacvm-box64` only provides, and
+  stopped with "target not found". The same would have stopped the next box64 update. Update VM, then
+  switch it off.
+- **x86 Linux apps** on VMs built with Omarchy 4.5: after a restart, x86_64 programs went to qemu-user
+  instead of box64 and every dynamic one failed ("Could not open '/lib64/ld-linux-x86-64.so.2'", #752).
+  Omarchy 4.5's qemu-user rule for x86_64 was loaded after box64's. While x86 apps is on, OmacVM now
+  holds that one rule back (`/etc/binfmt.d/qemu-x86_64-static.conf`, removed when off; qemu-user's
+  other architectures stay). Update VM fixes it, no restart and no box64 build. `omacvm check`'s
+  "x86 apps" row now says which rule gets x86_64 programs when it is not box64's.
+
 ## 3.4.1
 
 - **Omanotch** on Omarchy 4.5 with Skip the notch (#734): the tray's hidden icons open next to the
