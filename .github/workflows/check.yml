@@ -652,6 +652,9 @@ jobs:
       - name: The move to Omarchy 4.5 (preflight, steps, resume, keyring, report), its repo files, pkg-add's marking
         run: src/tests/omarchy-move.sh
 
+      - name: Test disk images made with a time limit (hdiutil create hung in newfs_hfs on the mini's CI host)
+        run: src/tests/hdiutil-create-test.sh
+
       - name: OmacVM.app moves VM folders safely (fixtures, small disk images)
         run: src/tests/app-storage.sh
 
