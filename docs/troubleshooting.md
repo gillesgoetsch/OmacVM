@@ -81,6 +81,14 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   OmacVM.app with **Keep the Dock and hot corners away** on (the default)
   hides it anyway; with that setting off, **Full screen including notch**
   starts as normal full screen. `omacvm check` points this out.
+- **The strip beside the notch stays black after you open the lid**
+  (OmacVM.app, **Full screen including notch**, the VM started with the lid
+  closed and only an external display on): leave full screen and enter it
+  again with the window on the MacBook's display. If the strip is still
+  black, start the VM again with the lid open. From 3.4.1 such a start uses
+  the notch the app saw last on this Mac and is meant to take the strip once
+  the lid is open (#716); that step is so far shown only by QEMU's own tests,
+  not yet with a real lid.
 - **A keyboard sharing app (Synergy, Deskflow, Barrier, Input Leap) loses
   the keyboard to the VM**: the VM types what was meant for the other
   computer. Turn on the hidden switch in
