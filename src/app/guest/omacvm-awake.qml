@@ -2,8 +2,12 @@
 // (its screensaver and lock) while a Firefox video plays where it can be seen. Firefox tells its wake lock
 // only to org.freedesktop.ScreenSaver (the agent serves it), never to Wayland, and Omarchy's shell waits only
 // for Wayland's idle inhibitors. A 1x1 transparent surface that takes no input and reserves no space, with an
-// IdleInhibitor that is on only while the agent's lease is fresh ($XDG_RUNTIME_DIR/omacvm/guest-awake,
-// {"until": unix seconds}, renewed every 10 s): a hung agent lets go within 25 s.
+// IdleInhibitor. It quits when the agent's lease ($XDG_RUNTIME_DIR/omacvm/guest-awake, {"until": unix
+// seconds}, renewed every 10 s) is missing or stale: a hung agent lets go within about 30 s.
+//
+// Hyprland 0.56 looks at a layer surface's inhibitor only when the inhibitor is made or goes (and when a
+// window maps or unmaps): one made before the surface is mapped never counts, and one switched off and on
+// lets the idle timers start again. So it is made once, 2 s after the start, and never switched off.
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -11,7 +15,7 @@ import Quickshell.Wayland
 
 ShellRoot {
   id: root
-  property bool fresh: false
+  property bool armed: false
 
   function look() {
     let until = 0
@@ -20,24 +24,28 @@ ShellRoot {
     } catch (e) {
       until = 0
     }
-    root.fresh = until > Date.now() / 1000
+    if (until <= Date.now() / 1000)
+      Qt.quit()
   }
 
   FileView {
     id: lease
     path: Quickshell.env("XDG_RUNTIME_DIR") + "/omacvm/guest-awake"
     onLoaded: root.look()
-    onLoadFailed: root.fresh = false
+    onLoadFailed: Qt.quit()
+  }
+
+  Timer {
+    interval: 2000
+    running: true
+    onTriggered: root.armed = true
   }
 
   Timer {
     interval: 5000
     running: true
     repeat: true
-    onTriggered: {
-      lease.reload()
-      root.look()
-    }
+    onTriggered: lease.reload()
   }
 
   PanelWindow {
@@ -54,7 +62,7 @@ ShellRoot {
 
     IdleInhibitor {
       window: surface
-      enabled: root.fresh
+      enabled: root.armed
     }
   }
 }

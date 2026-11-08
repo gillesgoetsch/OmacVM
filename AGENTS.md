@@ -404,7 +404,9 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   `browser/extensions/langpack-*.xpi`; an error would move all of Firefox's locks off the name for good);
   for such a window the agent also holds Omarchy's own idle with its child
   `quickshell -p /usr/local/lib/omacvm/omacvm-awake.qml` (`GuestAwake`, a 1x1
-  IdleInhibitor surface on a 25 s lease in `$XDG_RUNTIME_DIR/omacvm/guest-awake`,
+  IdleInhibitor surface made once 2 s after it maps, as Hyprland 0.56 rechecks
+  inhibitors only when one is made or goes; it quits when the 25 s lease in
+  `$XDG_RUNTIME_DIR/omacvm/guest-awake` goes stale,
   ADR 0072); `[]` once when it ends. QEMU
   (`omacvm-cocoa-video-awake*.patch`, ui/omacvm-video-awake.h) holds
   PreventUserIdleDisplaySleep "OmacVM: the VM is playing video" while a

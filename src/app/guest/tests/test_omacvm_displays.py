@@ -1451,10 +1451,14 @@ class GuestAwakeTest(unittest.TestCase):
         self.assertIn("exclusionMode: ExclusionMode.Ignore", qml)  # reserves no space
         self.assertIn("WlrLayershell.layer: WlrLayer.Top", qml)
         self.assertIn('color: "transparent"', qml)
-        self.assertRegex(qml, r"IdleInhibitor \{\s*window: surface\s*enabled: root\.fresh\s*\}")
-        self.assertIn('"/omacvm/" + "guest-awake"'.replace('" + "', ""), qml)
+        # Made once after the surface maps, never switched (Hyprland 0.56 rechecks only when it is made or goes)
+        self.assertRegex(qml, r"IdleInhibitor \{\s*window: surface\s*enabled: root\.armed\s*\}")
+        self.assertRegex(qml, r"interval: 2000\s*running: true\s*onTriggered: root\.armed = true")
+        self.assertEqual(qml.count("armed = "), 1)
+        self.assertIn('"/omacvm/guest-awake"', qml)
         self.assertEqual(od.AWAKE.name, "guest-awake")
-        self.assertIn("root.fresh = until > Date.now() / 1000", qml)
+        self.assertIn("if (until <= Date.now() / 1000)\n      Qt.quit()", qml)   # a stale lease: it goes
+        self.assertIn("onLoadFailed: Qt.quit()", qml)
         install = (HERE.parent / "install.sh").read_text()
         self.assertIn(f"install -Dm644 omacvm-awake.qml {od.AWAKE_QML}", install)
         self.assertLess(install.index("omacvm-awake.qml"), install.index("restart omacvm-displays.service"))

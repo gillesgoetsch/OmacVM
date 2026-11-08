@@ -1261,8 +1261,8 @@ class GuestAwake:
     runs a small Quickshell of its own as its child (omacvm-awake.qml: a 1x1
     transparent surface that takes no input, with an IdleInhibitor; in the
     agent's cgroup, so it goes when the agent stops or dies) and writes the
-    lease {"until": now + AWAKE_LEASE} at each check (every 10 s). The surface
-    inhibits only while the lease is fresh: a hung agent lets go within 25 s.
+    lease {"until": now + AWAKE_LEASE} at each check (every 10 s). The child
+    quits when the lease is stale: a hung agent lets go within about 30 s.
     Stopped as soon as no Firefox window counts. A start whose surface is not
     in Hyprland's j/layers within AWAKE_SETTLE fails (an old Quickshell without
     IdleInhibitor, say); after AWAKE_TRIES failures the agent stops trying and

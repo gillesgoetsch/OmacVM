@@ -67,10 +67,19 @@ anyway. Accepting the D-Bus call alone would gain about 30 s.
    cgroup, so it goes when the agent stops or dies) and writes the lease
    `$XDG_RUNTIME_DIR/omacvm/guest-awake` (`{"until": now + 25 s}`) at each
    check. The QML is a 1x1 transparent layer surface at the top left (Top
-   layer, an empty input mask, no exclusive zone) with an `IdleInhibitor`
-   that is on only while the lease is fresh: a hung agent lets go within
-   25 s. Hyprland counts a layer surface's inhibitor whatever the layer, so
-   nothing has to sit above a full-screen video. The child is stopped when no
+   layer, an empty input mask, no exclusive zone) with an `IdleInhibitor`.
+   The child quits when the lease is missing or stale: a hung agent lets go
+   within about 30 s. Hyprland 0.56 (`CInputManager::recheckIdleInhibitorStatus`)
+   looks at the inhibitors only when one is made or goes and when a window
+   maps or unmaps, and counts a layer surface's only while it is mapped: an
+   inhibitor made before the surface maps never counts, and one switched off
+   and on starts Omarchy's idle timers again. So the inhibitor is made once,
+   2 s after the start, and never switched; the lease ends the process
+   instead. (The first build switched it with the lease and made it at once:
+   Omarchy's screensaver came at 150 s and the lock at 300 s in row R7; the
+   plan step's spike had held only because Firefox's own window mapped after
+   the spike's surface.) Hyprland counts a mapped layer surface's inhibitor
+   whatever the layer, so nothing has to sit above a full-screen video. The child is stopped when no
    Firefox window counts, on SIGTERM, and a leftover lease is removed at the
    agent's start. A start whose surface is not in Hyprland's `j/layers`
    within 15 s fails; after 3 failures the agent stops trying until it
