@@ -646,6 +646,9 @@ jobs:
       - name: OmacVM's edits of Omarchy's shell on omarchy-mac's and upstream's files (toasts, display panels, night light indicator)
         run: src/tests/omarchy-shell.sh
 
+      - name: OmacVM's bar widgets read the bar's colours and font only through a guard (no TypeError lines at a shell restart)
+        run: src/tests/plugin-bar-null.sh
+
       - name: Per-display workspaces step aside on Omarchy 4.5 and keep the rest of bindings.lua
         run: src/tests/workspaces-45.sh
 
