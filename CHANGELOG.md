@@ -26,14 +26,12 @@ in more words.
   VMs). Omarchy's own bar toggle and the bars in the notch strip work as before. Update VM brings it
   (bar patch v39).
 - **Full screen including notch after a start with the lid closed** (#716, reported by @hadiskeini):
-  a VM started with the MacBook's lid closed (an external display only) now covers the strip beside
-  the notch once the lid is opened and the external display unplugged, without a restart (it stayed
-  black until the VM was started again). OmacVM.app remembers this Mac's notch (measured whenever it
-  sees the built-in display; never another Mac's) and uses it while the built-in display is off;
-  QEMU takes the strip once the full screen is on the MacBook's display. `omacvm check` no longer
-  warns while such a full screen is on an external display. After the update the app has to see the
-  built-in display once (opened with the lid open) before a start with the lid closed can use its
-  notch.
+  OmacVM.app remembers this Mac's notch (measured whenever it sees the built-in display; never
+  another Mac's) and uses it for a VM started while the built-in display is off (lid closed, an
+  external display only); QEMU takes the strip beside the notch once the full screen is on the
+  MacBook's display. `omacvm check` no longer warns while such a full screen is on an external
+  display. After the update the app has to see the built-in display once (opened with the lid open)
+  before a start with the lid closed can use its notch.
 - **Mac input methods** (experimental): in Omarchy 4.5's menu (Super+Space) the Mac's candidate
   window now opens at the menu's text cursor. 3.4.0 put it off by the origin of the window under the
   menu, or at the last click when no window was open. The same rule covers text fields in other
