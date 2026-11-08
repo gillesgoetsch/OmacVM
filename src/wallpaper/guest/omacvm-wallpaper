@@ -3,19 +3,45 @@
 # OmacVM Bridge makes it the wallpaper on every display (and so the lock
 # screen's background). Run by omacvm-wallpaper.path whenever the theme or
 # background changes, and once at login. Sends a picture only once.
+# A video background (Omarchy 4.5) or an animated picture sends its first
+# frame. Nothing is sent when no picture comes out of it (#747).
 set -euo pipefail
 CUR=$HOME/.local/state/omarchy/current
+state=${XDG_STATE_HOME:-$HOME/.local/state}/omacvm/wallpaper-sent
+# Up to 3.4.1 a video background left one PNG per frame in /tmp (the VM's
+# memory) at every try: this user's go, once.
+gone=${state%/*}/wallpaper-frames-gone
+if [[ ! -e $gone ]]; then
+  for f in "${TMPDIR:-/tmp}"/tmp.??????????-*.png; do
+    [[ -f $f && -O $f && ${f##*/tmp.??????????-} =~ ^[0-9]+\.png$ ]] && rm -f "$f"
+  done
+  mkdir -p "${gone%/*}"; : > "$gone"
+fi
 bg=$(readlink -f "$CUR/background" 2>/dev/null) || exit 0
 [[ -f $bg ]] || exit 0
 name=$(cat "$CUR/theme.name" 2>/dev/null || true)
-state=${XDG_STATE_HOME:-$HOME/.local/state}/omacvm/wallpaper-sent
 key="$bg $(stat -c %Y "$bg")"
 [[ -f $state && $(<"$state") == "$key" ]] && exit 0
 src=$bg
-case $(file -b --mime-type "$bg") in
+mime=$(file -b --mime-type "$bg")
+case $mime in
   image/png|image/jpeg) ;;
-  *) src=$(mktemp --suffix .png); trap 'rm -f "$src"' EXIT; magick "$bg" -strip "$src" ;;
+  *)
+    src=$(mktemp --suffix .png); trap 'rm -f "$src" "${src%.png}"-[0-9]*.png' EXIT
+    # One picture: magick writes one file per frame of a video or an animation
+    # and leaves $src empty. ffmpeg decodes only a video's first frame.
+    case $mime in
+      video/*)
+        if ! command -v ffmpeg >/dev/null; then
+          echo "omacvm-wallpaper: ${bg##*/} is a video and ffmpeg is not installed: not sent"; exit 0
+        fi
+        timeout 30 ffmpeg -nostdin -v error -y -i "$bg" -frames:v 1 -update 1 "$src" || true ;;
+      *) timeout 60 magick "${bg}[0]" -strip "$src" || true ;;
+    esac ;;
 esac
+if [[ ! -s $src ]]; then
+  echo "omacvm-wallpaper: no picture from ${bg##*/} ($mime): not sent"; exit 0
+fi
 omacvm-bridge wallpaper "$src" "$name" >/dev/null
 mkdir -p "$(dirname "$state")"
 printf '%s' "$key" > "$state"

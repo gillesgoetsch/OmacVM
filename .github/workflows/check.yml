@@ -977,6 +977,9 @@ jobs:
       - name: The Mac's Night Shift from Omarchy's menu and keys (#748); OmacVM's folder ahead of Omarchy's bin, --status's time limit, check's line, the one shell restart
         run: LUA=/tmp/lua-5.5.0/src/lua src/tests/nightlight-path.sh
 
+      - name: A video or animated background sends the Mac its first frame, never an empty picture (#747)
+        run: src/tests/wallpaper-video.sh
+
       - name: No tap-to-click on the virtual trackpad (a pinch's start was a right click on Omarchy 4.5); input.lua parses as Lua 5.5; check's line
         run: |
           LUAC=/tmp/lua-5.5.0/src/luac src/gestures/guest/test-install-gestures.sh

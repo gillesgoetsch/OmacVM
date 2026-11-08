@@ -14,6 +14,12 @@ in more words.
   unlock when the VM is locked). `omacvm check`'s "Night Shift toggle" line now reads what the
   running shell really runs and names the key only where there is one. 4.5's menu also reads the
   Mac's Night Shift for its row: when the Bridge does not answer within 2 s, the row says off.
+- **Wallpaper with a video background** (#747): on Omarchy 4.5, which can play a video as the
+  background, the Mac's wallpaper now becomes the video's first frame. Before, OmacVM sent the Mac an
+  empty picture, the Mac refused it and kept the old wallpaper, and each try left one picture per
+  frame of the video in the VM's `/tmp` (its memory). An animated picture also sends its first frame.
+  When no picture comes out of a file, nothing is sent. Update VM brings it (it adds ffmpeg where it
+  is missing) and removes the frame files once.
 
 ## 3.4.1
 
