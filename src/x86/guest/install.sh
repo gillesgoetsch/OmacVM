@@ -142,7 +142,7 @@ if [[ $1 == off ]]; then
   fi
   # After pacman: a removal that failed keeps qemu-user's rule held back.
   gave=no
-  if give_back; then gave=yes; echo "x86 apps: qemu-user's x86_64 rule back"; fi
+  if give_back; then gave=yes; echo "x86 apps: OmacVM's ${QEMU_HOLD#"$ROOT"} removed"; fi
   if (( ${#rm[@]} )); then
     binfmt_reload off
     ! registered || { echo "x86 apps: box64 removed, but its binfmt rule is still there (reboot)" >&2; exit 1; }

@@ -251,6 +251,7 @@ expect "off, 4.5: package removed, OmacVM's hold gone, one reload" "0 yes none 1
   "$CODE $(called "pacman -Rns --noconfirm omacvm-box64") $(hold) $(count "systemctl restart systemd-binfmt")"
 expect "off, 4.5: qemu-user's rules back, box64's gone" "qemu-i386 qemu-x86_64" "$(entries)"
 expect "off, 4.5: nothing of OmacVM's left in /etc/binfmt.d" "" "$(ls -A "$E" 2>/dev/null)"
+expect "off, 4.5: says what it removed" "x86 apps: removing box64|x86 apps: OmacVM's /etc/binfmt.d/qemu-x86_64-static.conf removed" "$(paste -sd'|' - <<<"$OUT")"
 boot
 expect "off, 4.5, after a restart: as before x86 apps" "qemu-i386 qemu-x86_64" "$(entries)"
 HOLD=ours QEMU=yes run off
