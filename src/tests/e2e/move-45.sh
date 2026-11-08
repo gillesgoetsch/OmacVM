@@ -30,7 +30,7 @@
 # app without a window (OMACVM_COCOA_HIDDEN), needs OMACVM_SIGN_ID (the
 # Developer ID, to sign the update it offers) and holds
 # ~/.omacvm-test-identity.lock while the app runs; disk-lock opens the test
-# app's window (no input; only when nobody uses the Mac: HID idle > 300 s and
+# app's window (no input; only when nobody uses the Mac: HID idle > 60 s and
 # the screen unlocked, else that row is BLOCKED). Both want a compiled test
 # build of the commit (the app's Swift side is tested), not scripts only.
 # Each run of a row writes DIR/rows/ROW-<base>-<mac>-<time>.json: {row, base,
@@ -80,10 +80,10 @@ app/app/Sources/OmacVM/OmarchyMoveCard.swift app/app/Sources/OmacVM/DiskView.swi
 src/tests/e2e/move-45.sh src/tests/e2e/move-45-result.py"
 
 usage() { sed -n '2,40s/^# \{0,1\}//p' "$0"; exit 2; }
-# On screen (MACS-1030d): nobody at the Mac for 5 minutes and the screen unlocked.
+# On screen (MACS-1030d): nobody at the Mac for 60 s and the screen unlocked.
 hid_idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'; }
 screen_locked() { [[ $(ioreg -n Root -d1 -a | plutil -extract IOConsoleUsers.0.CGSSessionScreenIsLocked raw - 2>/dev/null) == true ]]; }
-onscreen_ok() { (( $(hid_idle) > 300 )) && ! screen_locked; }
+onscreen_ok() { (( $(hid_idle) > 60 )) && ! screen_locked; }
 # The app's own decision (Updater.swift): "install V deferred: why" when it waits; "handing over to
 # update-swap.sh, quitting" when it goes ahead and only the swap's process check could stop it.
 held_deferred() { [[ $1 == *" deferred"* && $1 != *"handing over"* ]]; }

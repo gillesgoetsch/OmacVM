@@ -566,6 +566,11 @@ jobs:
           app/runtime/Tests/display/test-fullpanel-retake.sh
           app/runtime/Tests/display/test-fullpanel-retake.sh --self-test
 
+      - name: Full screen including notch after a start with the lid closed (issue 716; the checks catch the old code)
+        run: |
+          app/runtime/Tests/display/test-fullpanel-late-arm.sh
+          app/runtime/Tests/display/test-fullpanel-late-arm.sh --self-test
+
       - name: HDR's headroom for the guest (ADR 0049; the checks catch code without it)
         run: app/runtime/Tests/display/test-hdr-headroom.sh
 
@@ -952,7 +957,14 @@ jobs:
       - name: Hyprland Lua files parse (omacvm_app.lua), and keep the outputs' rules over a config reload
         run: |
           # Hyprland 0.56 runs Lua 5.5 (a loop variable is read-only there; 5.4 accepts it)
-          curl -fsSL -o /tmp/lua.tgz https://www.lua.org/ftp/lua-5.5.0.tar.gz
+          # www.lua.org's download fails now and then: retries, then PUC-Rio's copy of
+          # the same file; either must have the pinned SHA-256.
+          for u in https://www.lua.org/ftp/lua-5.5.0.tar.gz https://www.tecgraf.puc-rio.br/lua/ftp/lua-5.5.0.tar.gz; do
+            rm -f /tmp/lua.tgz
+            curl -fsSL --retry 3 --retry-all-errors --retry-delay 10 --max-time 120 -o /tmp/lua.tgz "$u" &&
+              echo "57ccc32bbbd005cab75bcc52444052535af691789dba2b9016d5c50640d68b3d  /tmp/lua.tgz" | sha256sum -c - && break
+            echo "::warning::Lua 5.5.0 from $u failed"
+          done
           echo "57ccc32bbbd005cab75bcc52444052535af691789dba2b9016d5c50640d68b3d  /tmp/lua.tgz" | sha256sum -c -
           tar -xzf /tmp/lua.tgz -C /tmp && make -s -C /tmp/lua-5.5.0 linux >/dev/null
           /tmp/lua-5.5.0/src/luac -p src/app/guest/omacvm_app.lua src/omanotch/guest/hypr/notchbar.lua src/guest/omacvm_vm.lua
@@ -961,6 +973,11 @@ jobs:
 
       - name: Transparent panels on Hyprland 0.57 (#630) on every route; omacvm_vm.lua, its installer, its check line
         run: LUA=/tmp/lua-5.5.0/src/lua src/tests/dmabuf-alpha.sh
+
+      - name: No tap-to-click on the virtual trackpad (a pinch's start was a right click on Omarchy 4.5); input.lua parses as Lua 5.5; check's line
+        run: |
+          LUAC=/tmp/lua-5.5.0/src/luac src/gestures/guest/test-install-gestures.sh
+          src/tests/trackpad-taps.sh
 
       - name: omacvm check's HDR line says what Hyprland's SDR copy does (the check catches code without it)
         run: src/tests/hdr-copy-check.sh

@@ -622,7 +622,7 @@ step_publish() {
   local nf; nf=$(notes_file)
   local assets=("$FILES/OmacVM-$VERSION.zip" "$FILES/OmacVM-$VERSION.zip.sha256" "$FILES/OmacVM-appcast.json"
     "$FILES/OmacVM-appcast.json.sig" "$FILES/omacvm-manifest.json" "$FILES/omacvm-manifest.json.sig")
-  local imgcmd="(cd $WT && OMACVM_PREBUILT_OUT=$OUT/prebuilt-up OMACVM_PREBUILT_TARGET=$m src/prebuilt/make-image.sh app upload)"
+  local imgcmd="(cd $(printf %q "$WT") && OMACVM_PREBUILT_OUT=$(printf %q "$OUT/prebuilt-up") OMACVM_PREBUILT_TARGET=$m src/prebuilt/make-image.sh app upload)"
   if (( DRY )); then
     note "dry run, would run:"
     (( have )) && note "  $imgcmd" && note "  then check prebuilt-$VERSION on GitHub against $img (image_published)"

@@ -69,7 +69,7 @@ not only at their start (`person.sh`):
 - Someone is there while a remote session is open (Screen Sharing: its
   "Remote user is connected", screensharingd, an established connection on
   port 5900; Jump Desktop: its rtcproxy or desktopproxy), also one nobody
-  touches, or when input that was not ours came in the last 5 minutes. Our
+  touches, or when input that was not ours came in the last 60 s. Our
   own events (keys posted to QEMU, the on-screen test's moves and clicks)
   reset macOS's HID idle time too: the harness stamps them
   (`~/Library/Caches/omacvm-e2e-last-input`).
@@ -182,7 +182,7 @@ button stands in). A copy outside the Applications folders asks to be
 installed: the test runs it without installing. Helpers of the copy that the
 run started (its Bridge) are stopped at the end.
 
-On screen only while nobody uses the Mac: no input for 300 s but the test's
+On screen only while nobody uses the Mac: no input for 60 s but the test's
 own (its last event, also a run's before, in `~/Library/Caches/omacvm-e2e-last-input`), no Jump Desktop or Screen Sharing session (also one left alone), the screen unlocked. Someone
 between two rows: the app's windows hidden, a wait (above); someone inside a
 row: that row BLOCKED. Someone who stays, CI runners still on jobs (with
@@ -352,7 +352,7 @@ Bases: 4.0 VMs of every age we shipped (a VM from prebuilt-3.0.0, one from
 prebuilt-3.0.8, a fresh 4.0.3rc4 build with more features), powered off, in
 the test app's VMs folder. The caller holds the Mac's VM lock and memory
 gate; nothing shows on the screen but `disk-lock`, which opens the test
-app's window only when nobody is at the Mac (HID idle over 5 minutes, the
+app's window only when nobody is at the Mac (HID idle over 60 s, the
 screen unlocked; else BLOCKED). `app-guards` and `disk-lock` need a
 compiled test build of the commit and hold `~/.omacvm-test-identity.lock`
 (so does the guest check while the test app runs the VM).

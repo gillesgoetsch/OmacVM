@@ -88,7 +88,11 @@ is full too. The menu and the clock at the far right stay put, and bars on
 other displays are not touched. Omarchy's hidden indicators (Dictate, Screen
 Recording and the others) open where they are when they fit right of the
 notch; when they don't, they open left of it, so the rest of the bar stays
-where it is and the notch looks untouched until you point at the bar. The bar patch does the layout
+where it is and the notch looks untouched until you point at the bar. Omarchy
+4.5's tray counts with its drawer open: it sits where the drawer opens in full,
+and does not move while the drawer slides open; what jumps left of the notch
+keeps clear of the room 4.5's hidden indicators open into there (so on a full
+bar a few more items hide there than on 4.0). The bar patch does the layout
 (`notchSkipPlace`); the app tells the VM through `/run/omacvm/host.env`
 (`OMACVM_NOTCHSKIP=1`) and `/run/omacvm/notch-skip`.
 
@@ -235,6 +239,7 @@ up by itself.
 | No bar for a few seconds after login | the strip showed at the end of the last session, so the bar started in the strip (`~/.local/state/omanotch/expect` says `1 <output>`). With the VM windowed now, Omanotch gives the bar back as soon as it connects; an older Omanotch, or none running, after 8 s, and the next login starts normally. A Mac restart or an Omanotch quit with the VM running keeps the hint |
 | OmacVM.app: the strip stays black | `~/Library/Logs/omanotch.log` ("refused a connection on 127.0.0.1: …", or on 192.168.77.1 on the fast network) · in the VM: `journalctl --user -u notchcast` ("answered no proof": the Mac's Omanotch is older than the VM's, update it) |
 | Strip shows another VM's bar | two VMs of one app are connected: Omanotch tells apps apart, not VMs of one app (`~/Library/Logs/omanotch.log`: "strip serves guest …"); stop the other VM or restart its `notchcast` |
+| No bar on the built-in display after the notch strip went away (Omarchy 4.0, bar patch v37 and older) | `hyprctl layers`: the bar at `0,-1`, 1 px tall, and `hyprctl monitors`: reserved top 0, so the parked window kept its size (#727). `omarchy-toggle-bar` twice, or any window opened on that display, brings it back; Update VM gives patch v39, which maps the bar's window again when the notch park ends |
 | Mouse lands in the wrong place | `hyprctl monitors` → `NOTCH` must have the built-in display's x and width, and sit at its position (OmacVM.app: right above it, touching its top edge) |
 | Panels open on the wrong screen | `NOTCHBAR_SCREEN` must name the built-in display (OmacVM.app: `$XDG_RUNTIME_DIR/omacvm/builtin` does, `omacvm check` → "notch display") |
 

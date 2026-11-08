@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 37)
+        self.assertEqual(V, 39)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -684,7 +684,8 @@ class RealOmarchy(unittest.TestCase):
             self.assertEqual(full.count("transform: Translate { x: slot.notchShift ? slot.notchShownX - (slot.notchEnd ? slot.width : 0) - slot.notchPlaceX : 0 }"), 1)
             # The housing's centre widths, and the after list named for them.
             if is_45(stock):
-                self.assertIn("? [beginList.notchRest, centerBox.width + endList.notchRest] : [0, 0]", full)
+                self.assertIn("? [beginList.notchRest, centerBox.notchRest + endList.notchRest, beginList.notchPeekMore] : [0, 0]", full)
+                self.assertEqual(full.count("    readonly property real notchRest: boxList.notchRest\n"), 1)
             else:
                 self.assertEqual(full.count("id: notchCentreAfter"), 1)
                 self.assertIn("? [notchCentreBefore.width, centerAnchorModule.width + notchCentreAfter.width]", full)
@@ -739,14 +740,16 @@ class RealOmarchy(unittest.TestCase):
         full = self.full(stock)
         widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
         rest = re.search(r"    readonly property real notchRest: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        more = re.search(r"    readonly property real notchPeekMore: \{\n(.*?)\n    \}\n", full, re.S).group(1)
         js = """
 var children = [ {}, { notchSlotIndex: 2, width: 40, notchPeekFull: 0 }, { notchSlotIndex: 0, width: 30, notchPeekFull: 0 },
                  { width: 50 }, { notchSlotIndex: 1, width: 90, notchPeekRest: 22, notchPeekFull: 68 } ];
 var notchWidths = (function () { WIDTHS })();
-console.log(JSON.stringify([notchWidths, (function () { REST })()]));
-""".replace("WIDTHS", widths).replace("REST", rest)
+console.log(JSON.stringify([notchWidths, (function () { REST })(), (function () { MORE })()]));
+""".replace("WIDTHS", widths).replace("REST", rest).replace("MORE", more)
         out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
-        self.assertEqual(json.loads(out.stdout), [[30, [90, 22, 68], 40], 92])
+        # The indicators' peek widens the list by their hidden ones (68).
+        self.assertEqual(json.loads(out.stdout), [[30, [90, 22, 68], 40], 92, 68])
         self.assertIn("            notchSlotIndex: moduleListRoot.keys.indexOf(modelData.key)\n", full)
         self.assertIn("onKeysChanged: if (notchShift && notchShift.animate)", full)
 
@@ -818,8 +821,10 @@ console.log(JSON.stringify(out))
             full = self.full(stock)
             bar, backup = self.dir / "Bar.qml", self.dir / "Bar.qml.before-notchbar"
             backup.write_text(stock)
-            # An older version (3.1.2 had v21), a version line alone, each piece missing.
-            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v21"), VERSION_LINE + "\n"]
+            # An older version (3.1.2 had v21; 3.4.0 v37; v38 = the test builds of
+            # #733 and #735 alone), a version line alone, each piece missing.
+            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v%d" % v) for v in (21, 37, 38)]
+            olds.append(VERSION_LINE + "\n")
             mod = load_patch()
             olds += [full.replace(p, "") for p in (mod.PIECES_45 if is_45(stock) else mod.PIECES)]
             for old in olds:
@@ -852,6 +857,98 @@ SKIP = r"""
 function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) { BODY }
 console.log(JSON.stringify(CASES.map(function (c) { return place.apply(null, c) })));
 """
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class ParkEnd(unittest.TestCase):
+    """#727: the window is mapped again when the notch park ends, and only
+    then (not on Omarchy's own bar toggle, not on the NOTCH or FullPanel bars).
+    The patch's own notchRoleFor and notchParkEnd run per window as QML runs
+    them: notchParkEnd at the window's start and on each notchRoleChanged."""
+
+    JS = r"""
+const root = { position: "top", notchParked: false, notchParkedScreen: "Virtual-1",
+               notchPanelOn: false, notchPanelScreen: "Virtual-1", barHidden: false };
+function notchRoleFor(s) { with (root) { ROLE } }
+function win(name) {
+  const w = { screen: { name: name }, notchRole: "" };
+  const r = { remapping: false, roleWas: "", remaps: 0 };
+  r.notchParkEnd = function () { with (r) { const barWindow = w; PARKEND } };
+  w.update = function () {
+    const role = notchRoleFor(w.screen);
+    if (role === w.notchRole) return;
+    w.notchRole = role; r.remapping = false; r.notchParkEnd(); if (r.remapping) r.remaps++;
+  };
+  w.notchRole = notchRoleFor(w.screen); r.notchParkEnd();
+  return { w: w, r: r };
+}
+const steps = STEPS;
+const wins = {};
+for (const st of steps) {
+  if (st.window) { wins[st.window] = win(st.window); continue; }
+  Object.assign(root, st.set);
+  for (const k in wins) wins[k].w.update();
+}
+const out = {};
+for (const k in wins) out[k] = wins[k].r.remaps;
+console.log(JSON.stringify(out));
+"""
+
+    def remaps(self, steps, text=None):
+        text = text or patched()
+        js = (self.JS.replace("ROLE", function(text, "notchRoleFor")).replace("PARKEND", function(text, "notchParkEnd"))
+              .replace("STEPS", json.dumps(steps)))
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def test_the_notch_unpark_maps_the_bar_again(self):
+        out = self.remaps([{"window": "Virtual-1"}, {"window": "NOTCH"},
+                           {"set": {"notchParked": True}}, {"set": {"notchParked": False}},
+                           {"set": {"notchParked": True}}, {"set": {"notchParked": False}}])
+        self.assertEqual(out, {"Virtual-1": 2, "NOTCH": 0})
+
+    def test_a_bar_started_parked_too(self):
+        out = self.remaps([{"set": {"notchParked": True}}, {"window": "Virtual-1"}, {"set": {"notchParked": False}}])
+        self.assertEqual(out, {"Virtual-1": 1})
+
+    def test_not_on_omarchys_own_bar_toggle(self):
+        steps = [{"window": "Virtual-1"}, {"window": "Virtual-2"}, {"window": "NOTCH"}]
+        steps += [{"set": {"barHidden": h}} for h in (True, False, True, False)]
+        self.assertEqual(self.remaps(steps), {"Virtual-1": 0, "Virtual-2": 0, "NOTCH": 0})
+        # Hidden by Omarchy while the strip shows: the park's end alone remaps.
+        steps = [{"window": "Virtual-1"}, {"set": {"barHidden": True}}, {"set": {"notchParked": True}},
+                 {"set": {"barHidden": False}}, {"set": {"barHidden": True}}, {"set": {"notchParked": False}},
+                 {"set": {"barHidden": False}}]
+        self.assertEqual(self.remaps(steps), {"Virtual-1": 1})
+
+    def test_not_on_the_notch_or_fullpanel_bars(self):
+        steps = [{"window": "Virtual-1"}, {"window": "NOTCH"},
+                 {"set": {"notchPanelOn": True}}, {"set": {"notchPanelOn": False}},
+                 {"set": {"notchPanelOn": True}}, {"set": {"barHidden": True}}, {"set": {"barHidden": False}},
+                 {"set": {"notchPanelOn": False}}, {"set": {"notchParked": True}}]
+        self.assertEqual(self.remaps(steps), {"Virtual-1": 0, "NOTCH": 0})
+        # The park moving to another output ends it on the first one only.
+        steps = [{"window": "Virtual-1"}, {"window": "Virtual-2"}, {"set": {"notchParked": True}},
+                 {"set": {"notchParkedScreen": "Virtual-2"}}, {"set": {"notchParked": False}}]
+        self.assertEqual(self.remaps(steps), {"Virtual-1": 1, "Virtual-2": 1})
+
+    def test_wired_to_the_role_in_every_omarchy(self):
+        # The window's remap item runs it at its start and on each role change,
+        # and nothing else in the window remaps on a park change.
+        for bar in SHELLS:
+            with self.subTest(omarchy=bar.parts[-5]):
+                d = pathlib.Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, d)
+                f = d / "Bar.qml"
+                f.write_text(bar.read_text())
+                self.assertEqual(patch_file(f).returncode, 0)
+                full = f.read_text()
+                item = re.search(r"\n    Item \{\n      id: notchRemap\n(.*?)\n    \}\n", full, re.S).group(1)
+                self.assertIn("      Component.onCompleted: { note(); notchParkEnd() }\n", item)
+                self.assertIn("        target: barWindow\n        function onNotchRoleChanged() { notchRemap.notchParkEnd() }\n", item)
+                self.assertEqual(full.count("notchParkEnd()"), 3)   # its definition, the start, the role change
+                self.assertNotIn("onParkedChanged", full)
+                self.assertEqual(self.remaps([{"window": "Virtual-1"}, {"set": {"notchParked": True}},
+                                              {"set": {"notchParked": False}}], full), {"Virtual-1": 1})
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
@@ -985,6 +1082,22 @@ class SkipTheNotch(unittest.TestCase):
         got = self.shown(r, "right", self.starts_right(right))
         self.assertGreaterEqual(got[10][0], wall_r)
         self.assertEqual([g for g, s in zip(got, r["right"]) if s["x"]], [[wall_l - 8 - 24 * (10 - i), False] for i in range(10)])
+
+    def test_overflow_clear_of_the_indicators_peek(self):
+        # Omarchy 4.5: the indicators left of the housing (60 at rest) open
+        # their hidden ones (84) towards the bar's start on a peek, over what
+        # lies there, and take its hover. The right side's overflow keeps
+        # clear of that room; the left side's own items and everything that
+        # fits are as before.
+        wall_l, wall_r = 640.5 - 6 - 60, 829.5 + 6 + 100
+        right = [24] * 25 + [150]
+        r = self.one([20, 100], right, beside=[60, 100, 84])
+        got = self.shown(r, "right", self.starts_right(right))
+        self.assertEqual([g for g, s in zip(got, r["right"]) if s["x"]], [[wall_l - 84 - 8 - 24 * (10 - i), False] for i in range(10)])
+        left = [20] + [26] * 25
+        self.assertEqual(self.one(left, [24] * 5 + [150], beside=[60, 100, 84]), self.one(left, [24] * 5 + [150], beside=[60, 100]))
+        self.assertEqual(self.one([20, 100], [24] * 5 + [150], beside=[60, 100, 84]),
+                         self.one([20, 100], [24] * 5 + [150], beside=[60, 100]))
 
     def test_workspaces_growing_and_shrinking(self):
         counts = [10, 22, 23, 24, 30, 24, 23, 10]
@@ -1920,6 +2033,226 @@ console.log(JSON.stringify([chev({ text: "\\uf053" }), chev({ text: "\\uf054" })
 """.replace("CHEV", function(text, "notchIsChevron")).replace("DX", function(text, "notchTrayDx"))
         out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
         self.assertEqual(json.loads(out.stdout), [True, True, False, False, -48, -48, 48, 0])
+
+
+# Omarchy 4.5's tray grows as its drawer slides open (4.0's keeps the drawer's
+# room all the time). Skip the notch on the bar beside the notch, as on the
+# M1 Max 14-inch at 1512 pt (housing 663.5-848.5, FullPanel): the right list's
+# widths from the patched ModuleList (notchWidths) at each step of the slide,
+# laid out by notchSkipPlace, as the bar does each frame. Out per step: the
+# tray's span on the bar [start, end] or "hidden".
+TRAY_SKIP = r"""
+var root = { notchIsTray: function (item) { NOTCHISTRAY } };
+function widths(children) { WIDTHS }
+function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) { PLACE }
+function slide(closed, drawer, others, left, beside) {
+  var out = [];
+  for (var k = 0; k <= 10; k++) {
+    var r = k / 10;
+    var tray = { expanded: r > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer,
+                 revealExtent: drawer * r, revealProgress: r };
+    var children = [{ notchSlotIndex: 0, width: closed + drawer * r, notchPeekFull: 0, activeItem: tray }];
+    for (var i = 0; i < others.length; i++) children.push({ notchSlotIndex: i + 1, width: others[i], notchPeekFull: 0 });
+    var right = widths(children);
+    var p = place(1512, 8, left, right, [663.5, 848.5], beside, 6, 8, 24, null, 12);
+    var s = p.right[0], w = closed + drawer * r;
+    out.push(s.hidden ? "hidden" : [s.n + s.x, s.n + s.x + w]);
+  }
+  return out;
+}
+console.log(JSON.stringify(CASES.map(function (c) { return slide.apply(null, c) })));
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class TrayBesideTheNotch(unittest.TestCase):
+    """Omarchy 4.5's tray drawer beside the notch with Skip the notch on: the
+    layout decides where the tray goes by its width with the drawer open, so
+    the drawer opens in place, in visible room, and the tray never moves
+    while it slides (it jumped over the housing mid-slide and closed as the
+    pointer lost it)."""
+
+    HOUSING = (663.5, 848.5)
+
+    def slides(self, *cases):
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        f = d / "Bar.qml"
+        f.write_text(stock)
+        self.assertEqual(patch_file(f).returncode, 0)
+        full = f.read_text()
+        widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        js = (TRAY_SKIP.replace("NOTCHISTRAY", function(full, "notchIsTray")).replace("WIDTHS", widths)
+              .replace("PLACE", function(full, "notchSkipPlace")).replace("CASES", json.dumps(cases)))
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def check(self, steps, side, beside=None):
+        # Left of the housing: clear of the indicators beside it at rest and
+        # of the room their peek opens into (beside[0], beside[2]).
+        wall = self.HOUSING[0] - 6 - (beside[0] + beside[2] if beside and len(beside) > 2 else 0)
+        for step in steps:
+            self.assertNotEqual(step, "hidden", steps)
+            a, b = step
+            # Visible room: clear of the housing, on the side it started on.
+            self.assertTrue(b <= wall if side == "left" else a >= self.HOUSING[1], steps)
+        # The drawer grows from the edge the tray keeps (its end): that edge
+        # never moves, so neither do the pinned icons and the chevron under
+        # the pointer.
+        self.assertEqual(len({round(s[1], 3) for s in steps}), 1, steps)
+
+    def test_room_on_the_right(self):
+        # Three drawer icons fit between the centre widgets and the right
+        # list: the tray stays where Omarchy puts it and opens there.
+        steps = self.slides([54, 81, [27] * 7, [27, 110], [90, 260]])[0]
+        self.check(steps, "right")
+        self.assertEqual(steps[0], [1261, 1315])
+        self.assertEqual(steps[-1], [1180, 1315])
+
+    def test_no_room_on_the_right(self):
+        # Six drawer icons do not fit there open: the tray sits left of the
+        # housing from the start (as Skip the notch moves any item that does
+        # not fit) and opens there. v37 decided by the width of the moment:
+        # it stayed right, jumped left at 80 % of the slide, and back.
+        cases = [[81, 162, [27] * 7, [27, 110], [90, 260]],
+                 [108, 216, [27] * 7, [27, 110], [90, 300]],
+                 [81, 162, [27] * 9, [27, 110], [90, 300]],
+                 # Omarchy 4.5's indicators (21 at rest) peek 105 wider.
+                 [54, 135, [27] * 4 + [260], [27, 105.5], [21, 260, 105]]]
+        for case, steps in zip(cases, self.slides(*cases)):
+            self.check(steps, "left", case[4])
+
+    def test_the_patch_counts_a_tray_open(self):
+        # Only a tray counts at its open width; a tray already open, and
+        # every other item, at the width it has.
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        f = d / "Bar.qml"
+        f.write_text(stock)
+        patch_file(f)
+        full = f.read_text()
+        widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        js = """
+var root = { notchIsTray: function (item) { NOTCHISTRAY } };
+function tray(drawer, reveal) {
+  return { expanded: reveal > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer, revealExtent: drawer * reveal };
+}
+var children = [ { notchSlotIndex: 0, width: 54, activeItem: tray(81, 0) },
+                 { notchSlotIndex: 1, width: 94.5, activeItem: tray(81, 0.5) },
+                 { notchSlotIndex: 2, width: 135, activeItem: tray(81, 1) },
+                 { notchSlotIndex: 3, width: 27, activeItem: { expanded: false } },
+                 { notchSlotIndex: 4, width: 27, activeItem: tray(0, 0) } ];
+console.log(JSON.stringify((function () { WIDTHS })()));
+""".replace("NOTCHISTRAY", function(full, "notchIsTray")).replace("WIDTHS", widths)
+        out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(out.stdout), [[54, 135], [94.5, 135], 135, 27, 27])
+
+    def patched_45(self):
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        f = d / "Bar.qml"
+        f.write_text(stock)
+        self.assertEqual(patch_file(f).returncode, 0)
+        return f.read_text()
+
+    def run_js(self, full, js, cases):
+        widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        rest = re.search(r"    readonly property real notchRest: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        js = (js.replace("NOTCHISTRAY", function(full, "notchIsTray")).replace("WIDTHS", widths).replace("REST", rest)
+              .replace("PLACE", function(full, "notchSkipPlace")).replace("CASES", json.dumps(cases)))
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def test_tray_in_the_left_list(self):
+        # The tray in the left list: fixed at its start, it grows right. Its
+        # start never moves while it slides, and it goes right of the housing
+        # from the start when it does not fit left of it open (closed it
+        # would; v37 kept it left and jumped it over part-way through).
+        js = r"""
+var root = { notchIsTray: function (item) { NOTCHISTRAY } };
+function widths(children) { WIDTHS }
+function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) { PLACE }
+console.log(JSON.stringify(CASES.map(function (c) {
+  var closed = c[0], drawer = c[1], before = c[2], right = c[3], beside = c[4], out = [];
+  for (var k = 0; k <= 10; k++) {
+    var r = k / 10, w = closed + drawer * r;
+    var tray = { expanded: r > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer,
+                 revealExtent: drawer * r, revealProgress: r };
+    var children = [];
+    for (var i = 0; i < before.length; i++) children.push({ notchSlotIndex: i, width: before[i], notchPeekFull: 0 });
+    children.push({ notchSlotIndex: before.length, width: w, notchPeekFull: 0, activeItem: tray });
+    var s = place(1512, 8, widths(children), right, [663.5, 848.5], beside, 6, 8, 24, null, 12).left[before.length];
+    out.push(s.hidden ? "hidden" : [s.n + s.x, s.n + s.x + w]);
+  }
+  return out;
+})));
+"""
+        beside = [21, 105.5, 105]
+        fits, jumps = self.run_js(self.patched_45(), js, [
+            [54, 135, [20] + [26] * 5, [90, 260], beside],
+            # Closed it ends at 602 (left of 636.5), open at 737.
+            [54, 135, [20] + [26] * 20, [90], beside]])
+        wall_l = self.HOUSING[0] - 6 - beside[0]
+        wall_r = self.HOUSING[1] + 6 + beside[1]
+        for steps, left in ((fits, True), (jumps, False)):
+            self.assertNotIn("hidden", steps)
+            self.assertEqual(len({round(s[0], 3) for s in steps}), 1, steps)
+            for a, b in steps:
+                self.assertTrue(b <= wall_l if left else a >= wall_r, steps)
+        self.assertEqual(fits[0][0], 158)
+        self.assertEqual(jumps[0][0], wall_r + 8)
+
+    def test_tray_in_the_centre(self):
+        # The tray in Omarchy 4.5's centre section: beside the notch, the
+        # centre box sits right of the housing and grows right as the drawer
+        # slides open. Where the right list's items end (centre + centerEnd)
+        # counts the tray open, so the right side is decided once: nothing
+        # moves while it slides (v38's first build took the centre's width of
+        # the moment, and the crowded right list glided across the housing
+        # mid-slide), and nothing kept right of the housing sits under the
+        # open drawer.
+        full = self.patched_45()
+        beside = re.search(r"readonly property var notchBeside: (notchLayout && active\n\s*\? \[[^\n]*\] : \[0, 0\])",
+                           full).group(1).replace("\n", " ")
+        rest_m = re.search(r"\n    readonly property real notchRest: (boxList\.notchRest)\n", full)
+        js = r"""
+var root = { notchIsTray: function (item) { NOTCHISTRAY } };
+function widths(children) { WIDTHS }
+function rest(notchWidths) { REST }
+function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) { PLACE }
+console.log(JSON.stringify(CASES.map(function (c) {
+  var closed = c[0], drawer = c[1], others = c[2], end = c[3], right = c[4], out = [];
+  for (var k = 0; k <= 10; k++) {
+    var r = k / 10, w = closed + drawer * r;
+    var tray = { expanded: r > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer,
+                 revealExtent: drawer * r, revealProgress: r };
+    var children = [{ notchSlotIndex: 0, width: w, notchPeekFull: 0, activeItem: tray }], live = w;
+    for (var i = 0; i < others.length; i++) {
+      children.push({ notchSlotIndex: i + 1, width: others[i], notchPeekFull: 0 });
+      live += others[i];
+    }
+    var boxList = { notchRest: rest(widths(children)) };
+    var centerBox = { width: live };
+    CENTRE_REST
+    var beginList = { notchRest: 21, notchPeekMore: 105 }, endList = { notchRest: end };
+    var notchLayout = true, active = true;
+    var p = place(1512, 8, [20, 26, 26, 26], right, [663.5, 848.5], BESIDE, 6, 8, 24, null, 12);
+    out.push(p.right.map(function (s) { return s.hidden ? "hidden" : s.n + s.x }));
+  }
+  return out;
+})));
+""".replace("BESIDE", beside).replace(
+            "CENTRE_REST", "centerBox.notchRest = %s;" % rest_m.group(1) if rest_m else "")
+        right = [27] * 10 + [90, 260]
+        steps = self.run_js(full, js, [[54, 135, [80], 27, right]])[0]
+        self.assertEqual(len({json.dumps(s) for s in steps}), 1, steps)
+        # Right of the housing: after the open centre (54 + 135 + 80) and
+        # centerEnd (27).
+        wall_r = self.HOUSING[1] + 6 + 54 + 135 + 80 + 27
+        shown = [(x, w) for x, w in zip(steps[0], right) if x != "hidden"]
+        self.assertTrue(all(x >= wall_r or x + w <= self.HOUSING[0] - 6 - 21 - 105 for x, w in shown), steps[0])
+        self.assertIn(1504 - 260, steps[0])
 
 
 # The notched Macs at their default resolution: strip height and display

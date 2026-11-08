@@ -1,0 +1,16 @@
+<!doctype html>
+<title>pinch-click</title>
+<style>html,body{margin:0;height:300vh;background:#eee;font:16px sans-serif}#s{position:fixed;top:8px;left:8px}</style>
+<div id="s">pinch-click-1107 probe</div>
+<script>
+// Every input event the browser hands the page, to Chrome's log (--enable-logging=stderr): "PC <what> ...".
+const L = (...a) => console.log("PC " + a.join(" "));
+addEventListener("contextmenu", e => { L("contextmenu", e.button, e.clientX, e.clientY); e.preventDefault(); });
+addEventListener("pointerdown", e => L("pointerdown", e.pointerType, e.button));
+addEventListener("mousedown", e => L("mousedown", e.button));
+addEventListener("auxclick", e => L("auxclick", e.button));
+addEventListener("wheel", e => L("wheel", e.ctrlKey ? "ctrl" : "plain", e.deltaX.toFixed(1), e.deltaY.toFixed(1), e.deltaMode), {passive: true});
+visualViewport.addEventListener("resize", () => L("vvscale", visualViewport.scale.toFixed(3)));
+addEventListener("resize", () => L("resize", innerWidth, devicePixelRatio.toFixed(3)));
+L("ready", innerWidth, innerHeight, devicePixelRatio);
+</script>

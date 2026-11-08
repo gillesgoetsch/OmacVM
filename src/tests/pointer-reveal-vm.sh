@@ -19,7 +19,7 @@
 #       [--gpu-off-main-loop 0|1] [--gestures [TRIPS]] [--tool PATH] [--out DIR]
 # NAME: a stopped test VM of the test app (OmacVM Test.app), in its VMs folder.
 # Moves the pointer, clicks and types only over the test VM's window, only on a
-# Mac nobody uses (HID idle over 300 s, no Jump Desktop), and stops when someone
+# Mac nobody uses (HID idle over 60 s, no Jump Desktop), and stops when someone
 # else does. Exit 0 passed, 1 a check failed, 2 usage, 3 not run.
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -58,7 +58,7 @@ jump() { pgrep -if 'Jump Desktop' | wc -l | tr -d ' '; }
 STAMP=${TMPDIR:-/tmp}/omacvm-pointer-reveal-input
 ours=$(cat "$STAMP" 2>/dev/null); [[ $ours =~ ^[0-9]+$ ]] || ours=0
 idle0=$(hid_idle)
-(( idle0 > 300 || idle0 + 2 >= $(date +%s) - ours )) && [[ $(jump) == 0 ]] || { echo "pointer-reveal: someone uses this Mac (HID idle $idle0 s, Jump $(jump)): not run" >&2; exit 3; }
+(( idle0 > 60 || idle0 + 2 >= $(date +%s) - ours )) && [[ $(jump) == 0 ]] || { echo "pointer-reveal: someone uses this Mac (HID idle $idle0 s, Jump $(jump)): not run" >&2; exit 3; }
 
 KEYS=(gpuOffMainLoop startFullScreen)
 e2e_settings_save "$DOM" "$W/saved" "${KEYS[@]}" || exit 3

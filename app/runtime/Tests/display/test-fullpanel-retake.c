@@ -7,8 +7,9 @@
  * of the window's FullPanel state (OmacVMFullPanelState in ui/cocoa.m,
  * method by method: willEnterFullScreen, verify:, frameChanged:,
  * screenChanged:, comeBack/checkReturn, engage, retake:, retakeAsk:,
- * retakeAgain, retakeNewChange, retakeExpired, retakeGiveUp:)
- * that decides with the header's rules. AppKit is modelled from the log:
+ * retakeAgain, retakeNewChange, retakeExpired, retakeGiveUp:, and the
+ * late arm of omacvm-cocoa-fullpanel-late-arm.patch: lateFits, a late
+ * willEnterFullScreen, #716) that decides with the headers' rules. AppKit is modelled from the log:
  * its full-screen layout asks the reservation (its own yes only when the
  * Space's display has a camera housing; FullPanel's answer no while the
  * window claims the strip) and keeps the menu bar's band when the answer
@@ -26,6 +27,7 @@
 #include "test-fullpanel-retake-stub.h"
 #else
 #include "omacvm-fullpanel-retake.h"
+#include "omacvm-fullpanel-late.h"
 #endif
 
 #ifndef OMACVM_FP_CLAIMS_WAIT_FOR_RESUME
@@ -71,6 +73,9 @@ typedef struct {
     unsigned settles;
     /* OmacVMFullPanelState */
     bool inside, armed, entered, accepted, rejected, lost, released;
+    bool late;                /* armed late (omacvm-cocoa-fullpanel-late-arm.patch) */
+    bool panel_given;         /* OMACVM_FULLPANEL_PANEL */
+    double panel_w, panel_h;
     bool displaced, display_changed, tracking, covered_logged;
     bool retake_pending, retake_given_up, lost_tile;
     bool reask_due;           /* -retakeAgain is queued */
@@ -81,6 +86,7 @@ typedef struct {
     OmacVMFPRect accepted_display;
     /* Lines. */
     int n_covered, n_lost, n_displaced, n_moved, n_taken, n_tries, n_not_back, n_give_up, n_reasks;
+    int n_resumed, n_stale;
     int check;
 } St;
 
@@ -112,10 +118,22 @@ static bool same_display(St *s)
     return omacvm_fp_rect_equal(s->screen->f, s->accepted_display) && s->screen_same_size;
 }
 
+/* -lateFits: a late full screen on a display of this start's panel size. */
+static bool fits(St *s)
+{
+#ifdef OMACVM_RETAKE_STUB
+    (void)s;
+    return true;
+#else
+    return omacvm_fp_late_fits(s->late, s->panel_given, s->panel_w, s->panel_h, s->screen->f.w,
+                               s->screen->f.h);
+#endif
+}
+
 static bool claims(St *s)
 {
     return omacvm_fp_claims(s->inside, s->armed, s->rejected, s->lost, false, notch(s)) &&
-           !(OMACVM_FP_CLAIMS_WAIT_FOR_RESUME && s->released);
+           !(OMACVM_FP_CLAIMS_WAIT_FOR_RESUME && s->released) && fits(s);
 }
 
 static void release_state(St *s)
@@ -172,6 +190,7 @@ static void verify(St *s, bool definitive)
     if (v == OMACVM_FP_ACCEPTED) {
         s->accepted = true;
         s->accepted_display = s->screen->f;
+        s->late = false;
         return;
     }
     s->accepted = false;
@@ -247,9 +266,18 @@ static void screen_changed(St *s, bool window_screen)
         new_change(s);
         release_state(s);
         say(s, CHECK_NORMAL, "the full screen is on a display without a camera housing: normal full screen there");
+    } else if (s->late && !s->rejected && omacvm_fp_screen_resumes(s->released, s->full, notch(s)) &&
+               !fits(s)) {
+        s->rejected = true;
+        s->released = s->displaced = false;
+        s->n_stale++;
+        say(s, CHECK_NORMAL, "the MacBook's display is %.0fx%.0f now, this start's notch was measured at %.0fx%.0f: normal full screen",
+            s->screen->f.w, s->screen->f.h, s->panel_w, s->panel_h);
     } else if (omacvm_fp_screen_resumes(s->released, s->full, notch(s))) {
         s->released = s->displaced = false;
         s->covered_logged = false;
+        s->n_resumed++;
+        say(s, CHECK_NONE, "display change: the full screen is on a display with a camera housing again");
         come_back(s);
     } else if (s->full) {
         come_back(s);
@@ -566,6 +594,211 @@ static void users_log(St *s, int order)
     s->locked = false;                    /* "windows follow the displays again" */
     settle(s);
 }
+
+#ifndef OMACVM_RETAKE_STUB
+/*
+ * #716: the VM started with the lid closed (an external display only): the
+ * main window's willEnterFullScreen on a display without a housing, then
+ * didEnterFullScreen (omacvm-cocoa-fullpanel-late-arm.patch). The panel this
+ * start's notch was measured on: the built-in's.
+ */
+static void start_late(St *s, const Disp *d, bool main_window, bool menu_bar_shown)
+{
+    OmacVMFPFallback here, with_housing;
+
+    memset(s, 0, sizeof(*s));
+    s->screen = s->space = d;
+    s->frame = (OmacVMFPRect){ 224, 102, 1280, 752 };
+    s->key = s->on_space = s->visible = s->in_place = true;
+    s->screen_live = s->screen_same_size = true;
+    s->reshape = s->reshape_works = true;
+    s->menu_bar_shown = menu_bar_shown;
+    s->panel_given = true;
+    s->panel_w = BUILTIN.f.w;
+    s->panel_h = BUILTIN.f.h;
+    s->now = 1;
+    /* willEnterFullScreen */
+    s->inside = true;
+    here = omacvm_fp_fallback(notch(s), s->menu_bar_shown, notch(s), true);
+    with_housing = here == OMACVM_FP_NO_NOTCH && main_window ? omacvm_fp_fallback(1, s->menu_bar_shown, true, true)
+                                                             : here;
+    switch (omacvm_fp_entry(here, with_housing, main_window)) {
+    case OMACVM_FP_ENTRY_NORMAL:
+        say(s, CHECK_NORMAL, "%s: normal full screen",
+            omacvm_fp_fallback_text(omacvm_fp_entry_why(here, with_housing, main_window)));
+        s->full = true;
+        layout(s, notch(s), NULL);
+        return;
+    case OMACVM_FP_ENTRY_LATE:
+        s->armed = s->late = s->released = true;
+        new_change(s);
+        say(s, CHECK_NONE, "in full screen on a display without a camera housing: the strip once on the MacBook's display");
+        break;
+    case OMACVM_FP_ENTRY_ARM:
+        s->armed = true;
+        break;
+    }
+    s->full = true;
+    layout(s, notch(s), NULL);    /* AppKit's own yes only with a housing */
+    /* didEnterFullScreen */
+    verify(s, true);
+    if (omacvm_fp_entered(s->armed, s->accepted, s->late)) {
+        s->entered = true;
+        engage(s);
+    }
+}
+
+/*
+ * The lid opened and the external display unplugged: the Space on the
+ * built-in (d). order 0: NSWindowDidChangeScreen first, then AppKit's layout
+ * (the claim: the whole display); 1: AppKit asks the reservation while
+ * NSScreen still names the external display (it keeps the band), then
+ * NSWindowDidChangeScreen.
+ */
+static void lid_opened(St *s, int order, const Disp *d)
+{
+    s->space = d;
+    if (order == 0) {
+        s->screen = d;
+        screen_changed(s, true);
+        layout(s, true, NULL);
+    } else {
+        layout(s, true, NULL);
+        s->screen = d;
+        screen_changed(s, true);
+    }
+}
+
+/* Hours on the external display: settles, sleep and wake, Mission Control, other screen changes. */
+static void on_the_external(St *s)
+{
+    for (int i = 0; i < 3; i++) {
+        settle(s);
+        s->screen_live = false;                 /* asleep */
+        s->locked = true;
+        screen_changed(s, false);
+        layout(s, false, NULL);
+        s->screen_live = true;                  /* awake */
+        s->locked = false;
+        screen_changed(s, false);
+        layout(s, false, NULL);
+        settle(s);
+        s->on_space = s->key = false;           /* Mission Control, another Space */
+        come_back(s);
+        s->on_space = s->key = true;
+        come_back(s);
+        heads_done(s);
+        later(s);
+    }
+}
+
+static bool quiet(St *s)
+{
+    return s->n_displaced == 0 && s->n_lost == 0 && s->n_moved == 0 && s->n_not_back == 0 &&
+           s->n_give_up == 0 && s->n_tries == 0 && s->n_resumed == 0 && s->n_covered == 0 &&
+           s->retake_tries == 0 && !s->retake_given_up && s->check == CHECK_NONE;
+}
+
+static void late_rows(void)
+{
+    St s;
+
+    start_late(&s, &LG, true, false);
+    row(&s, "late (#716): the lid closed at the start, normal full screen on the LG, armed late, entered",
+        s.armed && s.late && s.released && s.entered && !s.accepted && !s.tracking && quiet(&s),
+        "armed %d late %d entered %d accepted %d check %d", s.armed, s.late, s.entered, s.accepted, s.check);
+    on_the_external(&s);
+    row(&s, "late: quiet on the LG through settles, sleep, Mission Control (no line check warns about, no try used)",
+        quiet(&s) && s.late && s.released, "displaced %d lost %d not back %d give up %d tries %d check %d",
+        s.n_displaced, s.n_lost, s.n_not_back, s.n_give_up, s.retake_tries, s.check);
+
+    /* (a) AppKit lays it out at full height on the built-in: accepted, no try. */
+    lid_opened(&s, 0, &BUILTIN);
+    row(&s, "late, the lid opened (screen change first): the whole display at once, no try",
+        back(&s) && s.n_tries == 0 && s.n_taken == 0 && !s.late && s.n_resumed == 1,
+        "check %d tries %d taken %d late %d", s.check, s.n_tries, s.n_taken, s.late);
+    /* (c) Split View after that: lost, as any full screen. */
+    s.now = 50;
+    s.frame = (OmacVMFPRect){ 0, 0, 864, 1084 };
+    frame_changed(&s);
+    settle(&s);
+    row(&s, "late, then Split View: strip lost (a tile), nothing tried",
+        s.lost && s.n_lost == 1 && s.check == CHECK_LOST && s.n_tries == 0, "lost %d check %d tries %d", s.lost,
+        s.check, s.n_tries);
+
+    /* (b) AppKit keeps the band (asked while NSScreen named the LG): one try at the settle, taken again. */
+    start_late(&s, &LG, true, false);
+    on_the_external(&s);
+    lid_opened(&s, 1, &BUILTIN);
+    row(&s, "late, AppKit keeps the band on arrival: nothing yet (the displays move)", !covers(&s) &&
+        s.n_tries == 0 && !s.retake_given_up, "covers %d tries %d", covers(&s), s.n_tries);
+    settle(&s);
+    row(&s, "... the displays settled: one try, 'strip taken again', the strip back",
+        back(&s) && s.n_tries == 1 && s.n_taken == 1 && s.retake_tries == 1, "check %d tries %d taken %d",
+        s.check, s.n_tries, s.n_taken);
+    /* (c) A later display change: its own line and tries. */
+    builtin_leaves(&s, false);
+    builtin_back(&s, 2);
+    settle(&s);
+    row(&s, "late, taken, then a display change: 'display change:' and its own tries, the strip back",
+        back(&s) && s.n_displaced == 1 && s.retake_tries == 1 && s.n_tries == 2, "check %d displaced %d tries %d",
+        s.check, s.n_displaced, s.n_tries);
+
+    /* AppKit keeps the band for good: the 3 tries were all left on arrival. */
+    start_late(&s, &LG, true, false);
+    on_the_external(&s);
+    s.reshape_works = false;
+    lid_opened(&s, 1, &BUILTIN);
+    for (int i = 0; i < 4; i++) {
+        settle(&s);
+    }
+    row(&s, "late, AppKit keeps the band for good: 3 tries, then 'strip not back'",
+        s.n_tries == 3 && s.retake_given_up && s.check == CHECK_NOT_BACK, "tries %d given up %d check %d",
+        s.n_tries, s.retake_given_up, s.check);
+
+    /* The lid shut again before the strip came back, then opened: the strip back. */
+    start_late(&s, &LG, true, false);
+    lid_opened(&s, 1, &BUILTIN);
+    s.space = &LG;
+    s.screen = &LG;
+    screen_changed(&s, true);
+    layout(&s, false, NULL);
+    lid_opened(&s, 1, &BUILTIN);
+    settle(&s);
+    row(&s, "late, the lid shut and opened again before the strip came back: the strip back",
+        back(&s) && s.n_tries == 1, "check %d tries %d", s.check, s.n_tries);
+
+    /* The built-in at another size than this start's notch: normal full screen, said, never tried. */
+    start_late(&s, &LG, true, false);
+    lid_opened(&s, 1, &BUILTIN_BIG);
+    settle(&s);
+    screen_changed(&s, false);
+    settle(&s);
+    row(&s, "late, the built-in at another size than the notch measured: normal full screen, said once, no try",
+        s.rejected && !covers(&s) && s.n_stale == 1 && s.n_tries == 0 && s.n_resumed == 0 &&
+        s.check == CHECK_NORMAL, "rejected %d stale %d tries %d resumed %d check %d", s.rejected, s.n_stale,
+        s.n_tries, s.n_resumed, s.check);
+    /* No panel given (an older app): any size fits. */
+    start_late(&s, &LG, true, false);
+    s.panel_given = false;
+    lid_opened(&s, 0, &BUILTIN_BIG);
+    row(&s, "late, no panel size given: the strip on the built-in", covers(&s) && s.tracking &&
+        s.check == CHECK_COVERED, "covers %d check %d", covers(&s), s.check);
+
+    /* The other displays' windows (made again per display): normal full screen there, as before. */
+    start_late(&s, &LG, false, false);
+    row(&s, "a head window on a display without a housing: not armed (normal full screen)",
+        !s.armed && !s.late && !s.entered && s.check == CHECK_NORMAL, "armed %d late %d", s.armed, s.late);
+    /* The menu bar always shown (Keep the Dock away off): not armed, the line names the menu bar. */
+    start_late(&s, &LG, true, true);
+    row(&s, "late with the menu bar always shown: not armed, normal full screen", !s.armed && !s.late &&
+        s.check == CHECK_NORMAL, "armed %d late %d", s.armed, s.late);
+    lid_opened(&s, 0, &BUILTIN);
+    settle(&s);
+    row(&s, "... on the built-in later: nothing taken, nothing tried", !covers(&s) && s.n_tries == 0 &&
+        s.n_covered == 0, "covers %d tries %d", covers(&s), s.n_tries);
+}
+#endif
 
 static void rows(void)
 {
@@ -1026,6 +1259,9 @@ static void rows(void)
     heads_done(&s);
     row(&s, "... once they are in place: 'strip not back' says why", s.n_give_up == 1 && s.n_tries == 0 &&
         s.check == CHECK_NOT_BACK, "give up %d tries %d check %d", s.n_give_up, s.n_tries, s.check);
+#ifndef OMACVM_RETAKE_STUB
+    late_rows();
+#endif
 }
 
 #ifndef OMACVM_RETAKE_STUB

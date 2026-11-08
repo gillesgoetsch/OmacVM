@@ -1054,6 +1054,14 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-ret
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-retake.patch"
 "$native_dir/Tests/display/test-fullpanel-retake.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: FullPanel does not take the strip again as tested (test-fullpanel-retake.sh)"
+# FullPanel for a full screen entered without the notch (#716: the lid
+# closed at the start): the main window is armed late and takes the strip
+# through the resume and the retake once its Space is on the MacBook's
+# display. After the retake pair. Its rules' test, then the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-late-arm-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-late-arm.patch"
+"$native_dir/Tests/display/test-fullpanel-late-arm.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: FullPanel does not arm a full screen late as tested (test-fullpanel-late-arm.sh)"
 # OmacVM: the sound on its own real-time thread (OMACVM_AUDIO_THREAD=1): the
 # HDA's DMA and the mixer no longer wait for the main loop (virgl).
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-audio-own-thread.patch"
@@ -1639,6 +1647,13 @@ grep -q 'static int clip_varyings_in(const struct dump_ctx \*ctx, const char \*\
   grep -q 'return ctx->key->tcs_present ? "omacvm_vclip" : "omacvm_clip";' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q 'key->vs_clip_in = type == PIPE_SHADER_TESS_CTRL && prev->type == PIPE_SHADER_VERTEX &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vrend_shader.c: a vertex shader still passes clip distances to a control shader in gl_PerVertex on the Mac (vs-tcs-clip-varyings patch)"
+# OmacVM: the guest's Mesa copies clip distances written in a loop back from TEMP[18] only, so
+# distances 4..7 never reached the output (the M4 did not clip, the M1 Max drew nothing): the
+# GLSL copies the next temp too while the shader never writes that output itself (#692).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-clip-copyback.patch"
+grep -q 'static void emit_guest_clip_copyback(struct dump_ctx \*ctx, const struct tgsi_full_instruction \*inst)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'emit_buff(&ctx->glsl_strbufs, "clip_dist_temp\[1\] = vec4(temp%d\[%d\]);\\n", range->first,' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: clip distances 4..7 written in a loop still stay in the guest's temp (clip-copyback patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
@@ -1841,12 +1856,15 @@ grep -q 'if (!vkr_command_buffer_submit_ok(dispatch->data, submit->pCommandBuffe
   grep -q 'if (!vkr_cmd_secondaries_current(dispatch->data, cmd, "vkEndCommandBuffer"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'if (!vkr_context_check(ctx, cmd->device->physical_device->limits.moltenvk, call,' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_queue.c, vkr_command_buffer.c: a secondary recorded again or a command buffer not ended reaches the driver at the submit, or one MoltenVK could not record is refused (submit-state patch)"
-# A refusal's reason is logged whole, on one line: spirv-val's message runs to about 300 characters (#710).
+# A refusal's reason is logged whole, on one line: spirv-val's message runs to about 300 characters (#710),
+# and no byte below 0x20 of the reason or the guest's context name reaches it (#718).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-refusal-text.patch"
 [[ $(grep -c '^   char why\[512\];$' "$virgl_source/src/venus/vkr_pipeline.c") == 3 ]] && \
   grep -q 'char why\[512\]; /\* OmacVM (virgl-venus-refusal-text.patch) \*/' "$virgl_source/src/venus/vkr_context.c" && \
-  grep -q 'one refusal, one line \*/' "$virgl_source/src/venus/vkr_context.c" || \
-  die "vkr_pipeline.c, vkr_context.c: refusal reasons are cut at 192 bytes or span lines (refusal-text patch)"
+  grep -qF 'refusal, one line, no control bytes' "$virgl_source/src/venus/vkr_context.c" && \
+  [[ $(grep -cF 'if ((unsigned char)*c < 0x20)' "$virgl_source/src/venus/vkr_context.c") == 2 ]] && \
+  grep -qxF '              name, call, why,' "$virgl_source/src/venus/vkr_context.c" || \
+  die "vkr_pipeline.c, vkr_context.c: refusal reasons are cut at 192 bytes, span lines or keep control bytes (refusal-text patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

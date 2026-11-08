@@ -1574,15 +1574,13 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   into a control shader drew nothing on the M1 Max and M4 GPUs; 3.2.20 passes them as plain
   varyings too. One case is left in the VM's Mesa: a control shader that copies 5 to 8 distances
   in a loop gets only 0..3 back, and 4..7 are undefined. On the M4 they read 0 (a negative one
-  does not clip), on the M1 Max the draw is clipped away. The fix is a patch for OmacVM's own
-  guest Mesa build (`src/app/guest/mesa/`, #694), which the VM's Arch Mesa does not have. One
-  statement per distance avoids it: the VM's Mesa then passes them as plain varyings. Update the
-  app.
+  does not clip), on the M1 Max the draw is clipped away. 3.4.1 copies 4..7 on the Mac's side
+  (#692), so no guest Mesa build is needed for it. Update the app.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
   `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
   `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19),
   `virgl-shader-separable-patch-fill-writes.patch`, `virgl-shader-indirect-temps.patch`,
-  `virgl-shader-vs-tcs-clip-varyings.patch` (3.2.20); tests
+  `virgl-shader-vs-tcs-clip-varyings.patch` (3.2.20), `virgl-shader-clip-copyback.patch` (3.4.1); tests
   `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`,
   `test-separable-pervertex.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
@@ -1690,3 +1688,32 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   `src/app/guest/omacvm-displays`; tests
   `app/runtime/Tests/display/test-video-awake.sh`,
   `src/app/guest/tests/test_omacvm_displays.py`.
+
+## 57. A pinch starts with a right click (Omarchy 4.5)
+
+- **Symptom:** in Chrome (or another app), every pinch zoom on the Mac's
+  trackpad starts with a right click: a context menu opens, then the page
+  zooms. Also a middle-click paste from a three-finger tap. Trackpad
+  gestures and scroll momentum on, in full screen, on Omarchy 4.5 (a new
+  VM, or one moved from 4.0). Up to 3.4.0.
+- **Cause:** Omarchy 4.5 leaves Hyprland's tap-to-click on (omarchy-mac's
+  4.0 had it off). OmacVM's virtual trackpad gets the Mac's fingers, and
+  with scroll momentum it keeps two fingers still at the start of a pinch,
+  then lifts them when macOS calls it a pinch and puts them down again. That
+  short still touch is a two-finger tap for libinput: a right click.
+- **Fix (3.4.1):** Update VM (`omacvm apply`). OmacVM turns tap-to-click off
+  for its virtual trackpad only (`~/.config/hypr/input.lua`). Taps and clicks
+  still reach the VM through the VM app's pointer, as the Mac's own trackpad
+  settings make them. `omacvm check` has a "trackpad taps" row. Your own
+  `tap_to_click` for `apple-inc.-magic-trackpad-(omacvm)` wins (the row then
+  warns); one in an `hl.device` table over several lines is not seen, and
+  the one that loads later wins.
+- **Before 3.4.1:** add this line to `~/.config/hypr/input.lua`:
+
+  ```lua
+  hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", tap_to_click = false })
+  ```
+
+- **Where:** `src/gestures/guest/install.sh`, `src/guest/check.sh`
+  ("trackpad taps"); tests `src/gestures/guest/test-install-gestures.sh`,
+  `src/tests/trackpad-taps.sh`.
