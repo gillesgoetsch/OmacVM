@@ -94,7 +94,13 @@ end
 -- in again. So the rule each output shows now (display-sync keeps it in
 -- $XDG_RUNTIME_DIR/omacvm/display-sync/<output>.rule) is set again here, and
 -- the reload changes nothing. Not for an output monitors.lua names: the
--- user's own rule wins (display-sync leaves those alone too).
+-- user's own rule wins (display-sync leaves those alone too). Omarchy 4.5's
+-- one-line scale rule for Virtual-1 (its scale buttons, keys and menu) is
+-- Omarchy's scale, which display-sync reads, not the user's rule (#738).
+local function omarchy_scale_rule(line)
+  local s = line:match('^hl%.monitor%(%{ output = "Virtual%-1", mode = "preferred", position = "auto", scale = ([%d%.]+) %}%)%s*$')
+  return s ~= nil and (s:match("^%d+$") ~= nil or s:match("^%d+%.%d+$") ~= nil)
+end
 local function user_rule(output)
   local home = os.getenv("XDG_CONFIG_HOME") or ((os.getenv("HOME") or "") .. "/.config")
   local f = io.open(home .. "/hypr/monitors.lua", "r")
@@ -104,7 +110,7 @@ local function user_rule(output)
     -- (Hyprland's Lua is 5.5: a loop variable cannot be assigned to.)
     local code = line:gsub("%-%-.*$", "")
     local name = code:match("output%s*=%s*[\"']([^\"']*)[\"']")
-    if name == output then found = true end
+    if name == output and not omarchy_scale_rule(line) then found = true end
   end
   f:close()
   return found

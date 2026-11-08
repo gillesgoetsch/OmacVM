@@ -172,6 +172,23 @@ write(cfg .. "/hypr/monitors.lua",
   '-- hl.monitor({ output = "Virtual-1", mode = "1920x1200@60", position = "0x0", scale = 1 })\n')
 check("commented-out user rule: set", #load_config({ "Virtual-1", "NOTCH" }) == 1)
 
+-- #738: Omarchy 4.5's one-line scale rule for Virtual-1 is Omarchy's scale
+-- (display-sync reads it), not the user's rule: the kept rule is still set.
+local LUA_45 = 'local omarchy_monitor_scale = "auto"\nhl.monitor({ output = "", mode = "preferred", position = "auto", scale = omarchy_monitor_scale })\n'
+write(cfg .. "/hypr/monitors.lua",
+  LUA_45 .. 'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 1.6 })\n')
+check("Omarchy's scale rule: kept rule set", #load_config({ "Virtual-1", "NOTCH" }) == 1)
+for _, other in ipairs({
+  'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 1.6 }) -- mine\n',
+  'hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "auto", scale = 1.6 })\n',
+  'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 1. })\n',
+}) do
+  write(cfg .. "/hypr/monitors.lua", LUA_45 .. other)
+  check("other rule for the screen: not set (" .. other:sub(1, 60) .. ")", #load_config({ "Virtual-1", "NOTCH" }) == 0)
+end
+write(cfg .. "/hypr/monitors.lua",
+  'local omarchy_monitor_scale = 2\nhl.monitor({ output = "", mode = "preferred", position = "auto", scale = omarchy_monitor_scale })\n')
+
 -- Only plain values are read; a file that is not a kept rule is ignored and
 -- nothing in it runs.
 rule_file("Virtual-1", 'os.exit(3) hl.monitor({ output = "Virtual-1", mode = "' .. MODE .. '", position = "0x0", scale = "2" })\n')

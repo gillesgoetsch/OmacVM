@@ -98,13 +98,21 @@ def scale_for_mode(
         if requested is not None or sys.argv[3] != "Virtual-1":
             raise OSError("no legacy scale needed")
         config = pathlib.Path(sys.argv[2]).read_text()
+        # Omarchy 4.5 keeps it in its own one-line rule for the output
+        # instead (the last one counts, as in Hyprland; #738).
+        rules = re.findall(
+            r'^hl\.monitor\(\{ output = "Virtual-1", mode = "preferred", position = "auto", '
+            r'scale = ([0-9]+(?:\.[0-9]+)?) \}\)[ \t]*$',
+            config,
+            re.MULTILINE,
+        )
         match = re.search(
             r"^\s*local\s+omarchy_monitor_scale\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*(?:--[^\n]*)?$",
             config,
             re.MULTILINE,
         )
-        if match:
-            saved_scale = float(match.group(1))
+        if rules or match:
+            saved_scale = float(rules[-1] if rules else match.group(1))
             if isfinite(saved_scale) and saved_scale >= 0.25:
                 requested = saved_scale
     except OSError:
@@ -367,10 +375,15 @@ hdr_tonemap() {
   fi
 }
 
-# A rule in monitors.lua that names OUTPUT (not in a comment).
+# A rule in monitors.lua that names OUTPUT (not in a comment). Omarchy 4.5's
+# own one-line scale rule for Virtual-1 (its scale buttons, keys and menu write
+# it) is Omarchy's scale, read above, not the user's rule (#738).
 user_rule() {
-  [[ -r $monitor_config ]] &&
-    sed 's/--.*$//' "$monitor_config" | grep -qE "output[[:space:]]*=[[:space:]]*[\"']$1[\"']"
+  [[ -r $monitor_config ]] || return 1
+  local code
+  code=$(grep -vxE 'hl\.monitor\(\{ output = "Virtual-1", mode = "preferred", position = "auto", scale = [0-9]+(\.[0-9]+)? \}\)[[:space:]]*' "$monitor_config" |
+    sed 's/--.*$//') || true
+  grep -qE "output[[:space:]]*=[[:space:]]*[\"']$1[\"']" <<<"$code"
 }
 
 # output_positions LAYOUT OUTPUT:WIDTH:HEIGHT:SCALE ...: one "OUTPUT XxY" line
