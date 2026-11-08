@@ -11,7 +11,8 @@ in more words.
   display switched off by a test tool, a start used the remembered notch, the VM got it and QEMU
   waited for the MacBook's display; the test ended before that display came back, so the strip
   was not seen. A start with the lid really closed, then opened, is still to be checked. If the
-  strip stays black after you open the lid, start the VM again with the lid open.
+  strip stays black after you open the lid, leave full screen and enter it again on the MacBook's
+  display; if it is still black, start the VM again with the lid open (docs/troubleshooting.md).
 
 ## 3.4.1
 
