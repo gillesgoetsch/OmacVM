@@ -1486,7 +1486,7 @@ class GuestAwakeTest(unittest.TestCase):
         self.assertIn('color: "transparent"', qml)
         # Made once after the surface maps, never switched (Hyprland 0.56 rechecks only when it is made or goes)
         self.assertRegex(qml, r"IdleInhibitor \{\s*window: surface\s*enabled: root\.armed\s*\}")
-        self.assertRegex(qml, r"interval: 2000\s*running: true\s*onTriggered: root\.armed = true")
+        self.assertRegex(qml, r"interval: 2000\s*running: surface\.backingWindowVisible\s*onTriggered: root\.armed = true")
         self.assertEqual(qml.count("armed = "), 1)
         self.assertIn('"/omacvm/guest-awake"', qml)
         self.assertEqual(od.AWAKE.name, "guest-awake")

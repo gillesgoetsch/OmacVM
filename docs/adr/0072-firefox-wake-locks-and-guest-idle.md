@@ -74,7 +74,9 @@ anyway. Accepting the D-Bus call alone would gain about 30 s.
    maps or unmaps, and counts a layer surface's only while it is mapped: an
    inhibitor made before the surface maps never counts, and one switched off
    and on starts Omarchy's idle timers again. So the inhibitor is made once,
-   2 s after the start, and never switched; the lease ends the process
+   2 s after the surface is shown (Quickshell's `backingWindowVisible`; a
+   timer from the start could fire before a slow guest maps the surface),
+   and never switched; the lease ends the process
    instead. (The first build switched it with the lease and made it at once:
    Omarchy's screensaver came at 150 s and the lock at 300 s in row R7; the
    plan step's spike had held only because Firefox's own window mapped after

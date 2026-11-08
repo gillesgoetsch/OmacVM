@@ -7,7 +7,8 @@
 //
 // Hyprland 0.56 looks at a layer surface's inhibitor only when the inhibitor is made or goes (and when a
 // window maps or unmaps): one made before the surface is mapped never counts, and one switched off and on
-// lets the idle timers start again. So it is made once, 2 s after the start, and never switched off.
+// lets the idle timers start again. So it is made once, 2 s after the surface is shown (not after the start:
+// on a slow guest the surface could map late), and never switched off.
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -37,7 +38,7 @@ ShellRoot {
 
   Timer {
     interval: 2000
-    running: true
+    running: surface.backingWindowVisible
     onTriggered: root.armed = true
   }
 
