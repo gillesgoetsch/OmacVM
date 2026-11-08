@@ -80,7 +80,7 @@ app/app/Sources/OmacVM/OmarchyMoveCard.swift app/app/Sources/OmacVM/DiskView.swi
 src/tests/e2e/move-45.sh src/tests/e2e/move-45-result.py"
 
 usage() { sed -n '2,40s/^# \{0,1\}//p' "$0"; exit 2; }
-# On screen (MACS-1030d): nobody at the Mac for 5 minutes and the screen unlocked.
+# On screen (MACS-1030d): nobody at the Mac for 60 s and the screen unlocked.
 hid_idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'; }
 screen_locked() { [[ $(ioreg -n Root -d1 -a | plutil -extract IOConsoleUsers.0.CGSSessionScreenIsLocked raw - 2>/dev/null) == true ]]; }
 onscreen_ok() { (( $(hid_idle) > 60 )) && ! screen_locked; }

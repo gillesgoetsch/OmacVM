@@ -69,7 +69,7 @@ not only at their start (`person.sh`):
 - Someone is there while a remote session is open (Screen Sharing: its
   "Remote user is connected", screensharingd, an established connection on
   port 5900; Jump Desktop: its rtcproxy or desktopproxy), also one nobody
-  touches, or when input that was not ours came in the last 5 minutes. Our
+  touches, or when input that was not ours came in the last 60 s. Our
   own events (keys posted to QEMU, the on-screen test's moves and clicks)
   reset macOS's HID idle time too: the harness stamps them
   (`~/Library/Caches/omacvm-e2e-last-input`).
