@@ -386,7 +386,7 @@ omacvm-cocoa-present-unseen.patch and omacvm-cocoa-present-damage.patch.
 +    /*
 +     * Out of sight with the switch on while nothing can be told (no channel,
 +     * an agent that cannot pause): said once it lasted OMACVM_GP_AFTER_S, as
-+     * a pause would be (not for a window that is not shown yet at start).
++     * a pause would be (also at start: a window not shown yet while the guest boots says it once).
 +     */
 +    if (!seen && omacvm_gp_switch == 1 && omacvm_gp_why() != OMACVM_GP_SENT) {
 +        if (omacvm_gp_unable_at == 0) {
