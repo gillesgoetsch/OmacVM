@@ -7,10 +7,11 @@
 # its block size.
 set -euo pipefail
 cd "$(dirname "$0")"
-install -m644 90-omacvm.sysctl /etc/sysctl.d/90-omacvm.conf
-install -Dm644 90-omacvm-zram.conf /etc/systemd/zram-generator.conf.d/90-omacvm.conf
-install -m644 90-omacvm-mm.tmpfiles /etc/tmpfiles.d/90-omacvm-mm.conf
-install -m644 virtio-balloon.modules /etc/modules-load.d/virtio-balloon.conf
+D=${OMACVM_MEMORY_ROOT:-}   # tests only: a fake root for the files
+install -Dm644 90-omacvm.sysctl "$D"/etc/sysctl.d/90-omacvm.conf
+install -Dm644 90-omacvm-zram.conf "$D"/etc/systemd/zram-generator.conf.d/90-omacvm.conf
+install -Dm644 90-omacvm-mm.tmpfiles "$D"/etc/tmpfiles.d/90-omacvm-mm.conf
+install -Dm644 virtio-balloon.modules "$D"/etc/modules-load.d/virtio-balloon.conf
 # A kernel replaced since this start (the move to Omarchy 4.5 takes the VM
 # to another kernel): its modules are gone, so settings that need one not
 # loaded yet (another file's net.core.default_qdisc = fq) fail until the

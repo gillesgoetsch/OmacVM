@@ -23,7 +23,7 @@ echo 'sysctl: setting key "net.core.default_qdisc": No such file or directory' >
 EOF
 chmod 755 "$B"/*
 export T
-m() { PATH="$B:$PATH" OMACVM_MODULES_DIR=$T/modules bash "$R/src/memory/guest/install.sh" > "$T/out" 2>&1; echo $?; }
+m() { PATH="$B:$PATH" OMACVM_MODULES_DIR=$T/modules OMACVM_MEMORY_ROOT=$T/root bash "$R/src/memory/guest/install.sh" > "$T/out" 2>&1; echo $?; }
 expect "sysctl fine: done" 0 "$(m)"
 expect "the running kernel's modules gone, a module's setting fails: done, the line says a restart applies it" "0 1" \
   "$(SYSCTL_FAILS=1 m) $(grep -c 'apply after a restart' "$T/out")"
