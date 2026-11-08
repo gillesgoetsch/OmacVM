@@ -877,7 +877,10 @@ mac_side_refusal() {   # FS GB WHY: the VM on a GB disk image of FS; the move re
   # refuse it; OMACVM_TEST_MOVE_STOP=backup stops a run that wrongly goes on before any VM starts.
   IMG=$OUT/$TAG.sparseimage
   rm -f "$IMG"
-  hdiutil create -quiet -type SPARSE -size "$2g" -fs "$1" -volname "mv-$ROW" "$OUT/$TAG" || { check "disk image" 0 ""; return; }
+  # Time limit: hdiutil create hung inside newfs_hfs twice on the mini's CI host (2026-11-07).
+  local hc; hc=$(HDIUTIL_HANG_DIR=$OUT/logs "$R/src/tests/hdiutil-create.sh" 120 -quiet -type SPARSE -size "$2g" -fs "$1" -volname "mv-$ROW" "$OUT/$TAG")
+  local rc=$?; [[ -n $hc ]] && printf '%s\n' "$hc"
+  (( rc == 0 )) || { check "disk image" 0 "exit $rc$( ((rc == 124)) && echo ': hdiutil create hung (120 s), killed')"; return; }
   MNT=$(hdiutil attach -nobrowse -noautoopen "$IMG" 2>/dev/null | awk -F'\t' 'END { print $NF }')
   [[ -d $MNT ]] || { check "disk image attached" 0 ""; return; }
   VD="$MNT/$BN mv-$ROW"
