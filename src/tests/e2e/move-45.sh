@@ -1113,6 +1113,7 @@ row_app_guards() {
   check "the move finishes" $((rc == 0)) "exit $rc: $(J reason)"
   journal_state done
   # 4. The app opens after the move: the update waiting from step 3 goes in now.
+  local umark; umark=$(upd_mark)
   app_open || { check "the app opens after the move" 0 ""; app_clean; return; }
   for ((i = 0; i < 100; i++)); do [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist" 2>/dev/null) == "$cv" ]] && break; sleep 3; done
   check "after the move the waiting update goes in" $([[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist" 2>/dev/null) == "$cv" ]] && echo 1 || echo 0) "$(upd_log | grep -E 'install|swap|result' | tail -2 | tr '\n' ' ' | cut -c1-240)"
@@ -1121,6 +1122,12 @@ row_app_guards() {
   UPID=""
   check "after the move: the updated app quit, no launcher of the copy left" $(ua_settle 150 && echo 1 || echo 0) \
     "launchers '$(ua_launchers | tr '\n' ' ')', update-swap.sh '$(ua_swaps | tr '\n' ' ')'"
+  # The version alone passes before the swapped-in app answered: update-swap.sh can still put the old one back.
+  ul=$(upd_since "$umark")
+  check "after the move the updated app started (update.log 'swap: $cv started', still $cv)" \
+    $([[ $ul == *"swap: $cv started"* && $ul != *"swap: $cv did not start"* &&
+         $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist" 2>/dev/null) == "$cv" ]] && echo 1 || echo 0) \
+    "$(grep -E 'swap: (.* started|.* did not start|result)' <<<"$ul" | tail -2 | tr '\n' ' ' | cut -c1-240)"
   check "no QEMU after all of it" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
   app_clean
 }

@@ -83,6 +83,11 @@ expect "app_clean with the lock: done in the queue" 1 "$(grep -c 'move-45 .* don
 row=$(sed -n '/^row_app_guards() {/,/^}/p' "$K")
 expect "app-guards: the check after the update" 1 "$(grep -c 'check "after the move: the updated app quit, no launcher of the copy left" $(ua_settle 150' <<<"$row")"
 expect "app-guards: no sweep 5 s after the version check" 0 "$(grep -c '^  sleep 5$' <<<"$row")"
+expect "app-guards: update.log marked before the app opens after the move" 1 "$(grep -cF 'local umark; umark=$(upd_mark)' <<<"$row")"
+expect "app-guards: the swapped-in app answered its start check (update.log), not put back" 1 \
+  "$(grep -cF '$([[ $ul == *"swap: $cv started"* && $ul != *"swap: $cv did not start"* &&' <<<"$row")"
+expect "app-guards: that check comes after the settle" yes \
+  "$(awk '/ua_settle 150 &&/ { s = NR } /swap: \$cv started"\* &&/ { c = NR } END { print (s && c > s) ? "yes" : "no" }' <<<"$row")"
 expect "app_clean settles while it holds the lock" 1 "$(sed -n '/^app_clean() {/,/^}/p' "$K" | grep -c '(( ULOCK_MINE )) && ua_settle 150')"
 expect "kit syntax" 0 "$(bash -n "$K" >/dev/null 2>&1; echo $?)"
 exit $fail
