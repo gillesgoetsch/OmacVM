@@ -137,8 +137,10 @@ or choose their password: hand those over, never work around them.
   in the VM (its bar does the strip). With the lid closed (external displays only) a start uses
   the notch the app measured last on this Mac (the app's internal setting `builtinNotch`, this
   Mac's only; `defaults delete org.omacvm.app builtinNotch` forgets it; `OmacVM --notch` in the
-  app's `Contents/MacOS` prints what a start would use) and covers the strip once the lid is
-  open and the window on the MacBook's display (#716).
+  app's `Contents/MacOS` prints what a start would use) and is meant to cover the strip once the
+  lid is open and the window on the MacBook's display (#716; so far only QEMU's tests show that
+  step: the M1 row with the built-in switched off ended before it came back, and no real lid
+  row has run).
   Skip the notch (off by default, either full screen): `omacvm notch --vm NAME --skip on|off`,
   at once in a running VM; `--json` says `skip` and `skip_ready` (the VM's bar can do it).
 - **OmacVM cannot get into the VM**: `omacvm apply --vm NAME`. Exit 3 with a

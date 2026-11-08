@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.2 (unreleased)
+
+- **Correction to 3.4.1: Full screen including notch after a start with the lid closed (#716).**
+  3.4.1 said QEMU takes the strip beside the notch once the full screen is on the MacBook's display.
+  That step is checked only by QEMU's own tests so far. On a MacBook Pro M1 Max with its built-in
+  display switched off by a test tool, a start used the remembered notch, the VM got it and QEMU
+  waited for the MacBook's display; the test ended before that display came back, so the strip
+  was not seen. A start with the lid really closed, then opened, is still to be checked. If the
+  strip stays black after you open the lid, start the VM again with the lid open.
+
 ## 3.4.1
 
 - **Omanotch** on Omarchy 4.5 with Skip the notch (#734): the tray's hidden icons open next to the
