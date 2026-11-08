@@ -2,10 +2,12 @@
 # hdiutil-create.sh SECONDS ARGS...: `hdiutil create ARGS...` with a time limit, for tests.
 # On 2026-11-07 `hdiutil create -fs HFS+` / `-fs JHFS+` hung inside newfs_hfs twice on the mini's CI host
 # (app-move-vm.sh, app-storage.sh): the job sat until its 90-minute limit and newfs_hfs ran on as an orphan,
-# its image still attached. Past SECONDS this prints what hung (ps; a 2 s sample of each newfs_* process,
-# its call graph's top lines, the whole sample in HDIUTIL_HANG_DIR or TMPDIR), kills hdiutil and its
-# children (and newfs_* of the same -volname), detaches the image (the last argument, any extension)
-# and exits 124. Otherwise hdiutil's own exit code.
+# its image still attached. On 11-08 `-fs APFS` (app-drive-drop.sh) hung the same way: newfs_apfs waited in
+# open() of the new image's /dev/rdiskNs1, nobody else had it open (sample, lsof). So any file system.
+# Past SECONDS this prints what hung (ps; a 2 s sample of each newfs_* process, its call graph's top
+# lines, the whole sample in HDIUTIL_HANG_DIR or TMPDIR), kills hdiutil and its children (and newfs_*
+# of the same -volname), detaches the image (the last argument, any extension) and exits 124.
+# Otherwise hdiutil's own exit code.
 # HDIUTIL_CREATE_BIN: another program in place of hdiutil (the test, src/tests/hdiutil-create-test.sh).
 set -u
 secs=${1:?usage: hdiutil-create.sh SECONDS ARGS...}; shift
