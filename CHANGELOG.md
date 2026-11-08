@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.2 (unreleased)
+
+- **Pause drawing while hidden** (experimental): when a VM keeps drawing although its window is out
+  of sight, the logs now say why. The app's log (`logs/qemu.log` in the VM's folder) says when it
+  told the VM to stop or to draw again, or why it could not (the VM's display channel closed, its
+  display agent not ready or too old). The VM's display agent (`journalctl --user -u
+  omacvm-displays`) says when a screen or window share keeps a display on, when Hyprland did not
+  turn a display off, or did not answer. Each is said once until it changes, so hours out of sight
+  add no lines. A VM started while the Mac's displays sleep now counts its window as out of sight
+  until they wake, as it already did for a locked Mac. Update VM brings the agent's part.
+
 ## 3.4.1
 
 - **Omanotch** on Omarchy 4.5 with Skip the notch (#734): the tray's hidden icons open next to the
