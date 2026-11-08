@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.2 (unreleased)
+
+- **Bar widgets**: the Mac's Wi-Fi, Bluetooth, audio and Night Shift widgets no longer fill the
+  shell's log with `TypeError: Cannot read property 'foreground' of null` (246 lines each time the
+  shell reloads a plugin in place: Omanotch's first-login install, Update VM, Omarchy updates;
+  3.4.0 and 3.4.1). While the shell swaps the bar, they use Omarchy's own bar colour and font.
+  Nothing changes on screen. Update VM brings it.
+
 ## 3.4.1
 
 - **Omanotch** on Omarchy 4.5 with Skip the notch (#734): the tray's hidden icons open next to the
