@@ -1717,3 +1717,34 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 - **Where:** `src/gestures/guest/install.sh`, `src/guest/check.sh`
   ("trackpad taps"); tests `src/gestures/guest/test-install-gestures.sh`,
   `src/tests/trackpad-taps.sh`.
+
+## 60. zram is as big as the VM's memory (Omarchy 4.5)
+
+- **Symptom:** on Omarchy 4.5 (a new VM, or one moved from 4.0), `zramctl`
+  shows zram as big as the VM's memory (3.8G in a 4 GB VM, 48G in a 48 GB
+  one), not OmacVM's cap of a quarter of the memory, at most 8 GiB. Up to
+  3.4.1; `omacvm check` said ok.
+- **Cause:** Omarchy 4.5 ships its own zram file,
+  `/usr/lib/systemd/zram-generator.conf.d/90-omarchy.conf` (`zram-size =
+  ram`). zram-generator reads the files in `zram-generator.conf.d` by name,
+  in all its folders together, and the last one wins. `90-omarchy.conf` came
+  after OmacVM's `/etc/.../90-omacvm.conf`. On 4.0 there is no such file, so
+  the cap held.
+- **Fix (3.4.2):** Update VM (`omacvm apply`), then restart the VM. OmacVM's
+  file is now `/etc/systemd/zram-generator.conf.d/95-omacvm.conf` and the old
+  name goes. The order is Omarchy's `90-` < OmacVM's `95-` < a file of your
+  own, `99-*.conf`. The size changes at the restart; until then `omacvm
+  check`'s "zram swap" line says so.
+- **Your own size:** put it in `/etc/systemd/zram-generator.conf.d/99-local.conf`
+  (as Omarchy suggests), for example `[zram0]` and `zram-size = ram / 2`, then
+  restart. OmacVM leaves that file alone, and the check line says ok and
+  names it. A file of yours named before `95-` loses to OmacVM's cap.
+- **Before 3.4.2:** the same `99-local.conf` with `zram-size = min(ram / 4, 8192)`.
+- **`omacvm check`:** "zram swap" warns over the cap (10 % slack) and says
+  what to do: Update VM and a restart when OmacVM's file is missing or old,
+  the next restart when it is in place, or the path of the file that is read
+  after OmacVM's (for example a later file of Omarchy's, which Update VM does
+  not change).
+- **Where:** `src/memory/guest/install.sh`, `src/memory/guest/90-omacvm-zram.conf`,
+  `src/guest/check.sh` (`zram_decider`, `zram_line`); test
+  `src/tests/memory-zram-order.sh`.
