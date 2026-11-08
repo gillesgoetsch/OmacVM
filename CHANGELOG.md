@@ -12,9 +12,10 @@ in more words.
   added or its settings changed, the layout could stay as it was (QML logged "Binding loop detected
   for property notchWidths" and dropped the update) until the pointer came onto the bar. Now the
   layout counts the size each item asks for, an item that grows takes its new place at once, and
-  the tray waits unseen until its apps are in, then shows where it stays. Update VM brings it (bar
-  patch v40). With bar patch v37 (3.4.0) a tray could also change sides when it showed up, less
-  often.
+  a tray whose apps start together waits unseen until they are in, then shows where it stays.
+  Apps that start seconds apart can still move the tray left once, at once. Update VM brings it
+  (bar patch v40). With bar patch v37 (3.4.0) a tray could also change sides when it showed up,
+  less often.
 
 ## 3.4.1
 
