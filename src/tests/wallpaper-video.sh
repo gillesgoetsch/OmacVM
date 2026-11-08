@@ -37,7 +37,7 @@ EOF
 cat > "$B/mktemp" <<'EOF'
 #!/bin/bash
 s=""; [[ ${1:-} == --suffix ]] && s=$2
-n=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 10)
+n=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 10)
 f=${TMPDIR:-/tmp}/tmp.$n$s; : > "$f"; echo "$f"
 EOF
 printf '#!/bin/bash\necho 1700000000\n' > "$B/stat"
