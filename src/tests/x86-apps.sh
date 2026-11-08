@@ -220,7 +220,7 @@ expect "status, ours and qemu-user's x86_64 rule held back: ok (qemu-i386 stays)
   "ok box64 $V runs x86_64 programs and AppImages|box64 qemu-i386" "$OUT|$(entries)"
 INSTALLED=$V REGISTERED=yes FEX=yes run --status
 expect "status, ours and someone else's x86_64 rule: broken, names it" \
-  "broken box64 $V installed, but x86_64 programs go to FEX-x86_64 first (binfmt): omacvm apply" "$OUT"
+  "broken box64 $V installed, but x86_64 programs go to FEX-x86_64 first (a binfmt rule that is not OmacVM's: remove it to use box64)" "$OUT"
 HOLD=ours QEMU=yes run --status
 expect "status, off and OmacVM's hold left: needed" \
   "needed qemu-user's x86_64 rule is still held back by OmacVM (/etc/binfmt.d/qemu-x86_64-static.conf): omacvm apply" "$OUT"
