@@ -5,11 +5,11 @@ in more words.
 
 ## 3.4.2 (unreleased)
 
-- **Bar widgets**: the Mac's Wi-Fi, Bluetooth, audio and Night Shift widgets no longer fill the
-  shell's log with `TypeError: Cannot read property 'foreground' of null` (246 lines each time the
-  shell reloads a plugin in place: Omanotch's first-login install, Update VM, Omarchy updates;
-  3.4.0 and 3.4.1). While the shell swaps the bar, they use Omarchy's own bar colour and font.
-  Nothing changes on screen. Update VM brings it.
+- **Bar widgets**: the Mac's Wi-Fi, Bluetooth, audio and Night Shift widgets and the display panel
+  no longer fill the shell's log with `TypeError: Cannot read property 'foreground' of null` (up
+  to 250 lines each time the shell reloads a plugin in place: Omanotch's first-login install,
+  Update VM, Omarchy updates; 3.4.0 and 3.4.1). While the shell swaps the bar, they use Omarchy's
+  own bar colour and font. Nothing changes on screen. Update VM brings it.
 
 ## 3.4.1
 
