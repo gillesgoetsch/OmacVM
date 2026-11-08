@@ -134,7 +134,7 @@ VMD=$( (source "$HERE/test-vms.sh" && e2e_vm_guard "$APPID" "$VM") 2>&1) || { ec
 QPAT='(runtime/bin/OmacVM|MacOS/OmacVM-VM) -name'
 qemu_pid() { LC_ALL=C pgrep -f "$QPAT $VM( |$)" | head -1; }
 port() { sed -n "s/^SSH_PORT=//p" "$VMD/vm.env" | tr -d "'"; }
-gssh() { ssh -i "$KEY" -p "$(port)" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+gssh() { ssh -i "$VMD/ssh-key" -i "$KEY" -p "$(port)" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@127.0.0.1 "$@" < /dev/null; }
 # Every QEMU on this Mac but this VM's (the person's VM above all): none may run.
 others() { LC_ALL=C pgrep -fl "qemu-system-aarch64|runtime/bin/OmacVM -name|MacOS/OmacVM-VM -name" | LC_ALL=C grep -v -E "$QPAT $VM( |$)"; }

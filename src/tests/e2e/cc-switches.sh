@@ -292,10 +292,10 @@ else:
     print("missing false - -")' "$VM"
 }
 IP=""
-vssh() {   # ssh to $IP (127.0.0.1:PORT, or the fast network's address)
+vssh() {   # ssh to $IP (127.0.0.1:PORT, or the fast network's address); the VM's own key first, as onscreen.sh does
   local h=${IP%:*} p=22
   [[ $IP == *:* ]] && p=${IP##*:}
-  ssh -i "$KEY" -p "$p" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  ssh -i "$VMD/ssh-key" -i "$KEY" -p "$p" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o LogLevel=ERROR "root@$h" "$@"
 }
 gssh() {   # the VM as root; the address again from `omacvm vms` when it moved (the fast network)
