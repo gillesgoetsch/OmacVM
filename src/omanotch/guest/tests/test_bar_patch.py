@@ -2593,6 +2593,7 @@ class Matrix(unittest.TestCase):
 GLIDE = r"""
 var queue = [];
 var Qt = { callLater: function (f) { if (queue.indexOf(f) < 0) queue.push(f) } };
+var clock = 100000; Date.now = function () { return clock };
 function flush() { while (queue.length) queue.shift()() }
 function Slot(name, memory) {
   var self = this;
@@ -2607,7 +2608,7 @@ function Slot(name, memory) {
                                                  set: function (v) { iw = v } });
   Object.defineProperty(this, "notchContentWidth", { get: function () { return cw !== null ? cw : self.implicitWidth },
                                                      set: function (v) { cw = v } });
-  this.notchOpenExtent = 0; this.notchLastOpen = 0; this.notchLastContent = 20; this.notchAppearing = false;
+  this.notchOwnAt = 0; this.notchOpenExtent = 0; this.notchLastOpen = 0; this.notchLastContent = 20; this.notchAppearing = false;
   this.showRestarts = 0;
   this.notchShowEnd = { restart: function () { self.showRestarts++ } };
   this.parent = { forceLayout: function () {} };
@@ -2775,6 +2776,25 @@ out.push(t.moves.slice());
         self.assertEqual(app, [[960, 540, False]])
         self.assertEqual(grew_in_place, [])          # its end stays: nothing moves
         self.assertEqual(grew_back, [[540, 960, False]])
+
+    def test_the_layouts_next_round_after_an_own_change_is_at_once(self):
+        # The layout settles its decisions one round later (notchSkipKeep):
+        # a tray that grew stays right in the first round and goes left in
+        # the next, with no size change of its own then. Still its own move:
+        # at once, never a glide under the housing. A push 100 ms later glides.
+        out = self.run_steps("""
+var mem = {};
+var t = new Slot("tray", mem); t.notchEnd = true; t.width = 54; t.notchOpenExtent = 27; t.notchLastOpen = 27;
+t.set({x: 0, n: 896, hidden: false, animate: false}); flush(); t.moves = [];
+t.notchOpenExtent = 54; t.set({x: 0, n: 896, hidden: false, animate: true});
+t.set({x: -300, n: 896, hidden: false, animate: true}); flush();
+out.push(t.moves.slice()); t.moves = [];
+clock += 500; t.set({x: -320, n: 896, hidden: false, animate: true}); flush();
+out.push(t.moves.slice());
+""")
+        kept, pushed = out
+        self.assertEqual(kept, [[950, 650, False]])
+        self.assertEqual(pushed, [[650, 630, True]])
 
     def test_a_pushed_item_still_glides_once(self):
         # The weather beside the tray keeps its size; the tray's jump pushes it:

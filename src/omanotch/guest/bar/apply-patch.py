@@ -1876,6 +1876,9 @@ EXCLUSION
     property real notchLastWidth: 0
     readonly property real notchOpenExtent: activeItem && root.notchIsTray(activeItem) ? Number(activeItem.drawerExtent) || 0 : 0
     property real notchLastOpen: 0
+    // When it last changed: the layout settles its decisions one round later
+    // (notchSkipKeep), and that move is still its own (100 ms).
+    property real notchOwnAt: 0
     // An item that shows up (its widget had no width, as Omarchy's tray before
     // its first app) waits unseen at its place until that has been quiet for
     // 150 ms, then shows there: apps that register one by one give one
@@ -1955,7 +1958,8 @@ EXCLUSION
       // Its own size changed (the indicators' peek, a tray's new app, a
       // widget that grew): it takes its new place at once, as its own row
       // moves inside it at once.
-      var own = implicitWidth !== notchLastWidth || notchOpenExtent !== notchLastOpen
+      if (notchPlaced && (implicitWidth !== notchLastWidth || notchOpenExtent !== notchLastOpen)) notchOwnAt = Date.now()
+      var own = Date.now() - notchOwnAt < 100
       var appeared = notchPlaced && notchLastContent <= 0 && notchContentWidth > 0
       notchLastWidth = implicitWidth
       notchLastOpen = notchOpenExtent
@@ -2028,7 +2032,7 @@ EXCLUSION
       if (!!s.hidden !== notchShiftGone) notchShiftGone = !!s.hidden
       var to = notchEdge(s)
       if (Math.abs(notchShownX - to) > 0.01) {
-        notchSlide.enabled = !!s.animate
+        notchSlide.enabled = !!s.animate && Date.now() - notchOwnAt >= 100
         notchShownX = to
       }
       if (notchShown) notchShown[moduleName] = { x: to, ours: s.x !== 0 || s.hidden === true }
