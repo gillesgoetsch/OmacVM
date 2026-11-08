@@ -102,7 +102,7 @@ def scale_for_mode(
         # instead (the last one counts, as in Hyprland; #738).
         rules = re.findall(
             r'^hl\.monitor\(\{ output = "Virtual-1", mode = "preferred", position = "auto", '
-            r'scale = ([0-9]+(?:\.[0-9]+)?) \}\)[ \t]*$',
+            r'scale = ([0-9]+(?:\.[0-9]+)?) \}\)[ \t\r]*$',
             config,
             re.MULTILINE,
         )
