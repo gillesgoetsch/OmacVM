@@ -55,6 +55,7 @@ chmod 755 "$B"/*
 # check.sh's two functions, as they are
 awk '/^zram_decider\(\) \{/ || /^zram_line\(\) \{/ {on=1} on {print} on && /^}$/ {on=0}' "$C" > "$T/fn.sh"
 if grep -q '^zram_decider()' "$T/fn.sh" && grep -q '^zram_line()' "$T/fn.sh"; then
+  bash -n "$T/fn.sh" || { echo "FAIL check.sh's zram functions do not parse"; fail=1; }
   # shellcheck disable=SC1091
   source "$T/fn.sh"
 else
