@@ -54,6 +54,13 @@ What the patch adds:
     Omarchy 4.5's tray grows as its drawer slides open: Skip the notch
     places it by its width with the drawer open, so the drawer opens in
     place, clear of the housing, and the tray does not move while it slides.
+  * Skip the notch shows an item where it stays (#757): 4.5's lists count
+    the size each item asks for (implicitWidth; its laid-out width comes
+    from a polish the items force while the list is still counting, and
+    QML dropped that update as a binding loop); an item whose own size
+    changed takes its new place at once (only items pushed by others
+    glide); an item that shows up (it had no width, as the tray before its
+    first app) waits unseen until its place has been quiet for 150 ms.
 
 Omarchy's Bar.qml changed in October 2026 (upstream's notch floor from
 display-cutouts.json, a bar thickness per screen, the centre's hover area):
@@ -73,7 +80,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 39
+VERSION = 40
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -108,6 +115,7 @@ COMMON = [
     "  function notchParkedX(x) {\n",                                        # 1. clicks to the item's twin
     "    function onNotchParkedChanged() { root.notchTraySet(false, \"\", \"\") }\n",  # 2. its drawer closes
     "      function notchParkEnd() {\n",                                    # 3. mapped again after the park (#727)
+    "    property bool notchAppearing: false\n",                              # 9. shows up where it stays (#757)
 ]
 PIECES = COMMON + [
     "        Item { id: notchLeftEdge; ",                                     # 5. around the housing
@@ -121,7 +129,7 @@ PIECES_45 = COMMON + [
     "(sections.notchLayout ? root.notchRight + Style.space(6) : ",           # 5.
     "            notchSlotIndex: moduleListRoot.keys.indexOf(modelData.key)\n",  # 8. lists
     "    readonly property real notchRest: {\n",                              # 8.
-    "          : more > 0 ? [c.width, c.width + more] : c.width\n",            # 8. a tray counts open
+    "          : more > 0 ? [w, w + more] : w\n",                              # 8. a tray counts open
     "      ? [beginList.notchRest, centerBox.notchRest + endList.notchRest, beginList.notchPeekMore] : [0, 0]\n",  # 5. the peek's room
     "    readonly property real notchRest: boxList.notchRest\n",              # 5. the centre at rest
 ]
@@ -435,6 +443,10 @@ def lists_45(text):
     // drawer slides open, so where it goes is decided by that width, and it
     // opens in place and never moves from under the pointer), and the list's
     // width at rest.
+    // Each by the size the slot asks for (implicitWidth, from bindings), not
+    // its laid-out width: the layout sets that in its polish, which the slots
+    // force (ensurePolished) while this is still being counted, and QML drops
+    // such an update as a binding loop (#757).
     property var notchShift: null
     readonly property var notchWidths: {
       var out = []
@@ -442,8 +454,9 @@ def lists_45(text):
         var c = children[i]
         if (!c || !(c.notchSlotIndex >= 0)) continue
         var t = c.activeItem, more = t && root.notchIsTray(t) ? Number(t.drawerExtent) - Number(t.revealExtent) : 0
-        out[c.notchSlotIndex] = c.notchPeekFull > 0 ? [c.width, c.notchPeekRest, c.notchPeekFull]
-          : more > 0 ? [c.width, c.width + more] : c.width
+        var w = c.implicitWidth
+        out[c.notchSlotIndex] = c.notchPeekFull > 0 ? [w, c.notchPeekRest, c.notchPeekFull]
+          : more > 0 ? [w, w + more] : w
       }
       for (var j = 0; j < out.length; j++) if (out[j] === undefined) out[j] = 0
       return out
@@ -1855,9 +1868,32 @@ EXCLUSION
     // after the other, which once moved the weather and glided it back).
     readonly property var notchPeekActive: notchPeekBlock && notchPeekBlock.parent
       ? root.notchPeekActiveIn(notchPeekBlock.parent) : null
-    readonly property real notchPeekRest: notchPeekActive ? notchPeekActive.implicitWidth : width - notchPeekShown
+    readonly property real notchPeekRest: notchPeekActive ? notchPeekActive.implicitWidth : implicitWidth - notchPeekShown
     property real notchPeekOffset: 0
+    // Its own size at the last place (the size it asks for, which its list
+    // counts; a tray's also with its drawer open): a move it caused itself
+    // is at once, only moves of items pushed by others glide.
     property real notchLastWidth: 0
+    readonly property real notchOpenExtent: activeItem && root.notchIsTray(activeItem) ? Number(activeItem.drawerExtent) || 0 : 0
+    property real notchLastOpen: 0
+    // An item that shows up (its widget had no width, as Omarchy's tray before
+    // its first app) waits unseen at its place until that has been quiet for
+    // 150 ms, then shows there: apps that register one by one give one
+    // showing, where the tray stays. Never on a drag (the widget keeps its
+    // width) or the indicators' peek or a drawer's slide (they never start
+    // from no width).
+    readonly property real notchContentWidth: NOTCH_CONTENT_WIDTH
+    property real notchLastContent: 0
+    property bool notchAppearing: false
+    Timer {
+      id: notchShowEnd
+      interval: 150
+      onTriggered: {
+        notchFade.enabled = true
+        slot.notchAppearing = false
+        slot.notchSettle()
+      }
+    }
     readonly property real notchPeekDx: notchShift && notchShift.peekAt !== undefined
       ? notchShift.peekAt - (notchShownX - (notchEnd ? width : 0) + notchPeekOffset) : 0
     Translate { id: notchPeekMove; x: slot.notchPeekDx }
@@ -1895,8 +1931,8 @@ EXCLUSION
     readonly property bool notchEnd: region === "right"
     function notchEdge(s) { return s.n + s.x + (notchEnd ? width : 0) }
     transform: Translate { x: slot.notchShift ? slot.notchShownX - (slot.notchEnd ? slot.width : 0) - slot.notchPlaceX : 0 }
-    opacity: slot.notchShiftGone || slot.notchNew ? 0 : 1
-    enabled: !slot.notchShiftGone
+    opacity: slot.notchShiftGone || slot.notchNew || slot.notchAppearing ? 0 : 1
+    enabled: !slot.notchShiftGone && !slot.notchAppearing
     Behavior on notchShownX {
       id: notchSlide
       enabled: false
@@ -1916,10 +1952,14 @@ EXCLUSION
       else if (parent && typeof parent.ensurePolished === "function") parent.ensurePolished()
       var s = notchShift
       var gone = !!(s && s.hidden), animate = !!(s && s.animate)
-      // The indicators opening or closing their hidden ones: their own row
-      // moves inside them at once, so they do not slide either.
-      var peeked = notchPeekFull > 0 && width !== notchLastWidth
-      notchLastWidth = width
+      // Its own size changed (the indicators' peek, a tray's new app, a
+      // widget that grew): it takes its new place at once, as its own row
+      // moves inside it at once.
+      var own = implicitWidth !== notchLastWidth || notchOpenExtent !== notchLastOpen
+      var appeared = notchPlaced && notchLastContent <= 0 && notchContentWidth > 0
+      notchLastWidth = implicitWidth
+      notchLastOpen = notchOpenExtent
+      notchLastContent = notchContentWidth
       var placed = notchPlaced
       notchPlaced = !!s
       notchFade.enabled = placed && animate
@@ -1955,8 +1995,20 @@ EXCLUSION
         return
       }
       if (gone !== notchShiftGone) notchShiftGone = gone
+      if (notchAppearing || (appeared && animate)) {
+        // It showed up: unseen at its place until that is quiet (notchShowEnd).
+        notchFade.enabled = false
+        notchAppearing = true
+        notchShowEnd.restart()
+        notchSlide.enabled = false
+        notchPlaceX = s.n
+        notchShiftX = s.x
+        notchShownX = notchEdge(s)
+        notchPeekApply()
+        return
+      }
       var ours = s.x !== 0 || (placed ? notchShiftX !== 0 : !!(was && was.ours))
-      var glide = animate && ours && !peeked, running = notchSlideRun.running
+      var glide = animate && ours && !own, running = notchSlideRun.running
       if (!running) notchSlide.enabled = false
       notchPlaceX = s.n
       if (!placed) notchShownX = glide && was !== undefined ? was.x : notchEdge(s)
@@ -1982,6 +2034,9 @@ EXCLUSION
       if (notchShown) notchShown[moduleName] = { x: to, ours: s.x !== 0 || s.hidden === true }
     }
 '''
+    # The widget's own width: 4.5's slot has it apart from the length it asks
+    # for (which a drag or a removal changes); 4.0's slot is its widget's.
+    slot_body = slot_body.replace("NOTCH_CONTENT_WIDTH", "widgetWidth" if form45 else "implicitWidth")
     text = replace_variant(text, [(h, h + slot_body) for h in slot_heads], "the module slot")
     text = replace_once(text, '''    z: modulePointer.dragging ? 100 : 0
 ''', '''    // omarchy-notch-bar: while the indicators' hidden ones open elsewhere,

@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 39)
+        self.assertEqual(V, 40)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -741,9 +741,13 @@ class RealOmarchy(unittest.TestCase):
         widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
         rest = re.search(r"    readonly property real notchRest: \{\n(.*?)\n    \}\n", full, re.S).group(1)
         more = re.search(r"    readonly property real notchPeekMore: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        # implicitWidth (what each slot asks for), never the laid-out width,
+        # which the layout's polish sets later (999: not laid out yet, #757).
         js = """
-var children = [ {}, { notchSlotIndex: 2, width: 40, notchPeekFull: 0 }, { notchSlotIndex: 0, width: 30, notchPeekFull: 0 },
-                 { width: 50 }, { notchSlotIndex: 1, width: 90, notchPeekRest: 22, notchPeekFull: 68 } ];
+var children = [ {}, { notchSlotIndex: 2, width: 999, implicitWidth: 40, notchPeekFull: 0 },
+                 { notchSlotIndex: 0, width: 0, implicitWidth: 30, notchPeekFull: 0 },
+                 { width: 50, implicitWidth: 50 },
+                 { notchSlotIndex: 1, width: 999, implicitWidth: 90, notchPeekRest: 22, notchPeekFull: 68 } ];
 var notchWidths = (function () { WIDTHS })();
 console.log(JSON.stringify([notchWidths, (function () { REST })(), (function () { MORE })()]));
 """.replace("WIDTHS", widths).replace("REST", rest).replace("MORE", more)
@@ -752,6 +756,26 @@ console.log(JSON.stringify([notchWidths, (function () { REST })(), (function () 
         self.assertEqual(json.loads(out.stdout), [[30, [90, 22, 68], 40], 92, 68])
         self.assertIn("            notchSlotIndex: moduleListRoot.keys.indexOf(modelData.key)\n", full)
         self.assertIn("onKeysChanged: if (notchShift && notchShift.animate)", full)
+
+    def test_45_skip_never_reads_a_laid_out_width(self):
+        # What Skip the notch decides by on 4.5 (the lists' widths, their rest,
+        # the indicators' rest) reads no laid-out width: the slots force the
+        # layout's polish while it is counted, a binding loop QML drops (#757).
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        full = self.full(stock)
+        widths = re.search(r"    readonly property var notchWidths: \{\n(.*?)\n    \}\n", full, re.S).group(1)
+        rest = re.search(r"    readonly property real notchPeekRest: (.*)\n", full).group(1)
+        for text in (widths, rest):
+            self.assertNotIn("c.width", text)
+            self.assertNotIn("width -", text)
+            self.assertNotRegex(text, r"(?<![\w.])width\b")
+        self.assertIn("var w = c.implicitWidth\n", widths)
+        # The slot's own width: 4.5's widget width (a drag changes only the
+        # length it asks for), 4.0's its implicit width.
+        self.assertIn("readonly property real notchContentWidth: widgetWidth\n", full)
+        for name, other in self.each():
+            if not is_45(other):
+                self.assertIn("readonly property real notchContentWidth: implicitWidth\n", self.full(other))
 
     def test_an_older_patcher_puts_its_own_back(self):
         # 3.1.4's patcher (v22) does not take this file for its own: it patches
@@ -822,8 +846,8 @@ console.log(JSON.stringify(out))
             bar, backup = self.dir / "Bar.qml", self.dir / "Bar.qml.before-notchbar"
             backup.write_text(stock)
             # An older version (3.1.2 had v21; 3.4.0 v37; v38 = the test builds of
-            # #733 and #735 alone), a version line alone, each piece missing.
-            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v%d" % v) for v in (21, 37, 38)]
+            # #733 and #735 alone; 3.4.1 v39), a version line alone, each piece missing.
+            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v%d" % v) for v in (21, 37, 38, 39)]
             olds.append(VERSION_LINE + "\n")
             mod = load_patch()
             olds += [full.replace(p, "") for p in (mod.PIECES_45 if is_45(stock) else mod.PIECES)]
@@ -2051,8 +2075,8 @@ function slide(closed, drawer, others, left, beside) {
     var r = k / 10;
     var tray = { expanded: r > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer,
                  revealExtent: drawer * r, revealProgress: r };
-    var children = [{ notchSlotIndex: 0, width: closed + drawer * r, notchPeekFull: 0, activeItem: tray }];
-    for (var i = 0; i < others.length; i++) children.push({ notchSlotIndex: i + 1, width: others[i], notchPeekFull: 0 });
+    var children = [{ notchSlotIndex: 0, implicitWidth: closed + drawer * r, notchPeekFull: 0, activeItem: tray }];
+    for (var i = 0; i < others.length; i++) children.push({ notchSlotIndex: i + 1, implicitWidth: others[i], notchPeekFull: 0 });
     var right = widths(children);
     var p = place(1512, 8, left, right, [663.5, 848.5], beside, 6, 8, 24, null, 12);
     var s = p.right[0], w = closed + drawer * r;
@@ -2138,11 +2162,11 @@ var root = { notchIsTray: function (item) { NOTCHISTRAY } };
 function tray(drawer, reveal) {
   return { expanded: reveal > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer, revealExtent: drawer * reveal };
 }
-var children = [ { notchSlotIndex: 0, width: 54, activeItem: tray(81, 0) },
-                 { notchSlotIndex: 1, width: 94.5, activeItem: tray(81, 0.5) },
-                 { notchSlotIndex: 2, width: 135, activeItem: tray(81, 1) },
-                 { notchSlotIndex: 3, width: 27, activeItem: { expanded: false } },
-                 { notchSlotIndex: 4, width: 27, activeItem: tray(0, 0) } ];
+var children = [ { notchSlotIndex: 0, implicitWidth: 54, activeItem: tray(81, 0) },
+                 { notchSlotIndex: 1, implicitWidth: 94.5, activeItem: tray(81, 0.5) },
+                 { notchSlotIndex: 2, implicitWidth: 135, activeItem: tray(81, 1) },
+                 { notchSlotIndex: 3, implicitWidth: 27, activeItem: { expanded: false } },
+                 { notchSlotIndex: 4, implicitWidth: 27, activeItem: tray(0, 0) } ];
 console.log(JSON.stringify((function () { WIDTHS })()));
 """.replace("NOTCHISTRAY", function(full, "notchIsTray")).replace("WIDTHS", widths)
         out = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
@@ -2180,8 +2204,8 @@ console.log(JSON.stringify(CASES.map(function (c) {
     var tray = { expanded: r > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer,
                  revealExtent: drawer * r, revealProgress: r };
     var children = [];
-    for (var i = 0; i < before.length; i++) children.push({ notchSlotIndex: i, width: before[i], notchPeekFull: 0 });
-    children.push({ notchSlotIndex: before.length, width: w, notchPeekFull: 0, activeItem: tray });
+    for (var i = 0; i < before.length; i++) children.push({ notchSlotIndex: i, implicitWidth: before[i], notchPeekFull: 0 });
+    children.push({ notchSlotIndex: before.length, implicitWidth: w, notchPeekFull: 0, activeItem: tray });
     var s = place(1512, 8, widths(children), right, [663.5, 848.5], beside, 6, 8, 24, null, 12).left[before.length];
     out.push(s.hidden ? "hidden" : [s.n + s.x, s.n + s.x + w]);
   }
@@ -2227,9 +2251,9 @@ console.log(JSON.stringify(CASES.map(function (c) {
     var r = k / 10, w = closed + drawer * r;
     var tray = { expanded: r > 0, drawerItems: [], openTrayMenu: function () {}, drawerExtent: drawer,
                  revealExtent: drawer * r, revealProgress: r };
-    var children = [{ notchSlotIndex: 0, width: w, notchPeekFull: 0, activeItem: tray }], live = w;
+    var children = [{ notchSlotIndex: 0, implicitWidth: w, notchPeekFull: 0, activeItem: tray }], live = w;
     for (var i = 0; i < others.length; i++) {
-      children.push({ notchSlotIndex: i + 1, width: others[i], notchPeekFull: 0 });
+      children.push({ notchSlotIndex: i + 1, implicitWidth: others[i], notchPeekFull: 0 });
       live += others[i];
     }
     var boxList = { notchRest: rest(widths(children)) };
@@ -2572,9 +2596,20 @@ var Qt = { callLater: function (f) { if (queue.indexOf(f) < 0) queue.push(f) } }
 function flush() { while (queue.length) queue.shift()() }
 function Slot(name, memory) {
   var self = this;
+  this.slot = this;
   this.moduleName = name; this.notchShown = memory; this.notchShift = null; this.notchShiftGone = false;
   this.notchPlaced = false; this.notchPlaceX = 0; this.notchShiftX = 0; this.notchHold = false; this.notchNew = false;
   this.width = 20; this.notchLastWidth = 20; this.notchPeekFull = 0;
+  // implicitWidth follows width unless a step sets it (4.5: equal at rest);
+  // the widget's own width follows implicitWidth unless set (a drag differs).
+  var iw = null, cw = null;
+  Object.defineProperty(this, "implicitWidth", { get: function () { return iw !== null ? iw : self.width },
+                                                 set: function (v) { iw = v } });
+  Object.defineProperty(this, "notchContentWidth", { get: function () { return cw !== null ? cw : self.implicitWidth },
+                                                     set: function (v) { cw = v } });
+  this.notchOpenExtent = 0; this.notchLastOpen = 0; this.notchLastContent = 20; this.notchAppearing = false;
+  this.showRestarts = 0;
+  this.notchShowEnd = { restart: function () { self.showRestarts++ } };
   this.parent = { forceLayout: function () {} };
   this.notchSlideRun = { running: false };
   this.moves = [];
@@ -2586,6 +2621,7 @@ function Slot(name, memory) {
   this.notchEdge = function (s) { return s.n + s.x + (self.notchEnd ? self.width : 0) };
   this.notchSettle = function () { with (self) { SETTLE } };
   this.endHold = function () { self.notchHold = false; with (self) { HOLDEND } };
+  this.endShow = function () { with (self) { SHOWEND } };
   var shown = 0;
   Object.defineProperty(this, "notchShownX", {
     get: function () { return shown },
@@ -2608,7 +2644,9 @@ class Glide(unittest.TestCase):
         m = re.search(r"    onNotchShiftChanged: \{\n(.*?)\n    \}\n", text, re.S)
         settle = function(text, "notchSettle")
         hold = re.search(r"    onNotchHoldChanged: if \(!notchHold\) \{\n(.*?)\n    \}\n", text, re.S).group(1)
+        show = re.search(r"      id: notchShowEnd\n.*?      onTriggered: \{\n(.*?)\n      \}\n", text, re.S)
         js = GLIDE.replace("BODY", m.group(1)).replace("SETTLE", settle).replace("HOLDEND", hold).replace("STEPS", steps)
+        js = js.replace("SHOWEND", show.group(1) if show else "")
         return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
 
     def test_which_moves_glide(self):
@@ -2716,6 +2754,92 @@ tray.set({x: 105, n: 746, hidden: false, animate: true}); flush(); out.push(tray
         ind, tray = out
         self.assertEqual(ind, [])        # its own place on the bar did not change
         self.assertEqual(tray, [])       # the tray stays where it showed
+
+    def test_an_own_size_change_moves_at_once(self):
+        # A tray right of the housing gets a drawer app: its open width no
+        # longer fits there, and it takes its place left of the housing at
+        # once, never in a glide under the housing (#757). The same for a
+        # widget that grew.
+        out = self.run_steps("""
+var mem = {};
+var t = new Slot("tray", mem); t.notchEnd = true; t.width = 60; t.notchOpenExtent = 100; t.notchLastOpen = 100;
+t.set({x: 0, n: 900, hidden: false, animate: false}); flush(); t.moves = [];
+t.notchOpenExtent = 130; t.set({x: -420, n: 900, hidden: false, animate: true}); flush();
+out.push(t.moves.slice()); t.moves = [];
+t.width = 90; t.set({x: -420, n: 870, hidden: false, animate: true}); flush();
+out.push(t.moves.slice()); t.moves = [];
+t.width = 120; t.set({x: 0, n: 840, hidden: false, animate: true}); flush();
+out.push(t.moves.slice());
+""")
+        app, grew_in_place, grew_back = out
+        self.assertEqual(app, [[960, 540, False]])
+        self.assertEqual(grew_in_place, [])          # its end stays: nothing moves
+        self.assertEqual(grew_back, [[540, 960, False]])
+
+    def test_a_pushed_item_still_glides_once(self):
+        # The weather beside the tray keeps its size; the tray's jump pushes it:
+        # that move glides, once.
+        out = self.run_steps("""
+var mem = {};
+var w = new Slot("weather", mem); w.notchEnd = true; w.width = 50;
+w.set({x: 0, n: 980, hidden: false, animate: false}); flush(); w.moves = [];
+w.set({x: 0, n: 1040, hidden: false, animate: true}); flush(); out.push(w.moves.slice()); w.moves = [];
+w.set({x: -120, n: 1040, hidden: false, animate: true}); flush(); out.push(w.moves.slice());
+""")
+        omarchy, pushed = out
+        self.assertEqual(omarchy, [[1030, 1090, False]])  # Omarchy's own move: at once
+        self.assertEqual(pushed, [[1090, 970, True]])
+
+    def test_the_drawer_slide_moves_nothing(self):
+        # The drawer slides open: the tray grows to the left, its end stays,
+        # its place was decided by its open width: no move, no hold.
+        out = self.run_steps("""
+var mem = {};
+var t = new Slot("tray", mem); t.notchEnd = true; t.width = 60; t.notchOpenExtent = 100; t.notchLastOpen = 100;
+t.set({x: -400, n: 900, hidden: false, animate: false}); flush(); t.moves = [];
+[80, 110, 140, 160].forEach(function (w) { t.width = w; t.set({x: -400, n: 960 - w, hidden: false, animate: true}); flush() });
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts]);
+""")
+        self.assertEqual(out[0], [[], False, 0])
+
+    def test_a_drag_does_not_hold(self):
+        # A dragged widget's slot asks for no length while its room moves away
+        # and gets it back on the drop; the widget kept its width: no hold.
+        out = self.run_steps("""
+var mem = {};
+var c = new Slot("clock", mem); c.width = 70;
+c.set({x: 0, n: 1200, hidden: false, animate: false}); flush(); c.moves = [];
+c.implicitWidth = 0; c.notchContentWidth = 70; c.set({x: 0, n: 1200, hidden: false, animate: true}); flush();
+c.implicitWidth = 70; c.set({x: 0, n: 1200, hidden: false, animate: true}); flush();
+out.push([c.moves.slice(), c.notchAppearing, c.showRestarts]);
+""")
+        self.assertEqual(out[0], [[], False, 0])
+
+    def test_a_shown_up_slot_waits_unseen_then_shows_once_at_its_end_place(self):
+        # Omarchy's tray had no width (no app yet). Its apps register one by
+        # one: the first fits right of the housing, the later ones do not. The
+        # tray stays unseen at each place while they come, then shows once
+        # where it stays (#757). The indicators beside it do not hold.
+        out = self.run_steps("""
+var mem = {};
+var t = new Slot("tray", mem); t.notchEnd = true; t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
+t.set({x: 0, n: 1000, hidden: false, animate: true}); flush(); t.moves = [];
+t.width = 60; t.set({x: 0, n: 940, hidden: false, animate: true}); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts]); t.moves = [];
+t.width = 90; t.notchOpenExtent = 30; t.set({x: -430, n: 910, hidden: false, animate: true}); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts]); t.moves = [];
+t.endShow(); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, mem.tray]);
+var i = new Slot("indicators", mem); i.notchEnd = true; i.notchPeekFull = 68; i.width = 40;
+i.set({x: 0, n: 1100, hidden: false, animate: false}); flush(); i.moves = [];
+i.width = 108; i.set({x: 0, n: 1032, hidden: false, animate: true}); flush();
+out.push([i.moves.slice(), i.notchAppearing, i.showRestarts]);
+""")
+        first, second, shown, peek = out
+        self.assertEqual(first, [[], True, 1])                     # unseen, at its place (its end 940 + 60 as before)
+        self.assertEqual(second, [[[1000, 570, False]], True, 2])          # the next app: at once, still unseen
+        self.assertEqual(shown, [[], False, True, {"x": 570, "ours": True}])  # shows (fades in) where it stays
+        self.assertEqual(peek, [[], False, 0])
 
 
 
