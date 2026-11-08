@@ -281,6 +281,8 @@ jobs:
 
       - name: The moves gate (3.4.0 on) reads the move matrix's rows
         run: src/tests/move-45-gate.sh
+      - name: The move matrix's app rows quit the test app copy, also the one its self-update opens
+        run: src/tests/move-45-app-quit.sh
 
       - name: New VMs are Omarchy 4.5 (CLI and app agree; omarchy-mac 4.0 for tests only)
         run: src/tests/omarchy-route.sh
