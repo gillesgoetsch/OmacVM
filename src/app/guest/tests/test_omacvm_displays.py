@@ -809,7 +809,7 @@ class VideoOutputs(unittest.TestCase):
 
     def test_only_chromium_and_gecko_based_callers_get_a_lock(self):
         self.exe[100] = "/usr/bin/mpv"
-        self.exe[101] = "/usr/lib/firefox/firefox"        # no libxul.so beside it: not Gecko
+        self.exe[101] = str(self.tmp / "opt/firefox/firefox")   # no libxul.so beside it: not Gecko
         self.exe[103] = "/usr/bin/python3.14"
         self.assertIsNone(self.display_lock(100))
         self.assertIsNone(self.display_lock(101))
