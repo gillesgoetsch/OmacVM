@@ -7,16 +7,17 @@ update of the displays' windows, and it runs from one timer once the
 displays settle (ui/omacvm-display-settle.h): never inside the notification
 that asked, never inside another update, never while the screen is locked,
 the displays sleep or another user has the console (then 1 s after unlock or
-wake). Displays that are inactive, asleep or smaller than 100 x 100 points
-count as absent; one that comes back gets its window once it has counted for
-2 s. Full-screen tries are counted per display, also when its window is made
-again: 4 tries, a pause doubling from 1 s between them, a full screen that
-held 10 s starts the count over. A display window that goes while macOS
-moves it into or out of full screen is closed once macOS is done (or after
-4 s). A display window whose Space macOS moved to another display is made
-again on its own. resizeWindow never runs inside itself, the main window's
-size check after a resize runs a moment later, a size macOS keeps refusing
-is tried 3 times, and nothing is sized for a display that does not count.
+wake; all three are also read at start, where no notice comes). Displays
+that are inactive, asleep or smaller than 100 x 100 points count as absent;
+one that comes back gets its window once it has counted for 2 s. Full-screen
+tries are counted per display, also when its window is made again: 4 tries,
+a pause doubling from 1 s between them, a full screen that held 10 s starts
+the count over. A display window that goes while macOS moves it into or out
+of full screen is closed once macOS is done (or after 4 s). A display window
+whose Space macOS moved to another display is made again on its own.
+resizeWindow never runs inside itself, the main window's size check after a
+resize runs a moment later, a size macOS keeps refusing is tried 3 times,
+and nothing is sized for a display that does not count.
 OMACVM_TEST_LOCK_HOOK=1: the distributed notifications org.omacvm.test.lock
 and org.omacvm.test.unlock stand for the lock (tests; the test Mac is never
 locked).
@@ -484,7 +485,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
          if (hd->display && !keep) {
              omacvm_head_off(hd);
              changed = true;
-@@ -9422,6 +9667,192 @@ static void omacvm_displays_update(void)
+@@ -9422,6 +9667,198 @@ static void omacvm_displays_update(void)
      omacvm_update_mac_layout();
      omacvm_send_layout();
      omacvm_full_next();
@@ -670,14 +671,20 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +               name:NSWorkspaceSessionDidResignActiveNotification object:nil];
 +    [wc addObserver:watch selector:@selector(back:)
 +               name:NSWorkspaceSessionDidBecomeActiveNotification object:nil];
++    /*
++     * At start: no notice comes for what began before QEMU did (a VM started
++     * on a locked Mac, with its displays asleep, or for another user).
++     */
 +    omacvm_ds_session(&omacvm_ds_screen_locked, &omacvm_ds_away);
-+    if (omacvm_ds_screen_locked || omacvm_ds_away) {
-+        omacvm_ds_lock_changed("at start");
++    omacvm_ds_asleep = CGDisplayIsAsleep(CGMainDisplayID());
++    if (omacvm_ds_screen_locked || omacvm_ds_away || omacvm_ds_asleep) {
++        omacvm_ds_lock_changed(omacvm_ds_screen_locked ? "at start: screen locked" :
++                               omacvm_ds_away ? "at start: another user" : "at start: displays asleep");
 +    }
  }
  
  /* The guest channel: org.omacvm.display (JSON lines). */
-@@ -10745,6 +11176,7 @@ static void omacvm_displays_init(void)
+@@ -10745,6 +11182,7 @@ static void omacvm_displays_init(void)
      }
  #endif
      omacvm_head_delegate = [[OmacVMHeadDelegate alloc] init];
@@ -685,7 +692,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      /* Another Space: the detached cursor must move there (see omacvm_guard_corners). */
      [[[NSWorkspace sharedWorkspace] notificationCenter]
          addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification
-@@ -10758,9 +11190,8 @@ static void omacvm_displays_init(void)
+@@ -10758,9 +11196,8 @@ static void omacvm_displays_init(void)
                      object:nil
                       queue:[NSOperationQueue mainQueue]
                  usingBlock:^(NSNotification *note) {
