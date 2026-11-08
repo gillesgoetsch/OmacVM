@@ -400,7 +400,8 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   Chromium- nor Firefox-based get an error) or as the system's Chromium 157+; Firefox (`libxul.so` beside the
   program) gets a cookie for every reason, and its window counts without a
   Wayland inhibit while its process holds a "Playing video" or "Screen lock"
-  lock (an error would move all of Firefox's locks off the name for good);
+  lock (or their names in a language pack installed with that Firefox,
+  `browser/extensions/langpack-*.xpi`; an error would move all of Firefox's locks off the name for good);
   for such a window the agent also holds Omarchy's own idle with its child
   `quickshell -p /usr/local/lib/omacvm/omacvm-awake.qml` (`GuestAwake`, a 1x1
   IdleInhibitor surface on a 25 s lease in `$XDG_RUNTIME_DIR/omacvm/guest-awake`,

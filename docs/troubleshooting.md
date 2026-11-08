@@ -1687,10 +1687,12 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
     all. Up to 3.4.1 the agent refused Firefox, and Firefox then never asks
     again: **restart Firefox once after Update VM** (a Firefox that was
     running during the update does not count until then). Firefox from
-    Flatpak or Snap is not recognised. A Firefox in another language may
-    send its reasons translated; then a video does not count and the
-    agent's log names the reason once
-    (`journalctl --user -u omacvm-displays`). mpv counts.
+    Flatpak or Snap is not recognised. A Firefox in another language sends
+    its reasons translated: the agent reads them from the language packs
+    installed with Firefox (Arch's `firefox-i18n-*`); with a language pack
+    you added in Firefox itself a video does not count, and the agent's log
+    names the reason once (`journalctl --user -u omacvm-displays`). mpv
+    counts.
   - While a Firefox video counts, the VM's own screensaver and lock wait
     too, as for Chromium and mpv (which ask Omarchy themselves): the agent
     runs a small Quickshell of its own for it (`pgrep -af omacvm-awake`; a

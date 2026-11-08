@@ -6,6 +6,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import os
 import pathlib
 import shutil
 import struct
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 import zlib
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -601,6 +603,7 @@ class VideoOutputs(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         od._chromium_cache.clear()
+        od._gecko_cache.clear()
         self.start = {}
         self.locks = od.DisplayLocks(proc=self.proc)
 
@@ -888,6 +891,48 @@ class VideoOutputs(unittest.TestCase):
             self.assertFalse(self.locks.holds(100))
         self.assertEqual(self.locks.count(), 9)
         self.assertEqual(self.locks.gecko_pids(), set())
+
+    def langpack(self, lang, text, when):
+        """A language pack installed with this Firefox (browser/extensions), as pacman's firefox-i18n-*."""
+        ext = self.firefox_dir / "browser/extensions"
+        ext.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(ext / f"langpack-{lang}@firefox.mozilla.org.xpi", "w") as z:
+            z.writestr("manifest.json", "{}")
+            z.writestr(f"chrome/{lang}/locale/{lang}/global/dom/dom.properties", text)
+        os.utime(ext, (when, when))
+
+    def test_a_language_packs_names_count(self):
+        # Firefox 158 with firefox-i18n-de and its interface in German sent "Video abspielen" (row R16).
+        self.langpack("de", "# comment\nWakeLockVideoPlaying = Video abspielen\nWakeLockAudioPlaying = Audiowiedergabe\n"
+                            "WakeLockScreenLock = Sperrbildschirm\nWakeLockAutoscroll = Automatisches Scrollen\n", 1000)
+        self.h.window("0x1", inhibiting=False)
+        for reason in ("Video abspielen", "Sperrbildschirm", "Playing video"):
+            cookie = self.gecko_lock(reason)
+            self.assertEqual(self.outputs(), ["Virtual-1"], reason)
+            self.locks.uninhibit(":1.60", cookie)
+        for reason in ("Audiowiedergabe", "Automatisches Scrollen", "Playing audio"):
+            self.gecko_lock(reason)
+            self.assertEqual(self.outputs(), [], reason)
+        self.assertEqual(self.logged, [])                    # known names: nothing to explain
+        self.gecko_lock("Lecture vid\u00e9o")
+        self.assertEqual(len(self.logged), 1)                # a language pack not installed with it
+
+    def test_a_language_pack_added_later_is_read(self):
+        self.langpack("de", "WakeLockVideoPlaying=Video abspielen\n", 1000)
+        self.assertEqual(od.gecko_reasons(self.firefox)[0], {"Playing video", "Screen lock", "Video abspielen"})
+        self.langpack("fr", "WakeLockVideoPlaying = Lecture vid\\u00e9o\n", 2000)   # an escape, as .properties allow
+        self.assertIn("Lecture vid\u00e9o", od.gecko_reasons(self.firefox)[0])
+
+    def test_a_broken_language_pack_is_ignored(self):
+        ext = self.firefox_dir / "browser/extensions"
+        ext.mkdir(parents=True)
+        (ext / "langpack-xx@firefox.mozilla.org.xpi").write_bytes(b"not a zip")
+        self.langpack("de", "WakeLockVideoPlaying\n=\nWakeLockScreenLock =\n", 3000)   # no names in it
+        self.assertEqual(od.gecko_reasons(self.firefox), (frozenset(od.GECKO_DISPLAY_REASONS),
+                                                          frozenset(od.GECKO_OTHER_REASONS)))
+        self.h.window("0x1", inhibiting=False)
+        self.gecko_lock()
+        self.assertEqual(self.outputs(), ["Virtual-1"])
 
     def test_an_unknown_firefox_reason_is_logged_once(self):
         for _ in range(3):

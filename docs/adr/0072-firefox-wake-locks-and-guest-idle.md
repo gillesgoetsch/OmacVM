@@ -45,9 +45,13 @@ anyway. Accepting the D-Bus call alone would gain about 30 s.
    Thunderbird) a cookie, never an error, also when its 64 locks are full
    (then the cookie is not kept and never counts). Its reason decides:
    "Playing video" and "Screen lock" count (Firefox's own en-US names and the
-   fallback in its code: the same two kinds as Chromium's display locks);
-   every other reason never counts. A reason the agent does not know is
-   logged once. Everyone else (mpv, SDL, Python, gdbus) still gets the error.
+   fallback in its code: the same two kinds as Chromium's display locks), and
+   so do their translations in every language pack installed with that
+   Firefox (`browser/extensions/langpack-*.xpi` beside the program, its
+   `dom.properties` `WakeLockVideoPlaying` and `WakeLockScreenLock`, read
+   again when that folder changes): a Firefox in German sends "Video
+   abspielen". Every other reason never counts. A reason the agent does not
+   know is logged once. Everyone else (mpv, SDL, Python, gdbus) still gets the error.
 2. **Which window**: a window counts when it asks Wayland not to idle (as
    before) or its process holds a counting Firefox lock; every other rule of
    ADR 0070 applies unchanged (no `idle_inhibit` window rule, a shown
@@ -90,11 +94,15 @@ anyway. Accepting the D-Bus call alone would gain about 30 s.
 - One lock per process: with two Firefox windows on two shown outputs, both
   count while one plays (Firefox lets go 1.7 s after the playing window is
   hidden). Chromium has the same kind of imprecision.
-- A Firefox with another interface language may send translated reasons;
-  those do not count and the agent logs the first one. Firefox 158 with the
-  German language pack active sent the English names (row R16 in the work
-  notes says how that was shown). Flatpak or Snap Firefox (its program inside
-  its own mount namespace) is not detected and keeps getting the error.
+- Firefox sends its reasons in its interface language: Firefox 158 with
+  `firefox-i18n-de` and a German interface (its about:support titled
+  "Informationen zur Fehlerbehebung") sent "Video abspielen" and
+  "Audiowiedergabe" (row R16; the plan step's spike had seen English only
+  because its interface had stayed English). Language packs installed with
+  Firefox are read; one a person installed into their profile is not: then a
+  video does not count and the agent logs the reason once. Flatpak or Snap
+  Firefox (its program inside its own mount namespace) is not detected and
+  keeps getting the error.
 - One more small Quickshell process (its memory in the rows) only while a
   Firefox video counts.
 - Omarchy 4.0's Quickshell: row R7 on 4.0 decides; if `IdleInhibitor` does not

@@ -147,6 +147,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 import zlib
 
 PORT = Path("/dev/virtio-ports/org.omacvm.display")
@@ -836,6 +837,60 @@ def gecko_based(exe: str) -> bool:
 # ("Playing audio", "Autoscroll", "Download in progress") get a cookie that never counts.
 GECKO_DISPLAY_REASONS = ("Playing video", "Screen lock")
 GECKO_OTHER_REASONS = ("Playing audio", "Autoscroll", "Download in progress")
+GECKO_DISPLAY_KEYS = ("WakeLockVideoPlaying", "WakeLockScreenLock")
+GECKO_OTHER_KEYS = ("WakeLockAudioPlaying", "WakeLockAutoscroll", "WakeLockDownload")
+GECKO_LANGPACKS = 200   # language packs read at most per Firefox
+_gecko_cache: dict[str, tuple[float, frozenset[str], frozenset[str]]] = {}
+
+
+def langpack_reasons(pack: Path) -> tuple[set[str], set[str]]:
+    """A Firefox language pack's names for its wake locks (display ones, others),
+    from its chrome/*/locale/*/global/dom/dom.properties; none when unreadable."""
+    display: set[str] = set()
+    other: set[str] = set()
+    try:
+        with zipfile.ZipFile(pack) as z:
+            for info in z.infolist():
+                if (not re.fullmatch(r"chrome/[^/]+/locale/[^/]+/global/dom/dom\.properties", info.filename)
+                        or info.file_size > 1 << 20):
+                    continue
+                for line in z.read(info).decode("utf-8", "replace").splitlines():
+                    key, sep, value = line.partition("=")
+                    value = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), value.strip())
+                    if sep and value and key.strip() in GECKO_DISPLAY_KEYS:
+                        display.add(value[:200])
+                    elif sep and value and key.strip() in GECKO_OTHER_KEYS:
+                        other.add(value[:200])
+                break
+    except (OSError, zipfile.BadZipFile, ValueError, RuntimeError, EOFError):
+        pass
+    return display, other
+
+
+def gecko_reasons(exe: str) -> tuple[frozenset[str], frozenset[str]]:
+    """The reasons that count (display) and the other known ones for this Firefox:
+    the en-US names, plus those of every language pack installed with it
+    (browser/extensions/langpack-*.xpi beside the program: a Firefox in German
+    sends "Video abspielen"). Cached by that folder's mtime. Language packs a
+    person installed in their profile are not read."""
+    folder = Path(exe).parent / "browser/extensions"
+    base = frozenset(GECKO_DISPLAY_REASONS), frozenset(GECKO_OTHER_REASONS)
+    try:
+        mtime = folder.stat().st_mtime
+        packs = sorted(folder.glob("langpack-*.xpi"))[:GECKO_LANGPACKS]
+    except OSError:
+        return base
+    cached = _gecko_cache.get(str(folder))
+    if cached and cached[0] == mtime:
+        return cached[1], cached[2]
+    display, other = set(base[0]), set(base[1])
+    for pack in packs:
+        d, o = langpack_reasons(pack)
+        display |= d
+        other |= o
+    other -= display
+    _gecko_cache[str(folder)] = (mtime, frozenset(display), frozenset(other))
+    return frozenset(display), frozenset(other)
 
 
 def proc_start(pid, proc: Path = Path("/proc")) -> str | None:
@@ -897,8 +952,10 @@ class DisplayLocks:
         if chromium_based(exe):
             kind = "display"
         elif gecko_based(exe):
-            kind = "gecko" if reason in GECKO_DISPLAY_REASONS else "quiet"
-            self.note(reason)
+            display, other = gecko_reasons(exe)
+            kind = "gecko" if reason in display else "quiet"
+            if kind == "quiet" and reason not in other:
+                self.note(reason)
         else:
             return None
         with self.mutex:
@@ -912,10 +969,9 @@ class DisplayLocks:
             return self.last
 
     def note(self, reason) -> None:
-        """A Firefox reason this agent does not know (a translated name, a new
-        one): logged once, so a video that does not count can be explained."""
-        if reason in GECKO_DISPLAY_REASONS or reason in GECKO_OTHER_REASONS:
-            return
+        """A Firefox reason this agent does not know (a language pack it did not
+        read, a new name): logged once, so a video that does not count can be
+        explained."""
         text = (reason if isinstance(reason, str) else repr(reason))[:60]
         if text in self.said or len(self.said) >= 8:
             return
