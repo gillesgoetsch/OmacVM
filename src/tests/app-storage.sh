@@ -17,7 +17,7 @@ trap cleanup EXIT
 mkdir -p "$T/work" "$T/volumes/Real" "$T/volumes/Hfs"
 swiftc -O -o "$T/storage-test" "$R/app/app/Sources/OmacVM/Storage.swift" "$R/src/tests/app-storage/main.swift"
 # "Another drive": 64 MB, APFS, mounted inside the fixture folder.
-hdiutil create -quiet -size 64m -fs APFS -volname OmacVMTest "$T/drive.dmg"
+"$R/src/tests/hdiutil-create.sh" 120 -quiet -size 64m -fs APFS -volname OmacVMTest "$T/drive.dmg"
 hdiutil attach -quiet -nobrowse -mountpoint "$T/volumes/Real" "$T/drive.dmg"
 MNT=$T/volumes/Real
 # Mac OS Extended: no sparse files.

@@ -24,18 +24,18 @@ swiftc -O -o "$T/drive-drop-test" "$R/app/app/Sources/OmacVM/Storage.swift" \
   "$R/app/app/Sources/OmacVM/DriveWatch.swift" "$R/src/tests/app-drive-drop/main.swift"
 
 # exFAT first, without the rename check; then APFS with it.
-hdiutil create -quiet -size 64m -fs ExFAT -volname OMACVMDROP "$T/exfat.dmg"
+"$R/src/tests/hdiutil-create.sh" 120 -quiet -size 64m -fs ExFAT -volname OMACVMDROP "$T/exfat.dmg"
 hdiutil attach -quiet -nobrowse -mountpoint "$MNT" "$T/exfat.dmg"
 echo "== exFAT"
 "$T/drive-drop-test" "$T/work/exfat" "$MNT" "$T/exfat.dmg" OMACVMDROP
 hdiutil detach -quiet -force "$MNT" >/dev/null 2>&1 || true
 
-hdiutil create -quiet -size 64m -fs APFS -volname OmacVMDrop "$T/drive.dmg"
+"$R/src/tests/hdiutil-create.sh" 120 -quiet -size 64m -fs APFS -volname OmacVMDrop "$T/drive.dmg"
 hdiutil attach -quiet -nobrowse -mountpoint "$MNT" "$T/drive.dmg"
 # The rename needs a mount point under /Volumes: the last tab field of the
 # volume's line. hdiutil does not always print that line last (with other
 # images attaching at the same time the disk's own lines can come after it).
-hdiutil create -quiet -size 64m -fs APFS -volname "OmacVMRen$$" "$T/ren.dmg"
+"$R/src/tests/hdiutil-create.sh" 120 -quiet -size 64m -fs APFS -volname "OmacVMRen$$" "$T/ren.dmg"
 hdiutil attach -nobrowse "$T/ren.dmg" > "$T/ren.out"
 REN=$(awk -F'\t' '$NF ~ /^\/Volumes\// { print $NF }' "$T/ren.out")
 [[ $REN == /Volumes/* && $REN != *$'\n'* ]] || {
