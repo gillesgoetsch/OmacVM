@@ -33,7 +33,9 @@ PKG=omacvm-box64
 ours() { local i; i=$(LC_ALL=C pacman -Qi "$1" 2>/dev/null) || return 1; grep -q "^Packager *: $PACKAGER" <<<"$i"; }
 ver() { pacman -Q "$1" 2>/dev/null | awk '{ print $2 }' || true; }
 have() { ver $PKG; }
-old() { [[ -n $(ver box64) ]] && ours box64; }   # OmacVM's, under the old name
+# OmacVM's, under the old name: a package named box64. Not one that provides it
+# (pacman -Q box64 also answers with omacvm-box64; pacman -R box64 does not, #751).
+old() { [[ $(pacman -Qq box64 2>/dev/null) == box64 ]] && ours box64; }
 registered() { [[ -f $BINFMT/box64 ]] && grep -q '^enabled' "$BINFMT/box64"; }
 x86_test() {
   local t rc
