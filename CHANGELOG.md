@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.2 (unreleased)
+
+- **A video in Firefox keeps the Mac's display on** while it can be seen, as in Chromium (For #750,
+  found by the 4.5 sweep; Omarchy 4.0 and 4.5). Firefox tells its wake locks only over D-Bus, and
+  the VM's display agent refused them, so a Firefox video never counted. Now "Playing video" and a
+  page's screen wake lock count; music, downloads and a video without a sound track do not. While
+  such a video can be seen, the VM's own screensaver and lock wait too, as they do for Chromium and
+  mpv (a small helper of the display agent holds Omarchy's idle, ADR 0072). Update VM brings it;
+  **restart Firefox once after Update VM** (a Firefox that was running during the update does not
+  count until then).
+
 ## 3.4.1
 
 - **Omanotch** on Omarchy 4.5 with Skip the notch (#734): the tray's hidden icons open next to the

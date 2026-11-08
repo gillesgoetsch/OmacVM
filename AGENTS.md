@@ -396,8 +396,15 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   output that is on, not under another full-screen window, the session
   unlocked, and, if Chromium-based, only while its process holds a display
   wake lock (`DisplayLocks`: the agent serves `org.freedesktop.ScreenSaver`
-  on the session bus, where Chromium tells only those; other callers get an
-  error) or as the system's Chromium 157+; `[]` once when it ends. QEMU
+  on the session bus, where Chromium tells only those; callers neither
+  Chromium- nor Firefox-based get an error) or as the system's Chromium 157+; Firefox (`libxul.so` beside the
+  program) gets a cookie for every reason, and its window counts without a
+  Wayland inhibit while its process holds a "Playing video" or "Screen lock"
+  lock (an error would move all of Firefox's locks off the name for good);
+  for such a window the agent also holds Omarchy's own idle with its child
+  `quickshell -p /usr/local/lib/omacvm/omacvm-awake.qml` (`GuestAwake`, a 1x1
+  IdleInhibitor surface on a 25 s lease in `$XDG_RUNTIME_DIR/omacvm/guest-awake`,
+  ADR 0072); `[]` once when it ends. QEMU
   (`omacvm-cocoa-video-awake*.patch`, ui/omacvm-video-awake.h) holds
   PreventUserIdleDisplaySleep "OmacVM: the VM is playing video" while a
   listed output's window can be seen (guest-pause's sight), the VM runs and the list is under 30 s old; released on `[]`, the
