@@ -250,7 +250,7 @@ omacvm-cocoa-present-unseen.patch and omacvm-cocoa-present-damage.patch.
 +        });
 +        /* Without OpenGL (GPU safe mode) the guest's display off is not seen here. */
 +        info_report("OmacVM: pause drawing while hidden: told the VM to draw again after %.0f s%s", out_s,
-+                    !display_opengl ? "" : dark ? " (its display was off)" : " (its display had stayed on)");
++                    !display_opengl ? "" : dark ? " (its display went off)" : " (its display did not go off)");
 +    } else {
 +        info_report("OmacVM: pause drawing while hidden: the VM was not told to draw again (%s)", whys[why]);
 +    }
