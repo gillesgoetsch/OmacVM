@@ -2609,8 +2609,9 @@ function Slot(name, memory) {
   Object.defineProperty(this, "notchContentWidth", { get: function () { return cw !== null ? cw : self.implicitWidth },
                                                      set: function (v) { cw = v } });
   this.notchOwnAt = 0; this.notchOpenExtent = 0; this.notchLastOpen = 0; this.notchLastContent = 20; this.notchAppearing = false;
-  this.showRestarts = 0;
-  this.notchShowEnd = { restart: function () { self.showRestarts++ } };
+  this.showRestarts = 0; this.limitStarts = 0;
+  this.notchShowEnd = { restart: function () { self.showRestarts++ }, stop: function () {} };
+  this.notchShowLimit = { restart: function () { self.limitStarts++ }, stop: function () {} };
   this.parent = { forceLayout: function () {} };
   this.notchSlideRun = { running: false };
   this.moves = [];
@@ -2622,7 +2623,9 @@ function Slot(name, memory) {
   this.notchEdge = function (s) { return s.n + s.x + (self.notchEnd ? self.width : 0) };
   this.notchSettle = function () { with (self) { SETTLE } };
   this.endHold = function () { self.notchHold = false; with (self) { HOLDEND } };
-  this.endShow = function () { with (self) { SHOWEND } };
+  this.notchShowNow = function () { with (self) { SHOWNOW } };
+  // Either timer ends the wait (notchShowEnd: quiet; notchShowLimit: 1 s).
+  this.endShow = function () { self.notchShowNow() };
   var shown = 0;
   Object.defineProperty(this, "notchShownX", {
     get: function () { return shown },
@@ -2645,9 +2648,9 @@ class Glide(unittest.TestCase):
         m = re.search(r"    onNotchShiftChanged: \{\n(.*?)\n    \}\n", text, re.S)
         settle = function(text, "notchSettle")
         hold = re.search(r"    onNotchHoldChanged: if \(!notchHold\) \{\n(.*?)\n    \}\n", text, re.S).group(1)
-        show = re.search(r"      id: notchShowEnd\n.*?      onTriggered: \{\n(.*?)\n      \}\n", text, re.S)
+        show = function(text, "notchShowNow") if "function notchShowNow(" in text else ""
         js = GLIDE.replace("BODY", m.group(1)).replace("SETTLE", settle).replace("HOLDEND", hold).replace("STEPS", steps)
-        js = js.replace("SHOWEND", show.group(1) if show else "")
+        js = js.replace("SHOWNOW", show)
         return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
 
     def test_which_moves_glide(self):
@@ -2860,6 +2863,58 @@ out.push([i.moves.slice(), i.notchAppearing, i.showRestarts]);
         self.assertEqual(second, [[[1000, 570, False]], True, 2])          # the next app: at once, still unseen
         self.assertEqual(shown, [[], False, True, {"x": 570, "ours": True}])  # shows (fades in) where it stays
         self.assertEqual(peek, [[], False, 0])
+
+    def test_a_shown_up_slot_waits_only_for_its_own_place_and_1_s_at_most(self):
+        # While the tray waits unseen, other items on the bar change size (the
+        # indicators' peek, workspace pills): the layout gives every slot a new
+        # shift each time, with the tray's place unchanged. That does not start
+        # its 150 ms again; a change of its own place does. Whatever moves, it
+        # shows when the 1 s limit ends, at its place then; a limit after it
+        # showed does nothing.
+        out = self.run_steps("""
+var mem = {};
+var t = new Slot("tray", mem); t.notchEnd = true; t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
+t.set({x: 0, n: 1000, hidden: false, animate: true}); flush(); t.moves = [];
+t.width = 60; t.set({x: -430, n: 940, hidden: false, animate: true}); flush();
+for (var k = 0; k < 12; k++) { t.set({x: -430, n: 940, hidden: false, animate: true}); flush() }
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts, t.limitStarts]); t.moves = [];
+t.set({x: -400, n: 940, hidden: false, animate: true}); flush();
+t.set({x: -400, n: 940, hidden: true, animate: true}); flush();
+t.set({x: -400, n: 940, hidden: false, animate: true}); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts, t.limitStarts]); t.moves = [];
+t.endShow(); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, mem.tray]);
+t.notchFade.enabled = false; t.endShow(); flush();
+t.set({x: -400, n: 940, hidden: false, animate: true}); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, t.showRestarts, t.limitStarts]);
+""")
+        same, own, limit, after = out
+        self.assertEqual(same, [[[1000, 570, False]], True, 1, 1])   # 12 rounds with its place unchanged: no restart
+        self.assertEqual(own, [[[570, 600, False]], True, 4, 1])     # its edge moved, hidden, shown again: 3 restarts
+        self.assertEqual(limit, [[], False, True, {"x": 600, "ours": True}])  # the limit shows it where it is
+        self.assertEqual(after, [[], False, True, 4, 1])             # a late timer does nothing; no new wait
+        text = patched()
+        self.assertRegex(text, r"      id: notchShowLimit\n      interval: 1000\n      onTriggered: slot.notchShowNow\(\)\n")
+        self.assertRegex(text, r"      id: notchShowEnd\n      interval: 150\n      onTriggered: slot.notchShowNow\(\)\n")
+
+    def test_a_wait_that_ends_while_the_list_is_made_again_does_not_place_it(self):
+        # The 150 ms end while Omarchy makes the list again: the tray shows
+        # where it waited, and the hold's end places it (one move), not the
+        # timer at a place on the way.
+        out = self.run_steps("""
+var mem = {};
+var t = new Slot("tray", mem); t.notchEnd = true; t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
+t.set({x: 0, n: 1000, hidden: false, animate: true}); flush(); t.moves = [];
+t.width = 60; t.set({x: -430, n: 940, hidden: false, animate: true}); flush(); t.moves = []; clock += 500;
+t.notchHold = true; t.set({x: 0, n: 900, hidden: false, animate: true}); flush();
+t.endShow(); flush();
+out.push([t.moves.slice(), t.notchAppearing]); t.moves = [];
+t.set({x: -420, n: 940, hidden: false, animate: true}); t.endHold(); flush();
+out.push([t.moves.slice(), t.notchAppearing]);
+""")
+        during, end = out
+        self.assertEqual(during, [[], False])
+        self.assertEqual(end, [[[570, 580, True]], False])
 
 
 

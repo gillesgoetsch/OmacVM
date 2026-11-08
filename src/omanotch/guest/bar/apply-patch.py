@@ -60,7 +60,8 @@ What the patch adds:
     QML dropped that update as a binding loop); an item whose own size
     changed takes its new place at once (only items pushed by others
     glide); an item that shows up (it had no width, as the tray before its
-    first app) waits unseen until its place has been quiet for 150 ms.
+    first app) waits unseen until its own place has been quiet for 150 ms
+    (1 s at most).
 
 Omarchy's Bar.qml changed in October 2026 (upstream's notch floor from
 display-cutouts.json, a bar thickness per screen, the centre's hover area):
@@ -116,6 +117,7 @@ COMMON = [
     "    function onNotchParkedChanged() { root.notchTraySet(false, \"\", \"\") }\n",  # 2. its drawer closes
     "      function notchParkEnd() {\n",                                    # 3. mapped again after the park (#727)
     "    property bool notchAppearing: false\n",                              # 9. shows up where it stays (#757)
+    "      id: notchShowLimit\n",                                             # 9. ... 1 s at most
 ]
 PIECES = COMMON + [
     "        Item { id: notchLeftEdge; ",                                     # 5. around the housing
@@ -1877,25 +1879,39 @@ EXCLUSION
     readonly property real notchOpenExtent: activeItem && root.notchIsTray(activeItem) ? Number(activeItem.drawerExtent) || 0 : 0
     property real notchLastOpen: 0
     // When it last changed: the layout settles its decisions one round later
-    // (notchSkipKeep), and that move is still its own (100 ms).
+    // (notchSkipKeep), and that move is still its own (100 ms). Any other
+    // move of this item in those 100 ms is at once too.
     property real notchOwnAt: 0
     // An item that shows up (its widget had no width, as Omarchy's tray before
-    // its first app) waits unseen at its place until that has been quiet for
-    // 150 ms, then shows there: apps that register one by one give one
-    // showing, where the tray stays. Never on a drag (the widget keeps its
-    // width) or the indicators' peek or a drawer's slide (they never start
-    // from no width).
+    // its first app) waits unseen at its place until that place has been
+    // quiet for 150 ms, then shows there: apps that register one by one give
+    // one showing, where the tray stays. Only its own place counts (other
+    // items changing size do not), and it shows after 1 s at the latest.
+    // Never on a drag (the widget keeps its width) or the indicators' peek or
+    // a drawer's slide (they never start from no width).
     readonly property real notchContentWidth: NOTCH_CONTENT_WIDTH
     property real notchLastContent: 0
     property bool notchAppearing: false
+    property real notchAppearEdge: 0
+    property bool notchAppearGone: false
     Timer {
       id: notchShowEnd
       interval: 150
-      onTriggered: {
-        notchFade.enabled = true
-        slot.notchAppearing = false
-        slot.notchSettle()
-      }
+      onTriggered: slot.notchShowNow()
+    }
+    Timer {
+      id: notchShowLimit
+      interval: 1000
+      onTriggered: slot.notchShowNow()
+    }
+    function notchShowNow() {
+      if (!notchAppearing) return
+      notchShowEnd.stop()
+      notchShowLimit.stop()
+      notchFade.enabled = true
+      notchAppearing = false
+      // While Omarchy makes the list again, onNotchHoldChanged places it.
+      if (!notchHold) notchSettle()
     }
     readonly property real notchPeekDx: notchShift && notchShift.peekAt !== undefined
       ? notchShift.peekAt - (notchShownX - (notchEnd ? width : 0) + notchPeekOffset) : 0
@@ -2000,10 +2016,18 @@ EXCLUSION
       }
       if (gone !== notchShiftGone) notchShiftGone = gone
       if (notchAppearing || (appeared && animate)) {
-        // It showed up: unseen at its place until that is quiet (notchShowEnd).
+        // It showed up: unseen at its place until that is quiet (notchShowEnd),
+        // at most 1 s (notchShowLimit). Only a change of its own place (its
+        // kept edge, or hidden) starts the 150 ms again.
+        var edge = notchEdge(s)
         notchFade.enabled = false
-        notchAppearing = true
-        notchShowEnd.restart()
+        if (!notchAppearing) {
+          notchAppearing = true
+          notchShowLimit.restart()
+          notchShowEnd.restart()
+        } else if (Math.abs(edge - notchAppearEdge) > 0.01 || gone !== notchAppearGone) notchShowEnd.restart()
+        notchAppearEdge = edge
+        notchAppearGone = gone
         notchSlide.enabled = false
         notchPlaceX = s.n
         notchShiftX = s.x
