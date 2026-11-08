@@ -11,7 +11,8 @@
 #     as off within 2 s and leaves no process behind (needs timeout(1));
 #  4. omacvm check's "Night Shift toggle" line (check.sh's nightlight_line);
 #  5. guest/install.sh restarts the shell once: the Bridge on, omacvm_vm.lua
-#     written by this run, and the running shell does not find the toggle there.
+#     written or the Bridge's link made by this run, and the running shell does
+#     not find the toggle there.
 #   LUA=lua5.5 src/tests/nightlight-path.sh      (LUA: Lua 5.5, default lua)
 #   OMACVM_SRC=DIR src/tests/nightlight-path.sh  against another checkout's src/
 set -uo pipefail
@@ -168,17 +169,19 @@ fi
 # ---------- 5. guest/install.sh: the shell restarts once ----------
 INS=$SRC/guest/install.sh
 { awk '/^shell_runs_overrides\(\) \{/ {on=1} on {print} on && /^}$/ {exit}' "$INS"
-  awk '/^if \[\[ \$\{F\[bridge\]\} == on && \( \$hypr_vm == added/ {on=1} on {print} on && /^fi$/ {exit}' "$INS"; } |
+  awk '/^nl_link_made=no$/ {on=1} on {print} on && /^fi$/ {exit}' "$INS"; } |
   sed "s#/proc/#$T/proc/#" > "$T/gate.sh"
-if ! grep -q '^shell_runs_overrides' "$T/gate.sh" || ! grep -q 'restart_shell_later' "$T/gate.sh"; then
+if ! grep -q '^shell_runs_overrides' "$T/gate.sh" || ! grep -q 'restart_shell_later' "$T/gate.sh" ||
+   ! grep -q 'nl_link_made == yes' "$T/gate.sh"; then
   echo "FAIL no restart gate in guest/install.sh"; fail=1
 else
   expect "install.sh: hypr_vm holds hypr-vm.sh's answer, empty when the step does not run" yes \
     "$(awk '/^hypr_vm=""$/ {a=1} a && /^if system; then$/ {b=1} b && /hypr_vm=\$r/ {print "yes"; exit}' "$INS")"
   # shellcheck disable=SC2034 # read by the sourced block
-  gate() {   # BRIDGE HYPR_VM QS_PID SHELL_PATH -> restart|-
+  gate() {   # BRIDGE HYPR_VM QS_PID SHELL_PATH [LINK_HAD: yes|no, default yes] -> restart|-
     environ "$4"
-    ( declare -A F; F[bridge]=$1; hypr_vm=$2; U=u; OMARCHY_OVERRIDES=$T/ovr; export QS_PID=$3 PATH="$T/stub:$PATH"
+    ( declare -A F; F[bridge]=$1; hypr_vm=$2; nl_link_had=${5:-yes}; U=u; OMARCHY_OVERRIDES=$T/ovr
+      export QS_PID=$3 PATH="$T/stub:$PATH"
       log() { :; }; restart_shell_later() { echo restart; }
       source "$T/gate.sh" ) | tr -d '\n'
   }
@@ -191,9 +194,17 @@ else
     expect "install: omacvm_vm.lua unchanged (Hyprland did not reload it): no restart again" "" "$(gate on "" 4242 "$OLD")"
     expect "install: Bridge off: no restart" "" "$(gate off updated 4242 "$OLD")"
     expect "install: no shell running: no restart (the next one gets Hyprland's PATH)" "" "$(gate on updated "" "$OLD")"
+    # Updated with the Bridge off (omacvm_vm.lua written then, no restart), the
+    # Bridge switched on later: hypr-vm.sh does not run, this run makes the link.
+    expect "install: Bridge switched on, this run made the link, the shell from before: restart" restart \
+      "$(gate on "" 4242 "$OLD" no)"
+    expect "install: ... the shell already has the folder: no restart" "" "$(gate on "" 4242 "$NEW" no)"
+    mv "$T/ovr/omarchy-toggle-nightlight" "$T/ovr/x"
+    expect "install: ... the Bridge's step made no link (it failed): no restart" "" "$(gate on "" 4242 "$OLD" no)"
+    mv "$T/ovr/x" "$T/ovr/omarchy-toggle-nightlight"
   fi
-  expect "install: the gate comes after the Bridge's step, before the end's restart-shell.sh" yes \
-    "$(awk '/"\$R\/bridge\/guest\/install.sh"/ {a=NR} /&& ! shell_runs_overrides; then$/ {b=NR} /user_script "\$R\/guest\/restart-shell.sh" \|\| true/ {c=NR} END {print (a && b > a && c > b) ? "yes" : "no"}' "$INS")"
+  expect "install: the link is looked at before the Bridge's step, the gate after it, before the end's restart-shell.sh" yes \
+    "$(awk '/^nl_link_had=no; \[\[ -e \$OMARCHY_OVERRIDES\/omarchy-toggle-nightlight \]\] && nl_link_had=yes$/ {h=NR} /"\$R\/bridge\/guest\/install.sh"/ {a=NR} /&& ! shell_runs_overrides; then$/ {b=NR} /user_script "\$R\/guest\/restart-shell.sh" \|\| true/ {c=NR} END {print (h && a > h && b > a && c > b) ? "yes" : "no"}' "$INS")"
 fi
 
 (( fail == 0 )) && echo "nightlight-path: all passed"

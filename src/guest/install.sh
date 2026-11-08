@@ -522,6 +522,8 @@ elif [[ -f $H/.config/hypr/omacvm_glide.lua ]]; then
   log "scroll momentum: off"; "$R/gestures/guest/glide.sh" "$U" off
 fi
 if system; then log "workspaces"; "$R/workspaces/guest/install.sh" "$U"; fi
+# Whether the Bridge's night light link was there before this run (the gate below).
+nl_link_had=no; [[ -e $OMARCHY_OVERRIDES/omarchy-toggle-nightlight ]] && nl_link_had=yes
 if ! want bridge; then
   :
 elif [[ ${F[bridge]} == on ]]; then
@@ -533,9 +535,12 @@ fi
 # started with (#748). A shell from before omacvm_vm.lua put OmacVM's folder
 # first still finds Omarchy's toggle (hyprsunset): restarted once at the end
 # (through Hyprland, so it gets Hyprland's new PATH), only when this run wrote
-# omacvm_vm.lua. A Hyprland that did not reload it keeps the old PATH: no
-# restart on every apply then (omacvm check says to log out and in).
-if [[ ${F[bridge]} == on && ( $hypr_vm == added || $hypr_vm == updated ) ]] && ! shell_runs_overrides; then
+# omacvm_vm.lua or made the Bridge's link (the Bridge switched on after an
+# update made with it off). A Hyprland that did not reload it keeps the old
+# PATH: no restart on every apply then (omacvm check says to log out and in).
+nl_link_made=no
+[[ $nl_link_had == no && -e $OMARCHY_OVERRIDES/omarchy-toggle-nightlight ]] && nl_link_made=yes
+if [[ ${F[bridge]} == on && ( $hypr_vm == added || $hypr_vm == updated || $nl_link_made == yes ) ]] && ! shell_runs_overrides; then
   log "bridge: the Omarchy shell restarts once, for the Mac's night light in its menu"
   restart_shell_later
 fi
