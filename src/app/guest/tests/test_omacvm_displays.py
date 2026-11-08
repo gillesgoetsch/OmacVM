@@ -1953,6 +1953,29 @@ class Scale(unittest.TestCase):
             self.assertEqual(od.wanted_scale(), round(od.clean_scale(float(value), *size), 6))
             self.assertNotIn('output = "Virtual-1"', self.lua.read_text())
 
+    def test_main_scale_with_the_users_own_rule_is_omarchys(self):
+        # A rule of the user's for Virtual-1 wins at every reload, so writing the
+        # local would change nothing on screen: Omarchy's command, as before #738
+        # (Omarchy 4.5 changes the scale in such a one-line rule).
+        for own in ('hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "0x0", scale = 1 })\n',
+                    'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 2 }) -- mine\n',
+                    "hl.monitor({\n  output = 'Virtual-1',\n  scale = 2,\n})\n"):
+            for fullpanel in (True, False):
+                with self.subTest(own=own, fullpanel=fullpanel):
+                    self.lua.write_text(LUA_45 + own)
+                    rc, pokes, calls = self.set_scale([(3024, 1964), (3024, 1968)], fullpanel=fullpanel)
+                    self.assertEqual((rc, calls), (0, [["omarchy-hyprland-monitor-scaling", "1.6"]]))
+                    self.assertEqual(self.lua.read_text(), LUA_45 + own)
+        # A commented-out rule, Omarchy's own rule or one for another output: not the user's.
+        for other in ('-- hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "0x0", scale = 1 })\n',
+                      RULE_45.format(2),
+                      'hl.monitor({ output = "Virtual-2", mode = "preferred", position = "auto", scale = 1 })\n'):
+            with self.subTest(other=other):
+                self.lua.write_text(LUA_45 + other)
+                rc, pokes, calls = self.set_scale([(3024, 1964), (3024, 1968)])
+                self.assertEqual((rc, calls), (0, [[od.SYNC, "--once"]]))
+                self.assertIn("\nlocal omarchy_monitor_scale = 1.6\n", self.lua.read_text())
+
     def test_main_scale_gdk_follows_the_lowest_output(self):
         self.lua.write_text(LUA_45)
         self.set_scale([(3024, 1968)])

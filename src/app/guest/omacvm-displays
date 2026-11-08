@@ -209,6 +209,13 @@ def omarchy_scale_rules(text: str) -> list[str]:
     return [m.group(1) for m in map(OMARCHY_SCALE_RULE.fullmatch, text.splitlines()) if m]
 
 
+def own_main_rule(text: str) -> bool:
+    """A rule naming Virtual-1 (not in a comment) other than Omarchy's scale
+    rule: the user's own, which display-sync leaves alone too."""
+    return any(re.search(r"""output\s*=\s*["']Virtual-1["']""", line.split("--", 1)[0])
+               for line in text.splitlines() if not OMARCHY_SCALE_RULE.fullmatch(line))
+
+
 def wanted_scale() -> float | None:
     """Omarchy's scale for the main output: its scale rule for Virtual-1 (the
     last, as Hyprland takes it), else omarchy_monitor_scale in monitors.lua;
@@ -302,7 +309,15 @@ def set_main_scale(scale: float, focused: dict) -> int:
     (Omarchy's clean value for the output's size now), then display-sync
     applies it to the window's mode. Never Omarchy 4.5's per-output rule, whose
     "preferred" mode undid the Mac's size (#738). None of Omarchy's locals in
-    monitors.lua: Omarchy's own command."""
+    monitors.lua, or the user's own rule for Virtual-1 (which would win at the
+    next reload): Omarchy's own command, as before."""
+    try:
+        text = MONITORS_LUA.read_text()
+    except OSError:
+        text = ""
+    if own_main_rule(text):
+        log(f"scale {scale:g}: Virtual-1 has its own rule in {MONITORS_LUA}: Omarchy's command")
+        return subprocess.call(["omarchy-hyprland-monitor-scaling", f"{scale:g}"])
     width, height = int(focused.get("width", 0)), int(focused.get("height", 0))
     new = clean_scale(scale, width, height) if width > 0 and height > 0 else scale
     scales = [new]
@@ -314,12 +329,9 @@ def set_main_scale(scale: float, focused: dict) -> int:
             except (TypeError, ValueError):
                 pass
     gdk = max(1, int(min(scales) + 0.5))
-    try:
-        text = MONITORS_LUA.read_text()
-    except OSError:
-        text = ""
     out = lua_scale_text(text, new, gdk)
     if out is None:
+        log(f"scale {scale:g}: no omarchy_monitor_scale in {MONITORS_LUA}: Omarchy's command")
         return subprocess.call(["omarchy-hyprland-monitor-scaling", f"{scale:g}"])
     if out != text:
         try:
