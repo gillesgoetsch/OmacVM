@@ -74,16 +74,16 @@ x86_others() {   # their names, space separated
 }
 
 # qemu-user's x86_64 rule, held back while x86 apps is on.
-HOLD=$ROOT/etc/binfmt.d/qemu-x86_64-static.conf
+QEMU_HOLD=$ROOT/etc/binfmt.d/qemu-x86_64-static.conf
 HOLD_LINE='# OmacVM x86 apps: x86_64 programs go to box64, not to qemu-user (#752).'
-held() { [[ -f $HOLD && ! -L $HOLD ]] && [[ $(head -n1 "$HOLD") == "$HOLD_LINE" ]]; }
+held() { [[ -f $QEMU_HOLD && ! -L $QEMU_HOLD ]] && [[ $(head -n1 "$QEMU_HOLD") == "$HOLD_LINE" ]]; }
 hold() {   # only where there is no file of that name yet
-  [[ -e $HOLD || -L $HOLD ]] && return 0
-  install -d -m755 "${HOLD%/*}"
-  printf '%s\n' "$HOLD_LINE" "# Removed when x86 apps is switched off (omacvm disable x86-apps). Empty: no rules." > "$HOLD"
-  chmod 644 "$HOLD"
+  [[ -e $QEMU_HOLD || -L $QEMU_HOLD ]] && return 0
+  install -d -m755 "${QEMU_HOLD%/*}"
+  printf '%s\n' "$HOLD_LINE" "# Removed when x86 apps is switched off (omacvm disable x86-apps). Empty: no rules." > "$QEMU_HOLD"
+  chmod 644 "$QEMU_HOLD"
 }
-give_back() { held || return 1; rm -f "$HOLD"; }   # true when it removed OmacVM's file
+give_back() { held || return 1; rm -f "$QEMU_HOLD"; }   # true when it removed OmacVM's file
 # Someone else's box64 (installed by hand): left alone, and so is qemu-user's rule.
 foreign() {
   if [[ -n $(have) ]]; then
@@ -107,12 +107,12 @@ status() {
     elif ! registered; then echo "broken box64 $v installed, but x86_64 programs are not handed to it (binfmt): omacvm apply"
     elif o=$(x86_others); [[ -n $o ]]; then
       # qemu-user's x86_64 rule: OmacVM holds it back; any other rule is left alone
-      if [[ $o == qemu-x86_64 ]] && { held || [[ ! -e $HOLD && ! -L $HOLD ]]; }; then
+      if [[ $o == qemu-x86_64 ]] && { held || [[ ! -e $QEMU_HOLD && ! -L $QEMU_HOLD ]]; }; then
         echo "broken box64 $v installed, but x86_64 programs go to $o first (binfmt): omacvm apply"
       else echo "broken box64 $v installed, but x86_64 programs go to $o first (a binfmt rule that is not OmacVM's: remove it to use box64)"; fi
     else echo "ok box64 $v runs x86_64 programs and AppImages"; fi
   elif old; then echo "needed box64 $(ver box64) under its old package name: omacvm apply"
-  elif held; then echo "needed qemu-user's x86_64 rule is still held back by OmacVM (${HOLD#"$ROOT"}): omacvm apply"
+  elif held; then echo "needed qemu-user's x86_64 rule is still held back by OmacVM (${QEMU_HOLD#"$ROOT"}): omacvm apply"
   elif v=${v:-$(ver box64)}; [[ -n $v ]]; then echo "ok box64 $v (not OmacVM's: installed by hand, left alone)"
   else echo "off box64 not installed"; fi
 }
