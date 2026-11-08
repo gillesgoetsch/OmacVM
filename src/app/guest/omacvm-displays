@@ -1158,14 +1158,15 @@ class Notes:
     def say(self, key: str, text: str) -> None:
         if self.said.get(key) == text:
             return
-        self.said[key] = text
         now = self.clock()
         if self.since is None or now - self.since >= 60:
             self.since = now
             self.count = 0
+        if self.count >= NOTES_MAX:
+            return      # not kept: a look after this minute that finds the same says it
+        self.said[key] = text
         self.count += 1
-        if self.count <= NOTES_MAX:
-            log(text)
+        log(text)
         if self.count == NOTES_MAX:
             log("more notes on the pause this minute are left out")
 

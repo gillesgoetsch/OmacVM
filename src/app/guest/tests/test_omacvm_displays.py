@@ -1418,6 +1418,23 @@ class PauseNotesTest(PauseCase):
             n.say("k20", "note 20")
         self.assertEqual([c.args[0] for c in log.call_args_list], ["note 20"])
 
+    def test_a_note_left_out_by_the_cap_is_said_after_the_minute(self):
+        self.t = [1000.0]
+        n = od.Notes(clock=lambda: self.t[0])
+        with mock.patch.object(od, "log"):
+            for i in range(od.NOTES_MAX):
+                n.say(f"k{i}", f"note {i}")
+        with mock.patch.object(od, "log") as log:
+            n.say("late", "the late note")             # capped: left out
+            self.t[0] += 5
+            n.say("late", "the late note")             # the next look, same minute: still left out
+        self.assertEqual(log.call_args_list, [])
+        self.t[0] += 60
+        with mock.patch.object(od, "log") as log:
+            n.say("late", "the late note")             # the next minute: said
+            n.say("late", "the late note")             # and then once only
+        self.assertEqual([c.args[0] for c in log.call_args_list], ["the late note"])
+
     def test_what_hyprland_said_to_a_failed_dpms_request(self):
         for reply, want in ((None, "no answer from Hyprland in 2 s"), ("error: no such monitor\n",
                                                                       "Hyprland said 'error: no such monitor'")):
