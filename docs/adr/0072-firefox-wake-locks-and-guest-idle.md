@@ -112,10 +112,17 @@ anyway. Accepting the D-Bus call alone would gain about 30 s.
   video does not count and the agent logs the reason once. Flatpak or Snap
   Firefox (its program inside its own mount namespace) is not detected and
   keeps getting the error.
-- One more small Quickshell process (its memory in the rows) only while a
-  Firefox video counts.
-- Omarchy 4.0's Quickshell: row R7 on 4.0 decides; if `IdleInhibitor` does not
-  load there, 4.0 gets the Mac side only (the agent gives up after 3 tries).
+- One more Quickshell process (about 128 MB resident in the test VMs) only
+  while a Firefox video counts.
+- Checked on Omarchy 4.5 (Quickshell 0.3.2, Hyprland 0.56.2, Firefox 158) and
+  4.0 (Quickshell 0.3.2, Hyprland 0.57.1, Firefox 159.0.1): with a Firefox
+  video and no input for 330 s, no screensaver and no lock; after the pause
+  the screensaver came about 150 s later, as after a Chromium pause on the
+  same VM. If a later Quickshell cannot load the QML, the agent gives up
+  after 3 tries and only the Mac side works.
+- The 1x1 surface takes no input (empty mask, pinned by a test). A click at
+  its pixel in a test VM changed nothing, but Omarchy 4.5's bar does not
+  react at that pixel anyway, so the click test proves little.
 
 ## Rejected
 
