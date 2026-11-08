@@ -36,6 +36,11 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   (Hyprland 0.57): Update VM (3.2.15) or
   `omacvm update`, then log out and in
   ([50](#50-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
+- **The tray or other bar items show right of the notch, then move left of
+  it** (Omarchy 4.5, Omanotch with Skip the notch; on OmacVM 3.4.1 the shell
+  log may say `Binding loop detected for property "notchWidths"`): Update VM
+  (3.4.2, bar patch v40). If tray apps start seconds apart, the tray can
+  still move once, at once (#757).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
   and Kitty draw on the Mac's GPU; from 3.2.18 the app's experimental switch
