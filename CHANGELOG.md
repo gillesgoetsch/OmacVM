@@ -12,6 +12,11 @@ in more words.
   keep clear of where Omarchy 4.5's hidden indicators open (bar patch v39). On a full bar the tray
   now stays left of the notch even while closed, where its drawer has room to open. A tray in the
   centre section no longer moves the right side's items while its drawer slides open.
+- **Trackpad** on Omarchy 4.5: a pinch zoom (in Chrome and elsewhere) no longer starts with a right
+  click, and a three-finger tap no longer pastes (a middle click). Omarchy 4.5 leaves tap-to-click
+  on, and OmacVM's virtual trackpad took its short still touches (the two fingers at the start of a
+  pinch) as taps (#736). Tap-to-click is now off for that trackpad only (Update VM; `omacvm check`
+  "trackpad taps"); the Mac's taps and clicks reach the VM as the Mac's trackpad settings make them.
 - **Omanotch** on Omarchy 4.0 VMs: the bar on the built-in display could stay parked off screen
   (1 px tall, nothing reserved at the top) after the notch strip went away, until something else
   was drawn on that display or Omarchy's bar toggle was pressed twice (#727, seen on hidden test VMs
@@ -52,11 +57,6 @@ in more words.
   the 3.4.0 publish before anything went up); CI's guest job fetches Lua 5.5 with retries, then
   from PUC-Rio's copy, the SHA-256 pinned; the e2e kits show something on a Mac's screen after
   60 s without input (was 300 s).
-- Omarchy 4.5: a pinch zoom (in Chrome and elsewhere) no longer starts with a right click, and a
-  three-finger tap no longer pastes (a middle click). Omarchy 4.5 leaves tap-to-click on, and OmacVM's virtual
-  trackpad took its short still touches (the two fingers at the start of a pinch) as taps.
-  Tap-to-click is now off for that trackpad only (Update VM; `omacvm check` "trackpad taps"); the
-  Mac's taps and clicks reach the VM as the Mac's trackpad settings make them.
 
 ## 3.4.0
 
