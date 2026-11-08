@@ -465,4 +465,11 @@ a 4.0 VM the key started hyprsunset and the Mac's Night Shift stayed off).
   changes nothing, so the Bridge on or off is only the link, no reload.
 - The keys get the new PATH when Hyprland reloads `omacvm_vm.lua`; the shell
   only when it starts again (through Hyprland: `omarchy-restart-shell` uses
-  `hyprctl dispatch exec_cmd`), which `guest/install.sh` does once.
+  `hyprctl dispatch exec_cmd`), which `guest/install.sh` does once: when it
+  wrote `omacvm_vm.lua`, or when it made the link (the Bridge switched on
+  after an update made with it off).
+- `omarchy toggle nightlight` (Omarchy 4.5's `omarchy` command, which its
+  agent skill suggests for "turn on night light") still runs Omarchy's own
+  toggle: `bin/omarchy` runs `$OMARCHY_BIN_DIR/<command>`, its own folder,
+  not the first one on PATH. Not a regression; the menu, the bar and the 4.0
+  key are what OmacVM covers.

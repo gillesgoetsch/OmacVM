@@ -16,6 +16,15 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   their space at once; system files stay in the 2 update snapshots until
   newer ones replace them), or give the VM a larger disk: shut it down, then
   Disk › Change… in its window. The VM grows into it at its next start.
+- **The Omarchy menu's Nightlight tints the VM, the Mac's Night Shift does
+  not change** (Bridge on; up to 3.4.1): Omarchy puts its own commands first
+  on the desktop's PATH, so its own night light (hyprsunset) ran instead of
+  OmacVM's. On Omarchy 4.0 Super+Ctrl+N did the same. On Omarchy 4.5
+  Super+Ctrl+N opens Omarchy's Network panel: that is Omarchy's key there,
+  not a fault (these docs said it switched Night Shift up to 3.4.1). Fix:
+  Update VM. If `omacvm check` still warns on "Night Shift toggle", log out
+  and in. The next Nightlight from the menu turns the VM's tint off and
+  switches the Mac.
 - **A VM in Parallels, UTM or VMware Fusion**: OmacVM 3.4.0 retired those
   routes. The VM keeps running as it is, without OmacVM updates. Move to
   OmacVM.app: [how](../README.md#retired-routes).

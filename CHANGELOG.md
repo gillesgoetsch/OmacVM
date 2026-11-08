@@ -11,7 +11,7 @@ in more words.
   OmacVM's. OmacVM now puts one folder of its own ahead of them, with only the Bridge's night light
   toggle in it. On Omarchy 4.5 Super+Ctrl+N stays Omarchy's Network panel; the menu and the bar's
   Night Shift drive the Mac there. Update VM brings it and restarts Omarchy's bar once (after the
-  unlock when the VM is locked). `omacvm check`'s "Night Shift toggle" line now reads what the
+  unlock when the VM is locked); with the Bridge off then, switching it on later does that restart. `omacvm check`'s "Night Shift toggle" line now reads what the
   running shell really runs and names the key only where there is one. 4.5's menu also reads the
   Mac's Night Shift for its row: when the Bridge does not answer within 2 s, the row says off.
 - **Wallpaper with a video background** (#747): on Omarchy 4.5, which can play a video as the
