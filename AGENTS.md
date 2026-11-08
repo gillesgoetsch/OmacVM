@@ -650,6 +650,7 @@ The less obvious ones, with causes and where the fix lives, are in
 | OmacVM.app, HDR on: screenshots, hyprpicker and screen shares of Chrome (PQ windows) far too bright, light greys white; SDR apps exact | Hyprland 0.56.2's and 0.57.0's SDR copy for captures puts PQ windows' SDR white at 80 nits, not 203 | Update VM (`src/app/guest/hypr-capture/`, a file per Hyprland release); `omacvm check` "HDR captures" says whether a fix fits this Hyprland and names the installed version when none does (docs/troubleshooting.md, 44) |
 | OmacVM.app: Ghostty opens no window, "Ghostty requires OpenGL 4.3" (3.2.13 and older) | virgl gives OpenGL 4.1 (the Mac's OpenGL); Ghostty 1.2 and newer need 4.3; Zink on KosmicKrisp gives 2.1, and with the 3.2.13 app and older a forced 4.3 aborted QEMU (ADR 0065) | 3.2.14: the EGL vendor library starts Ghostty alone on Mesa's llvmpipe (`src/app/guest/omacvm_egl.c`, ADR 0064); Update VM, then log out and in; `omacvm check` "Ghostty"; Alacritty and Kitty draw on the GPU (docs/troubleshooting.md, 47) |
 | Omarchy notifications, bar panels or the Omarchy menu black out the whole screen around their card (Hyprland 0.57); fine with `QT_QUICK_BACKEND=software` | Hyprland 0.57.0's default `quirks:skip_non_kms_dmabuf_formats` = true (hyprwm/Hyprland#15803) offers apps only the formats a display plane takes; virtio-gpu's takes XRGB8888 only, so Mesa has no EGL config with alpha and Qt Quick's transparent layers draw opaque | 3.2.15: Update VM, then log out and in (`src/guest/omacvm_vm.lua`); `omacvm check` "transparent panels"; before: the line in docs/troubleshooting.md, 50 |
+| Omarchy 4.5, gestures and scroll momentum on: a right click (context menu) at the start of every pinch, a middle-click paste on a three-finger tap (3.4.0 and older) | Omarchy 4.5 leaves Hyprland's tap-to-click on (omarchy-mac 4.0: off); the virtual trackpad's short still touches (scroll momentum lifts the two still fingers when macOS calls a pinch) read as taps | 3.4.1: Update VM; `tap_to_click = false` for `apple-inc.-magic-trackpad-(omacvm)` (`src/gestures/guest/install.sh`); `omacvm check` "trackpad taps" (docs/troubleshooting.md, 57) |
 
 ## 8. Hard-won rules (do NOT)
 
@@ -665,6 +666,10 @@ The less obvious ones, with causes and where the fix lives, are in
 - Do not hard-code scales (Omarchy's scale menu writes
   `omarchy_monitor_scale`).
 - Omarchy 4's Hyprland config is **Lua**; `hyprland.conf` is ignored.
+- Do not let the virtual trackpad tap to click (`tap_to_click = false` for
+  `apple-inc.-magic-trackpad-(omacvm)`, gestures/guest/install.sh). Omarchy 4.5
+  keeps Hyprland's default (on): scroll momentum lifts the two still fingers when
+  macOS calls a pinch, a two-finger tap, so every pinch began with a right click.
 - Keep zram small and memory capped. OmacVM.app's QEMU gives what Linux frees back to the Mac
   (free page reporting, ADR 0059; from 3.2.12 it moves the old pages aside
   and advises them `MADV_FREE_REUSABLE`, ADR 0062; up to 3.2.11 macOS kept

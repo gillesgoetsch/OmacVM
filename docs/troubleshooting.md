@@ -1688,3 +1688,32 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   `src/app/guest/omacvm-displays`; tests
   `app/runtime/Tests/display/test-video-awake.sh`,
   `src/app/guest/tests/test_omacvm_displays.py`.
+
+## 57. A pinch starts with a right click (Omarchy 4.5)
+
+- **Symptom:** in Chrome (or another app), every pinch zoom on the Mac's
+  trackpad starts with a right click: a context menu opens, then the page
+  zooms. Also a middle-click paste from a three-finger tap. Trackpad
+  gestures and scroll momentum on, in full screen, on Omarchy 4.5 (a new
+  VM, or one moved from 4.0). Up to 3.4.0.
+- **Cause:** Omarchy 4.5 leaves Hyprland's tap-to-click on (omarchy-mac's
+  4.0 had it off). OmacVM's virtual trackpad gets the Mac's fingers, and
+  with scroll momentum it keeps two fingers still at the start of a pinch,
+  then lifts them when macOS calls it a pinch and puts them down again. That
+  short still touch is a two-finger tap for libinput: a right click.
+- **Fix (3.4.1):** Update VM (`omacvm apply`). OmacVM turns tap-to-click off
+  for its virtual trackpad only (`~/.config/hypr/input.lua`). Taps and clicks
+  still reach the VM through the VM app's pointer, as the Mac's own trackpad
+  settings make them. `omacvm check` has a "trackpad taps" row. Your own
+  `tap_to_click` for `apple-inc.-magic-trackpad-(omacvm)` wins (the row then
+  warns); one in an `hl.device` table over several lines is not seen, and
+  the one that loads later wins.
+- **Before 3.4.1:** add this line to `~/.config/hypr/input.lua`:
+
+  ```lua
+  hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", tap_to_click = false })
+  ```
+
+- **Where:** `src/gestures/guest/install.sh`, `src/guest/check.sh`
+  ("trackpad taps"); tests `src/gestures/guest/test-install-gestures.sh`,
+  `src/tests/trackpad-taps.sh`.

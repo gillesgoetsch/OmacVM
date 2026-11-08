@@ -193,6 +193,18 @@ shell_colors() {
 QT_QUICK_TYPES=/usr/lib/qt6/qml/QtQuick/plugins.qmltypes
 if [[ -z $(shell_log) ]]; then skip "shell colours" "no log of a running Omarchy shell"
 else shell_colors "$(shell_log)" "$(/usr/local/lib/omacvm/shell-colors.py --status 2>/dev/null)"; fi
+# omacvm check's "trackpad taps" line: prints "status<TAB>detail" for the
+# Hyprland config in DIR (~/.config/hypr). The virtual trackpad never taps (taps
+# and clicks come from the Mac): Omarchy 4.5 leaves Hyprland's tap-to-click on, and
+# the short lifts of the virtual fingers (the start of a pinch) were taps there, a
+# right click. Lines that are comments do not count. src/tests/trackpad-taps.sh.
+taps_line() {
+  local re='^[[:space:]]*hl\.device\(.*magic-trackpad-\(omacvm\).*tap_to_click'
+  if grep -Erqs "$re *= *false" "$1"; then printf 'ok\t%s\n' "off on the virtual trackpad"
+  elif grep -Erqs "$re" "$1"; then
+    printf 'warn\t%s\n' "on for the virtual trackpad (your setting): a pinch can start with a right click"
+  else printf 'bad\t%s\n' "not set for the virtual trackpad: on Omarchy 4.5 a pinch starts with a right click; Update VM (omacvm apply)"; fi
+}
 # dmabuf_alpha_line ANSWER PIECE HYPR-START USER-FILE: the "transparent panels" line
 # (#630), "status<TAB>detail". Hyprland 0.57 turns quirks:skip_non_kms_dmabuf_formats on;
 # on virtio-gpu apps then get no buffer format with alpha, and the shell's panels,
@@ -504,6 +516,8 @@ if [[ $GESTURES == on ]]; then
   check "virtual trackpad" "Magic Trackpad (OmacVM)" ev_device "Apple Inc. Magic Trackpad (OmacVM)"
   if grep -Erqs '^[[:space:]]*hl\.gesture\(.*action *= *"workspace"' "$H/.config/hypr/"; then ok "workspace swipes" "workspace gestures configured"
   else bad "workspace swipes" "no hl.gesture line for workspaces in ~/.config/hypr"; fi
+  IFS=$'\t' read -r ts tt < <(taps_line "$H/.config/hypr")
+  case $ts in ok) ok "trackpad taps" "$tt" ;; warn) warn "trackpad taps" "$tt" ;; *) bad "trackpad taps" "$tt" ;; esac
 else skip "trackpad gestures" "off (chosen at setup): macOS keeps its swipes"; fi
 FEATURE=scroll-momentum
 if [[ $GLIDE == on && $GESTURES == on ]]; then

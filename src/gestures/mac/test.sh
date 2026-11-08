@@ -345,7 +345,7 @@ grep -E '^(ok|FAIL|skip) ' "$T/focus"
 # The guest's reconnects without the Mac's helper: 2 s, then 10 s, one log line per outage.
 python3 "$HERE/../guest/test-retry.py" "$HERE/../guest/omacvm-gestures" > "$T/retry" 2>&1 || fail=1
 grep -E '^(ok|FAIL|skip) ' "$T/retry"
-# ... and install.sh's gesture lines: only for a count with no sideways gesture yet.
+# ... and install.sh's gesture lines: only for a count with no sideways gesture yet; no taps.
 bash "$HERE/../guest/test-install-gestures.sh" > "$T/install-gestures" 2>&1 || fail=1
 grep -E '^(ok|FAIL) ' "$T/install-gestures"
 # 6. Which scrolling scroll momentum takes.
