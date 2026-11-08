@@ -158,8 +158,12 @@ int main(void)
         last += s == OMACVM_GP_SAY_LAST;
     }
     check(said == OMACVM_GP_LOG_MAX && last == 1, "log: flapping: OMACVM_GP_LOG_MAX lines, the last says the rest are left out");
-    check(omacvm_gp_log(&l, OMACVM_GP_SEEN, OMACVM_GP_SENT, OMACVM_GP_LOG_EVERY_S + 1) == OMACVM_GP_SAY ||
-          omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_SENT, OMACVM_GP_LOG_EVERY_S + 2) == OMACVM_GP_SAY,
-          "log: lines again once OMACVM_GP_LOG_EVERY_S has passed");
+    /* A change while capped is left out, not kept as said: the lease repeats it, and it is said once the cap ends. */
+    check(omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_NO_CHANNEL, OMACVM_GP_LOG_EVERY_S - 0.5) == OMACVM_GP_QUIET,
+          "log: capped: a new reason is left out");
+    check(omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_NO_CHANNEL, OMACVM_GP_LOG_EVERY_S + 1) == OMACVM_GP_SAY,
+          "log: the lease after the cap: the reason left out is said");
+    check(omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_NO_CHANNEL, OMACVM_GP_LOG_EVERY_S + 6) == OMACVM_GP_QUIET,
+          "log: and then quiet again");
     return fails ? 1 : 0;
 }

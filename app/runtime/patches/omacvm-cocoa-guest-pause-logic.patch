@@ -20,7 +20,7 @@ diff --git a/ui/omacvm-guest-pause.h b/ui/omacvm-guest-pause.h
 new file mode 100644
 --- /dev/null
 +++ b/ui/omacvm-guest-pause.h
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,226 @@
 +/*
 + * OmacVM: the guest stops drawing while the VM's main window cannot be seen
 + * (omacvm-cocoa-guest-pause.patch, OmacVM.app's "Pause drawing while
@@ -215,7 +215,7 @@ new file mode 100644
 +} OmacVMGpWhy;
 +
 +typedef struct OmacVMGpLog {
-+    OmacVMGpTell tell;      /* the last word logged or left out as the same (NONE: none yet) */
++    OmacVMGpTell tell;      /* the last word logged (NONE: none yet) */
 +    OmacVMGpWhy why;
 +    double since;           /* the current OMACVM_GP_LOG_EVERY_S began */
 +    unsigned lines;         /* lines in it */
@@ -233,15 +233,16 @@ new file mode 100644
 +    if (tell == OMACVM_GP_NONE || (tell == l->tell && why == l->why)) {
 +        return OMACVM_GP_QUIET;
 +    }
-+    l->tell = tell;
-+    l->why = why;
 +    if (l->lines == 0 || now - l->since >= OMACVM_GP_LOG_EVERY_S) {
 +        l->since = now;
 +        l->lines = 0;
 +    }
 +    if (l->lines >= OMACVM_GP_LOG_MAX) {
++        /* Not kept: still the case after the cap, it is said then. */
 +        return OMACVM_GP_QUIET;
 +    }
++    l->tell = tell;
++    l->why = why;
 +    return ++l->lines == OMACVM_GP_LOG_MAX ? OMACVM_GP_SAY_LAST : OMACVM_GP_SAY;
 +}
 +
