@@ -5,8 +5,9 @@ What: a header with no AppKit in it: when to tell the guest that the VM's
 main window is out of sight (after 2 s) and seen again (at once), and when
 the window keeps its last picture (from "unseen" until the guest's first
 frame after "seen", at most 1 s), and when to say it again (the lease every
-5 s, "seen" every 0.25 s until the first frame). Used by omacvm-cocoa-guest-pause.patch
-(which explains the why).
+5 s, "seen" every 0.25 s until the first frame), and when qemu.log says
+what became of a word (only when it changes, at most 20 lines in 10
+minutes). Used by omacvm-cocoa-guest-pause.patch (which explains the why).
 
 Why its own file: so the rules are tested without QEMU or a window
 (app/runtime/Tests/display/test-guest-pause.sh applies this patch to an
@@ -19,7 +20,7 @@ diff --git a/ui/omacvm-guest-pause.h b/ui/omacvm-guest-pause.h
 new file mode 100644
 --- /dev/null
 +++ b/ui/omacvm-guest-pause.h
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,225 @@
 +/*
 + * OmacVM: the guest stops drawing while the VM's main window cannot be seen
 + * (omacvm-cocoa-guest-pause.patch, OmacVM.app's "Pause drawing while
@@ -48,6 +49,9 @@ new file mode 100644
 + *   on when no word came for three of them), and "seen" is said again every
 + *   OMACVM_GP_RESEND_S until the guest's first frame, for at most
 + *   OMACVM_GP_RESEND_FOR_S.
++ * - qemu.log says each word and whether the guest got it, only when that
++ *   changes (omacvm_gp_log), so a period out of sight without a pause says
++ *   why.
 + */
 +#ifndef OMACVM_GUEST_PAUSE_H
 +#define OMACVM_GUEST_PAUSE_H
@@ -190,6 +194,55 @@ new file mode 100644
 +    }
 +    p->hold = false;
 +    return ++p->frames;
++}
++
++/*
++ * qemu.log: whether the guest got the word, so an out-of-sight period that
++ * did not pause says why. The lease and the repeated "seen" say the same
++ * word again and again: a line only when the word or what became of it
++ * changes, and at most OMACVM_GP_LOG_MAX lines in OMACVM_GP_LOG_EVERY_S
++ * (then one line that the rest are left out).
++ */
++#define OMACVM_GP_LOG_MAX 20
++#define OMACVM_GP_LOG_EVERY_S 600.0
++
++typedef enum OmacVMGpWhy {
++    OMACVM_GP_SENT,         /* written to the display channel */
++    OMACVM_GP_NO_CHANNEL,   /* the display channel is closed */
++    OMACVM_GP_NO_HELLO,     /* the guest's display agent has not said hello */
++    OMACVM_GP_NOT_ABLE,     /* its hello did not say "pause": 1 */
++    OMACVM_GP_NOT_TAKEN,    /* the channel did not take the whole line */
++} OmacVMGpWhy;
++
++typedef struct OmacVMGpLog {
++    OmacVMGpTell tell;      /* the last word logged or left out as the same (NONE: none yet) */
++    OmacVMGpWhy why;
++    double since;           /* the current OMACVM_GP_LOG_EVERY_S began */
++    unsigned lines;         /* lines in it */
++} OmacVMGpLog;
++
++typedef enum OmacVMGpSay {
++    OMACVM_GP_QUIET,        /* the same as before, or left out */
++    OMACVM_GP_SAY,          /* log it */
++    OMACVM_GP_SAY_LAST,     /* log it, and that the next ones are left out */
++} OmacVMGpSay;
++
++/* What became of a word (tell) sent or not (why): whether to log it. */
++static inline OmacVMGpSay omacvm_gp_log(OmacVMGpLog *l, OmacVMGpTell tell, OmacVMGpWhy why, double now)
++{
++    if (tell == OMACVM_GP_NONE || (tell == l->tell && why == l->why)) {
++        return OMACVM_GP_QUIET;
++    }
++    l->tell = tell;
++    l->why = why;
++    if (l->lines == 0 || now - l->since >= OMACVM_GP_LOG_EVERY_S) {
++        l->since = now;
++        l->lines = 0;
++    }
++    if (l->lines >= OMACVM_GP_LOG_MAX) {
++        return OMACVM_GP_QUIET;
++    }
++    return ++l->lines == OMACVM_GP_LOG_MAX ? OMACVM_GP_SAY_LAST : OMACVM_GP_SAY;
 +}
 +
 +#endif

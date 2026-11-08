@@ -125,5 +125,41 @@ int main(void)
     /* Never paused: no hold, frames are not counted. */
     p = fresh();
     check(!omacvm_gp_keep(&p, false, 1) && omacvm_gp_frame(&p) == 0, "never paused: nothing kept, nothing counted");
+
+    /* qemu.log: a line when the word or what became of it changes, never for the lease or a repeated "seen". */
+    OmacVMGpLog l = { 0 };
+    check(omacvm_gp_log(&l, OMACVM_GP_NONE, OMACVM_GP_SENT, 1) == OMACVM_GP_QUIET, "log: nothing to say, no line");
+    check(omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_SENT, 1) == OMACVM_GP_SAY, "log: \"unseen\" sent: a line");
+    n = 0;
+    for (t = 6; t < 3600; t += OMACVM_GP_LEASE_S) {
+        n += omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_SENT, t) != OMACVM_GP_QUIET;
+    }
+    check(n == 0, "log: an hour of leases: no more lines");
+    check(omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_NO_CHANNEL, 3600) == OMACVM_GP_SAY &&
+          omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_NO_CHANNEL, 3605) == OMACVM_GP_QUIET,
+          "log: the lease dropped (channel closed): one line, then quiet");
+    check(omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_SENT, 3610) == OMACVM_GP_SAY,
+          "log: sent again after the channel came back: a line");
+    check(omacvm_gp_log(&l, OMACVM_GP_SEEN, OMACVM_GP_SENT, 3620) == OMACVM_GP_SAY, "log: \"seen\" sent: a line");
+    n = 0;
+    for (t = 3620; t < 3625; t += OMACVM_GP_RESEND_S) {
+        n += omacvm_gp_log(&l, OMACVM_GP_SEEN, OMACVM_GP_SENT, t) != OMACVM_GP_QUIET;
+    }
+    check(n == 0, "log: \"seen\" said again until the first frame: no more lines");
+    check(omacvm_gp_log(&l, OMACVM_GP_SEEN, OMACVM_GP_NOT_TAKEN, 3626) == OMACVM_GP_SAY,
+          "log: a line the channel did not take: a line");
+
+    /* A window going in and out of sight all the time: at most OMACVM_GP_LOG_MAX lines in OMACVM_GP_LOG_EVERY_S. */
+    l = (OmacVMGpLog){ 0 };
+    unsigned said = 0, last = 0;
+    for (t = 0; t < OMACVM_GP_LOG_EVERY_S - 1; t += 3) {
+        OmacVMGpSay s = omacvm_gp_log(&l, (int)(t / 3) % 2 ? OMACVM_GP_SEEN : OMACVM_GP_UNSEEN, OMACVM_GP_SENT, t);
+        said += s != OMACVM_GP_QUIET;
+        last += s == OMACVM_GP_SAY_LAST;
+    }
+    check(said == OMACVM_GP_LOG_MAX && last == 1, "log: flapping: OMACVM_GP_LOG_MAX lines, the last says the rest are left out");
+    check(omacvm_gp_log(&l, OMACVM_GP_SEEN, OMACVM_GP_SENT, OMACVM_GP_LOG_EVERY_S + 1) == OMACVM_GP_SAY ||
+          omacvm_gp_log(&l, OMACVM_GP_UNSEEN, OMACVM_GP_SENT, OMACVM_GP_LOG_EVERY_S + 2) == OMACVM_GP_SAY,
+          "log: lines again once OMACVM_GP_LOG_EVERY_S has passed");
     return fails ? 1 : 0;
 }
