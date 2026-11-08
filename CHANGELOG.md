@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.2 (unreleased)
+
+- **Display scale sticks on the VM's main screen** (#738): the display panel's scale buttons kept
+  the scale only for a moment ("Full screen including notch": 1.6 became 1.333, then 2), and after
+  one the screen no longer followed the window's size. Omarchy's newer scaling command (seen in
+  omarchy 4.5.0-3) saves the scale in a rule of its own for the screen, whose "preferred" mode put
+  the old size back, and OmacVM took that rule for one of yours. The panel now keeps the main
+  screen's scale in `omarchy_monitor_scale` itself, OmacVM reads that exact rule as Omarchy's scale
+  (Omarchy's keys and menu write it too), and a VM that already has it gets it moved into
+  `omarchy_monitor_scale` at the next login. Any other monitor rule of yours stays as it is, and
+  with your own rule for the main screen the buttons work as before. Update VM brings it.
+
 ## 3.4.1
 
 - **Omanotch** on Omarchy 4.5 with Skip the notch (#734): the tray's hidden icons open next to the
