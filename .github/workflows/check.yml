@@ -454,6 +454,8 @@ jobs:
 
       - name: e2e harnesses wait between rows while someone is at the Mac; CI runners paused for a gate
         run: src/tests/e2e-person.sh
+      - name: The built-in display switched off by display-unplug.sh always comes back (its tool's dry run only, no display changed)
+        run: src/tests/e2e-builtin-display.sh
 
       - name: Test copies only as the test identity (a lane's own id has no macOS permissions)
         run: src/tests/e2e-relabel-id.sh

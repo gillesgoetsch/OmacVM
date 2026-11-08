@@ -76,8 +76,17 @@
 # startFullScreen and the VM's notch-mode are put back as they were.
 # Between cases it waits while someone is at the Mac (person.sh); a case that
 # failed while someone came and went gets a BLOCKED "person" row.
+# The built-in display switched off (fullpanel-builtin --builtin-off,
+# fullpanel-clamshell) is checked back on after each time and at the end: the
+# tool turns it on itself, also when it is stopped; if it is not in the active
+# list then, the run turns it on by its id (builtin-display on ID); if that
+# fails too, a FAIL row, a loud line and exit 6 (D2 on 2026-11-08 left an M1's
+# built-in off 6 min). A MacBook whose built-in display is off at the start
+# (no built-in in the list) is refused (exit 3; OMACVM_E2E_BUILTIN_OFF_OK=1
+# runs it, the lid closed on purpose).
 # Exit 0 only when every unplug passed; 1 a case failed; 2 a wrong call; 3 it
-# could not run (another VM, a tool); 5 someone stayed at the Mac (BLOCKED rows).
+# could not run (another VM, a tool); 5 someone stayed at the Mac (BLOCKED rows);
+# 6 the built-in display is still off.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 source "$HERE/person.sh"
@@ -171,12 +180,37 @@ LOCKTOOL="$OUT/test-lock"
 clang -fobjc-arc -framework Foundation "$R/app/scripts/dev/test-lock.m" -o "$LOCKTOOL" >> "$OUT/build-tool.log" 2>&1 ||
   { echo "display-unplug: could not build the lock tool ($OUT/build-tool.log)" >&2; exit 3; }
 lockhook() { "$LOCKTOOL" "$1"; }
-# The built-in display off and back (fullpanel-builtin --builtin-off, fullpanel-clamshell).
+# The built-in display off and back (fullpanel-builtin --builtin-off, fullpanel-clamshell); built for
+# every run: it also says whether a MacBook's built-in is on at the start.
 BDISP="$OUT/builtin-display"
-if (( BOFF )) || [[ $ONLY == *",fullpanel-clamshell,"* ]]; then
-  clang -fobjc-arc -framework AppKit -framework CoreGraphics "$R/app/scripts/dev/builtin-display.m" -o "$BDISP" \
-    >> "$OUT/build-tool.log" 2>&1 || { echo "display-unplug: could not build the built-in display tool ($OUT/build-tool.log)" >&2; exit 3; }
+clang -fobjc-arc -framework AppKit -framework CoreGraphics "$R/app/scripts/dev/builtin-display.m" -o "$BDISP" \
+  >> "$OUT/build-tool.log" 2>&1 || { echo "display-unplug: could not build the built-in display tool ($OUT/build-tool.log)" >&2; exit 3; }
+BDISP_ID=$("$BDISP" mode | sed -n 's/.* builtin=\([0-9][0-9]*\) .*/\1/p'); BDISP_USED=0; BDISP_LOST=0
+if [[ -z $BDISP_ID && ${OMACVM_E2E_BUILTIN_OFF_OK:-0} != 1 && $(ioreg -rc AppleSmartBattery 2>/dev/null) == *'"BatteryInstalled" = Yes'* ]]; then
+  echo "display-unplug: this MacBook's built-in display is off (an earlier run? the lid closed?): open the lid, or builtin-display on ID; OMACVM_E2E_BUILTIN_OFF_OK=1 runs anyway" >&2
+  exit 3
 fi
+builtin_back() {   # WHEN: the built-in in the active list again after the tool; else on by its id; 1 when still off
+  (( BDISP_USED )) && [[ -n $BDISP_ID ]] || return 0
+  local i m
+  for ((i = 0; i < 10; i++)); do m=$("$BDISP" mode 2>/dev/null); [[ $m == *" builtin=$BDISP_ID "* ]] && return 0; sleep 1; done
+  echo "display-unplug: $1: the built-in display $BDISP_ID is not back after the tool: turning it on" >&2
+  "$BDISP" on "$BDISP_ID" >> "$OUT/builtin-display-on.log" 2>&1
+  m=$("$BDISP" mode 2>/dev/null)
+  if [[ $m == *" builtin=$BDISP_ID "* ]]; then
+    res "builtin-back-$1" FAIL "the built-in display stayed off after the tool (kit or macOS); on again by its id: ${m#now }"
+    return 0
+  fi
+  BDISP_LOST=1
+  res "builtin-back-$1" FAIL "THE BUILT-IN DISPLAY $BDISP_ID IS STILL OFF (${m#now }): builtin-display on $BDISP_ID, or close the lid and open it"
+  printf '\n*** display-unplug: THE BUILT-IN DISPLAY %s IS STILL OFF (%s) ***\n\n' "$BDISP_ID" "$OUT/builtin-display-on.log" >&2
+  return 1
+}
+boff_stop() {   # WHEN: the tool stopped (it turns the built-in on as it goes), then the built-in checked
+  [[ -n $BOFF_PID ]] && { kill "$BOFF_PID" 2>/dev/null; wait "$BOFF_PID" 2>/dev/null; }
+  BOFF_PID=""
+  builtin_back "$1" || exit 6
+}
 # The Mac's session locked (the screen lock): nobody can unlock it from here.
 session_locked() { person_locked; }
 
@@ -188,6 +222,8 @@ BOFF_PID=""
 restore() {
   person_watch_stop
   [[ -n $BOFF_PID ]] && { kill "$BOFF_PID" 2>/dev/null; wait "$BOFF_PID" 2>/dev/null; }
+  BOFF_PID=""
+  (( BDISP_LOST )) || builtin_back end
   unplug
   local p; p=$(qemu_pid)
   if [[ -n $p ]]; then
@@ -199,6 +235,8 @@ restore() {
   if [[ $NOTCH_BEFORE == none ]]; then rm -f "$VMD/notch-mode"; else echo "$NOTCH_BEFORE" > "$VMD/notch-mode"; fi
   if [[ $REMEMBERED_BEFORE == unset ]]; then defaults delete "$APPID" builtinNotch 2>/dev/null
   else defaults write "$APPID" builtinNotch "$REMEMBERED_BEFORE"; fi
+  (( BDISP_LOST )) && exit 6
+  return 0
 }
 trap restore EXIT
 
@@ -453,15 +491,18 @@ case_fullpanel_builtin() {
     fp_check "fullpanel-builtin-replug-$r" "$l0" "$F0" || break
   done
   if (( BOFF )); then
-    # The user's trigger: the built-in leaves the display set and comes back (macOS puts it back
-    # when the tool ends). Its mode must be the same after (macOS keeps one per set of displays).
+    # The user's trigger: the built-in leaves the display set and comes back (the tool turns it on,
+    # builtin_back checks). Its mode must be the same after (macOS keeps one per set of displays).
     local m0 m1
     m0=$("$BDISP" mode); l0=$(wc -l < "$VMD/logs/qemu.log")
+    BDISP_USED=1
     if "$BDISP" off 10 > "$OUT/fullpanel-builtin-off.tool" 2>&1; then
+      builtin_back off || exit 6
       sleep 12
       fp_check fullpanel-builtin-off "$l0" "$F0"
     else
       res fullpanel-builtin-off FAIL "the built-in display did not go off and back: $(tail -1 "$OUT/fullpanel-builtin-off.tool")"
+      builtin_back off || exit 6
     fi
     m1=$("$BDISP" mode)
     [[ $m1 == "$m0" ]] || res fullpanel-builtin-off-mode FAIL "the built-in's mode changed ($m0 -> $m1): left as it is, tell the person"
@@ -498,20 +539,21 @@ case_fullpanel_clamshell() {
   log "fullpanel-clamshell: notch ${n0#notch }; the built-in display off, the VM on a virtual one"
   plug || { res fullpanel-clamshell FAIL "no virtual display"; return; }
   m0=$("$BDISP" mode)
+  BDISP_USED=1
   "$BDISP" off 120 > "$OUT/fullpanel-clamshell-off.tool" 2>&1 &
   BOFF_PID=$!
   for ((r = 0; r < 20; r++)); do [[ $("$BDISP" mode) == *"builtin=none"* ]] && break; sleep 0.5; done
   if [[ $("$BDISP" mode) != *"builtin=none"* ]]; then
     res fullpanel-clamshell FAIL "the built-in display did not go off: $(tail -1 "$OUT/fullpanel-clamshell-off.tool")"
-    kill "$BOFF_PID" 2>/dev/null; BOFF_PID=""; unplug; return
+    boff_stop clamshell; unplug; return
   fi
   n1=$("$APP/Contents/MacOS/OmacVM" --notch 2>/dev/null)
   if [[ $n1 != "remembered ${n0#notch }" ]]; then
     res fullpanel-clamshell FAIL "with the built-in off the app says '${n1:-nothing}', want 'remembered ${n0#notch }'"
-    kill "$BOFF_PID" 2>/dev/null; BOFF_PID=""; unplug; return
+    boff_stop clamshell; unplug; return
   fi
   res fullpanel-clamshell-remembered ok "built-in off: $n1"
-  start fullpanel-clamshell || { res fullpanel-clamshell FAIL "the VM did not start"; kill "$BOFF_PID" 2>/dev/null; BOFF_PID=""; unplug; return; }
+  start fullpanel-clamshell || { res fullpanel-clamshell FAIL "the VM did not start"; boff_stop clamshell; unplug; return; }
   # QEMU's way into full screen while the built-in is off (it says so at once); then the built-in back.
   # The app empties qemu.log at each start (Runner.swift, O_TRUNC), so the whole log is this start's.
   # The built-in is off for 120 s (start up to 40 s, this up to 75 s); a late arm after it came
@@ -520,7 +562,7 @@ case_fullpanel_clamshell() {
     late=$(grep -m1 -E 'full panel: (in full screen on a display without a camera housing|a window on another display than the built-in one)' "$VMD/logs/qemu.log" 2>/dev/null)
     [[ -n $late ]] && break; sleep 1
   done
-  kill "$BOFF_PID" 2>/dev/null; wait "$BOFF_PID" 2>/dev/null; BOFF_PID=""
+  boff_stop clamshell
   area=$(grep -h 'OmacVM: notch area:' "$VMD/logs/qemu.log" | tail -1)
   if [[ $area != *"notch area: fullpanel (Omanotch off for this start; the built-in display is off"* ]]; then
     res fullpanel-clamshell FAIL "not a FullPanel start with the remembered notch: ${area:-no notch area line}"; unplug; stop; return
