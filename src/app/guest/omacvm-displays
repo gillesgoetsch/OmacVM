@@ -1225,7 +1225,7 @@ class GuestAwake:
         self.started = 0.0
         self.shown = False
         self.fails = 0
-        self.path.unlink(missing_ok=True)   # an earlier agent's lease
+        self.drop()   # an earlier agent's lease
 
     def want(self, on: bool) -> None:
         """At each check: hold (renew the lease, start or check the child) or let go."""
@@ -1256,6 +1256,12 @@ class GuestAwake:
             elif now - self.started >= AWAKE_SETTLE:
                 self.failed(f"no surface after {AWAKE_SETTLE:.0f} s")
 
+    def drop(self) -> None:
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def lease(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1283,7 +1289,7 @@ class GuestAwake:
         self.stop_child()
         self.fails += 1
         if self.fails >= AWAKE_TRIES:
-            self.path.unlink(missing_ok=True)
+            self.drop()
             log(f"omacvm-awake failed {self.fails} times ({why}): not tried again until the agent restarts; "
                 "Omarchy's screensaver may cover a Firefox video")
         else:
@@ -1303,7 +1309,7 @@ class GuestAwake:
             pass
 
     def release(self) -> None:
-        self.path.unlink(missing_ok=True)
+        self.drop()
         if self.child is not None:
             if self.shown:
                 log("no Firefox video plays: Omarchy's screensaver and lock as usual")
