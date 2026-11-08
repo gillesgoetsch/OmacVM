@@ -20,6 +20,10 @@ in more words.
   frame of the video in the VM's `/tmp` (its memory). An animated picture also sends its first frame.
   When no picture comes out of a file, nothing is sent. Update VM brings it (it adds ffmpeg where it
   is missing) and removes the frame files once.
+- **`omacvm check` warns when the VM's disk is nearly full** (#749): a "free space" line, a warning
+  under 10 GiB free, where Omarchy's own update stops ("You need at least 10 GiB free to safely
+  update Omarchy."). It says what to do: delete files in your home, or give the VM a larger disk
+  (Disk › Change… in the VM window, with the VM shut down).
 
 ## 3.4.1
 

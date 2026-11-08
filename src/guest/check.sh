@@ -1102,6 +1102,16 @@ n=$(sed -n 's/^NUMBER_LIMIT="\([0-9]*\)"$/\1/p' /etc/snapper/configs/root 2>/dev
 if [[ -z $d ]]; then bad "freeing disk space" "nothing trims: deleted files keep their space (omacvm apply)"
 elif [[ $n == 5 && ! -e /var/lib/omacvm/update-snapshots ]]; then warn "freeing disk space" "$d; 5 update snapshots keep deleted system files (omacvm apply keeps fewer)"
 else ok "freeing disk space" "$d${n:+; $n update snapshots}"; fi
+# Omarchy's update stops under 10 GiB free on / (omarchy-update-requires-free-space,
+# the same in Omarchy 4.0 and 4.5): the same measure and limit here, said first.
+FREE_MIN=$((10 * 1024 * 1024 * 1024))
+avail=$(df --output=avail --block-size=1 / 2>/dev/null | tail -n 1 | tr -d ' ')
+if [[ $avail =~ ^[0-9]+$ ]]; then
+  gib=$(awk -v b="$avail" 'BEGIN { printf "%.1f", b / 1073741824 }')
+  if (( avail < FREE_MIN )); then
+    warn "free space" "$gib GiB free on /, Omarchy's update needs 10 GiB: delete files in your home you no longer need, or give the VM a larger disk (VM window, Disk › Change… with the VM shut down)" human
+  else ok "free space" "$gib GiB free on /"; fi
+fi
 # The desktop user's runtime folder (/run/user/UID), a tmpfs of 10 % of the
 # VM's memory: when it is full, Hyprland and apps that draw through shared
 # memory there die of SIGBUS (2026-10-19: OmacVM.app's hyprpicker up to 3.1.24

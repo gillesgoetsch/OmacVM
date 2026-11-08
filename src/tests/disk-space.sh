@@ -4,7 +4,8 @@
 # set by hand stays (also 5 after the change), the weekly trim is on, the
 # trim runs after btrfs's cleaner, both together waited for at most a
 # minute; omacvm apply runs it only after the VM side worked, never for a
-# repair; omacvm check's "freeing disk space" line.
+# repair; omacvm check's "freeing disk space" line, and its "free space" line
+# (a warning under Omarchy's update limit, 10 GiB free on /, #749).
 # snapper, systemctl, btrfs, timeout and findmnt are stand-ins.
 #   src/tests/disk-space.sh
 set -uo pipefail
@@ -191,5 +192,31 @@ rm -f "$T/root"
 expect "check: no snapper, trim only" "ok|freeing disk space|weekly trim" "$(ROOT_OPTS=rw,nodiscard,ssd chk)"
 expect "check: nothing trims" "FAIL|freeing disk space|nothing trims: deleted files keep their space (omacvm apply)" \
   "$(ROOT_OPTS=rw,nodiscard TIMER_OFF=1 chk)"
+
+# omacvm check's "free space" line (#749): under Omarchy's update limit (10 GiB free on /,
+# omarchy-update-requires-free-space) a warning a person acts on; df as Omarchy reads it.
+blk=$(sed -n '/^# Omarchy.s update stops under 10 GiB free/,/^fi$/p' "$R/src/guest/check.sh")
+cat > "$T/bin/df" <<'EOF'
+#!/bin/bash
+echo "df $*" >> "$CALLS"
+printf '%s\n' "  Avail" "$DF_AVAIL"
+EOF
+chmod +x "$T/bin/df"
+cat > "$T/free" <<EOF
+ok()   { echo "ok|\$1|\$2|\${3:+1}"; }
+warn() { echo "WARN|\$1|\$2|\${3:+1}"; }
+$blk
+EOF
+free() { : > "$CALLS"; DF_AVAIL=$1 PATH="$T/bin:$PATH" bash "$T/free" 2>&1; }
+G=1073741824
+expect "free space: the block found" yes "$([[ $blk == *'10 * 1024 * 1024 * 1024'* ]] && echo yes)"
+expect "free space: 9.0 GiB: warn, a person, says what to do" \
+  "WARN|free space|9.0 GiB free on /, Omarchy's update needs 10 GiB: delete files in your home you no longer need, or give the VM a larger disk (VM window, Disk › Change… with the VM shut down)|1" \
+  "$(free $((9 * G)))"
+expect "free space: read as Omarchy's guard reads it" "df --output=avail --block-size=1 /" "$(free $((9 * G)) >/dev/null; cat "$CALLS")"
+expect "free space: one byte under 10 GiB: warn" WARN "$(free $((10 * G - 1)) | cut -d'|' -f1)"
+expect "free space: exactly 10 GiB: ok (Omarchy updates)" "ok|free space|10.0 GiB free on /|" "$(free $((10 * G)))"
+expect "free space: 52.3 GiB: ok" "ok|free space|52.3 GiB free on /|" "$(free 56157381017)"
+expect "free space: no number from df: no line" "" "$(free 'df: /: No such file')"
 
 exit $fail

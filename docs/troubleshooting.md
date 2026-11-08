@@ -10,6 +10,12 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 ## Common problems
 
 - **First stop**: `omacvm check` names what is wrong and what to do.
+- **Omarchy's update says "You need at least 10 GiB free to safely update
+  Omarchy."**: the VM's disk is nearly full. `omacvm check` warns first
+  ("free space"). Delete files in your home you no longer need (they free
+  their space at once; system files stay in the 2 update snapshots until
+  newer ones replace them), or give the VM a larger disk: shut it down, then
+  Disk › Change… in its window. The VM grows into it at its next start.
 - **A VM in Parallels, UTM or VMware Fusion**: OmacVM 3.4.0 retired those
   routes. The VM keeps running as it is, without OmacVM updates. Move to
   OmacVM.app: [how](../README.md#retired-routes).

@@ -449,7 +449,8 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   (`KEEP`; omarchy-mac's 5 held deleted files for 5 updates; a number set by
   hand stays), `fstrim.timer` on, then btrfs's cleaner and a trim, both
   waited for (at most a minute together); `@factory` stays (factory reset). Check line "freeing disk space";
-  `src/tests/disk-space.sh`.
+  `src/tests/disk-space.sh`. Check line "free space": WARN under 10 GiB free on `/`, where Omarchy's
+  update stops (`omarchy-update-requires-free-space`, the same `df` reading).
   OmacVM.app's QEMU turns each guest flush into `fcntl(F_BARRIERFSYNC)`
   (`qemu-darwin-disk-flush-barrier.patch`, ADR 0053; `OMACVM_DISK_FLUSH=full|fsync`), qemu.log
   "OmacVM: disk flush: ...", check line "disk flush"; `src/tests/disk-flush.sh`,

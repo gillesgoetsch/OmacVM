@@ -201,7 +201,7 @@ jobs:
       - name: Building behind a proxy (scutil samples, the VM's variables, sudo, systemd-run, retries, a stub proxy)
         run: src/tests/proxy.sh
 
-      - name: Freeing disk space (2 update snapshots kept, a trim at apply, omacvm check's line)
+      - name: Freeing disk space (2 update snapshots kept, a trim at apply, omacvm check's lines; the 10 GiB warning, #749)
         run: src/tests/disk-space.sh
 
       - name: Free page reporting in 256 KiB blocks (page_reporting_order 6, omacvm check's line)
