@@ -3,6 +3,19 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.2 (unreleased)
+
+- **Omanotch** on Omarchy 4.5 with Skip the notch (#757, reported by the project owner on an M1
+  Max): the tray no longer shows right of the notch first and then moves left of it. Two causes,
+  both from bar patch v38/v39 (3.4.1). When tray apps started after the bar (at login or later),
+  the tray showed in Omarchy's place and then slid under the notch to the left. After a widget was
+  added or its settings changed, the layout could stay as it was (QML logged "Binding loop detected
+  for property notchWidths" and dropped the update) until the pointer came onto the bar. Now the
+  layout counts the size each item asks for, an item that grows takes its new place at once, and
+  the tray waits unseen until its apps are in, then shows where it stays. Update VM brings it (bar
+  patch v40). With bar patch v37 (3.4.0) a tray could also change sides when it showed up, less
+  often.
+
 ## 3.4.1
 
 - **Omanotch** on Omarchy 4.5 with Skip the notch (#734): the tray's hidden icons open next to the
