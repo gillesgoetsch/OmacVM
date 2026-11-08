@@ -670,6 +670,13 @@ The less obvious ones, with causes and where the fix lives, are in
   `apple-inc.-magic-trackpad-(omacvm)`, gestures/guest/install.sh). Omarchy 4.5
   keeps Hyprland's default (on): scroll momentum lifts the two still fingers when
   macOS calls a pinch, a two-finger tap, so every pinch began with a right click.
+- Do not count on `/usr/local/bin` to replace an Omarchy command: Omarchy's
+  `envs.lua` puts `$OMARCHY_PATH/bin` first on the session's PATH (`hl.env`,
+  4.0 and 4.5), so the menu, the keys and the shell run Omarchy's. Link the
+  replacement into `/usr/local/lib/omacvm/omarchy-overrides`, which
+  `omacvm_vm.lua` puts ahead of it (#748), or call it by full path. Read the
+  session's PATH from the shell's `/proc/<pid>/environ`, not Hyprland's: that
+  is the environment before its config ran.
 - Keep zram small and memory capped. OmacVM.app's QEMU gives what Linux frees back to the Mac
   (free page reporting, ADR 0059; from 3.2.12 it moves the old pages aside
   and advises them `MADV_FREE_REUSABLE`, ADR 0062; up to 3.2.11 macOS kept

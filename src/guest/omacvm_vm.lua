@@ -45,3 +45,27 @@ local function dmabuf_alpha()
   hl.config({ quirks = { skip_non_kms_dmabuf_formats = false } })
 end
 dmabuf_alpha()
+
+-- The Bridge's night light toggle ahead of Omarchy's (#748). Omarchy's
+-- envs.lua puts $OMARCHY_PATH/bin first on the session's PATH (hl.env, on
+-- Omarchy 4.0 and 4.5), so the menu, the keys and the shell ran Omarchy's own
+-- omarchy-toggle-nightlight (hyprsunset in the VM), never OmacVM's in
+-- /usr/local/bin that drives the Mac's Night Shift. This puts one folder of
+-- OmacVM's in front of Omarchy's, nothing else on PATH moves. The folder holds
+-- only what the Bridge links there (bridge/guest/install.sh) and is empty or
+-- gone while the Bridge is off (guest/off.sh): an empty or missing folder on
+-- PATH changes nothing, so it stays on PATH and switching the Bridge needs no
+-- reload. Runs on every load: a reload runs Omarchy's envs.lua first again
+-- (its folder first), then this (ours first), the same PATH each time.
+-- Can go when Omarchy no longer puts its bin first or lets an app replace one
+-- of its commands.
+local OMARCHY_OVERRIDES = "/usr/local/lib/omacvm/omarchy-overrides"
+local function overrides_first()
+  if type(hl.env) ~= "function" then return end
+  local kept = { OMARCHY_OVERRIDES }
+  for entry in (os.getenv("PATH") or "/usr/local/bin:/usr/bin"):gmatch("[^:]+") do
+    if entry ~= OMARCHY_OVERRIDES then kept[#kept + 1] = entry end
+  end
+  hl.env("PATH", table.concat(kept, ":"))
+end
+overrides_first()

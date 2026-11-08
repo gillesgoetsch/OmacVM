@@ -121,12 +121,15 @@ bridge_widgets_in_bar() {
   jq -e --arg w "$BRIDGE_WIDGETS" '($w | split(" ")) as $w | [.bar.layout[]?[]?.id, .plugins[]?.id] | any(. as $i | $w | index($i))' \
     < <(home_cat "$ROOT$H/.config/omarchy/shell.json") >/dev/null 2>&1
 }
+# The folder omacvm_vm.lua puts ahead of Omarchy's bin on the session's PATH;
+# the Bridge links its night light toggle there (bridge/guest/install.sh).
+OMARCHY_OVERRIDES=/usr/local/lib/omacvm/omarchy-overrides
 bridge_off() {
-  local b=/usr/local/bin e=/etc/systemd/user p q=$H/.local/state/omacvm/pending-plugins
+  local b=/usr/local/bin e=/etc/systemd/user p q=$H/.local/state/omacvm/pending-plugins o=$OMARCHY_OVERRIDES
   local nl=$ROOT$H/.local/state/omacvm/nightlight-indicator c=$ROOT$H/.config/omarchy/shell.json tmp
   off_any $b/omacvm-bridge $b/omacvm-bridge-osd $b/omacvm-bridge-events $e/omacvm-bridge-osd.service \
     $e/omacvm-bridge-events.socket $e/omacvm-bridge-events.service $b/omarchy-toggle-nightlight \
-    $b/omacvm-timezone /etc/systemd/system/omacvm-timezone.service ||
+    $o/omarchy-toggle-nightlight $b/omacvm-timezone /etc/systemd/system/omacvm-timezone.service ||
     bridge_widgets_in_bar || return 0
   log "bridge: off"
   # The time zone stays as it is now; it no longer follows the Mac.
@@ -158,6 +161,10 @@ bridge_off() {
   for p in omarchy-toggle-nightlight omarchy-network-qr omarchy-network-password omacvm-bridge omacvm-bridge-osd omacvm-bridge-events; do
     rm -f "$ROOT$b/$p"
   done
+  # Omarchy's own toggle again for the menu and the keys, at once (no reload:
+  # the folder stays on PATH, empty or gone).
+  rm -f "$ROOT$o/omarchy-toggle-nightlight"
+  rmdir "$ROOT$o" 2>/dev/null || true
   rm -f "$ROOT$e/omacvm-bridge-osd.service" "$ROOT$e/omacvm-bridge-events.socket" "$ROOT$e/omacvm-bridge-events.service"
 }
 

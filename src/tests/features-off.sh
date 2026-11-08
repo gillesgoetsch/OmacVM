@@ -158,6 +158,8 @@ expect "omanotch off, the next apply unlocked: the uninstall in the session, the
 # in the bar are disabled at the next login.
 reset_root
 for b in omacvm-bridge omacvm-bridge-osd omacvm-bridge-events omarchy-toggle-nightlight; do file "/usr/local/bin/$b"; done
+NLO=/usr/local/lib/omacvm/omarchy-overrides   # omacvm_vm.lua puts it first on the session's PATH (#748)
+link "$NLO/omarchy-toggle-nightlight" /usr/local/bin/omarchy-toggle-nightlight
 for u in omacvm-bridge-osd.service omacvm-bridge-events.socket omacvm-bridge-events.service omacvm-plugins.service; do file "/etc/systemd/user/$u"; done
 link "$H/.config/systemd/user/graphical-session.target.wants/omacvm-bridge-osd.service" /etc/systemd/user/omacvm-bridge-osd.service
 link "$H/.config/systemd/user/sockets.target.wants/omacvm-bridge-events.socket" /etc/systemd/user/omacvm-bridge-events.socket
@@ -168,9 +170,11 @@ expect "bridge off: says so" "bridge: off" "$(cat "$OUT")"
 for p in /usr/local/bin/omacvm-bridge /usr/local/bin/omacvm-bridge-osd /usr/local/bin/omacvm-bridge-events \
          /etc/systemd/user/omacvm-bridge-osd.service /etc/systemd/user/omacvm-bridge-events.socket \
          "$H/.config/systemd/user/graphical-session.target.wants/omacvm-bridge-osd.service" \
-         "$H/.config/systemd/user/sockets.target.wants/omacvm-bridge-events.socket"; do
+         "$H/.config/systemd/user/sockets.target.wants/omacvm-bridge-events.socket" \
+         "$NLO/omarchy-toggle-nightlight" "$NLO"; do
   expect "bridge off, no session: $p gone" no "$(has "$p")"
 done
+expect "bridge off: the folder of OmacVM's own commands only, its parent stays" yes "$(has /usr/local/lib/omacvm)"
 expect "bridge off: queued widgets not enabled at the next login" omacvm.workspaces "$(cat "$ROOT$H/.local/state/omacvm/pending-plugins")"
 expect "bridge off, no session: widgets disabled at the next login" 5 "$(grep -c . "$ROOT$H/.local/state/omacvm/pending-plugins-off")"
 expect "bridge off, no session: omacvm-plugins runs at the next login" yes "$(has "$H/.config/systemd/user/graphical-session.target.wants/omacvm-plugins.service")"
@@ -186,6 +190,15 @@ reset_root; file /usr/local/bin/omacvm-timezone; file /etc/systemd/system/omacvm
 run_off bridge_off 0
 expect "bridge off: the time zone agent stopped" yes "$(called "systemctl disable --now omacvm-timezone.service")"
 expect "bridge off: the time zone agent gone" "no no" "$(has /usr/local/bin/omacvm-timezone) $(has /etc/systemd/system/omacvm-timezone.service)"
+# Only the night light link left (a half-done off, an older off.sh): it goes, so the
+# menu and the keys run Omarchy's own toggle again.
+reset_root; link "$NLO/omarchy-toggle-nightlight" /usr/local/bin/omarchy-toggle-nightlight
+run_off bridge_off 0
+expect "bridge off, only the night light link left: it and its folder go" "bridge: off no no" "$(cat "$OUT") $(has "$NLO/omarchy-toggle-nightlight") $(has "$NLO")"
+# Something else of the person's in that folder: the folder stays.
+reset_root; link "$NLO/omarchy-toggle-nightlight" /usr/local/bin/omarchy-toggle-nightlight; file "$NLO/mine"
+run_off bridge_off 0
+expect "bridge off, another file in the folder: the link goes, the folder stays" "no yes" "$(has "$NLO/omarchy-toggle-nightlight") $(has "$NLO/mine")"
 reset_root; run_off bridge_off 0
 expect "bridge off, no Bridge: nothing" "" "$(cat "$OUT" "$CALLS")"
 grep -q 'pending-plugins-off' "$R/src/lib/omacvm-plugins" && echo "ok   omacvm-plugins disables the queued widgets" ||

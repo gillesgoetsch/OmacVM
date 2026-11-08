@@ -2,7 +2,9 @@
 -- against a stand-in for Hyprland's Lua config that behaves as 0.56.2 and 0.57.0 do:
 -- hl.config with an unknown key records a config error (shown on the screen) and does
 -- not raise one; hl.get_config gives nil and a message for an unknown key; a config
--- load starts from the defaults. Run by src/tests/dmabuf-alpha.sh:
+-- load starts from the defaults; hl.env is setenv(), so os.getenv sees what it set.
+-- And OmacVM's folder ends up ahead of Omarchy's bin on the session's PATH (#748).
+-- Run by src/tests/dmabuf-alpha.sh:
 --   lua omacvm_vm_test.lua PIECE [ROUTE=FILE,FILE...]...
 -- PIECE: src/guest/omacvm_vm.lua; each ROUTE: the Lua files OmacVM's installers
 -- require from hyprland.lua on that route. XDG_CONFIG_HOME and XDG_RUNTIME_DIR: empty
@@ -25,10 +27,18 @@ local function write(path, text)
   f:close()
 end
 
--- The stand-in. known: the keys this Hyprland has, with their defaults.
+-- The stand-in. known: the keys this Hyprland has, with their defaults. env: the
+-- process environment hl.env writes (opts.path: PATH at Hyprland's start).
 local values, known, errors, sets
+local env = {}
+local real_getenv = os.getenv
+os.getenv = function(k)
+  if k == "PATH" or env[k] ~= nil then return env[k] end   -- PATH: only the stand-in's
+  return real_getenv(k)
+end
 local function hyprland(skip_default, opts)
   opts = opts or {}
+  env = { PATH = opts.path }
   known = {
     ["cursor.no_hardware_cursors"] = 2, ["cursor.use_cpu_buffer"] = 2,
     ["render.keep_unmodified_copy"] = 2, ["render.cm_auto_hdr"] = 1,
@@ -56,6 +66,9 @@ local function hyprland(skip_default, opts)
     timer = function() end,
     exec_cmd = function() end,
   }
+  if not opts.no_env then
+    hl.env = function(k, v) env[k] = tostring(v) end
+  end
   if not opts.no_get_config then
     hl.get_config = function(key)
       if type(key) ~= "string" then error("hl.get_config: bad type for arg 1") end
@@ -131,6 +144,48 @@ if have_piece then
   -- it runs the Lua): the second load sets it again.
   hyprland(true); load_config(P); reload(); load_config(P)
   check("a reload: set again from the default" .. errs(), values[KEY] == false and times_set() == 2 and #errors == 0)
+end
+
+-- PATH (#748). Omarchy's default/hypr/envs.lua (omarchy-mac 4.0 and Omarchy 4.5 alike;
+-- loaded by default.hypr.omarchy, before OmacVM's line at the end of hyprland.lua):
+local function omarchy_envs(omarchy_path)
+  local bin_dir = omarchy_path .. "/bin"
+  local kept = {}
+  for entry in (os.getenv("PATH") or "/usr/local/bin:/usr/bin"):gmatch("[^:]+") do
+    if entry ~= bin_dir then table.insert(kept, entry) end
+  end
+  table.insert(kept, 1, bin_dir)
+  hl.env("PATH", table.concat(kept, ":"))
+end
+if have_piece then
+  local P = { piece }
+  local OVR = "/usr/local/lib/omacvm/omarchy-overrides"
+  local START = "/home/u/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/bin"
+  hyprland(false, { path = START }); omarchy_envs("/usr/share/omarchy"); load_config(P)
+  check("PATH: OmacVM's folder, then Omarchy's bin, then the rest as Hyprland started" .. errs(),
+    env.PATH == OVR .. ":/usr/share/omarchy/bin:" .. START and #errors == 0)
+  local first = env.PATH
+  reload(); omarchy_envs("/usr/share/omarchy"); load_config(P)
+  check("a reload (Omarchy's bin first again, then OmacVM's): the same PATH", env.PATH == first)
+  reload(); omarchy_envs("/usr/share/omarchy"); load_config(P)
+  check("... and again", env.PATH == first)
+  hyprland(false, { path = START }); omarchy_envs("/home/u/.local/share/omarchy"); load_config(P)
+  check("Omarchy dev-linked (OMARCHY_PATH in the home): its bin second",
+    env.PATH == OVR .. ":/home/u/.local/share/omarchy/bin:" .. START)
+  hyprland(false, { path = START .. ":" .. OVR }); omarchy_envs("/usr/share/omarchy"); load_config(P)
+  check("OmacVM's folder already on PATH: once, in front",
+    env.PATH == OVR .. ":/usr/share/omarchy/bin:" .. START)
+  -- The folder is not looked at (here it does not exist): with the Bridge off it is empty
+  -- or gone and changes nothing, so it stays on PATH and no reload is needed.
+  local f = io.open(OVR, "r")
+  if f then f:close() end
+  hyprland(false, { path = START }); omarchy_envs("/usr/share/omarchy"); load_config(P)
+  check("the folder missing (" .. (f and "there" or "not there") .. " here): still first",
+    env.PATH:sub(1, #OVR + 1) == OVR .. ":")
+  hyprland(false, {}); load_config(P)
+  check("no PATH at all: the folder, then Hyprland's fallback", env.PATH == OVR .. ":/usr/local/bin:/usr/bin")
+  hyprland(false, { path = START, no_env = true }); load_config(P)
+  check("no hl.env: PATH left as it is, no error" .. errs(), env.PATH == START and #errors == 0)
 end
 
 if failed == 0 then print("omacvm_vm_test: all passed") end

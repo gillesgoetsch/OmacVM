@@ -121,6 +121,18 @@ in_session() {
 }
 # Updated bar widgets load in a new shell: restarted once at the end.
 restart_shell_later() { home_mkdir "$H/.local/state/omacvm"; home_put "$H/.local/state/omacvm/restart-shell" < /dev/null; }
+# The running Omarchy shell (quickshell -p <OMARCHY_PATH>/shell) finds the
+# Bridge's night light toggle in OmacVM's folder (omacvm_vm.lua's
+# OMARCHY_OVERRIDES, ahead of Omarchy's bin) on its own PATH. No shell: true
+# (the next one starts with Hyprland's PATH).
+shell_runs_overrides() {
+  local p pa w
+  p=$(pgrep -u "$U" -f '(^|/)(quickshell|qs) (.* )?-p [^ ]+/shell( |$)' | head -n 1)
+  [[ -n $p ]] || return 0
+  pa=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^PATH=//p')
+  w=$(PATH=$pa; command -v omarchy-toggle-nightlight 2>/dev/null)
+  [[ $w == "$OMARCHY_OVERRIDES/omarchy-toggle-nightlight" ]]
+}
 # A script of OmacVM's as the desktop user (its user units, Omarchy's shell).
 user_script() { sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" bash "$@"; }
 # The desktop session: down, busy, locked or open (guest/session-lock.sh).
@@ -407,11 +419,15 @@ fi
 # Hyprland settings every route needs (omacvm_vm.lua, each says why): Hyprland
 # 0.57's quirks:skip_non_kms_dmabuf_formats off, else virtio-gpu leaves apps no
 # format with alpha and the shell's panels and notifications black out the
-# screen (#630). Hyprland reads it at its start.
+# screen (#630). Hyprland reads it at its start. And OmacVM's folder ahead of
+# Omarchy's bin on the session's PATH (#748): Hyprland's reload of the file
+# gives it to the keys at once, the shell gets it below.
+hypr_vm=""
 if system; then
   r=$("$R/guest/hypr-vm.sh" "$U" 2>&1) || r="failed: $r"
+  hypr_vm=$r
   case $r in
-    added|updated) log "Hyprland: OmacVM's settings for every VM $r (on Hyprland 0.57: transparent panels and notifications from the next login)" ;;
+    added|updated) log "Hyprland: OmacVM's settings for every VM $r (the Bridge's night light toggle ahead of Omarchy's now; on Hyprland 0.57: transparent panels and notifications from the next login)" ;;
     "") ;;
     *) log "Hyprland: OmacVM's settings for every VM: $r" ;;
   esac
@@ -512,6 +528,16 @@ elif [[ ${F[bridge]} == on ]]; then
   log "bridge";     "$R/bridge/guest/install.sh" "$U"
 else
   bridge_off   # Omarchy's own Bluetooth, Wi-Fi and audio widgets come back
+fi
+# The menu's Nightlight runs in the Omarchy shell, with the PATH the shell
+# started with (#748). A shell from before omacvm_vm.lua put OmacVM's folder
+# first still finds Omarchy's toggle (hyprsunset): restarted once at the end
+# (through Hyprland, so it gets Hyprland's new PATH), only when this run wrote
+# omacvm_vm.lua. A Hyprland that did not reload it keeps the old PATH: no
+# restart on every apply then (omacvm check says to log out and in).
+if [[ ${F[bridge]} == on && ( $hypr_vm == added || $hypr_vm == updated ) ]] && ! shell_runs_overrides; then
+  log "bridge: the Omarchy shell restarts once, for the Mac's night light in its menu"
+  restart_shell_later
 fi
 # External display brightness: Omarchy's own DDC/CI path (ddcutil) goes through
 # the Bridge to the external Mac display an output is on. Only our ddcutil is

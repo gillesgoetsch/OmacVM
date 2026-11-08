@@ -2,7 +2,7 @@
 // (lit while Night Shift is on, dimmed while off). A click opens a panel in the
 // style of Omarchy's display panel: Night Shift on/off, its strength and True
 // Tone, all on the Mac. Middle click switches Night Shift right away, like
-// Super+Ctrl+N (which OmacVM points at the Mac too). The state comes live from
+// the menu's Nightlight (which OmacVM points at the Mac too). The state comes live from
 // omacvm-bridge's event stream ("display" events), so changes made on the Mac
 // show here at once.
 import QtQuick

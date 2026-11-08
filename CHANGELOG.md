@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.2 (unreleased)
+
+- **Night Shift from the Omarchy menu** (#748): the menu's Nightlight switches the Mac's Night Shift
+  again, on Omarchy 4.0 and 4.5, and on 4.0 so does Super+Ctrl+N. Both ran Omarchy's own night light
+  (hyprsunset in the VM) instead: Omarchy puts its own commands first on the desktop's PATH, ahead of
+  OmacVM's. OmacVM now puts one folder of its own ahead of them, with only the Bridge's night light
+  toggle in it. On Omarchy 4.5 Super+Ctrl+N stays Omarchy's Network panel; the menu and the bar's
+  Night Shift drive the Mac there. Update VM brings it and restarts Omarchy's bar once (after the
+  unlock when the VM is locked). `omacvm check`'s "Night Shift toggle" line now reads what the
+  running shell really runs and names the key only where there is one. 4.5's menu also reads the
+  Mac's Night Shift for its row: when the Bridge does not answer within 2 s, the row says off.
+
 ## 3.4.1
 
 - **Omanotch** on Omarchy 4.5 with Skip the notch (#734): the tray's hidden icons open next to the
