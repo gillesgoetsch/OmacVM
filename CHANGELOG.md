@@ -5,7 +5,7 @@ in more words.
 
 ## 3.4.2 (unreleased)
 
-- **A video in Firefox keeps the Mac's display on** while it can be seen, as in Chromium (For #750,
+- **A video in Firefox keeps the Mac's display on** while it can be seen, as in Chromium (#750;
   found by the 4.5 sweep; Omarchy 4.0 and 4.5). Firefox tells its wake locks only over D-Bus, and
   the VM's display agent refused them, so a Firefox video never counted. Now "Playing video" and a
   page's screen wake lock count; music, downloads and a video without a sound track do not. While
