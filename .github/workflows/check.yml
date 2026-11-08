@@ -898,6 +898,9 @@ jobs:
       - name: The memory step on a VM whose kernel was replaced since it started (the move to Omarchy 4.5)
         run: src/tests/memory-kernel-replaced.sh
 
+      - name: OmacVM's zram cap is the size zram-generator takes, also over Omarchy 4.5's own file; omacvm check's "zram swap" line (bash 5, GNU tools, as in the VM)
+        run: src/tests/memory-zram-order.sh
+
       - name: omarchy-mac's ARM package targets that Omarchy's repo has (bash 5, as in the VM)
         run: src/tests/omarchy-targets.sh
 

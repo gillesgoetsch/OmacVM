@@ -9,7 +9,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 D=${OMACVM_MEMORY_ROOT:-}   # tests only: a fake root for the files
 install -Dm644 90-omacvm.sysctl "$D"/etc/sysctl.d/90-omacvm.conf
-install -Dm644 90-omacvm-zram.conf "$D"/etc/systemd/zram-generator.conf.d/90-omacvm.conf
+# zram-generator reads its drop-ins by file name across /usr/lib, /etc and
+# /run, and the last one wins: OmacVM's cap is 95-, after Omarchy 4.5's
+# /usr/lib/.../90-omarchy.conf (zram-size = ram) and before a file of the
+# user's own (99-local.conf). The old name sorted before Omarchy's (#746);
+# it goes once the new file is in place. The size changes at the next restart.
+install -Dm644 90-omacvm-zram.conf "$D"/etc/systemd/zram-generator.conf.d/95-omacvm.conf
+rm -f "$D"/etc/systemd/zram-generator.conf.d/90-omacvm.conf
 install -Dm644 90-omacvm-mm.tmpfiles "$D"/etc/tmpfiles.d/90-omacvm-mm.conf
 install -Dm644 virtio-balloon.modules "$D"/etc/modules-load.d/virtio-balloon.conf
 # A kernel replaced since this start (the move to Omarchy 4.5 takes the VM
