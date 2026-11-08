@@ -79,11 +79,12 @@
 # The built-in display switched off (fullpanel-builtin --builtin-off,
 # fullpanel-clamshell) is checked back on after each time and at the end: the
 # tool turns it on itself, also when it is stopped; if it is not in the active
-# list then, the run turns it on by its id (builtin-display on ID); if that
-# fails too, a FAIL row, a loud line and exit 6 (D2 on 2026-11-08 left an M1's
-# built-in off 6 min). A MacBook whose built-in display is off at the start
-# (no built-in in the list) is refused (exit 3; OMACVM_E2E_BUILTIN_OFF_OK=1
-# runs it, the lid closed on purpose).
+# list then, the run turns it on by its id (builtin-display on ID) with a FAIL
+# row (exit 1, also when found at the end); if that fails too, a FAIL row, a
+# loud line and exit 6 (D2 on 2026-11-08 left an M1's built-in off 6 min). A
+# MacBook whose built-in display is off at the start (no built-in in the list)
+# is refused (exit 3; OMACVM_E2E_BUILTIN_OFF_OK=1 runs it, the lid closed on
+# purpose).
 # Exit 0 only when every unplug passed; 1 a case failed; 2 a wrong call; 3 it
 # could not run (another VM, a tool); 5 someone stayed at the Mac (BLOCKED rows);
 # 6 the built-in display is still off.
@@ -181,14 +182,23 @@ clang -fobjc-arc -framework Foundation "$R/app/scripts/dev/test-lock.m" -o "$LOC
   { echo "display-unplug: could not build the lock tool ($OUT/build-tool.log)" >&2; exit 3; }
 lockhook() { "$LOCKTOOL" "$1"; }
 # The built-in display off and back (fullpanel-builtin --builtin-off, fullpanel-clamshell); built for
-# every run: it also says whether a MacBook's built-in is on at the start.
-BDISP="$OUT/builtin-display"
-clang -fobjc-arc -framework AppKit -framework CoreGraphics "$R/app/scripts/dev/builtin-display.m" -o "$BDISP" \
-  >> "$OUT/build-tool.log" 2>&1 || { echo "display-unplug: could not build the built-in display tool ($OUT/build-tool.log)" >&2; exit 3; }
-BDISP_ID=$("$BDISP" mode | sed -n 's/.* builtin=\([0-9][0-9]*\) .*/\1/p'); BDISP_USED=0; BDISP_LOST=0
-if [[ -z $BDISP_ID && ${OMACVM_E2E_BUILTIN_OFF_OK:-0} != 1 && $(ioreg -rc AppleSmartBattery 2>/dev/null) == *'"BatteryInstalled" = Yes'* ]]; then
-  echo "display-unplug: this MacBook's built-in display is off (an earlier run? the lid closed?): open the lid, or builtin-display on ID; OMACVM_E2E_BUILTIN_OFF_OK=1 runs anyway" >&2
-  exit 3
+# every run: it also says whether a MacBook's built-in is on at the start. A build that fails stops
+# only a run with a case that switches the built-in; the others go on without the start check.
+BDISP="$OUT/builtin-display"; BDISP_ID=""; BDISP_USED=0; BDISP_LOST=0
+bdisp_needed() { [[ $ONLY == *",fullpanel-clamshell,"* ]] || { [[ $ONLY == *",fullpanel-builtin,"* ]] && (( BOFF )); }; }
+if clang -fobjc-arc -framework AppKit -framework CoreGraphics "$R/app/scripts/dev/builtin-display.m" -o "$BDISP" \
+  >> "$OUT/build-tool.log" 2>&1; then
+  BDISP_ID=$("$BDISP" mode | sed -n 's/.* builtin=\([0-9][0-9]*\) .*/\1/p')
+  if [[ -z $BDISP_ID && ${OMACVM_E2E_BUILTIN_OFF_OK:-0} != 1 && $(ioreg -rc AppleSmartBattery 2>/dev/null) == *'"BatteryInstalled" = Yes'* ]]; then
+    # An off display is not online, so its id cannot be read now: on Apple silicon MacBooks it is 1
+    # (the M1 Max's on 2026-11-08); an earlier run's *-off.tool file names it ("builtin=ID").
+    echo "display-unplug: this MacBook's built-in display is off (an earlier run? the lid closed?): open the lid, or turn it on by its id: \"$BDISP\" on 1 (usually 1; an earlier run's *-off.tool says builtin=ID); OMACVM_E2E_BUILTIN_OFF_OK=1 runs anyway" >&2
+    exit 3
+  fi
+elif bdisp_needed; then
+  echo "display-unplug: could not build the built-in display tool ($OUT/build-tool.log)" >&2; exit 3
+else
+  echo "display-unplug: could not build the built-in display tool ($OUT/build-tool.log): no case here switches the built-in, so the run goes on without checking it is on at the start" >&2
 fi
 builtin_back() {   # WHEN: the built-in in the active list again after the tool; else on by its id; 1 when still off
   (( BDISP_USED )) && [[ -n $BDISP_ID ]] || return 0
@@ -219,7 +229,8 @@ FS_BEFORE=$(defaults read "$APPID" startFullScreen 2>/dev/null || echo unset)
 NOTCH_BEFORE=$(cat "$VMD/notch-mode" 2>/dev/null || echo none)
 REMEMBERED_BEFORE=$(defaults read "$APPID" builtinNotch 2>/dev/null || echo unset)
 BOFF_PID=""
-restore() {
+restore() {   # the EXIT trap: an exit code that said "passed" becomes 1 when the end check wrote a FAIL row
+  local rc=$? nf=$n_fail
   person_watch_stop
   [[ -n $BOFF_PID ]] && { kill "$BOFF_PID" 2>/dev/null; wait "$BOFF_PID" 2>/dev/null; }
   BOFF_PID=""
@@ -236,6 +247,7 @@ restore() {
   if [[ $REMEMBERED_BEFORE == unset ]]; then defaults delete "$APPID" builtinNotch 2>/dev/null
   else defaults write "$APPID" builtinNotch "$REMEMBERED_BEFORE"; fi
   (( BDISP_LOST )) && exit 6
+  (( n_fail > nf && (rc == 0 || rc == 5) )) && exit 1
   return 0
 }
 trap restore EXIT

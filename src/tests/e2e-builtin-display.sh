@@ -105,6 +105,42 @@ reset off; touch "$T/stuck"
 ( boff_stop d 2>/dev/null; echo "went on" ); rc=$?
 expect "boff_stop with the built-in still off: the run ends with 6" 6 "$rc"
 
+# ---- restore (the EXIT trap): its exit code, with stand-ins for all it touches (no defaults, VM or display)
+sed -n '/^restore() {/,/^}/p' "$H" > "$T/restore.sh"
+expect "the harness has restore" 1 "$(grep -c '^restore() {' "$T/restore.sh")"
+ends() {   # STATE RC [stuck]: the code a run that ends with RC has, the built-in found STATE at the end
+  reset "$1"; [[ ${3:-} == stuck ]] && touch "$T/stuck"
+  (
+    sleep() { :; }; defaults() { echo "defaults $*" >> "$T/calls"; }
+    person_watch_stop() { :; }; unplug() { :; }; qemu_pid() { :; }; gssh() { :; }
+    res() { [[ $2 == FAIL ]] && n_fail=$((n_fail + 1)); return 0; }
+    source "$T/restore.sh"
+    n_fail=0; APPID=org.omacvm.app.test.none; VMD=$T/vmd; FS_BEFORE=unset; NOTCH_BEFORE=none; REMEMBERED_BEFORE=unset
+    trap restore EXIT
+    exit "$2"
+  ) 2>/dev/null
+}
+mkdir -p "$T/vmd"
+ends on 0; expect "restore: the built-in on at the end, passed: 0" 0 "$?"
+ends on 5; expect "restore: the built-in on at the end, blocked: 5" 5 "$?"
+ends off 0; expect "restore: found off at the end, on again by its id: 1, not 0" 1 "$?"
+ends off 5; expect "restore: found off at the end, on again by its id: 1, not 5" 1 "$?"
+ends off 3; expect "restore: found off at the end after exit 3: stays 3" 3 "$?"
+ends off 0 stuck; expect "restore: still off at the end: 6" 6 "$?"
+expect "restore: only the stand-in defaults was called" 0 "$(grep -vcE '^(defaults .*|on 1|mode)$' "$T/calls")"
+
+# ---- the tool's build: needed only by a case that switches the built-in
+sed -n '/^bdisp_needed() {/p' "$H" > "$T/need.sh"; source "$T/need.sh"
+expect "the harness has bdisp_needed" 1 "$(grep -c '^bdisp_needed() {' "$T/need.sh")"
+need() { ONLY=$1 BOFF=$2 bdisp_needed && echo yes || echo no; }
+expect "needed: fullpanel-clamshell" yes "$(need ",fullpanel-clamshell," 0)"
+expect "needed: fullpanel-builtin --builtin-off" yes "$(need ",fullpanel-builtin," 1)"
+expect "not needed: fullpanel-builtin without --builtin-off" no "$(need ",fullpanel-builtin," 0)"
+expect "not needed: the default list" no "$(need "" 1)"
+expect "not needed: full,window" no "$(need ",full,window," 0)"
+expect "a failed build stops only a run that needs it" 1 "$(grep -c '^elif bdisp_needed; then$' "$H")"
+expect "the refusal says which id to turn on" 1 "$(grep -c 'on 1 (usually 1' "$H")"
+
 # ---- where the harness uses them
 rest=$(sed -n '/^restore() {/,/^}/p' "$H")
 has "restore: checks the built-in after stopping the tool" '(( BDISP_LOST )) || builtin_back end' "$rest"
