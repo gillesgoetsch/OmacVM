@@ -82,8 +82,11 @@ anyway. Accepting the D-Bus call alone would gain about 30 s.
    whatever the layer, so nothing has to sit above a full-screen video. The child is stopped when no
    Firefox window counts, on SIGTERM, and a leftover lease is removed at the
    agent's start. A start whose surface is not in Hyprland's `j/layers`
-   within 15 s fails; after 3 failures the agent stops trying until it
-   restarts and logs it once (the Mac side still works). Chromium and mpv
+   within 15 s fails, and so does a child that ends; after 3 failures in a
+   row the agent stops trying until it restarts and logs it once (the Mac
+   side still works). A shown surface clears the count, so a child that held
+   and then quit (a stale lease after the guest's clock jumped, Hyprland slow
+   to answer, killed by hand) is started again however often that happens. Chromium and mpv
    never get it: they hold Omarchy's idle themselves.
 
 ## Consequences
@@ -119,7 +122,7 @@ anyway. Accepting the D-Bus call alone would gain about 30 s.
   video and no input for 330 s, no screensaver and no lock; after the pause
   the screensaver came about 150 s later, as after a Chromium pause on the
   same VM. If a later Quickshell cannot load the QML, the agent gives up
-  after 3 tries and only the Mac side works.
+  after 3 failed starts in a row and only the Mac side works.
 - The 1x1 surface takes no input (empty mask, pinned by a test). A click at
   its pixel in a test VM changed nothing, but Omarchy 4.5's bar does not
   react at that pixel anyway, so the click test proves little.

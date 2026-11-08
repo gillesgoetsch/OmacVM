@@ -1247,7 +1247,7 @@ AWAKE_QML = Path("/usr/local/lib/omacvm/omacvm-awake.qml")
 AWAKE_NAMESPACE = "omacvm-awake"         # its surface's layer namespace
 AWAKE_LEASE = 25.0    # seconds the hold lasts after the agent's last check (a hung agent lets go)
 AWAKE_SETTLE = 15.0   # seconds a start has to show its surface
-AWAKE_TRIES = 3       # failed starts before the agent stops trying (until it starts again)
+AWAKE_TRIES = 3       # failed starts in a row before the agent stops trying (until it starts again)
 
 
 class GuestAwake:
@@ -1265,8 +1265,11 @@ class GuestAwake:
     quits when the lease is stale: a hung agent lets go within about 30 s.
     Stopped as soon as no Firefox window counts. A start whose surface is not
     in Hyprland's j/layers within AWAKE_SETTLE fails (an old Quickshell without
-    IdleInhibitor, say); after AWAKE_TRIES failures the agent stops trying and
-    says so once."""
+    IdleInhibitor, say), and so does a child that ends; after AWAKE_TRIES
+    failures in a row the agent stops trying and says so once. A shown surface
+    clears the count: a child that held and then quit (a stale lease after the
+    guest's clock jumped, Hyprland slow to answer, killed by hand) is started
+    again however often that happens."""
 
     def __init__(self, path: Path = AWAKE, qml: Path = AWAKE_QML, start=None,
                  layers=lambda: hypr_json("j/layers"), clock=time.monotonic) -> None:
@@ -1308,6 +1311,7 @@ class GuestAwake:
         if not self.shown:
             if self.surface():
                 self.shown = True
+                self.fails = 0   # the limit is for failed starts in a row, not for ends after a hold
                 log("a Firefox video plays: Omarchy's screensaver and lock wait while it can be seen")
             elif now - self.started >= AWAKE_SETTLE:
                 self.failed(f"no surface after {AWAKE_SETTLE:.0f} s")

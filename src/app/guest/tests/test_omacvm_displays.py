@@ -1388,6 +1388,39 @@ class GuestAwakeTest(unittest.TestCase):
         self.assertEqual(len(self.children), 2)
         self.assertTrue(self.path.exists())
 
+    def test_a_child_that_held_and_ended_never_uses_up_the_tries(self):
+        a = self.make()
+        rounds = od.AWAKE_TRIES + 3
+        for n in range(1, rounds + 1):
+            a.want(True)                                            # (re)started
+            self.assertEqual(len(self.children), n)
+            self.show(self.children[-1])
+            self.clock[0] += 10
+            a.want(True)                                            # held
+            self.children[-1].returncode = 0                        # quit by itself: a stale lease, killed by hand
+            self.clock[0] += 10
+        a.want(True)
+        self.assertEqual(len(self.children), rounds + 1)
+        self.assertTrue(self.path.exists())
+        self.assertFalse(any("not tried again" in l for l in self.logged))
+
+    def test_failed_starts_count_in_a_row_only(self):
+        a = self.make()
+        a.want(True)
+        self.children[-1].returncode = 1                            # failed before it showed
+        a.want(True)
+        self.children[-1].returncode = 1
+        a.want(True)                                                # 2 failures in a row
+        self.show(self.children[-1])
+        a.want(True)                                                # this one shows: the count is cleared
+        for _ in range(od.AWAKE_TRIES - 1):
+            self.children[-1].returncode = 1
+            a.want(True)
+        self.assertFalse(any("not tried again" in l for l in self.logged))
+        self.children[-1].returncode = 1
+        a.want(True)                                                # AWAKE_TRIES in a row now
+        self.assertIn("not tried again", self.logged[-1])
+
     def test_no_surface_counts_as_a_failure_and_three_stop_it(self):
         a = self.make()
         for n in range(1, od.AWAKE_TRIES + 1):

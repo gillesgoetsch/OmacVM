@@ -1697,7 +1697,7 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
     too, as for Chromium and mpv (which ask Omarchy themselves): the agent
     runs a small Quickshell of its own for it (`pgrep -af omacvm-awake`; a
     1x1 invisible surface at the top left that takes no clicks). Its log
-    says when it holds and lets go; after 3 failed starts it stops trying
+    says when it holds and lets go; after 3 failed starts in a row it stops trying
     until the agent restarts (then Omarchy's screensaver can cover the
     video after 150 s and the Mac's display sleeps after it).
   - Hyprland window rules (Omarchy's full-screen rules, the `noidle` tag)
