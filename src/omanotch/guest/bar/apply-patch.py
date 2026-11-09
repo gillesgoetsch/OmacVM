@@ -529,18 +529,20 @@ def lists_45(text):
 def peek_45(text):
     """Step 10 on Omarchy 4.5's bar: the bar's hover handler peeks where the
     indicators are (root.notchPeeksAt; point.position and the indicators'
-    place both in the handler's item), and their slot says when that place
-    moved under a still pointer (after step 9, in its body)."""
+    place both in the handler's item), from root.notchIndicatorSpans, which
+    their slot refreshes after it moved and the handler when the pointer
+    comes onto the bar (after step 9, in the slot's body)."""
     text = replace_once(text, '''          readonly property bool peeking: hovered && BarModel.peeksAt(point.position, barWindow.peekEdge, root.vertical)
 ''', '''          // omarchy-notch-bar: also over the indicators' own place, never under
           // the camera housing (root.notchPeeksAt).
           readonly property bool peeking: hovered && root.notchPeeksAt(barWindow, parent, point.position, BarModel.peeksAt(point.position, barWindow.peekEdge, root.vertical))
+          onHoveredChanged: if (hovered) Qt.callLater(root.notchIndicatorTick)
 ''')
     text = replace_once(text, '''    onNotchPeekBlockChanged: notchPeekApply()
-''', '''    onNotchPeekBlockChanged: notchPeekApply()
+''', '''    onNotchPeekBlockChanged: { notchPeekApply(); Qt.callLater(root.notchIndicatorTick) }
     // The indicators' place on their bar (their row, Skip the notch's place
-    // and peek): when it changes, the bar's peek looks again once this
-    // change is done (root.notchIndicatorMoves).
+    // and peek): when it changes, root.notchIndicatorSpans is read again once
+    // this change is done.
     readonly property string notchPeekPlace: {
       if (!notchPeekBlock) return ""
       var a = [width, notchShownX, notchPlaceX, notchShiftGone, notchShift ? notchShift.peekAt : "",
@@ -956,43 +958,51 @@ def main():
   // the peek also holds over their own place, Omarchy's rule counts only
   // while they sit inside its stretch, and nothing opens under the camera
   // housing on a bar in the notch strip (the pointer cannot be seen there).
-  // Where they are changes under a still pointer (their row, Skip the notch,
-  // a tray's drawer pushing them): their slot bumps this once that change is
-  // done (not at once: the peek's own opening widens them), and the bar's
-  // peek looks again.
-  property int notchIndicatorMoves: 0
-  function notchIndicatorTick() { notchIndicatorMoves++ }
-  // The indicators' place on bar window win, in item into's coordinates (the
-  // window's content when null): [start, end], or null where that bar has
-  // none or Skip the notch hides their hidden ones. Where Skip the notch
-  // opens the hidden ones left of the housing (peekAt), from there to the
-  // indicators' end, housing included: the pointer crosses it on the way.
-  // With none of theirs showing (nothing active), where the hidden ones open.
-  function notchIndicatorSpan(win, into) {
-    void notchIndicatorMoves   // a binding that asks looks again when they moved
+  // The bar's hover reads where they are only from notchIndicatorSpans, which
+  // their slot refreshes once a move is done (their row, Skip the notch, a
+  // tray's drawer pushing them, the peek's own opening): read straight from
+  // the items, the peek's own opening changed what it read while it was being
+  // set (QML: "Binding loop detected for property peeking").
+  property var notchIndicatorSpans: ({})
+  function notchIndicatorTick() {
+    var now = notchIndicatorSpansNow()
+    if (JSON.stringify(now) !== JSON.stringify(notchIndicatorSpans)) notchIndicatorSpans = now
+  }
+  // The indicators' place on each bar window, by screen name, in the window's
+  // content coordinates: [start, end], or null where Skip the notch hides
+  // their hidden ones. Where Skip the notch opens the hidden ones left of the
+  // housing (peekAt), from there to the indicators' end, housing included:
+  // the pointer crosses it on the way. With none of theirs showing (nothing
+  // active), where the hidden ones open.
+  function notchIndicatorSpansNow() {
+    var out = {}
     for (var i = 0; i < moduleSlots.length; i++) {
       var s = moduleSlots[i]
       if (!s || !s.notchPeekBlock || s.visible === false || s.notchShiftGone === true) continue
-      var w = slotWindow(s)
-      if (!w || !w.contentItem || !sameWindow(w, win)) continue
-      var sh = s.notchShift
-      if (sh && sh.peekHidden) return null
-      var x = s.mapToItem(into || w.contentItem, 0, 0).x, end = x + Math.max(0, s.width)
+      var w = slotWindow(s), n = w && w.screen && w.contentItem ? String(w.screen.name) : ""
+      if (!n || out.hasOwnProperty(n)) continue
+      var sh = s.notchShift, x = s.mapToItem(w.contentItem, 0, 0).x, f = Number(s.notchPeekFull) || 0
       // peekAt is on the bar; the slot shows at notchShownX less its width.
-      if (sh && sh.peekAt !== undefined)
-        return [Math.min(x, sh.peekAt + x - (s.notchShownX - (s.notchEnd ? s.width : 0))), end]
-      if (s.width > 0) return [x, end]
-      var f = Number(s.notchPeekFull) || 0
-      if (!(f > 0)) return null
-      return s.fixedEdge === "start" ? [x, x + f] : s.fixedEdge === "end" ? [x - f, x] : [x - f / 2, x + f / 2]
+      out[n] = sh && sh.peekHidden ? null
+        : sh && sh.peekAt !== undefined ? [Math.min(x, sh.peekAt + x - (s.notchShownX - (s.notchEnd ? s.width : 0))), x + s.width]
+        : s.width > 0 ? [x, x + s.width]
+        : !(f > 0) ? null
+        : s.fixedEdge === "start" ? [x, x + f] : s.fixedEdge === "end" ? [x - f, x] : [x - f / 2, x + f / 2]
     }
-    return null
+    return out
+  }
+  // On bar window win in item into's coordinates (the content's when null).
+  function notchIndicatorSpan(win, into, spans) {
+    var n = win && win.screen ? String(win.screen.name) : "", sp = (spans || notchIndicatorSpans)[n]
+    if (!sp) return null
+    var o = into && win.contentItem ? into.mapToItem(win.contentItem, 0, 0).x : 0
+    return [sp[0] - o, sp[1] - o]
   }
   // The peek at pos (into's coordinates) on bar window win; stock: Omarchy's
-  // own answer there.
-  function notchPeeksAt(win, into, pos, stock) {
+  // own answer there; spans: notchIndicatorSpans unless given.
+  function notchPeeksAt(win, into, pos, stock, spans) {
     if (!pos || root.vertical || !win) return stock
-    var x = Number(pos.x), span = notchIndicatorSpan(win, into)
+    var x = Number(pos.x), span = notchIndicatorSpan(win, into, spans)
     if (!span) return stock
     if (x >= span[0] && x < span[1]) return true
     if (win.notchLayout && x >= notchLeft && x <= notchRight) return false
@@ -1019,7 +1029,7 @@ def main():
       // On the parked copy, at the place of the item the strip shows at x.
       var px = root.notchParkedX(x)
       if (isNaN(px)) px = x
-      var peek = root.notchPeeksAt(root.notchParkedWindow(), null, { x: px }, px < edge)
+      var peek = root.notchPeeksAt(root.notchParkedWindow(), null, { x: px }, px < edge, root.notchIndicatorSpansNow())
       if (peek !== root.notchPeeking) { root.notchPeeking = peek; root.setBarHovered(peek) }
       return root.notchTargetAt(x, 0) ? "widget" : "free"
     }

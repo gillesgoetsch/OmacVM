@@ -1911,9 +1911,10 @@ class Hover(unittest.TestCase):
         body = function(full, "notchHover")
         js = (HOVER % (body, json.dumps(xs))).replace("setCenterSectionHovered: function", "gone: function")
         js = js.replace("var closed = 0;", """var closed = 0; root.notchPeekEdge = function() { return %d };
-var moduleSlots = [], notchIndicatorMoves = 0, notchLeft = 918, notchRight = 1138;
-function notchIndicatorSpan(win, into) {%s}
-function notchPeeksAt(win, into, pos, stock) {%s}
+var moduleSlots = [], notchIndicatorSpans = {}, notchLeft = 918, notchRight = 1138;
+function notchIndicatorSpan(win, into, spans) {%s}
+function notchPeeksAt(win, into, pos, stock, spans) {%s}
+root.notchIndicatorSpansNow = function() { return {} };
 root.notchParkedX = function(x) { return x };
 root.notchParkedWindow = function() { return { notchLayout: true, peekEdge: %d } };
 root.notchPeeksAt = notchPeeksAt;""" % (edge, function(full, "notchIndicatorSpan"), function(full, "notchPeeksAt"), edge))
@@ -1951,11 +1952,12 @@ console.log(JSON.stringify([a, b, edge()]));
 # an x on its window (ax). The patch's functions run as they are.
 PEEK = r"""
 var root = { vertical: false, barHidden: false, notchFullscreen: false, notchHovering: false, notchPeeking: false };
-var notchLeft = LEFT, notchRight = RIGHT, notchParkedScreen = "Virtual-1", notchIndicatorMoves = 0;
+var notchLeft = LEFT, notchRight = RIGHT, notchParkedScreen = "Virtual-1", notchIndicatorSpans = {};
 var moduleSlots = [], calls = [];
 function sameWindow(a, b) { return !!a && !!b && (a === b || (!!a.screen && !!b.screen && a.screen.name === b.screen.name)) }
 function slotWindow(s) { return s.win }
-function Win(name, edge, notch) { return { screen: { name: name }, peekEdge: edge, notchLayout: notch, contentItem: { ax: 0 } } }
+function Item(ax) { return { ax: ax, mapToItem: function(to, x, y) { return { x: this.ax - (to.ax || 0) + x, y: y } } } }
+function Win(name, edge, notch) { return { screen: { name: name }, peekEdge: edge, notchLayout: notch, contentItem: Item(0) } }
 // A slot at ax on its window, w wide; ind: the indicators ({full, edge, shift}).
 function Slot(win, ax, w, ind, name) {
   ind = ind || null;
@@ -1968,13 +1970,14 @@ function Slot(win, ax, w, ind, name) {
 var notchBarVariants = { instances: [] };
 FUNCS
 root.notchParkedX = notchParkedX; root.notchPeeksAt = notchPeeksAt; root.notchParkedWindow = notchParkedWindow;
-root.notchPeekEdge = notchPeekEdge;
+root.notchPeekEdge = notchPeekEdge; root.notchIndicatorSpansNow = notchIndicatorSpansNow;
 root.notchTargetAt = function() { return null };
 root.notchTraySet = function() {};
 root.setBarHovered = function(h) { calls.push("bar " + h) };
 root.notchHover = function(x) { HOVER };
 var out = [];
-function t(name, win, into, x, stock) { out.push([name, notchPeeksAt(win, into, { x: x, y: 10 }, stock)]) }
+// The bar's hover reads the spans the slots refreshed (notchIndicatorTick) after their last move.
+function t(name, win, into, x, stock) { notchIndicatorTick(); out.push([name, notchPeeksAt(win, into, { x: x, y: 10 }, stock)]) }
 function strip(name, x) { calls = []; var r = root.notchHover(x); out.push([name, r, calls]) }
 BODY
 console.log(JSON.stringify(out));
@@ -1992,8 +1995,8 @@ class PeekWhereTheIndicatorsAre(unittest.TestCase):
     open); Omarchy's own layout keeps them in centerBegin, ending 6 before
     the housing."""
 
-    FUNCS = ["notchParkedWindow", "notchPeekEdge", "notchIndicatorSpan", "notchPeeksAt", "notchShownSlots",
-             "notchParkedX"]
+    FUNCS = ["notchParkedWindow", "notchPeekEdge", "notchIndicatorTick", "notchIndicatorSpansNow", "notchIndicatorSpan",
+             "notchPeeksAt", "notchShownSlots", "notchParkedX"]
 
     def run_js(self, body, left=771.5, right=956.5):
         full = patched()
@@ -2007,7 +2010,7 @@ class PeekWhereTheIndicatorsAre(unittest.TestCase):
 
     def test_owners_layout(self):
         r = self.run_js("""
-var win = Win("Virtual-1", 962.5, true), into = { ax: 0 };
+var win = Win("Virtual-1", 962.5, true), into = Item(0);
 moduleSlots = [Slot(win, 1131, 22, null, "weather"), Slot(win, 1164, 32, { full: 84 })];
 t("left half", win, into, 500, true);
 t("under the housing", win, into, 905, true);
@@ -2022,9 +2025,27 @@ t("open: right of them (tray)", win, into, 1205, false);
                              "on the bell": True, "open: on a hidden one": True, "open: on the bell": True,
                              "open: right of them (tray)": False})
 
+    def test_the_hover_reads_the_last_refresh(self):
+        # The spans change only when the slots refresh them (after a move is
+        # done), not while the hover's own answer is being set.
+        r = self.run_js("""
+var win = Win("Virtual-1", 962.5, true), into = Item(0);
+moduleSlots = [Slot(win, 1164, 32, { full: 84 })];
+out.push(["before any refresh: Omarchy's answer", notchPeeksAt(win, into, { x: 1180, y: 10 }, false)]);
+notchIndicatorTick();
+moduleSlots[0].ax = 1300;
+out.push(["moved, not refreshed yet", notchPeeksAt(win, into, { x: 1180, y: 10 }, false)]);
+notchIndicatorTick();
+out.push(["refreshed", notchPeeksAt(win, into, { x: 1180, y: 10 }, false)]);
+var same = notchIndicatorSpans; notchIndicatorTick();
+out.push(["a refresh with nothing moved keeps the same object", notchIndicatorSpans === same]);
+""")
+        self.assertEqual(r, {"before any refresh: Omarchy's answer": False, "moved, not refreshed yet": True,
+                             "refreshed": False, "a refresh with nothing moved keeps the same object": True})
+
     def test_omarchys_layout_keeps_its_rule_but_not_under_the_housing(self):
         r = self.run_js("""
-var win = Win("Virtual-1", 962.5, true), into = { ax: 0 };
+var win = Win("Virtual-1", 962.5, true), into = Item(0);
 moduleSlots = [Slot(win, 733.5, 32, { full: 84 })];
 t("left half", win, into, 500, true);
 t("on them", win, into, 750, true);
@@ -2038,7 +2059,7 @@ t("past the centre box", win, into, 1000, false);
         # A bar in no notch strip (notchLayout false): no housing; the
         # indicators right of the centre box peek over their own place only.
         r = self.run_js("""
-var win = Win("Virtual-1", 864, false), into = { ax: 0 };
+var win = Win("Virtual-1", 864, false), into = Item(0);
 moduleSlots = [Slot(win, 1164, 32, { full: 84 })];
 t("their layout: left half", win, into, 500, true);
 t("their layout: where the housing would be", win, into, 900, false);
@@ -2053,7 +2074,7 @@ t("Omarchy's layout: left half", win, into, 500, true);
         # Skip the notch's peekAt: the hidden ones open at 640-724, left of
         # the housing; the bell stays at 1164-1196 (notchShownX its end).
         r = self.run_js("""
-var win = Win("Virtual-1", 962.5, true), into = { ax: 0 };
+var win = Win("Virtual-1", 962.5, true), into = Item(0);
 moduleSlots = [Slot(win, 1164, 32, { full: 84, shift: { x: 0, n: 1164, peekAt: 640 } })];
 t("on a moved hidden one", win, into, 680, false);
 t("under the housing between them and the bell", win, into, 860, false);
@@ -2074,7 +2095,7 @@ t("a slot Skip the notch moved: on the bell", win, into, 1170, false);
         # No room for the hidden ones on either side (peekHidden), or the
         # indicators hidden: Omarchy's answer, as v41 had it.
         r = self.run_js("""
-var win = Win("Virtual-1", 962.5, true), into = { ax: 0 };
+var win = Win("Virtual-1", 962.5, true), into = Item(0);
 moduleSlots = [Slot(win, 1164, 32, { full: 84, shift: { x: 0, n: 1164, peekHidden: true } })];
 t("peekHidden under the housing", win, into, 905, true);
 t("peekHidden on the bell", win, into, 1180, false);
@@ -2094,7 +2115,7 @@ t("indicators of another bar", win, into, 1180, false);
         # No indicator active: nothing of theirs shows at rest (width 0), so
         # the peek opens where the hidden ones open (end-kept: to the left).
         r = self.run_js("""
-var win = Win("Virtual-1", 962.5, true), into = { ax: 0 };
+var win = Win("Virtual-1", 962.5, true), into = Item(0);
 moduleSlots = [Slot(win, 1164, 0, { full: 84 })];
 t("end-kept: where they open", win, into, 1100, false);
 t("end-kept: right of them", win, into, 1170, false);
@@ -2108,20 +2129,20 @@ t("none at all", win, into, 1100, false);
 
     def test_vertical_bar_is_omarchys(self):
         r = self.run_js("""
-var win = Win("Virtual-1", 962.5, true), into = { ax: 0 };
+var win = Win("Virtual-1", 962.5, true), into = Item(0);
 moduleSlots = [Slot(win, 1164, 32, { full: 84 })];
 root.vertical = true;
 t("vertical, stock true", win, into, 1180, true);
 t("vertical, stock false", win, into, 1180, false);
 root.vertical = false;
-out.push(["no position", notchPeeksAt(win, into, null, true)]);
+notchIndicatorTick(); out.push(["no position", notchPeeksAt(win, into, null, true)]);
 """)
         self.assertEqual(r, {"vertical, stock true": True, "vertical, stock false": False, "no position": True})
 
     def test_the_hover_items_coordinates(self):
         # The span is mapped into the hover handler's item, as its pointer is.
         r = self.run_js("""
-var win = Win("Virtual-1", 962.5, true), into = { ax: 40 };
+var win = Win("Virtual-1", 962.5, true), into = Item(40);
 moduleSlots = [Slot(win, 1204, 32, { full: 84 })];
 t("on the bell in the item", win, into, 1180, false);
 t("its window x in the item", win, into, 1220, false);
@@ -2145,7 +2166,7 @@ var p = place(1512, 8, [20, 26, 26, 26], right, [663.5, 848.5], [0, 0], 6, 8, 24
 var s = p.right[4], at = s.n + s.x;
 out.push(["peekAt", p.right[4].peekAt]);
 out.push(["jumped", p.jumped]);
-var win = Win("Virtual-1", 854.5, true), into = { ax: 0 };
+var win = Win("Virtual-1", 854.5, true), into = Item(0);
 moduleSlots = [Slot(win, at, 32, { full: 84, shift: s })];
 t("on the bell", win, into, at + 16, false);
 t("under the housing", win, into, 750, false);
@@ -2207,7 +2228,15 @@ strip("left the strip", -1);
         f.write_text(stock)
         self.assertEqual(patch_file(f).returncode, 0)
         full = f.read_text()
-        self.assertIn("void notchIndicatorMoves", function(full, "notchIndicatorSpan"))
+        # What the hover's binding reads: the spans, never the items (their
+        # widths and places change while the peek it sets opens them).
+        for name in ("notchPeeksAt", "notchIndicatorSpan"):
+            self.assertNotIn("moduleSlots", function(full, name))
+            self.assertNotRegex(function(full, name), r"\.width\b|notchShownX")
+        self.assertIn("moduleSlots", function(full, "notchIndicatorSpansNow"))
+        self.assertIn("notchIndicatorSpans = now", function(full, "notchIndicatorTick"))
+        self.assertEqual(full.count("          onHoveredChanged: if (hovered) Qt.callLater(root.notchIndicatorTick)\n"), 1)
+        self.assertEqual(full.count("    onNotchPeekBlockChanged: { notchPeekApply(); Qt.callLater(root.notchIndicatorTick) }\n"), 1)
         self.assertEqual(full.count("    onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)\n"), 1)
         place = re.search(r"    readonly property string notchPeekPlace: \{\n(.*?)\n    \}\n", full, re.S).group(1)
         js = """
