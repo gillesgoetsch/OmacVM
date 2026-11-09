@@ -667,7 +667,9 @@ class Copies(unittest.TestCase):
         st, d = self.check()["NOTCH workspaces"]
         self.assertEqual(st, "warn")
         self.assertIn("widgets/Workspaces.qml has no Omanotch patch", d)
-        self.assertIn(f"Delete ~/.config/omarchy/plugins/{USER}.bar, then repair Omanotch", d)
+        # $USER as typed, not the login: no user name in a report (#760).
+        self.assertIn("Delete ~/.config/omarchy/plugins/$USER.bar, then repair Omanotch", d)
+        self.assertNotIn(USER, d)
         ws.unlink()
         st, d = self.check()["NOTCH workspaces"]
         self.assertEqual(st, "warn")

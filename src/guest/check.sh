@@ -1299,7 +1299,7 @@ elif systemctl --user -M "$U@" list-unit-files notchcast.service 2>/dev/null | g
   # line on its own: Qt's locale warning can come first.
   wsf=$H/.config/omarchy/plugins/$U.bar/widgets/Workspaces.qml
   if [[ $(jq -rR 'fromjson? | .workspaces // empty' <<<"$st" 2>/dev/null) == omarchy ]] && grep -qs omarchy-notch-bar "$wsf"; then
-    warn "NOTCH workspaces" "the bar copy's widgets/Workspaces.qml does not load (the shell's log says why): the strip shows the NOTCH output's own workspaces. Delete ~/.config/omarchy/plugins/$U.bar, then repair Omanotch to make it again"
+    warn "NOTCH workspaces" "the bar copy's widgets/Workspaces.qml does not load (the shell's log says why): the strip shows the NOTCH output's own workspaces. Delete ~/.config/omarchy/plugins/\$USER.bar, then repair Omanotch to make it again"
   fi
 else skip "Omanotch" "not installed (omacvm enable omanotch, on a MacBook with a notch)"; fi
 # Its copies of Omarchy's bar and background follow Omarchy's updates

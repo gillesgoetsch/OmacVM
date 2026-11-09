@@ -877,7 +877,7 @@ def notch_workspaces_line():
         return ("warn", "NOTCH workspaces", f"Omarchy changed its workspaces widget and OmacVM's patch does not fit it: {what}")
     why = "is gone" if mine is None else "has no Omanotch patch"
     return ("warn", "NOTCH workspaces", f"the bar copy's {WORKSPACES} {why}: {what}. "
-                                        f"Delete {show(c.dir)}, then repair Omanotch to make it again")
+                                        f"Delete ~/.config/omarchy/plugins/$USER.{c.name}, then repair Omanotch to make it again")
 
 
 def main(argv):
