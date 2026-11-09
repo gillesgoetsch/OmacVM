@@ -22,6 +22,14 @@ in more words.
   was not seen. A start with the lid really closed, then opened, is still to be checked. If the
   strip stays black after you open the lid, leave full screen and enter it again on the MacBook's
   display; if it is still black, start the VM again with the lid open (docs/troubleshooting.md).
+- **Pause drawing while hidden** (experimental): when a VM keeps drawing although its window is out
+  of sight, the logs now say why. The app's log (`logs/qemu.log` in the VM's folder) says when it
+  told the VM to stop or to draw again, or why it could not (the VM's display channel closed, its
+  display agent not ready or too old). The VM's display agent (`journalctl --user -u
+  omacvm-displays`) says when a screen or window share keeps a display on, when Hyprland did not
+  turn a display off, or did not answer. Each is said once until it changes, so hours out of sight
+  add no lines. A VM started while the Mac's displays sleep now counts its window as out of sight
+  until they wake, as it already did for a locked Mac. Update VM brings the agent's part.
 
 ## 3.4.1
 

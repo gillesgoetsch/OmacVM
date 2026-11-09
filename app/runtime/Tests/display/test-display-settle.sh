@@ -70,6 +70,11 @@ problems() {
   # The lock and sleep reach the app also in the background.
   [[ $(grep -c 'NSNotificationSuspensionBehaviorDeliverImmediately' <<<"$watch") -ge 2 ]] &&
     grep -q 'NSWorkspaceScreensDidSleepNotification' <<<"$watch" || echo "the lock or sleep is not watched"
+  # What began before QEMU sends no notice: the lock, another user and sleeping displays are read at start.
+  grep -q 'omacvm_ds_session(&omacvm_ds_screen_locked, &omacvm_ds_away);' <<<"$watch" &&
+    grep -q 'omacvm_ds_asleep = CGDisplayIsAsleep(CGMainDisplayID());' <<<"$watch" &&
+    grep -q 'if (omacvm_ds_screen_locked || omacvm_ds_away || omacvm_ds_asleep) {' <<<"$watch" ||
+    echo "a lock or sleep that began before the start is not read"
 }
 
 # The checks catch the old code (3.1.14's omacvm-cocoa-displays.patch).

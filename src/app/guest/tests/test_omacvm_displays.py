@@ -1324,6 +1324,127 @@ class PauseTest(PauseCase):
         rs.assert_not_called()
 
 
+class PauseNotesTest(PauseCase):
+    """The journal says why a display the Mac called unseen is not off (the
+    user's 2026-11-07 VM: 20 minutes out of sight, never paused, no line
+    saying why), once until that changes: the Mac's lease every 5 s adds none."""
+
+    def lines(self, p, looks=6):
+        """The agent's journal lines while the Mac says "unseen" looks times, 5 s apart."""
+        with mock.patch.object(od, "log") as log:
+            for _ in range(looks):
+                p.mac(["Virtual-1"])
+                p.apply()
+                self.t[0] += 5
+        return [c.args[0] for c in log.call_args_list]
+
+    def test_a_normal_pause_adds_no_note(self):
+        p = self.make("Virtual-1")
+        self.assertEqual(self.lines(p), ["drawing paused on Virtual-1: its Mac window is out of sight",
+                                         "Hyprland's wake on key presses and pointer moves off while a display is paused"])
+
+    def test_a_window_share_is_named_once(self):
+        p = self.make("Virtual-1")
+        p.cast(True, "window", "5a3b1c")
+        got = self.lines(p)
+        self.assertEqual(got, ["drawing not paused on Virtual-1: a window share is running (window 5a3b1c): "
+                               "it may be on any display"])
+        p.cast(False, "window", "5a3b1c")
+        self.assertIn("drawing paused on Virtual-1: its Mac window is out of sight", self.lines(p, 1))
+        # Seen, then out of sight again with a share: said again for the new period.
+        with mock.patch.object(od, "log"):
+            p.mac([])
+            p.apply()
+        p.cast(True, "window", "77aa")
+        self.assertEqual(len([l for l in self.lines(p) if "window share" in l]), 1)
+
+    def test_a_share_of_the_output_is_named_once(self):
+        p = self.make("Virtual-1", "Virtual-2")
+        p.cast(True, "monitor", "Virtual-1")
+        with mock.patch.object(od, "log") as log:
+            for _ in range(4):
+                p.mac(["Virtual-1", "Virtual-2"])
+                p.apply()
+        got = [c.args[0] for c in log.call_args_list]
+        self.assertEqual([l for l in got if "not paused" in l],
+                         ["drawing not paused on Virtual-1: a share of it is running"])
+        self.assertFalse(self.h.dpms["Virtual-2"])
+
+    def test_a_refused_dpms_request_is_said_once_with_hyprlands_answer(self):
+        p = self.make("Virtual-1")
+        p.failed = lambda: "no answer from Hyprland in 2 s"
+        self.h.refuse = True
+        got = self.lines(p)
+        self.assertEqual(got, ["drawing not paused on Virtual-1: Hyprland did not turn it off "
+                               "(no answer from Hyprland in 2 s); trying again at the next word"])
+        self.h.refuse = False
+        self.assertEqual(self.lines(p, 1)[0], "drawing paused on Virtual-1: its Mac window is out of sight")
+        self.h.refuse = True                       # refused again later in the same period: said again
+        self.h.dpms["Virtual-1"] = True            # a key press turned it on
+        self.assertEqual(len(self.lines(p)), 1)
+
+    def test_no_answer_for_the_outputs_is_said_once(self):
+        p = self.make("Virtual-1")
+        p.monitors = lambda: None
+        self.assertEqual(self.lines(p), ["drawing not paused: no answer from Hyprland for its outputs"])
+
+    def test_a_display_the_guest_turned_off_is_said_once(self):
+        p = self.make("Virtual-1", off=("Virtual-1",))
+        self.assertEqual(self.lines(p), ["drawing not paused on Virtual-1: the guest had turned it off itself"])
+        self.assertEqual(self.h.calls, [])
+
+    def test_a_refused_turn_on_is_said_once(self):
+        p = self.make("Virtual-1")
+        self.lines(p, 1)
+        self.h.refuse = True
+        with mock.patch.object(od, "log") as log:
+            for _ in range(5):
+                p.mac([])
+                p.apply()
+        got = [c.args[0] for c in log.call_args_list]
+        self.assertEqual(got, ["Virtual-1 not on again yet: Hyprland did not turn it on; trying again"])
+
+    def test_at_most_ten_notes_a_minute(self):
+        self.t = [1000.0]
+        n = od.Notes(clock=lambda: self.t[0])
+        with mock.patch.object(od, "log") as log:
+            for i in range(15):
+                n.say(f"k{i}", f"note {i}")
+        got = [c.args[0] for c in log.call_args_list]
+        self.assertEqual(got[:od.NOTES_MAX], [f"note {i}" for i in range(od.NOTES_MAX)])
+        self.assertEqual(got[od.NOTES_MAX:], ["more notes on the pause this minute are left out"])
+        self.t[0] += 60
+        with mock.patch.object(od, "log") as log:
+            n.say("k20", "note 20")
+        self.assertEqual([c.args[0] for c in log.call_args_list], ["note 20"])
+
+    def test_a_note_left_out_by_the_cap_is_said_after_the_minute(self):
+        self.t = [1000.0]
+        n = od.Notes(clock=lambda: self.t[0])
+        with mock.patch.object(od, "log"):
+            for i in range(od.NOTES_MAX):
+                n.say(f"k{i}", f"note {i}")
+        with mock.patch.object(od, "log") as log:
+            n.say("late", "the late note")             # capped: left out
+            self.t[0] += 5
+            n.say("late", "the late note")             # the next look, same minute: still left out
+        self.assertEqual(log.call_args_list, [])
+        self.t[0] += 60
+        with mock.patch.object(od, "log") as log:
+            n.say("late", "the late note")             # the next minute: said
+            n.say("late", "the late note")             # and then once only
+        self.assertEqual([c.args[0] for c in log.call_args_list], ["the late note"])
+
+    def test_what_hyprland_said_to_a_failed_dpms_request(self):
+        for reply, want in ((None, "no answer from Hyprland in 2 s"), ("error: no such monitor\n",
+                                                                      "Hyprland said 'error: no such monitor'")):
+            with mock.patch.object(od, "hypr_request", return_value=reply):
+                self.assertFalse(od.dpms("Virtual-1", False))
+            self.assertEqual(od.DPMS_FAILED, want)
+        with mock.patch.object(od, "hypr_request", return_value="ok"):
+            self.assertTrue(od.dpms("Virtual-1", False))
+
+
 class WakeGuardTest(PauseCase):
     """While the agent holds a display off, Hyprland's wake on moves and keys
     is off (the user's 2026-10-28 two-display case: every move on the LG woke

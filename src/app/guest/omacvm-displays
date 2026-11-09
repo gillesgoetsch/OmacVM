@@ -48,7 +48,10 @@ org.omacvm.display, one JSON object per line:
                 another display goes off by itself (Omarchy's idle wakes it
                 the usual way), and at the agent's next start
                 ($XDG_RUNTIME_DIR/omacvm/paused-wake). A config reload puts
-                Omarchy's values back: they are turned off again.
+                Omarchy's values back: they are turned off again. The journal
+                says why a display the Mac called unseen is not off (a share,
+                no answer from Hyprland, a DPMS request it refused, a display
+                the guest had turned off itself), once until that changes.
   to the Mac    {"inhibit": ["Virtual-1"]}  the outputs that show a video
                 now, so the Mac keeps its display on while that window can
                 be seen (as a Mac video player does; ADR 0070). A window
@@ -1265,10 +1268,56 @@ def screencasts(data: bytes) -> list[tuple[bool, str, str]]:
     return out
 
 
+DPMS_FAILED = ""      # what became of the last DPMS request that failed (for the journal)
+
+
 def dpms(name: str, on: bool) -> bool:
     """One output's display on or off (Hyprland's own DPMS)."""
+    global DPMS_FAILED
     action = "enable" if on else "disable"
-    return hypr_request(f'dispatch hl.dsp.dpms({{ action = "{action}", monitor = "{name}" }})') == "ok"
+    reply = hypr_request(f'dispatch hl.dsp.dpms({{ action = "{action}", monitor = "{name}" }})')
+    if reply == "ok":
+        return True
+    DPMS_FAILED = "no answer from Hyprland in 2 s" if reply is None else f"Hyprland said {reply.strip()[:80]!r}"
+    return False
+
+
+NOTES_MAX = 10        # pause notes a minute at most
+
+
+class Notes:
+    """Journal lines on why a display the Mac called unseen is not off. The
+    Mac says "unseen" again every 5 s and each look finds the same: a line
+    only when its text changes (per key), at most NOTES_MAX a minute."""
+
+    def __init__(self, clock=time.monotonic) -> None:
+        self.clock = clock
+        self.said: dict[str, str] = {}
+        self.since = None
+        self.count = 0
+
+    def say(self, key: str, text: str) -> None:
+        if self.said.get(key) == text:
+            return
+        now = self.clock()
+        if self.since is None or now - self.since >= 60:
+            self.since = now
+            self.count = 0
+        if self.count >= NOTES_MAX:
+            return      # not kept: a look after this minute that finds the same says it
+        self.said[key] = text
+        self.count += 1
+        log(text)
+        if self.count == NOTES_MAX:
+            log("more notes on the pause this minute are left out")
+
+    def done(self, key: str) -> None:
+        self.said.pop(key, None)
+
+    def keep(self, prefix: str, keys) -> None:
+        """Only these keys with this prefix still hold."""
+        for key in [k for k in self.said if k.startswith(prefix) and k not in keys]:
+            del self.said[key]
 
 
 WAKE = RUNTIME / "omacvm/paused-wake"
@@ -1415,12 +1464,14 @@ class Pause:
     """
 
     def __init__(self, set_dpms=dpms, monitors=lambda: hypr_json("j/monitors"), path: Path = PAUSED,
-                 clock=time.monotonic, guard: WakeGuard | None = None) -> None:
+                 clock=time.monotonic, guard: WakeGuard | None = None, failed=lambda: DPMS_FAILED) -> None:
         self.set_dpms = set_dpms
         self.monitors = monitors
         self.path = path
         self.clock = clock
         self.guard = guard if guard is not None else WakeGuard()
+        self.failed = failed           # what Hyprland said to a DPMS request that failed
+        self.notes = Notes(clock)
         self.unseen: set[str] = set()
         self.paused: set[str] = set()
         self.casts: dict[tuple[str, str], int] = {}
@@ -1428,9 +1479,12 @@ class Pause:
         self.renewed = 0.0             # the Mac's last "unseen" with a display in it
 
     def mac(self, names) -> None:
+        was = self.unseen
         self.unseen = {n for n in names if isinstance(n, str) and re.fullmatch(r"Virtual-[0-9]+", n)}
         if self.unseen:
             self.renewed = self.clock()
+        elif was:
+            self.notes.keep("", [k for k in self.notes.said if k.startswith("on:")])   # seen: say it again next time
 
     def due_at(self) -> float | None:
         """When the pause has something to do by itself: the lease's end, the end of the share settle."""
@@ -1445,6 +1499,7 @@ class Pause:
         if self.unseen and self.clock() - self.renewed > LEASE:
             log(f"no word from the Mac for {LEASE:.0f} s: drawing again")
             self.unseen = set()
+            self.notes.keep("", [k for k in self.notes.said if k.startswith("on:")])
         self.apply()
 
     def cast(self, on: bool, kind: str, name: str) -> None:
@@ -1467,30 +1522,65 @@ class Pause:
             return set()   # a window shared: it may be on any output
         return {n for n in self.unseen if ("monitor", n) not in self.casts}
 
+    def blocked(self) -> str | None:
+        """Why no display is turned off now, when a share is the reason."""
+        if self.clock() - self.casts_since < CAST_SETTLE:
+            return None
+        windows = sorted(f"{kind} {name}"[:60] for kind, name in self.casts if kind != "monitor")
+        if windows:
+            return f"a window share is running ({', '.join(windows[:3])}): it may be on any display"
+        return None
+
     def busy(self) -> bool:
         return bool(self.unseen or self.paused or self.guard.saved)
 
     def apply(self) -> None:
         data = self.monitors()
         if not isinstance(data, list):
+            if self.unseen:
+                self.notes.say("monitors", "drawing not paused: no answer from Hyprland for its outputs")
             return
+        self.notes.done("monitors")
         state = {m.get("name"): m for m in data if isinstance(m, dict) and not m.get("disabled")}
         off = self.wanted_off()
+        why = self.blocked() if self.unseen else None
+        if why:
+            self.notes.say("block", f"drawing not paused on {', '.join(sorted(self.unseen))}: {why}")
+        else:
+            self.notes.done("block")
+        shared = {n for n in self.unseen if ("monitor", n) in self.casts} if not why else set()
+        for name in sorted(shared):
+            self.notes.say(f"share:{name}", f"drawing not paused on {name}: a share of it is running")
+        self.notes.keep("share:", [f"share:{n}" for n in shared])
         changed = False
         for name in sorted(off):
             m = state.get(name)
             if m is None or m.get("dpmsStatus") is not True:
-                continue   # gone, or already off (by the guest itself)
+                # gone, or already off (by the guest itself)
+                if m is None:
+                    self.notes.say(f"off:{name}", f"drawing not paused on {name}: Hyprland has no such output")
+                elif name not in self.paused:
+                    self.notes.say(f"off:{name}", f"drawing not paused on {name}: the guest had turned it off itself")
+                continue
             if self.set_dpms(name, False):
                 if name not in self.paused:
                     log(f"drawing paused on {name}: its Mac window is out of sight")
                 self.paused.add(name)
+                self.notes.done(f"off:{name}")
                 changed = True
+            else:
+                failed = self.failed()
+                self.notes.say(f"off:{name}", f"drawing not paused on {name}: Hyprland did not turn it off"
+                               + (f" ({failed})" if failed else "") + "; trying again at the next word")
         woke = set()
         for name in sorted(self.paused - off):
             m = state.get(name)
             if m is not None and m.get("dpmsStatus") is False and not self.set_dpms(name, True):
+                failed = self.failed()
+                self.notes.say(f"on:{name}", f"{name} not on again yet: Hyprland did not turn it on"
+                               + (f" ({failed})" if failed else "") + "; trying again")
                 continue   # try again at the next look
+            self.notes.done(f"on:{name}")
             self.paused.discard(name)
             woke.add(name)
             changed = True
