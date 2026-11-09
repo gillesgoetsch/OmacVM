@@ -1826,7 +1826,9 @@ console.log(JSON.stringify([
                      + '{"workspaceString": "w[tv1]", "gapsOut": {"top": 0}}, {"workspaceString": "2", "gapsOut": 4.6}]'),
   notchGapRulesParse("[]"), notchGapRulesParse(""), notchGapRulesParse("{}"),
   notchSpecialsParse('[{"name": "Virtual-1", "specialWorkspace": {"id": -98, "name": "special:qconsole"}}, '
-                     + '{"name": "Virtual-2", "specialWorkspace": {"id": 0, "name": ""}}, {"name": "NOTCH-1"}]'),
+                     + '{"name": "Virtual-2", "specialWorkspace": {"id": 0, "name": ""}}, {"name": "NOTCH-1"}, '
+                     + '{"name": "Virtual-3", "specialWorkspace": {"address": "", "type": "", "name": ""}}, '
+                     + '{"name": "Virtual-4", "specialWorkspace": {"type": "special", "name": "special:scratchpad"}}]'),
   notchSpecialsParse("nope"),
   notchSpecialEvent({ "Virtual-2": "special:a" }, "special:qconsole,Virtual-1"),
   notchSpecialEvent({ "Virtual-1": "special:qconsole" }, ",Virtual-1"),
@@ -1835,7 +1837,8 @@ console.log(JSON.stringify([
         self.assertEqual(out, [
             [{"name": "special:qconsole", "top": 0}, {"name": "w[tv1]", "top": 0}, {"name": "2", "top": 4}],
             [], None, None,
-            {"Virtual-1": "special:qconsole", "Virtual-2": "", "NOTCH-1": ""}, None,
+            {"Virtual-1": "special:qconsole", "Virtual-2": "", "NOTCH-1": "", "Virtual-3": "",
+             "Virtual-4": "special:scratchpad"}, None,
             {"Virtual-2": "special:a", "Virtual-1": "special:qconsole"}, {"Virtual-1": ""}, {}])
 
     def test_gaps_read_at_start_after_a_reload_and_a_look_change(self):
@@ -1852,13 +1855,14 @@ console.log(JSON.stringify([
                 self.assertEqual(full.count('if (n === "configreloaded") root.notchGapsCheck(1500)'), 1)
                 self.assertTrue(function(full, "notchGapsCheck").startswith("\n    notchReadGaps(false)\n"))
                 self.assertEqual(full.count('else if (n === "activespecial") {'), 1)
-                self.assertEqual(full.count("function onTransparentChanged() { root.notchGapsCheck(1500) }"), 1)
+                self.assertEqual(full.count("function onRequestedTransparentChanged() { root.notchGapsCheck(1500) }"), 1)
                 # flush-bar (omarchy-mac 4.0) under a transparent top bar: the
-                # whole strip from the moment the bar turns transparent.
-                self.assertIn('readonly property bool notchFlush: notchFlushBar && transparent && position === "top"', full)
+                # whole strip from the moment the setting changes (as
+                # flush-bar sees it), not when the bar has its text colour.
+                self.assertIn('readonly property bool notchFlush: notchFlushBar && requestedTransparent && position === "top"', full)
                 self.assertIn('"/shell/plugins/flush-bar/manifest.json"', full)
                 # The stock root has the properties the patch listens to.
-                self.assertIn("  property bool transparent: ", stock)
+                self.assertIn("  property bool requestedTransparent: ", stock)
                 self.assertIn("  property string position: ", stock)
                 self.assertIn("  property string omarchyPath: ", full)
                 # A read asked while one runs is run after it; a hyprctl that

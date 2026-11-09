@@ -670,7 +670,9 @@ def main():
   property var notchSpecials: ({})
   property int notchSpecialSerial: 0
   property bool notchFlushBar: false
-  readonly property bool notchFlush: notchFlushBar && transparent && position === "top"
+  // requestedTransparent: the bar's setting, as flush-bar sees it (the bar
+  // turns transparent itself only after it picked a text colour).
+  readonly property bool notchFlush: notchFlushBar && requestedTransparent && position === "top"
   property var notchGapsPass: null
   property int notchGapsQueued: 0  // a read asked while one runs: 1 soon, 2 later
   // hyprctl -j getoption general:gaps_out -> its top, -1 if unreadable.
@@ -702,14 +704,14 @@ def main():
     }
   }
   // hyprctl -j monitors -> {output: the special workspace shown on it, or
-  // ""}, null if unreadable.
+  // ""}, null if unreadable (by name: Hyprland 0.57 gives no id for none).
   function notchSpecialsParse(text) {
     try {
       var list = JSON.parse(String(text)), out = {}
       if (!Array.isArray(list)) return null
       for (var i = 0; i < list.length; i++) {
         var s = list[i].specialWorkspace
-        out[String(list[i].name)] = s && s.id ? String(s.name || "") : ""
+        out[String(list[i].name)] = s && s.name ? String(s.name) : ""
       }
       return out
     } catch (e) {
@@ -831,7 +833,7 @@ def main():
   }
   Connections {
     target: root
-    function onTransparentChanged() { root.notchGapsCheck(1500) }
+    function onRequestedTransparentChanged() { root.notchGapsCheck(1500) }
     function onPositionChanged() { root.notchGapsCheck(1500) }
   }
   // FullPanel (OmacVM.app): the camera housing from host.env, in Mac points
