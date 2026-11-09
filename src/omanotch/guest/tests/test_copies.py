@@ -143,9 +143,11 @@ class Copies(unittest.TestCase):
                    key=lambda blk: blk.size)
         self.assertGreater(best.size, 20)
         mid = best.a + best.size // 2
-        # One that is there once (the edit finds it), away from the block's ends.
+        # One that is there once, also as part of a longer line (the edit
+        # finds it by text), away from the block's ends.
+        text = "".join(al)
         return next(al[i] for i in sorted(range(best.a + 5, best.a + best.size - 5), key=lambda i: abs(i - mid))
-                    if al.count(al[i]) == 1 and al[i].strip())
+                    if text.count(al[i]) == 1 and al[i].strip())
 
     def changed_line(self, a, b):
         """A line of a that b changes."""
