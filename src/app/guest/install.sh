@@ -71,7 +71,9 @@ udevadm control --reload 2>/dev/null; udevadm trigger --subsystem-match=virtio-p
 install -m644 omacvm-clipboard.service /etc/systemd/user/
 systemctl --global enable omacvm-clipboard.service >/dev/null 2>&1 || true
 systemctl --user -M "$U@" daemon-reload 2>/dev/null && systemctl --user -M "$U@" restart omacvm-clipboard.service 2>/dev/null || true
-# The Mac's displays (over a virtio port; the same uaccess rule).
+# The Mac's displays (over a virtio port; the same uaccess rule). The agent
+# runs omacvm-awake.qml while a Firefox video plays (Omarchy's idle waits).
+install -Dm644 omacvm-awake.qml /usr/local/lib/omacvm/omacvm-awake.qml
 install -m644 omacvm-displays.service /etc/systemd/user/
 systemctl --global enable omacvm-displays.service >/dev/null 2>&1 || true
 systemctl --user -M "$U@" daemon-reload 2>/dev/null && systemctl --user -M "$U@" restart omacvm-displays.service 2>/dev/null || true

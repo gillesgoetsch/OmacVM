@@ -68,10 +68,18 @@ org.omacvm.display, one JSON object per line:
                 display locks (a video playing where it can be seen, a
                 page's screen wake lock) to org.freedesktop.ScreenSaver,
                 which this agent serves on the session bus for that
-                (Chromium-based callers get a cookie, any other an error, so
-                it falls back as when nobody serves it). The system's
-                Chromium 157 or newer also counts by Wayland alone. Firefox
-                was not tested. Omarchy's Stay Awake and the no-idle-lock
+                (Chromium- and Firefox-based callers get a cookie, any other
+                an error, so it falls back as when nobody serves it). The
+                system's Chromium 157 or newer also counts by Wayland alone.
+                Firefox tells every wake lock only there, with its reason, and
+                then never asks Wayland: its window counts while its process
+                holds a "Playing video" or "Screen lock" one (its other
+                reasons get a cookie that never counts; an error would move
+                all of Firefox's locks off this name for good). For such a
+                window the agent also holds Omarchy's own idle (screensaver,
+                lock) as Chromium's Wayland inhibit does, with a small
+                Quickshell of its own (omacvm-awake.qml; GuestAwake, ADR
+                0072). Omarchy's Stay Awake and the no-idle-lock
                 feature are never sent. Asked every 10 s with
                 the layout compare (one Hyprland request while nothing plays);
                 sent at once when the list changes, again every 10 s while it
@@ -138,6 +146,7 @@ import os
 from pathlib import Path
 import re
 import select
+import shutil
 import signal
 import socket
 import struct
@@ -145,6 +154,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 import zlib
 
 PORT = Path("/dev/virtio-ports/org.omacvm.display")
@@ -961,6 +971,73 @@ def chromium_based(exe: str) -> bool:
     return os.path.exists(os.path.join(os.path.dirname(exe), "icudtl.dat"))
 
 
+def gecko_based(exe: str) -> bool:
+    """Firefox and its forks (LibreWolf, Floorp, Zen), Thunderbird: libxul.so beside the program."""
+    return os.path.exists(os.path.join(os.path.dirname(exe), "libxul.so"))
+
+
+# Firefox's own names for its display wake locks (dom.properties WakeLockVideoPlaying and
+# WakeLockScreenLock, also the fallback in widget/gtk/WakeLockListener.cpp; Firefox 158 and 159):
+# a video that plays where it can be seen, a page's screen wake lock. Its other names
+# ("Playing audio", "Autoscroll", "Download in progress") get a cookie that never counts.
+GECKO_DISPLAY_REASONS = ("Playing video", "Screen lock")
+GECKO_OTHER_REASONS = ("Playing audio", "Autoscroll", "Download in progress")
+GECKO_DISPLAY_KEYS = ("WakeLockVideoPlaying", "WakeLockScreenLock")
+GECKO_OTHER_KEYS = ("WakeLockAudioPlaying", "WakeLockAutoscroll", "WakeLockDownload")
+GECKO_LANGPACKS = 200   # language packs read at most per Firefox
+_gecko_cache: dict[str, tuple[float, frozenset[str], frozenset[str]]] = {}
+
+
+def langpack_reasons(pack: Path) -> tuple[set[str], set[str]]:
+    """A Firefox language pack's names for its wake locks (display ones, others),
+    from its chrome/*/locale/*/global/dom/dom.properties; none when unreadable."""
+    display: set[str] = set()
+    other: set[str] = set()
+    try:
+        with zipfile.ZipFile(pack) as z:
+            for info in z.infolist():
+                if (not re.fullmatch(r"chrome/[^/]+/locale/[^/]+/global/dom/dom\.properties", info.filename)
+                        or info.file_size > 1 << 20):
+                    continue
+                for line in z.read(info).decode("utf-8", "replace").splitlines():
+                    key, sep, value = line.partition("=")
+                    value = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), value.strip())
+                    if sep and value and key.strip() in GECKO_DISPLAY_KEYS:
+                        display.add(value[:200])
+                    elif sep and value and key.strip() in GECKO_OTHER_KEYS:
+                        other.add(value[:200])
+                break
+    except (OSError, zipfile.BadZipFile, ValueError, RuntimeError, EOFError):
+        pass
+    return display, other
+
+
+def gecko_reasons(exe: str) -> tuple[frozenset[str], frozenset[str]]:
+    """The reasons that count (display) and the other known ones for this Firefox:
+    the en-US names, plus those of every language pack installed with it
+    (browser/extensions/langpack-*.xpi beside the program: a Firefox in German
+    sends "Video abspielen"). Cached by that folder's mtime. Language packs a
+    person installed in their profile are not read."""
+    folder = Path(exe).parent / "browser/extensions"
+    base = frozenset(GECKO_DISPLAY_REASONS), frozenset(GECKO_OTHER_REASONS)
+    try:
+        mtime = folder.stat().st_mtime
+        packs = sorted(folder.glob("langpack-*.xpi"))[:GECKO_LANGPACKS]
+    except OSError:
+        return base
+    cached = _gecko_cache.get(str(folder))
+    if cached and cached[0] == mtime:
+        return cached[1], cached[2]
+    display, other = set(base[0]), set(base[1])
+    for pack in packs:
+        d, o = langpack_reasons(pack)
+        display |= d
+        other |= o
+    other -= display
+    _gecko_cache[str(folder)] = (mtime, frozenset(display), frozenset(other))
+    return frozenset(display), frozenset(other)
+
+
 def proc_start(pid, proc: Path = Path("/proc")) -> str | None:
     """The process's start time (field 22 of /proc/PID/stat): another process
     that gets the same pid later has another one."""
@@ -971,29 +1048,43 @@ def proc_start(pid, proc: Path = Path("/proc")) -> str | None:
     return fields[19] if len(fields) > 19 else None
 
 
-DISPLAY_LOCKS_MAX = 64   # display wake locks held at once (Chromium takes one per playing video)
+DISPLAY_LOCKS_MAX = 64   # wake locks kept at once (Chromium takes one per playing video)
 
 
 class DisplayLocks:
-    """Chromium's display wake locks, told to org.freedesktop.ScreenSaver, which
-    this agent serves (serve_display_locks). Chromium takes one for a video that
-    plays where it can be seen ("Video Wake Lock") and for a page's screen wake
-    lock, and lets go when it pauses, ends or its tab goes to the background.
-    Chromium 156 and older also ask Wayland not to idle for music, downloads and
-    calls (fixed in 157), but those go to org.freedesktop.PowerManagement, never
-    here (power_save_blocker_linux.cc). So a Chromium window's Wayland inhibit
-    counts while its process holds one of these. The D-Bus thread adds and
-    removes, the agent asks: one mutex."""
+    """Chromium's and Firefox's display wake locks, told to
+    org.freedesktop.ScreenSaver, which this agent serves (serve_display_locks).
+
+    Chromium takes one for a video that plays where it can be seen ("Video Wake
+    Lock") and for a page's screen wake lock, and lets go when it pauses, ends
+    or its tab goes to the background. Chromium 156 and older also ask Wayland
+    not to idle for music, downloads and calls (fixed in 157), but those go to
+    org.freedesktop.PowerManagement, never here (power_save_blocker_linux.cc).
+    So a Chromium window's Wayland inhibit counts while its process holds one
+    of these ("display").
+
+    Firefox tells every wake lock here, with its reason, and then never asks
+    Wayland: "Playing video" and "Screen lock" count ("gecko"), the rest get a
+    cookie that never counts ("quiet"). A Gecko caller never gets an error, not
+    even when the locks are full: after one error Firefox moves every wake lock
+    off this name for good (WakeLockListener.cpp SwitchToNextWakeLockType), so a
+    refused "Playing audio" would lose the next video too.
+
+    A lock goes with UnInhibit, when its caller leaves the bus, and when its pid
+    belongs to another process. The D-Bus thread adds and removes, the agent
+    asks: one mutex."""
 
     def __init__(self, proc: Path = Path("/proc"), limit: int = DISPLAY_LOCKS_MAX):
         self.proc = proc
         self.limit = limit
         self.mutex = threading.Lock()
-        self.locks: dict[int, tuple[str, int, str]] = {}   # cookie -> (D-Bus sender, pid, start time)
+        self.locks: dict[int, tuple[str, int, str, str]] = {}   # cookie -> (D-Bus sender, pid, start time, kind)
         self.last = 0
+        self.said: set[str] = set()   # Firefox reasons not known, logged once each
 
-    def inhibit(self, sender, pid) -> int | None:
-        """A cookie for a Chromium-based caller; None for anyone else, or when full."""
+    def inhibit(self, sender, pid, reason=None) -> int | None:
+        """A cookie for a Chromium- or Gecko-based caller; None for anyone else,
+        and for Chromium when full."""
         if not isinstance(sender, str) or not a_pid(pid):
             return None
         try:
@@ -1001,15 +1092,37 @@ class DisplayLocks:
         except OSError:
             return None
         start = proc_start(pid, self.proc)
-        if start is None or not chromium_based(exe):
+        if start is None:
+            return None
+        if chromium_based(exe):
+            kind = "display"
+        elif gecko_based(exe):
+            display, other = gecko_reasons(exe)
+            kind = "gecko" if reason in display else "quiet"
+            if kind == "quiet" and reason not in other:
+                self.note(reason)
+        else:
             return None
         with self.mutex:
             self._prune()
-            if len(self.locks) >= self.limit:
-                return None
             self.last = self.last % 0xFFFFFFFF + 1
-            self.locks[self.last] = (sender, pid, start)
+            if len(self.locks) >= self.limit:
+                # Full: Chromium gets an error (it tries again at its next video),
+                # Firefox a cookie that is not kept and never counts.
+                return None if kind == "display" else self.last
+            self.locks[self.last] = (sender, pid, start, kind)
             return self.last
+
+    def note(self, reason) -> None:
+        """A Firefox reason this agent does not know (a language pack it did not
+        read, a new name): logged once, so a video that does not count can be
+        explained."""
+        text = (reason if isinstance(reason, str) else repr(reason))[:60]
+        if text in self.said or len(self.said) >= 8:
+            return
+        self.said.add(text)
+        log(f"Firefox's wake lock {text!r} is not {' or '.join(map(repr, GECKO_DISPLAY_REASONS))}: "
+            "it does not keep the Mac's display on")
 
     def uninhibit(self, sender, cookie) -> None:
         with self.mutex:
@@ -1024,10 +1137,20 @@ class DisplayLocks:
     def _prune(self) -> None:
         self.locks = {c: v for c, v in self.locks.items() if proc_start(v[1], self.proc) == v[2]}
 
-    def holds(self, pid) -> bool:
+    def holds(self, pid, kinds=("display", "gecko")) -> bool:
+        """Whether the process holds a lock that counts (of these kinds)."""
         with self.mutex:
             self._prune()
-            return any(v[1] == pid for v in self.locks.values())
+            return any(v[1] == pid and v[3] in kinds for v in self.locks.values())
+
+    def gecko_holds(self, pid) -> bool:
+        """A Firefox display wake lock: its window counts without a Wayland inhibit."""
+        return self.holds(pid, ("gecko",))
+
+    def gecko_pids(self) -> set[int]:
+        with self.mutex:
+            self._prune()
+            return {v[1] for v in self.locks.values() if v[3] == "gecko"}
 
     def count(self) -> int:
         with self.mutex:
@@ -1075,13 +1198,14 @@ SCREENSAVER_XML = f"""<node><interface name="{SCREENSAVER}">
 
 def screensaver_answer(locks: DisplayLocks, method: str, sender, args, pid) -> tuple:
     """org.freedesktop.ScreenSaver's answer: ("cookie", n), ("done", None) or
-    ("error", name, text). Callers that are not Chromium-based get an error, so
-    they do what they do when nobody serves the name (Firefox and SDL go on to
-    Wayland's idle inhibit)."""
+    ("error", name, text). Callers that are neither Chromium- nor Gecko-based get
+    an error, so they do what they do when nobody serves the name (SDL goes on
+    to Wayland's idle inhibit)."""
     if method == "Inhibit":
-        cookie = locks.inhibit(sender, pid)
+        reason = args[1] if isinstance(args, tuple) and len(args) > 1 else None
+        cookie = locks.inhibit(sender, pid, reason)
         if cookie is None:
-            return ("error", "org.freedesktop.DBus.Error.NotSupported", "only Chromium's display wake locks")
+            return ("error", "org.freedesktop.DBus.Error.NotSupported", "only Chromium's and Firefox's wake locks")
         return ("cookie", cookie)
     if method == "UnInhibit":
         locks.uninhibit(sender, args[0] if isinstance(args, tuple) and args else None)
@@ -1097,7 +1221,7 @@ def serve_display_locks(locks: DisplayLocks = DISPLAY_LOCKS) -> None:
     try:
         from gi.repository import Gio, GLib
     except ImportError:
-        log("python-gobject is missing: a video in Chromium before 157 does not keep the Mac's display on")
+        log("python-gobject is missing: a video in Firefox or in Chromium before 157 does not keep the Mac's display on")
         return
     context = GLib.MainContext.new()
     context.push_thread_default()
@@ -1144,24 +1268,30 @@ def serve_display_locks(locks: DisplayLocks = DISPLAY_LOCKS) -> None:
 
     def acquired(_bus, _name) -> None:
         served[0] = True
-        log(f"serving {SCREENSAVER}: a video in Chromium keeps the Mac's display on")
+        log(f"serving {SCREENSAVER}: a video in Chromium or Firefox keeps the Mac's display on")
 
     def lost(_bus, _name) -> None:
         log(f"{SCREENSAVER} lost" if served[0] else
-            f"another program serves {SCREENSAVER}: a video in Chromium before 157 does not keep the Mac's display on")
+            f"another program serves {SCREENSAVER}: a video in Firefox or in Chromium before 157 does not keep "
+            "the Mac's display on")
         served[0] = False
 
     Gio.bus_own_name(Gio.BusType.SESSION, SCREENSAVER, Gio.BusNameOwnerFlags.DO_NOT_QUEUE, on_bus, acquired, lost)
     GLib.MainLoop.new(context, False).run()
 
 
-def inhibiting_outputs(clients, monitors, rule_free, locked, counts=player_counts) -> list[str]:
+def inhibiting_outputs(clients, monitors, rule_free, locked, counts=player_counts,
+                       asks=lambda pid: False, counted: set | None = None) -> list[str]:
     """The outputs showing a video now (the Mac keeps its display on for them).
 
     clients and monitors are Hyprland's j/clients and j/monitors; rule_free(address)
     says Hyprland has no idle_inhibit window rule for the window (asked only for
     a window that passes everything else); locked() whether the session is
-    locked (asked only when some window counts); counts(pid) player_counts."""
+    locked (asked only when some window counts); counts(pid) player_counts.
+    A window asks not to idle on Wayland (inhibitingIdle) or, Firefox, through
+    a display wake lock its process holds (asks(pid): DisplayLocks.gecko_holds;
+    Firefox never asks Wayland once that name answers). The pids of the windows
+    that made an output count go into counted."""
     if not isinstance(clients, list) or not isinstance(monitors, list):
         return []
     shown: dict[int, str] = {}   # workspace id -> the output showing it
@@ -1181,8 +1311,11 @@ def inhibiting_outputs(clients, monitors, rule_free, locked, counts=player_count
         if isinstance(c, dict) and c.get("fullscreen") and isinstance(c.get("workspace"), dict):
             full.setdefault(c["workspace"].get("id"), set()).add(str(c.get("address")))
     out: set[str] = set()
+    pids: set = set()
     for c in clients:
-        if not isinstance(c, dict) or c.get("inhibitingIdle") is not True:
+        if not isinstance(c, dict):
+            continue
+        if c.get("inhibitingIdle") is not True and not (a_pid(c.get("pid")) and asks(c.get("pid"))):
             continue
         if c.get("hidden") is True or c.get("mapped") is False:
             continue
@@ -1199,8 +1332,11 @@ def inhibiting_outputs(clients, monitors, rule_free, locked, counts=player_count
         if not counts(c.get("pid")) or not rule_free(address):
             continue
         out.add(name)
+        pids.add(c.get("pid"))
     if out and locked():
         return []
+    if counted is not None:
+        counted.update(pids)
     return sorted(out)
 
 
@@ -1235,17 +1371,188 @@ def idle_rule_free(address: str) -> bool:
     return isinstance(prop, dict) and prop.get("idle_inhibit") == 0 and not isinstance(prop.get("idle_inhibit"), bool)
 
 
-def video_outputs() -> list[str] | None:
+def video_outputs(counted: set | None = None, locks: DisplayLocks | None = None) -> list[str] | None:
     """inhibiting_outputs for this session now; None when Hyprland does not answer."""
+    locks = DISPLAY_LOCKS if locks is None else locks
     clients = hypr_json("j/clients")
     if not isinstance(clients, list):
         return None
-    if not any(isinstance(c, dict) and c.get("inhibitingIdle") is True for c in clients):
+    if not locks.gecko_pids() and not any(isinstance(c, dict) and c.get("inhibitingIdle") is True for c in clients):
         return []   # nothing asks: no more requests
     monitors_data = hypr_json("j/monitors")
     if not isinstance(monitors_data, list):
         return None
-    return inhibiting_outputs(clients, monitors_data, idle_rule_free, screen_locked)
+    return inhibiting_outputs(clients, monitors_data, idle_rule_free, screen_locked,
+                              counts=lambda pid: player_counts(pid, locks=locks),
+                              asks=locks.gecko_holds, counted=counted)
+
+
+AWAKE = RUNTIME / "omacvm/guest-awake"   # the guest idle hold's lease, read by omacvm-awake.qml
+AWAKE_QML = Path("/usr/local/lib/omacvm/omacvm-awake.qml")
+AWAKE_NAMESPACE = "omacvm-awake"         # its surface's layer namespace
+AWAKE_LEASE = 25.0    # seconds the hold lasts after the agent's last check (a hung agent lets go)
+AWAKE_SETTLE = 15.0   # seconds a start has to show its surface
+AWAKE_TRIES = 3       # failed starts in a row before the agent stops trying (until it starts again)
+QS_RUNTIME = RUNTIME / "quickshell"   # Quickshell's folder per instance: by-id/<id>, linked from by-pid/<pid>
+
+
+class GuestAwake:
+    """Omarchy's own idle (its screensaver at 150 s, the lock at 300 s) held for a
+    Firefox video. Chromium and mpv hold it themselves with Wayland's idle
+    inhibit, which Omarchy's shell honours (IdleMonitor respectInhibitors);
+    Firefox tells only org.freedesktop.ScreenSaver, so its video got covered by
+    the screensaver after 150 s, and then no output counted for the Mac either.
+
+    While a window counts through a Firefox lock (inhibiting_outputs), the agent
+    runs a small Quickshell of its own as its child (omacvm-awake.qml: a 1x1
+    transparent surface that takes no input, with an IdleInhibitor; in the
+    agent's cgroup, so it goes when the agent stops or dies) and writes the
+    lease {"until": now + AWAKE_LEASE} at each check (every 10 s). The child
+    quits when the lease is stale: a hung agent lets go within about 30 s.
+    Stopped as soon as no Firefox window counts. A start whose surface is not
+    in Hyprland's j/layers within AWAKE_SETTLE fails (an old Quickshell without
+    IdleInhibitor, say), and so does a child that ends; after AWAKE_TRIES
+    failures in a row the agent stops trying and says so once. A shown surface
+    clears the count: a child that held and then quit (a stale lease after the
+    guest's clock jumped, Hyprland slow to answer, killed by hand) is started
+    again however often that happens."""
+
+    def __init__(self, path: Path = AWAKE, qml: Path = AWAKE_QML, start=None,
+                 layers=lambda: hypr_json("j/layers"), clock=time.monotonic,
+                 qs_runtime: Path = QS_RUNTIME) -> None:
+        self.path = path
+        self.qs_runtime = qs_runtime
+        self.qml = qml
+        self.start = start or (lambda: subprocess.Popen(
+            ["quickshell", "-p", str(self.qml)], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True))
+        self.layers = layers
+        self.clock = clock
+        self.child = None
+        self.started = 0.0
+        self.shown = False
+        self.fails = 0
+        self.drop()   # an earlier agent's lease
+
+    def want(self, on: bool) -> None:
+        """At each check: hold (renew the lease, start or check the child) or let go."""
+        if not on:
+            self.release()
+            return
+        if self.fails >= AWAKE_TRIES:
+            return
+        self.lease()
+        if self.child is not None and self.child.poll() is not None:
+            self.failed(f"it ended (exit {self.child.returncode})")
+        if self.fails >= AWAKE_TRIES:
+            return
+        now = self.clock()
+        if self.child is None:
+            try:
+                self.child = self.start()
+            except OSError as error:
+                self.failed(f"it did not start ({error.strerror or error})")
+                return
+            self.started = now
+            self.shown = False
+            return
+        if not self.shown:
+            if self.surface():
+                self.shown = True
+                self.fails = 0   # the limit is for failed starts in a row, not for ends after a hold
+                log("a Firefox video plays: Omarchy's screensaver and lock wait while it can be seen")
+            elif now - self.started >= AWAKE_SETTLE:
+                self.failed(f"no surface after {AWAKE_SETTLE:.0f} s")
+
+    def drop(self) -> None:
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def lease(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"until": round(time.time() + AWAKE_LEASE, 1)}))
+            tmp.replace(self.path)
+        except OSError:
+            pass
+
+    def surface(self) -> bool:
+        data = self.layers()
+        pid = getattr(self.child, "pid", None)
+        if not isinstance(data, dict):
+            return False
+        for output in data.values():
+            levels = output.get("levels") if isinstance(output, dict) else None
+            for items in (levels.values() if isinstance(levels, dict) else ()):
+                for item in (items if isinstance(items, list) else ()):
+                    if (isinstance(item, dict) and item.get("namespace") == AWAKE_NAMESPACE
+                            and item.get("pid") == pid):
+                        return True
+        return False
+
+    def failed(self, why: str) -> None:
+        self.stop_child()
+        self.fails += 1
+        if self.fails >= AWAKE_TRIES:
+            self.drop()
+            log(f"omacvm-awake failed {self.fails} times ({why}): not tried again until the agent restarts; "
+                "Omarchy's screensaver may cover a Firefox video")
+        else:
+            log(f"omacvm-awake failed ({why}): trying again")
+
+    def stop_child(self) -> None:
+        child, self.child = self.child, None
+        if child is None:
+            return
+        folder = self.instance_folder(child.pid)   # read before it is reaped: the pid cannot be reused yet
+        try:
+            child.terminate()
+            child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=2)
+        except OSError:
+            pass
+        if folder is not None and child.poll() is not None:
+            self.forget(child.pid, folder)
+
+    def instance_folder(self, pid) -> Path | None:
+        """The child's Quickshell instance folder (by-pid/<pid> -> by-id/<id>), if it is one."""
+        link = self.qs_runtime / "by-pid" / str(pid)
+        try:
+            target = Path(os.readlink(link))
+        except (OSError, ValueError):
+            return None
+        if not target.is_absolute():
+            target = link.parent / target
+        by_id = self.qs_runtime / "by-id"
+        if target.parent != by_id or target.name in ("", ".", "..") or target.is_symlink():
+            return None
+        return target
+
+    def forget(self, pid, folder: Path) -> None:
+        """Quickshell leaves its instance folder (its logs, lock and IPC socket, about
+        6 KB in the session's RAM) after it ends, also when it quits by itself: one per
+        start until the session ends. The child's is removed once it has gone."""
+        try:
+            shutil.rmtree(folder)
+        except OSError:
+            pass
+        try:
+            (self.qs_runtime / "by-pid" / str(pid)).unlink()
+        except OSError:
+            pass
+
+    def release(self) -> None:
+        self.drop()
+        if self.child is not None:
+            if self.shown:
+                log("no Firefox video plays: Omarchy's screensaver and lock as usual")
+            self.stop_child()
+        self.shown = False
 
 
 PAUSED = RUNTIME / "omacvm/paused-displays"
@@ -1720,6 +2027,8 @@ class Agent:
         self.scale: float | None = None   # the scale last told to the Mac
         self.inhibit: list[str] = []       # the outputs showing a video, as last told to the Mac
         self.last_inhibit = 0.0
+        self.locks = DISPLAY_LOCKS
+        self.awake = GuestAwake()
         self.lua_scale: float | None = None   # monitors.lua's, when last looked at
 
     def send(self, message: dict) -> None:
@@ -1773,11 +2082,14 @@ class Agent:
 
     def check_inhibit(self, find=video_outputs) -> None:
         """Whether a video plays (inhibiting_outputs), to the Mac: at once when
-        it changes, again every INHIBIT_EVERY while it plays, [] once."""
+        it changes, again every INHIBIT_EVERY while it plays, [] once. Omarchy's
+        own idle is held while a window counts through a Firefox lock (GuestAwake)."""
         self.last_inhibit = time.monotonic()
-        outputs = find()
+        counted: set = set()
+        outputs = find(counted)
         if outputs is None:
-            return   # Hyprland does not answer: the Mac's lease runs out
+            return   # Hyprland does not answer: the Mac's lease and the guest hold's run out
+        self.awake.want(bool(counted & self.locks.gecko_pids()))
         if outputs != self.inhibit:
             log(f"a video plays on {', '.join(outputs)}: the Mac's display stays on while it can be seen"
                 if outputs else "no video plays: the Mac's display may sleep")
@@ -1796,6 +2108,7 @@ class Agent:
     def stop(self, *_args) -> None:
         """SIGTERM (the user service stops): the Mac lets go at once, not after its lease."""
         INHIBIT_STATE.unlink(missing_ok=True)
+        self.awake.release()
         if self.inhibit:
             try:
                 self.send_inhibit([])   # after what is still queued: lines stay whole

@@ -1676,7 +1676,9 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 - **Stays on?** A player in the VM that hangs while it plays, in a window
   that can be seen, keeps asking Omarchy not to idle, so the Mac's display
   stays on until the window is hidden or minimised, the Mac locks or the VM
-  stops, as with a Mac player that hangs.
+  stops, as with a Mac player that hangs. A Firefox that hangs while it
+  plays does the same, and the VM's own lock waits meanwhile, as for
+  Chromium.
 - **Still dark?**
   - Chromium (Omarchy's browser and web apps, Chrome, Brave, Electron apps)
     counts only while it holds its display wake lock: Chromium takes it for
@@ -1699,8 +1701,28 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
     window and a video in another, the first window's display counts (not
     tested); and a video that starts while no Chromium window has the focus
     (an autoplay in the background) does not count until the next play.
-  - Firefox was not tested: it may tell D-Bus instead of Wayland, or not
-    reach either. mpv counts.
+  - Firefox (3.4.2, Update VM; ADR
+    [0072](adr/0072-firefox-wake-locks-and-guest-idle.md)) tells its wake
+    locks only to `org.freedesktop.ScreenSaver`, with a reason: "Playing
+    video" (a playing video with a sound track, also muted) and "Screen
+    lock" (a page's screen wake lock) count; music, autoscroll and
+    downloads do not, and a video without a sound track takes no lock at
+    all. Up to 3.4.1 the agent refused Firefox, and Firefox then never asks
+    again: **restart Firefox once after Update VM** (a Firefox that was
+    running during the update does not count until then). Firefox from
+    Flatpak or Snap is not recognised. A Firefox in another language sends
+    its reasons translated: the agent reads them from the language packs
+    installed with Firefox (Arch's `firefox-i18n-*`); with a language pack
+    you added in Firefox itself a video does not count, and the agent's log
+    names the reason once (`journalctl --user -u omacvm-displays`). mpv
+    counts.
+  - While a Firefox video counts, the VM's own screensaver and lock wait
+    too, as for Chromium and mpv (which ask Omarchy themselves): the agent
+    runs a small Quickshell of its own for it (`pgrep -af omacvm-awake`; a
+    1x1 invisible surface at the top left that takes no clicks). Its log
+    says when it holds and lets go; after 3 failed starts in a row it stops trying
+    until the agent restarts (then Omarchy's screensaver can cover the
+    video after 150 s and the Mac's display sleeps after it).
   - Hyprland window rules (Omarchy's full-screen rules, the `noidle` tag)
     and Omarchy's Stay Awake do not count: they would keep the Mac's display
     on for any full-screen window or for good.
@@ -1708,7 +1730,7 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
     count now. QEMU's log: `OmacVM: video awake: ...` (each hold and release
     with why).
 - **Where:** `app/runtime/patches/omacvm-cocoa-video-awake*.patch`,
-  `src/app/guest/omacvm-displays`; tests
+  `src/app/guest/omacvm-displays`, `src/app/guest/omacvm-awake.qml`; tests
   `app/runtime/Tests/display/test-video-awake.sh`,
   `src/app/guest/tests/test_omacvm_displays.py`.
 
