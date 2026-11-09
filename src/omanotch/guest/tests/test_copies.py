@@ -13,6 +13,7 @@ import os
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -365,6 +366,44 @@ class Copies(unittest.TestCase):
         text = self.entry().read_text()
         self.assertIn("  // mine\n", text)
         self.assertIn("// newer patch", text)
+
+    def test_a_45_copy_from_bar_v41_with_your_edit_becomes_v42(self):
+        # 3.4.2's patch (v41) made a 4.5 VM's copy, which has an edit of the
+        # owner's; the next patch (v42: the indicators' peek, #763 #764)
+        # merges in, the edit stays, and patching again changes nothing.
+        real = (self.lib / "bar/apply-patch.py").read_text()
+        v41 = real.replace("VERSION = 42\n", "VERSION = 41\n")
+        for old in ("    if form45:\n        text = peek_45(text)\n",
+                    '    "hovered && root.notchPeeksAt(barWindow, parent, point.position, ",       # 10. the peek where the indicators are\n',
+                    '    "    onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)\\n",  # 10.\n'):
+            self.assertEqual(v41.count(old), 1, old)
+            v41 = v41.replace(old, "")
+        (self.lib / "bar/apply-patch.py").write_text(v41)
+        self.reset(UP45)
+        self.follow(install=True)
+        text = self.entry().read_text()
+        self.assertIn("// omarchy-notch-bar patch v41\n", text)
+        self.assertNotIn("root.notchPeeksAt(barWindow", text)
+        mine = self.quiet_line(self.entry().read_bytes(), self.patched("bar", UP45))
+        self.edit(self.entry(), mine, mine + "  // mine: stays\n")
+        (self.lib / "bar/apply-patch.py").write_text(real)
+        n = self.restarts
+        self.assertEqual(self.follow(), 0)
+        self.assertEqual(self.restarts, n + 1)
+        text = self.entry().read_text()
+        self.assertEqual(text.replace(mine + "  // mine: stays\n", mine), self.patched("bar", UP45).decode())
+        self.assertIn("// omarchy-notch-bar patch v42\n", text)
+        self.assertEqual(text.count("root.notchPeeksAt(barWindow, parent, point.position, "), 1)
+        self.assertEqual(self.check()["bar copy"][0], "ok")
+        self.assertEqual(self.state()["edits"], ["Bar.qml"])
+        # Patching it again: the patcher says so and writes nothing.
+        out = subprocess.run([sys.executable, str(self.lib / "bar/apply-patch.py"), str(self.entry())],
+                             capture_output=True, text=True)
+        self.assertEqual((out.returncode, out.stdout.strip()), (0, "already patched (v42)"))
+        self.assertEqual(self.entry().read_text(), text)
+        n = self.restarts
+        self.assertEqual(self.follow(), 0)
+        self.assertEqual(self.restarts, n, "nothing changed: no restart")
 
     def newer_patch(self):
         """OmacVM's patch changes: the bar patcher adds a line."""
