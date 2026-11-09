@@ -628,6 +628,65 @@ hdr_capture_line() {
     *) printf '%s\t%s\n' "$bad" "OmacVM's fix for screenshots and screen sharing of HDR apps (Chrome) is not in this VM: Update VM" ;;
   esac
 }
+# zram_decider ROOT: the file whose [zram0] zram-size zram-generator takes (zram-generator.conf(5),
+# 1.2.1): drop-ins by file name (bytes) across usr/lib, usr/local/lib, etc and run, the same
+# name in a later of those folders hiding the earlier one, a link to /dev/null masking it; the
+# last one that sets it wins; with none, the main file (the first of run, etc, usr/local/lib,
+# usr/lib). Prints the path (without ROOT), or nothing (zram-generator's default).
+zram_decider() {
+  local r=${1%/} d f n p last=""
+  local get='/^[[:space:]]*\[/ { s = $0; gsub(/[[:space:]]/, "", s); z = (s == "[zram0]"); next }
+    z && /^[[:space:]]*zram-size[[:space:]]*=/ { f = 1 } END { exit !f }'
+  while IFS= read -r n; do
+    p=""
+    for d in run etc usr/local/lib usr/lib; do
+      f=$r/$d/systemd/zram-generator.conf.d/$n
+      if [[ -e $f || -L $f ]]; then p=$f; break; fi
+    done
+    [[ -L $p && $(readlink "$p") == /dev/null ]] && continue
+    awk "$get" "$p" 2>/dev/null && last=${p#"$r"}
+  done < <(for d in usr/lib usr/local/lib etc run; do
+             for f in "$r/$d/systemd/zram-generator.conf.d"/*.conf; do
+               if [[ -e $f || -L $f ]]; then echo "${f##*/}"; fi
+             done
+           done | LC_ALL=C sort -u)
+  if [[ -z $last ]]; then
+    for d in run etc usr/local/lib usr/lib; do
+      f=$r/$d/systemd/zram-generator.conf
+      [[ -e $f ]] || continue
+      awk "$get" "$f" 2>/dev/null && last=${f#"$r"}
+      break
+    done
+  fi
+  echo "$last"
+}
+# zram_line SIZE_BYTES MEMTOTAL_KB DECIDER OURS: the "zram swap" line, "status<TAB>detail".
+# OmacVM's cap is memory/guest/90-omacvm-zram.conf's min(ram / 4, 8192) MiB; up to 10 % over is
+# fine (MemTotal moves a little with the kernel). Over it, the line says who decides (DECIDER,
+# zram_decider's path) and what changes it (OURS = 1: OmacVM's 95-omacvm.conf is in place):
+# Update VM only when that is what is missing; a file of the user's own in /etc is their choice.
+zram_line() {
+  local b=$1 kb=$2 who=$3 ours=$4 cap size capt w
+  if [[ -z $b || $b == 0 ]]; then printf 'fail\t%s\n' "none (reboot after omacvm apply?)"; return 0; fi
+  cap=$(( kb * 1024 / 4 )); (( cap > 8192 * 1048576 )) && cap=$(( 8192 * 1048576 ))
+  size=$(awk -v b="$b" 'BEGIN { m = b / 1048576; s = m >= 1024 ? sprintf("%.1fG", m / 1024) : sprintf("%.1fM", m); sub(/\.0/, "", s); print s }')
+  capt=$(awk -v b="$cap" 'BEGIN { m = b / 1048576; s = m >= 1024 ? sprintf("%.1fG", m / 1024) : sprintf("%.1fM", m); sub(/\.0/, "", s); print s }')
+  case $who in
+    /etc/systemd/zram-generator.conf.d/90-omacvm.conf|/etc/systemd/zram-generator.conf.d/95-omacvm.conf) ;;
+    /etc/systemd/zram-generator.conf.d/*)
+      printf 'ok\t%s\n' "$size, set by $who (yours; OmacVM's cap is $capt)"; return 0 ;;
+  esac
+  w=$who; [[ -n $w ]] || w="zram-generator's default"
+  if (( b * 10 <= cap * 11 )); then
+    printf 'ok\t%s\n' "$size (OmacVM's cap: a quarter of the memory, at most 8 GiB)"
+  elif [[ $ours != 1 ]]; then
+    printf 'warn\t%s\n' "$size, over OmacVM's cap of $capt (set by $w): Update VM (omacvm apply), then restart the VM"
+  elif [[ $who == /etc/systemd/zram-generator.conf.d/95-omacvm.conf ]]; then
+    printf 'warn\t%s\n' "$size, over OmacVM's cap of $capt: the cap applies at the VM's next restart"
+  else
+    printf 'warn\t%s\n' "$size, over OmacVM's cap of $capt: $w is read after OmacVM's file and sets it"
+  fi
+}
 # ghostty_line INSTALLED JSON LIBRARY [MARKER ZINKOFF RECORD]: the "Ghostty" line,
 # "status<TAB>detail" (nothing when Ghostty is not installed). Ghostty 1.2 and newer need OpenGL
 # 4.3, the VM's GPU gives 4.1, so OmacVM's EGL vendor library starts Ghostty alone on Mesa's CPU
@@ -1052,8 +1111,17 @@ if [[ $TYPE == app ]]; then
   elif [[ $o == -1 ]]; then warn "free page reporting" "the balloon has not started free page reporting yet (Update VM / omacvm apply sets 256 KiB)"
   else warn "free page reporting" "freed memory leaves QEMU's footprint in blocks of order $o, not 256 KiB (Update VM / omacvm apply sets it)"; fi
 fi
-z=$(swapon --show=NAME,SIZE --noheadings 2>/dev/null | awk '/zram/ { print $2; exit }')
-[[ -n $z ]] && ok "zram swap" "$z" || bad "zram swap" "none (reboot after omacvm apply?)"
+# zram: OmacVM's cap, or who sets more (#746: Omarchy 4.5's own file was read after OmacVM's).
+zd="" zb=""
+read -r zd zb < <(swapon --show=NAME,SIZE --bytes --noheadings 2>/dev/null | awk '/zram/ { print $1, $2; exit }')
+[[ -n $zd && -r /sys/block/${zd##*/}/disksize ]] && zb=$(cat "/sys/block/${zd##*/}/disksize")
+zo=0; [[ -s /etc/systemd/zram-generator.conf.d/95-omacvm.conf ]] && zo=1
+r=$(zram_line "$zb" "$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo)" "$(zram_decider /)" "$zo")
+case ${r%%$'\t'*} in
+  ok) ok "zram swap" "${r#*$'\t'}" ;;
+  warn) warn "zram swap" "${r#*$'\t'}" ;;
+  *) bad "zram swap" "${r#*$'\t'}" ;;
+esac
 if command -v grub-mkconfig >/dev/null; then
   if ! command -v snapper >/dev/null; then bad "bootable snapshots" "snapper is not installed (pacman -S snapper)"
   elif ! systemctl is-active -q grub-btrfsd; then bad "bootable snapshots" "grub-btrfsd is not running"

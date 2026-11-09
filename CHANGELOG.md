@@ -36,6 +36,14 @@ in more words.
   Update VM, Omarchy updates; 3.4.0 and 3.4.1). While the shell swaps the bar, they use Omarchy's
   own bar colour and font. Nothing changes on screen. Update VM brings it
   ([troubleshooting 59](docs/troubleshooting.md#59-the-shells-log-fills-with-typeerror-cannot-read-property-foreground-of-null)).
+- **zram on Omarchy 4.5** (#746): a 4.5 VM, new or moved from 4.0, had zram as big as its whole
+  memory (48 GB of zram in a 48 GB VM), not OmacVM's cap of a quarter of the memory, at most 8 GiB.
+  Omarchy 4.5 ships its own zram file (`/usr/lib/systemd/zram-generator.conf.d/90-omarchy.conf`,
+  `zram-size = ram`), and zram-generator reads such files by name, so it was read after OmacVM's
+  `90-omacvm.conf` and won. OmacVM's file is now `95-omacvm.conf`: after Omarchy's, before a file
+  of your own (`99-local.conf`, as Omarchy suggests), which still decides. Update VM, then restart
+  the VM. `omacvm check`'s "zram swap" line warns when zram is over the cap and says which file
+  sets it. 4.0 VMs keep the same size.
 
 ## 3.4.1
 

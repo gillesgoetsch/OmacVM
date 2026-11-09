@@ -84,7 +84,8 @@ Gestures, `notchcast` in the VM.
 - **The memory-optimized kernel** (`src/kernel/`, opt-in) is Arch Linux ARM's
   own `linux-aarch64`, rebuilt with transparent huge pages always on and
   MGLRU; the stock kernel stays in GRUB as a fallback.
-- **Memory** (`src/memory/`): the guest keeps a small zram and reclaims
+- **Memory** (`src/memory/`): the guest keeps a small zram (a quarter of its
+  memory, at most 8 GiB; Omarchy 4.5's own default is all of it) and reclaims
   smoothly instead of hoarding. What the VM frees leaves QEMU's
   footprint, the number Activity Monitor shows, in 256 KiB blocks
   (`page_reporting_order` 6; the kernel's default is 2 MiB blocks, which
