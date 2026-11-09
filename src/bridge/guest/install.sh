@@ -4,7 +4,9 @@
 #   ./install.sh <desktop-user>
 # Idempotent. Installs:
 #   /usr/local/bin/omacvm-bridge, /usr/local/bin/omacvm-bridge-osd, /usr/local/bin/omacvm-bridge-events
-#   /usr/local/bin/omarchy-toggle-nightlight (Super+Ctrl+N drives the Mac's Night Shift)
+#   /usr/local/bin/omarchy-toggle-nightlight (the menu's Nightlight, and
+#   Super+Ctrl+N on Omarchy 4.0, drive the Mac's Night Shift), linked from
+#   /usr/local/lib/omacvm/omarchy-overrides: ahead of Omarchy's on the session's PATH
 #   /usr/local/bin/omarchy-network-{qr,password} (Omarchy's Wi-Fi QR card shares the Mac's network)
 #   user service omacvm-bridge-osd (Omarchy OSD for the Mac's media keys)
 #   user socket omacvm-bridge-events (one event stream from the Mac per
@@ -27,6 +29,13 @@ as_user() { sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" "$@"; }
 ../../guest/pkg-add python || true
 install -m755 omacvm-bridge omacvm-bridge-osd omacvm-bridge-events omarchy-toggle-nightlight \
   omarchy-network-qr omarchy-network-password /usr/local/bin/
+# Omarchy's envs.lua puts its own bin first on the session's PATH, so
+# /usr/local/bin does not win there (#748): the night light toggle is linked
+# into the folder omacvm_vm.lua puts ahead of it (guest/off.sh removes it).
+# Only that one: OmacVM's Wi-Fi QR card calls its two commands by full path.
+OMARCHY_OVERRIDES=/usr/local/lib/omacvm/omarchy-overrides
+install -d "$OMARCHY_OVERRIDES"
+ln -sfn /usr/local/bin/omarchy-toggle-nightlight "$OMARCHY_OVERRIDES/omarchy-toggle-nightlight"
 install -m644 omacvm-bridge-osd.service omacvm-bridge-events.socket omacvm-bridge-events.service /etc/systemd/user/
 systemctl --user -M "$U@" daemon-reload
 systemctl --user -M "$U@" enable --now omacvm-bridge-events.socket >/dev/null 2>&1 || true

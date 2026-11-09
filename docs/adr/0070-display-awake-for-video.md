@@ -65,7 +65,7 @@ videos play in a window) do not tell them apart.
      on the session bus (`serve_display_locks`, Gio, in its own thread):
      a Chromium-based caller (by the pid the bus gives) gets a cookie, any
      other caller an error, so Firefox, SDL and the rest fall back as when
-     nobody serves the name. A lock goes with `UnInhibit`, when its caller
+     nobody serves the name (Firefox from 3.4.2: ADR 0072). A lock goes with `UnInhibit`, when its caller
      leaves the bus, or when its pid belongs to another process; at most 64.
      Also counted, by Wayland alone: the system's `/usr/lib/chromium/chromium`,
      not replaced on disk while it runs, with pacman's `chromium` 157 or
@@ -104,7 +104,9 @@ mini with the switch off: guest saying `inhibit`, nothing held.
   the focus when its first lock starts: with music in one Chromium window and
   a video in another, the first one's display counts (not tested;
   troubleshooting 56).
-- Firefox was not tested.
+- Firefox was not tested here; it did not count (#750). ADR
+  [0072](0072-firefox-wake-locks-and-guest-idle.md) adds Firefox's wake
+  locks and holds Omarchy's own idle for them (3.4.2).
 - The agent now owns `org.freedesktop.ScreenSaver` in the session. Only
   Chromium-based callers get an answer other than an error; an app that
   only ever tries that name (and not Wayland) keeps its behaviour, as it

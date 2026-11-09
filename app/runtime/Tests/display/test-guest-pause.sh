@@ -35,8 +35,12 @@ gfx=$(body 'static void cocoa_gl_update(DisplayChangeListener *dcl,')
 frame=$(body 'static void omacvm_gp_guest_frame(void)')
 hello=$(body 'static void omacvm_chan_line(NSData *data)')
 init=$(body 'static void omacvm_displays_init(void)')
+why=$(body 'static OmacVMGpWhy omacvm_gp_why(void)')
+say=$(body 'static void omacvm_gp_say(OmacVMGpTell tell, OmacVMGpWhy why)')
+write=$(body 'static void omacvm_chan_write(NSString *line)')
 [[ -n $seen && -n $lock && -n $update && -n $tell && -n $send && -n $again && -n $ghello && -n $close && -n $fire &&
-   -n $sw && -n $present && -n $off && -n $flush && -n $gfx && -n $frame && -n $hello && -n $init ]] || fail "a piece of the wiring is missing"
+   -n $sw && -n $present && -n $off && -n $flush && -n $gfx && -n $frame && -n $hello && -n $init && -n $why &&
+   -n $say && -n $write ]] || fail "a piece of the wiring is missing"
 grep -q '#include "ui/omacvm-guest-pause.h"' "$m" || fail "the rules are not included"
 # What feeds it: the occlusion, the lock and sleep, the start.
 grep -q 'omacvm_gp_update();' <<<"$seen" && grep -q 'omacvm_gp_update();' <<<"$lock" &&
@@ -58,7 +62,8 @@ grep -q 'boolForKey:@"pauseWhileHidden"' <<<"$sw" && grep -q 'getenv("OMACVM_GUE
 # The guest is told over the display channel, only an agent that says it can, a restarted agent again;
 # the lease and "seen" again in case a line was dropped.
 grep -q '{\\"unseen\\":\[\\"Virtual-1\\"\]}' <<<"$send" && grep -q '{\\"unseen\\":\[\]}' <<<"$send" &&
-  grep -q 'omacvm_chan_write' <<<"$send" && grep -q '!omacvm_gp_able' <<<"$send" &&
+  grep -q 'omacvm_chan_write' <<<"$send" && grep -q '!omacvm_gp_able ? OMACVM_GP_NOT_ABLE' <<<"$why" &&
+  grep -q 'OmacVMGpWhy why = omacvm_gp_why();' <<<"$send" && grep -q 'if (why == OMACVM_GP_SENT) {' <<<"$send" &&
   grep -q 'omacvm_gp_send(tell);' <<<"$tell" && grep -q 'omacvm_gp_again_arm();' <<<"$tell" &&
   grep -q 'omacvm_gp_hello(d);' <<<"$hello" || fail "the guest is not told as tested"
 grep -q 'hello\[@"pause"\]' <<<"$ghello" && grep -q 'omacvm_gp_able = able;' <<<"$ghello" &&
@@ -71,6 +76,18 @@ awk '/omacvm_frames_unseen\+\+;/ {a = NR} /if \(omacvm_gp_keep\(&omacvm_gp, gl_s
   fail "the present does not keep the last picture before drawing without a scanout"
 grep -q 'omacvm_gp_dark = true;' <<<"$off" && grep -q 'unsigned n = omacvm_gp_frame(&omacvm_gp);' <<<"$frame" &&
   grep -q 'omacvm: guest drawing: paused for' <<<"$frame" || fail "the guest's pause is not logged"
+# qemu.log: every word for the guest and what became of it (a short write too), through the limiter;
+# out of sight with nobody to tell, once it lasted as long as a pause would wait.
+grep -q 'omacvm_chan_short = left > 0;' <<<"$write" && grep -q 'why = omacvm_chan_short ? OMACVM_GP_NOT_TAKEN : OMACVM_GP_SENT;' <<<"$send" &&
+  grep -q 'omacvm_gp_say(tell, why);' <<<"$send" && grep -q 'OmacVMGpSay say = omacvm_gp_log(&said, tell, why, CACurrentMediaTime());' <<<"$say" &&
+  grep -q 'if (say == OMACVM_GP_QUIET) {' <<<"$say" && grep -q 'told the VM to stop drawing' <<<"$say" &&
+  grep -q 'but the VM was not told' <<<"$say" && grep -q 'told the VM to draw again after' <<<"$say" &&
+  grep -q 'the VM was not told to draw again' <<<"$say" && grep -q 'OMACVM_GP_SAY_LAST' <<<"$say" ||
+  fail "what becomes of the words for the guest is not logged as tested"
+grep -q 'if (!seen && omacvm_gp_switch == 1 && omacvm_gp_why() != OMACVM_GP_SENT) {' <<<"$update" &&
+  grep -q 'now - omacvm_gp_unable_at >= OMACVM_GP_AFTER_S' <<<"$update" &&
+  grep -q 'omacvm_gp_say(OMACVM_GP_UNSEEN, omacvm_gp_why());' <<<"$update" ||
+  fail "a window out of sight with nobody to tell is not logged as tested"
 # Both kinds of guest frame end the hold: a GL scanout's flush, and a plain surface's update (GPU safe mode),
 # not QEMU's own "display not active" surface.
 grep -q 'omacvm_gp_guest_frame();' <<<"$flush" && grep -q '!surface_is_placeholder(surface)' <<<"$gfx" &&

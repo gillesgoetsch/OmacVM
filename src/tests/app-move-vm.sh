@@ -493,7 +493,7 @@ kill "$live" 2>/dev/null
 
 # ---------- a VM on Mac OS Extended (cp -c copies there, rc 0): refused ----------
 H=$T/hfs
-if hdiutil create -quiet -size 40m -fs HFS+ -volname omacvm-move-test "$T/hfs.dmg" 2>/dev/null && mkdir -p "$H" &&
+if "$R/src/tests/hdiutil-create.sh" 120 -quiet -size 40m -fs HFS+ -volname omacvm-move-test "$T/hfs.dmg" 2>/dev/null && mkdir -p "$H" &&
    hdiutil attach -quiet -nobrowse -mountpoint "$H" "$T/hfs.dmg" 2>/dev/null; then
   Vs=$V; V=$H/Old; mkdir -p "$V"
   cp "$Vs/vm.env" "$Vs/efi-vars.fd" "$Vs/ready" "$V/"; dd if=/dev/urandom of="$V/disk.img" bs=1k count=64 2>/dev/null

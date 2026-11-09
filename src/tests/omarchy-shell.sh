@@ -96,7 +96,7 @@ PY
   rm -rf "$T/mon"
   python3 "$R/src/app/guest/monitor-widget/build.py" "$T/mon" "$O/$v/shell/plugins/panels/monitor" 2>/dev/null
   t "0" "$?" "$v: OmacVM.app's display panel builds"
-  t "1 fill: Style.hoverFillFor(root.bar.foreground, Commons.Color.accent)" \
+  t "1 fill: Style.hoverFillFor(root.barFg, Commons.Color.accent)" \
     "$(grep -c '^import qs.Commons as Commons$' "$T/mon/Panel.qml") $(awk '/id: macExternalRow/ {on = 1} on && /fill:/ {sub(/^ */, ""); print; exit}' "$T/mon/Panel.qml")" \
     "  its own row's colour is Commons.Color (Qt 6.12)"
   t "1 1" "$(grep -c 'id: macExtraRow' "$T/mon/Panel.qml") $(grep -c '^ *ToggleSwitch {$' "$T/mon/Panel.qml")" \

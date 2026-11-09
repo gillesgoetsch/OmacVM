@@ -35,7 +35,7 @@ apply "$T/b"
 expect "kernel without free page reporting: nothing made" no "$([[ -e $T/b$P || -d $T/b/sys/module ]] && echo yes || echo no)"
 o=$(sed -n "s|^w $P - - - - \([0-9]*\)$|\1|p" "$F")
 expect "the order is 2 (16 KiB, the Mac's page) to 8 (1 MiB)" yes "$([[ -n $o ]] && (( o >= 2 && o < 9 )) && echo yes)"
-expect "install.sh installs the file" 1 "$(grep -c 'install -m644 90-omacvm-mm.tmpfiles /etc/tmpfiles.d/90-omacvm-mm.conf' "$I")"
+expect "install.sh installs the file" 1 "$(grep -c 'install -Dm644 90-omacvm-mm.tmpfiles "$D"/etc/tmpfiles.d/90-omacvm-mm.conf' "$I")"
 expect "install.sh applies it at once" 1 "$(grep -c 'systemd-tmpfiles --create /etc/tmpfiles.d/90-omacvm-mm.conf' "$I")"
 expect "omacvm check reads the order on the app route" 1 "$(grep -c "cat $P" "$C")"
 expect "the check row is \"free page reporting\", never memory back to the Mac" "5 0" \

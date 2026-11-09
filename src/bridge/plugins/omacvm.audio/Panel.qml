@@ -32,6 +32,13 @@ Panel {
 
   Bridge { id: bridge }
 
+  // `bar` is null while there is no bar: Omarchy's bar sets it from outside,
+  // and when the shell reloads a plugin in place (a widget or the bar copy
+  // written, Update VM) the old bar goes before its widgets. Then Omarchy's
+  // own bar colours and font, so no binding reads a property of null.
+  readonly property color barFg: bar ? bar.foreground : Commons.Color.bar.text
+  readonly property string barFont: bar ? bar.fontFamily : Style.font.family
+
   readonly property bool available: bridge.available && !!bridge.audio
   readonly property var audio: bridge.audio || ({})
   readonly property var output: audio.output || null
@@ -418,8 +425,8 @@ Panel {
               id: heroIcon
               textFormat: Text.PlainText
               text: root.outputIcon()
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
+              color: root.barFg
+              font.family: root.barFont
               font.pixelSize: Style.font.display
               opacity: root.outputMuted || !root.available ? 0.5 : 1.0
               anchors.left: parent.left
@@ -431,7 +438,7 @@ Panel {
               visible: root.available
               checked: root.anyAudible
               hasCursor: root.headerHasCursor
-              foreground: root.bar.foreground
+              foreground: root.barFg
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               onHovered: function(on) { if (on) root.setHeaderCursor() }
@@ -440,7 +447,7 @@ Panel {
               PanelToolTip {
                 visible: powerSwitch.containsMouse
                 text: root.toggleHint
-                fontFamily: root.bar.fontFamily
+                fontFamily: root.barFont
               }
             }
 
@@ -455,8 +462,8 @@ Panel {
 
               Text {
                 text: root.available ? "Audio" : "Mac unavailable"
-                color: root.bar.foreground
-                font.family: root.bar.fontFamily
+                color: root.barFg
+                font.family: root.barFont
                 font.pixelSize: Style.font.title
                 font.bold: true
                 elide: Text.ElideRight
@@ -470,8 +477,8 @@ Panel {
                   outputSlider.dragging ? outputSlider.liveValue : root.outputVolume,
                   root.outputMuted
                 ).toUpperCase()
-                color: Qt.darker(root.bar.foreground, 1.4)
-                font.family: root.bar.fontFamily
+                color: Qt.darker(root.barFg, 1.4)
+                font.family: root.barFont
                 font.pixelSize: Style.font.caption
                 font.bold: true
                 font.letterSpacing: 1.2
@@ -484,7 +491,7 @@ Panel {
           // ---- Output devices ----
           PanelSeparator {
             visible: root.available
-            foreground: root.bar.foreground
+            foreground: root.barFg
           }
 
           Column {
@@ -499,8 +506,8 @@ Panel {
               PanelSectionHeader {
                 id: outputHeader
                 text: "OUTPUT"
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
+                foreground: root.barFg
+                fontFamily: root.barFont
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
               }
@@ -511,8 +518,8 @@ Panel {
                 text: root.outputAdjustable
                   ? Math.round((outputSlider.dragging ? outputSlider.liveValue : root.outputVolume) * 100) + "%"
                   : "FIXED"
-                color: Qt.darker(root.bar.foreground, 1.4)
-                font.family: root.bar.fontFamily
+                color: Qt.darker(root.barFg, 1.4)
+                font.family: root.barFont
                 font.pixelSize: Style.font.caption
                 font.bold: true
                 anchors.right: parent.right
@@ -528,7 +535,7 @@ Panel {
               height: outputSlider.implicitHeight + Style.spacing.controlGap
               hasCursor: root.cursorActive && root.focusSection === "output" && root.selectedIndex === -1
               onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(outputSliderRow)
-              foreground: root.bar.foreground
+              foreground: root.barFg
               outline: true
 
               PanelSlider {
@@ -573,7 +580,7 @@ Panel {
           // ---- Input ----
           PanelSeparator {
             visible: root.available && (root.displayInputs.length > 0 || root.hasInput)
-            foreground: root.bar.foreground
+            foreground: root.barFg
           }
 
           Column {
@@ -588,8 +595,8 @@ Panel {
               PanelSectionHeader {
                 id: microphoneHeader
                 text: "INPUT"
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
+                foreground: root.barFg
+                fontFamily: root.barFont
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
               }
@@ -600,8 +607,8 @@ Panel {
                 text: root.inputAdjustable
                   ? Math.round((inputSlider.dragging ? inputSlider.liveValue : root.inputVolume) * 100) + "%"
                   : "FIXED"
-                color: Qt.darker(root.bar.foreground, 1.4)
-                font.family: root.bar.fontFamily
+                color: Qt.darker(root.barFg, 1.4)
+                font.family: root.barFont
                 font.pixelSize: Style.font.caption
                 font.bold: true
                 anchors.right: parent.right
@@ -618,7 +625,7 @@ Panel {
               height: inputControls.implicitHeight + Style.spacing.controlGap
               hasCursor: root.cursorActive && root.focusSection === "input" && root.selectedIndex === -1
               onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(inputSliderRow)
-              foreground: root.bar.foreground
+              foreground: root.barFg
               outline: true
 
               Column {
@@ -647,13 +654,13 @@ Panel {
                   visible: root.hasMeter
                   width: parent.width
                   height: Math.max(Style.space(5), Style.spacing.xs)
-                  color: Util.alpha(root.bar.foreground, 0.18)
+                  color: Util.alpha(root.barFg, 0.18)
                   opacity: root.inputMuted ? 0.35 : 1.0
 
                   Rectangle {
                     height: parent.height
                     width: parent.width * Math.max(0, Math.min(1, inputPeakMonitor.peak))
-                    color: root.bar.foreground
+                    color: root.barFg
                     Behavior on width { NumberAnimation { duration: 70 } }
                   }
                 }
@@ -697,7 +704,7 @@ Panel {
     hasCursor: root.cursorActive && root.focusSection === "output" && root.selectedIndex === rowIndex
     onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(sinkRow)
     current: isActive
-    foreground: root.bar.foreground
+    foreground: root.barFg
     fill: root.hoverFill
     currentFill: root.selectedFill
     implicitHeight: sinkInner.implicitHeight + Style.spacing.xl
@@ -714,8 +721,8 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: Model.sinkGlyph(sinkRow.device)
-        color: root.bar.foreground
-        font.family: root.bar.fontFamily
+        color: root.barFg
+        font.family: root.barFont
         font.pixelSize: Style.font.title
         width: Style.space(22)
         horizontalAlignment: Text.AlignHCenter
@@ -725,8 +732,8 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: sinkRow.device ? sinkRow.device.name : ""
-        color: root.bar.foreground
-        font.family: root.bar.fontFamily
+        color: root.barFg
+        font.family: root.barFont
         font.pixelSize: Style.font.body
         font.bold: sinkRow.isActive
         elide: Text.ElideRight
@@ -758,7 +765,7 @@ Panel {
     hasCursor: root.cursorActive && root.focusSection === "input" && root.selectedIndex === rowIndex
     onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(sourceRow)
     current: isActive
-    foreground: root.bar.foreground
+    foreground: root.barFg
     fill: root.hoverFill
     currentFill: root.selectedFill
     implicitHeight: sourceInner.implicitHeight + Style.spacing.xl
@@ -775,8 +782,8 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: Model.sourceGlyph(sourceRow.device)
-        color: root.bar.foreground
-        font.family: root.bar.fontFamily
+        color: root.barFg
+        font.family: root.barFont
         font.pixelSize: Style.font.title
         width: Style.space(22)
         horizontalAlignment: Text.AlignHCenter
@@ -786,8 +793,8 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: sourceRow.device ? sourceRow.device.name : ""
-        color: root.bar.foreground
-        font.family: root.bar.fontFamily
+        color: root.barFg
+        font.family: root.barFont
         font.pixelSize: Style.font.body
         font.bold: sourceRow.isActive
         elide: Text.ElideRight

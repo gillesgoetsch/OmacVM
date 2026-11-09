@@ -638,10 +638,40 @@ it on, a VM whose window nobody can see stops drawing, as a macOS app does:
   is in QEMU (`omacvm-cocoa-guest-pause*.patch`), the VM side in the display
   agent (Update VM brings it). `defaults write org.omacvm.app
   pauseWhileHidden -bool true` does the same as the row.
-- QEMU's log: "OmacVM: pause drawing while hidden: on|off" at the start and
-  on a change, and after each pause "guest drawing: paused for N s ...;
-  frames again A and B ms after it was seen". The VM's journal:
-  "omacvm-displays: drawing paused on Virtual-1" / "drawing again".
+- QEMU's log (`logs/qemu.log` in the VM's folder): "OmacVM: pause drawing
+  while hidden: on|off" at the start and on a change, and after each pause
+  "guest drawing: paused for N s ...; frames again A and B ms after it was
+  seen". What QEMU told the VM, each with "OmacVM: pause drawing while
+  hidden:" before it:
+  - "told the VM to stop drawing (the window is out of sight)"
+  - "told the VM to draw again after N s (its display went off)", or "(its
+    display did not go off)" (nothing in brackets without OpenGL)
+  - "the window is out of sight, but the VM was not told (...)" and "the VM
+    was not told to draw again (...)", with why: "its display channel is
+    closed", "its display agent has not said hello", "its display agent
+    cannot pause" (Update VM brings one that can) or "the display channel
+    did not take the line". The first comes once the window was out of
+    sight for 2 s, also at a start while the VM boots.
+- The VM's journal (`journalctl --user -u omacvm-displays`): "drawing
+  paused on Virtual-1" / "drawing again", and why a display the Mac called
+  unseen is still on:
+  - "drawing not paused on Virtual-1: a window share is running (window
+    ...): it may be on any display", or "... a share of it is running"
+  - "drawing not paused: no answer from Hyprland for its outputs"
+  - "drawing not paused on Virtual-1: Hyprland did not turn it off (...);
+    trying again at the next word", with Hyprland's answer or "no answer
+    from Hyprland in 2 s"; or "Hyprland has no such output"
+  - "drawing not paused on Virtual-1: the guest had turned it off itself"
+  - "Virtual-1 not on again yet: Hyprland did not turn it on; trying again"
+- Each of these lines comes once until its cause changes, so the word
+  QEMU says again every 5 s adds none, and hours out of sight add none.
+  Why the VM was not told is said once per run in qemu.log while it stays
+  the same, also when the window goes out of sight again later; the
+  journal says its reasons again for each new out-of-sight period. At
+  most 20 lines in 10 minutes in qemu.log and 10 a minute in the journal;
+  the last one says the next ones are left out. A line left out that
+  still holds is said after that: in qemu.log with the next 5 s word
+  while out of sight, in the journal at the agent's next look.
 - Only the main window (Virtual-1); the windows on other displays in full
   screen keep drawing.
 - While the display is paused, Hyprland's own wake on a pointer move or a
@@ -1093,10 +1123,21 @@ window per guest screen:
   window code to `omacvm-displays` in the VM (a user service), which writes
   it for `omacvm-display-sync`; that places each output as the Mac's
   displays are. A display with its own rule in `monitors.lua` keeps it.
+  Not counted as a rule of yours: Omarchy's own one-line scale rule for the
+  main output, exactly `hl.monitor({ output = "Virtual-1", mode = "preferred",
+  position = "auto", scale = S })` on one line (Omarchy's newer scaling
+  command writes it, seen in omarchy 4.5.0-3). That is Omarchy's scale for
+  Virtual-1: display-sync and `omacvm_app.lua` read it, and `omacvm-displays`
+  moves it into `omarchy_monitor_scale` at every login (#738).
 - The display panel keeps zoom separately for each secondary output in
   `~/.config/omacvm/scales/Virtual-N` (`$XDG_CONFIG_HOME` when set). Its
-  buttons call `omacvm-displays scale SCALE` for secondary and full-panel
-  outputs; normal primary scaling keeps Omarchy's original command. The
+  buttons call `omacvm-displays scale SCALE` for every VM output (Virtual-N,
+  the main output Virtual-1 in a window too); only outputs that are not the
+  VM's keep Omarchy's original command. For Virtual-1 it writes the scale
+  (Omarchy's clean value for the output's size) into `omarchy_monitor_scale`
+  itself and runs display-sync, never Omarchy's command; with a rule of your
+  own for Virtual-1, or no `omarchy_monitor_scale` line, it runs Omarchy's
+  command as before. The
   wrapper also works from a terminal on the focused output. A secondary
   output with a named rule in `monitors.lua` is refused without changes:
   edit that rule, or remove it to use automatic sizing and independent zoom.

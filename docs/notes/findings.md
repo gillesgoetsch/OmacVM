@@ -439,3 +439,37 @@ edges after the downscale), so only alpha 0 counts as nothing drawn.
 People see the black only while the shell's wallpaper is down (a shell
 restart or crash): screenshots and shares of the bare background. That
 part is Hyprland's; a report for Hyprland is drafted, not posted.
+
+## Omarchy's bin comes first on the session's PATH (November 2026)
+
+OmacVM's `omarchy-toggle-nightlight` (the Bridge's, it drives the Mac's Night
+Shift) sat in `/usr/local/bin`, "ahead of Omarchy's" on a login shell's PATH.
+The session never ran it (#748). Omarchy's `default/hypr/envs.lua` (the same
+lines in omarchy-mac 4.0 and Omarchy 4.5) takes Hyprland's PATH, removes
+`$OMARCHY_PATH/bin` from it and puts it back in front with `hl.env`, which is
+`setenv()` in Hyprland. Every key bind, every `exec_cmd` and the Omarchy shell
+(started by `omarchy-launch-shell` from Hyprland) inherit that order, so
+`/usr/share/omarchy/bin/omarchy-toggle-nightlight` (hyprsunset in the VM) won
+everywhere: the menu's Nightlight on 4.0 and 4.5, and Super+Ctrl+N on 4.0 (on
+a 4.0 VM the key started hyprsunset and the Mac's Night Shift stayed off).
+
+- `/proc/<Hyprland pid>/environ` is no proof: it holds the environment
+  Hyprland was started with, before its config ran. The sweep's
+  `path-Hyprland` rows read it and passed (`/usr/local/bin` first) while the
+  shell's own environ had `/usr/share/omarchy/bin` first. Read the shell's
+  (`quickshell -n -p <OMARCHY_PATH>/shell`) or a process a key started.
+- The fix is a folder of OmacVM's ahead of Omarchy's
+  (`/usr/local/lib/omacvm/omarchy-overrides`, put first by `omacvm_vm.lua`
+  after Omarchy's envs.lua, on every config load), holding only links to the
+  commands OmacVM replaces (the night light toggle). An empty folder on PATH
+  changes nothing, so the Bridge on or off is only the link, no reload.
+- The keys get the new PATH when Hyprland reloads `omacvm_vm.lua`; the shell
+  only when it starts again (through Hyprland: `omarchy-restart-shell` uses
+  `hyprctl dispatch exec_cmd`), which `guest/install.sh` does once: when it
+  wrote `omacvm_vm.lua`, or when it made the link (the Bridge switched on
+  after an update made with it off).
+- `omarchy toggle nightlight` (Omarchy 4.5's `omarchy` command, which its
+  agent skill suggests for "turn on night light") still runs Omarchy's own
+  toggle: `bin/omarchy` runs `$OMARCHY_BIN_DIR/<command>`, its own folder,
+  not the first one on PATH. Not a regression; the menu, the bar and the 4.0
+  key are what OmacVM covers.

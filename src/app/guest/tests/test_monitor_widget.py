@@ -65,6 +65,14 @@ class Build(unittest.TestCase):
         self.assertIn("Model.parseDisplays(root.notchFilterJson(displaysJson))", text)
         self.assertIn("root.notchScreenCount() > 1", text)
 
+    def test_main_output_through_omacvm_displays(self):
+        # #738: Omarchy 4.5's command writes a rule for Virtual-1 whose "preferred" mode
+        # undoes the window's size; the VM's main output goes through omacvm-displays too.
+        self.assertEqual(self.build(), 0)
+        text = (self.out / "Panel.qml").read_text()
+        self.assertIn('|| /^Virtual-[1-9][0-9]*$/.test(display.name)', text)
+        self.assertNotIn('display.name !== "Virtual-1"', text)
+
     def test_every_scale_in_fullpanel(self):
         # #355: in "Full screen including notch" every preset, set through omacvm-displays.
         self.assertEqual(self.build(), 0)
@@ -72,7 +80,6 @@ class Build(unittest.TestCase):
         self.assertIn('display.name === root.macFullPanel ? scalePresets', text)
         self.assertIn('root.macScaleManagedFocused() ? ["/usr/local/bin/omacvm-displays", "scale", String(scale)]', text)
         self.assertIn(': ["bash", "-c", "omarchy-hyprland-monitor-scaling " + scale]', text)
-        self.assertIn('display.name !== "Virtual-1" && /^Virtual-[1-9][0-9]*$/.test(display.name)', text)
         self.assertIn('display.name === root.macFullPanel', text)
         self.assertIn('command: ["omacvm-displays", "fullpanel"]', text)
         self.assertIn("if (!macFullPanelProc.running) macFullPanelProc.running = true", text)
@@ -105,7 +112,7 @@ class Build(unittest.TestCase):
         # imports it itself).
         self.assertEqual(self.build(), 0)
         text = (self.out / "Panel.qml").read_text()
-        self.assertIn("Style.hoverFillFor(root.bar.foreground, Commons.Color.accent)", text)
+        self.assertIn("Style.hoverFillFor(root.barFg, Commons.Color.accent)", text)
         self.assertNotIn(", Color.accent)", text)
         self.assertEqual(text.count(build.COMMONS_ALIAS), 1)
         (self.source / "Panel.qml").write_text(build.COMMONS_ALIAS + panel())

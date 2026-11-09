@@ -2,7 +2,7 @@
 // (lit while Night Shift is on, dimmed while off). A click opens a panel in the
 // style of Omarchy's display panel: Night Shift on/off, its strength and True
 // Tone, all on the Mac. Middle click switches Night Shift right away, like
-// Super+Ctrl+N (which OmacVM points at the Mac too). The state comes live from
+// the menu's Nightlight (which OmacVM points at the Mac too). The state comes live from
 // omacvm-bridge's event stream ("display" events), so changes made on the Mac
 // show here at once.
 import QtQuick
@@ -11,11 +11,20 @@ import Quickshell
 import Quickshell.Io
 import qs.Ui
 import qs.Commons
+// Qt 6.12's QtQuick has a Color of its own, which hides Omarchy's (#376).
+import qs.Commons as Commons
 
 Panel {
   id: root
   moduleName: "omacvm.nightshift"
   ipcTarget: "omacvm.nightshift"
+
+  // `bar` is null while there is no bar: Omarchy's bar sets it from outside,
+  // and when the shell reloads a plugin in place (a widget or the bar copy
+  // written, Update VM) the old bar goes before its widgets. Then Omarchy's
+  // own bar colours and font, so no binding reads a property of null.
+  readonly property color barFg: bar ? bar.foreground : Commons.Color.bar.text
+  readonly property string barFont: bar ? bar.fontFamily : Style.font.family
 
   // ---- the Mac's display state (omacvm-bridge events) ----
   property bool available: false
@@ -191,9 +200,9 @@ Panel {
             id: heroIcon
             textFormat: Text.PlainText
             text: "󰔎"
-            color: root.bar.foreground
+            color: root.barFg
             opacity: root.nightShift ? 1.0 : 0.55
-            font.family: root.bar.fontFamily
+            font.family: root.barFont
             font.pixelSize: Style.font.display
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
@@ -209,8 +218,8 @@ Panel {
 
             Text {
               text: "Night Shift"
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
+              color: root.barFg
+              font.family: root.barFont
               font.pixelSize: Style.font.title
               font.bold: true
               elide: Text.ElideRight
@@ -221,8 +230,8 @@ Panel {
               textFormat: Text.PlainText
               text: !root.available ? "THE MAC DOES NOT ANSWER"
                 : ((root.nightShift ? "ON" : "OFF") + " · THE MAC'S WHOLE SCREEN")
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
+              color: Qt.darker(root.barFg, 1.4)
+              font.family: root.barFont
               font.pixelSize: Style.font.caption
               font.bold: true
               font.letterSpacing: 1.2
@@ -232,14 +241,14 @@ Panel {
           }
         }
 
-        PanelSeparator { foreground: root.bar.foreground }
+        PanelSeparator { foreground: root.barFg }
 
         Toggle {
           width: parent.width
           label: "Night Shift"
           description: root.schedule !== "" ? "Warmer colors on the Mac · " + root.schedule : "Warmer colors on the Mac"
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
+          foreground: root.barFg
+          fontFamily: root.barFont
           checked: root.nightShift
           enabled: root.available
           hasCursor: root.cursorActive && root.cursor === 0
@@ -259,8 +268,8 @@ Panel {
             PanelSectionHeader {
               id: strengthHeader
               text: "STRENGTH"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
+              foreground: root.barFg
+              fontFamily: root.barFont
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
             }
@@ -269,8 +278,8 @@ Panel {
               id: strengthValue
               textFormat: Text.PlainText
               text: Math.round(strengthSlider.dragging ? strengthSlider.liveValue : root.shownStrength * 100) + "%"
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
+              color: Qt.darker(root.barFg, 1.4)
+              font.family: root.barFont
               font.pixelSize: Style.font.caption
               font.bold: true
               anchors.right: parent.right
@@ -283,7 +292,7 @@ Panel {
             width: parent.width
             height: strengthSlider.implicitHeight + Style.spacing.controlGap
             hasCursor: root.cursorActive && root.cursor === 1
-            foreground: root.bar.foreground
+            foreground: root.barFg
             outline: true
             opacity: root.available ? 1.0 : 0.45
 
@@ -309,7 +318,7 @@ Panel {
 
         PanelSeparator {
           visible: root.trueToneAvailable
-          foreground: root.bar.foreground
+          foreground: root.barFg
         }
 
         Toggle {
@@ -317,8 +326,8 @@ Panel {
           width: parent.width
           label: "True Tone"
           description: "The Mac's display adapts to the light around it"
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
+          foreground: root.barFg
+          fontFamily: root.barFont
           checked: root.trueTone
           hasCursor: root.cursorActive && root.cursor === 2
           onClicked: root.toggleTrueTone()

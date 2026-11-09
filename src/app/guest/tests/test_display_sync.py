@@ -351,6 +351,42 @@ class ModeAndScale(SyncCase):
         self.assertIn("its own rule", r.stderr)
         self.assertFalse((self.state / "Virtual-1.rule").exists())
 
+    # #738: Omarchy 4.5's command keeps the scale in a one-line rule for the
+    # output ("preferred" mode). For Virtual-1 that is Omarchy's scale: the
+    # screen keeps following the window, with that scale.
+    OMARCHY_45 = 'hl.monitor({{ output = "Virtual-1", mode = "preferred", position = "auto", scale = {} }})\n'
+
+    def test_omarchys_scale_rule_is_followed(self):
+        self.set_window(3024, 1968)
+        self.config.write_text(MONITORS_LUA.format(scale='"auto"') + self.OMARCHY_45.format(1.6))
+        r = self.run_sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("its own rule", r.stderr)
+        m = self.shown()
+        self.assertEqual((m["width"], m["height"]), (3024, 1968))
+        self.assertAlmostEqual(m["scale"], 1.6)
+        self.assertIn('scale = "1.6"', (self.state / "Virtual-1.rule").read_text())
+        self.hyprland_reloads(3024, 1964)                # the rule's "preferred": the cached mode
+        self.run_sync()
+        self.assertEqual((self.shown()["height"], self.shown()["scale"]), (1968, 1.6))
+        self.set_window(2940, 1840)                       # window mode: a resize is followed
+        self.config.write_text(MONITORS_LUA.format(scale="2") + self.OMARCHY_45.format(1.25))
+        self.run_sync()
+        m = self.shown()
+        self.assertEqual((m["width"], m["height"]), (2940, 1840))
+        self.assertAlmostEqual(m["scale"], clean_scale(2940, 1840, 1.25), places=5)
+
+    def test_other_rules_for_the_screen_stay_the_users(self):
+        self.set_window(3024, 1968)
+        for rule in ('hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 1.6 }) -- mine\n',
+                     'hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "auto", scale = 1.6 })\n',
+                     'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "0x0", scale = 1.6 })\n'):
+            with self.subTest(rule=rule):
+                self.config.write_text(MONITORS_LUA.format(scale="2") + rule)
+                r = self.run_sync()
+                self.assertIn("its own rule", r.stderr)
+                self.assertEqual(self.evals(), [])
+
 
 class KeptRule(SyncCase):
     """The rule an output shows is kept for omacvm_app.lua, which sets it again

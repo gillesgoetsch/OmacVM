@@ -20,14 +20,14 @@ The short version is the grid at the top of the [README](../README.md).
 | **The GPU, in the desktop and the browsers** | Hyprland's animations, and pages and WebGL in Chromium, Chrome, Brave and Firefox, drawn by the Mac's GPU |
 | **Per-display workspaces** | Each display has its own workspaces 1…0, like Spaces. Unplug and they park on the Mac's screen; plug back in and they return |
 | **Clipboard both ways, Cmd+V** | Copy in Omarchy, paste on the Mac and back; Cmd+V pastes everywhere, terminals included |
-| **Night Shift and True Tone** | The Mac's Night Shift in Omarchy's bar, with Omarchy's own night light icon, lit while it is on. A click opens a panel like Omarchy's own: Night Shift, its strength and True Tone, all on the Mac (Super+Ctrl+N switches Night Shift directly). It replaces Omarchy's own night light, so the screen is never tinted twice |
-| **Wallpaper follows the theme** | Switch Omarchy's theme or background and the Mac's desktop wallpaper follows, on every Space (macOS also shows it behind its own lock screen) |
+| **Night Shift and True Tone** | The Mac's Night Shift in Omarchy's bar, with Omarchy's own night light icon, lit while it is on. A click opens a panel like Omarchy's own: Night Shift, its strength and True Tone, all on the Mac (the Omarchy menu's Nightlight switches Night Shift directly, and on Omarchy 4.0 so does Super+Ctrl+N; on 4.5 that key is Omarchy's Network panel). It replaces Omarchy's own night light, so the screen is never tinted twice |
+| **Wallpaper follows the theme** | Switch Omarchy's theme or background and the Mac's desktop wallpaper follows, on every Space (macOS also shows it behind its own lock screen). A video background (Omarchy 4.5) gives the Mac its first frame |
 | **The Mac's clock** | Omarchy's clock at the far right of the bar, in your Mac's menu bar format (day, date, 12 or 24 hours, seconds, language) |
 | **The Mac's time zone** *(with the Bridge)* | The VM's time zone follows the Mac's: at every start and when the Mac's changes (you travel). A zone you set in the VM yourself is kept; set it back to the Mac's and it follows again |
 | **The Mac's battery** | On a MacBook, Omarchy's battery icon and panel show the Mac's charge and charging, as on a laptop, plus time left and Omarchy's low-battery warning (not tested yet with the Mac on battery; the VM never suspends for it) |
 | **Your keyboard layout** | Taken from the Mac |
 | **Chromium video on the Mac** *(on by default)* | Omarchy's own Chromium decodes H.264 and VP9 (YouTube included) on the Mac's media engine, as Google Chrome and Brave do on their own: YouTube 4K takes about half the CPU it takes otherwise. A small kernel module and a sandboxed decoder service in the VM; a video it cannot take plays on the CPU. Off: `omacvm disable chromium-video` ([details](video-decode.md#chromium-from-arch-linux-arm)) |
-| **The display stays on for a video** | While a video plays in the VM and its window can be seen, the Mac's display does not turn off by itself, as with a Mac video player. A paused video, music, a minimised or covered window, another Space, a locked screen or a stopped VM let it sleep as usual; the Mac itself still sleeps when the lid closes. mpv and Omarchy's Chromium (also its web apps such as YouTube) count; Chromium counts only while it holds its display wake lock (a video playing where it can be seen), not for music, downloads or calls; Firefox was not tested ([details](troubleshooting.md#56-app-the-macs-display-turns-off-while-a-video-plays-in-the-vm)). Needs the app update and Update VM |
+| **The display stays on for a video** | While a video plays in the VM and its window can be seen, the Mac's display does not turn off by itself, as with a Mac video player. A paused video, music, a minimised or covered window, another Space, a locked screen or a stopped VM let it sleep as usual; the Mac itself still sleeps when the lid closes. mpv and Omarchy's Chromium (also its web apps such as YouTube) count; Chromium counts only while it holds its display wake lock (a video playing where it can be seen), not for music, downloads or calls. Firefox counts for a video that plays where it can be seen and a page's screen wake lock (not music or downloads; restart Firefox once after Update VM), and while such a video can be seen the VM's own screensaver and lock wait too, as for Chromium ([details](troubleshooting.md#56-app-the-macs-display-turns-off-while-a-video-plays-in-the-vm)). Needs the app update and Update VM |
 | **The control centre** | `omacvm` in Omarchy (the Omarchy menu, the bar's OmacVM item or a terminal; from the Mac: *Features…* in OmacVM.app's menu or `omacvm features --in-vm`) opens a floating window in the middle of the display (Escape or `q` closes it; `omacvm --here` stays in the terminal) and lists every feature with its live status: works, needs you (with the exact step on the Mac), failing, off, or not available on this Mac and why. Space switches a feature, `r` repairs it, `enter` shows its checks, version and log, `U` the updates (only the features a release changes, install now, weekly checks on or off; `o` updates the VM's own system with `omarchy update` and checks the graphics after), `!` reports a problem. The Mac does the work through a fixed list of requests to OmacVM Bridge; a failed switch puts the earlier features back. Theme colours come from the terminal, so it follows Omarchy's theme |
 | **Fast network** *(experimental, off by default)* | The VM on macOS's own VM network (vmnet) instead of QEMU's built-in one: faster to and from the Mac, steady latency, an address of its own. A small system service, so macOS asks for your password once: the app's **Fast network (experimental)** switch, or `omacvm enable fast-network` ([how](routes/app.md#fast-network-experimental-off-by-default)). On it the VM is a machine on a network of the Mac (`192.168.77.0/24`, the Mac at `192.168.77.1`): it reaches every service the Mac offers on all its addresses (Remote Login, File Sharing, a dev server on `0.0.0.0`), not only OmacVM's own as on QEMU's built-in network |
 | **Graphics: OpenGL, Vulkan or Automatic** *(Automatic by default)* | Per VM, in the app's setup and VM window, `omacvm graphics` or the control centre. OpenGL: Omarchy and its apps draw with OpenGL on the Mac's GPU. Vulkan: the same plus Vulkan on the Mac's GPU for Vulkan apps (KosmicKrisp on macOS 26 and newer, MoltenVK before). Vulkan windows reach the screen by a copy on the Mac, faster than the VM's software copy (on KosmicKrisp since 3.0.1). Automatic is Vulkan on macOS 26 and newer with KosmicKrisp, OpenGL before ([how](routes/app.md)). OpenGL is 4.1 in both (the Mac's OpenGL); Ghostty, which needs 4.3, draws on the VM's CPU ([troubleshooting 47](troubleshooting.md#47-app-ghostty-opens-no-window-or-draws-on-the-cpu)) |
@@ -105,8 +105,10 @@ its bar there itself:
   VM gets a few pixels more (2944x1912 for 1.6 on the Air, at most 7 more
   each way), shown scaled onto the panel, with no black band. The app keeps
   the scale for the VM, so the next start begins at that size;
-- windows start below the strip, so nothing sits behind the notch, also
-  with the bar hidden (Super+Shift+Space), when the wallpaper fills the
+- windows start below the strip, so nothing sits behind the notch (from
+  3.4.2 the bar reserves the strip less 5 px of Omarchy's top window gap,
+  all of the gap when it is under 5, so windows sit closer under it),
+  also with the bar hidden (Super+Shift+Space), when the wallpaper fills the
   strip up to the top edge; a full-screen window (a video, Super+F) turns
   the strip black;
 - macOS's menu bar stays hidden over the strip, as in the app's normal
@@ -466,10 +468,20 @@ translator: [box64](https://github.com/ptitSeb/box64).
   program or AppImage starts like any other: `./Some-App-x86_64.AppImage`.
   box64 translates the app's own code and uses the VM's native libraries
   (glibc, GTK, X11, Wayland, OpenGL, SDL, FUSE) where it can.
+- **x86_64 programs go to box64 only.** Omarchy 4.5 has qemu-user
+  (`qemu-user-static-binfmt`), whose x86_64 rule would take them first after
+  a restart. While x86 apps is on, OmacVM holds that one rule back with a
+  file of its own, `/etc/binfmt.d/qemu-x86_64-static.conf` (comments only).
+  qemu-user's other architectures stay, and `qemu-x86_64-static ./program`
+  still works by name. Another x86_64 rule (FEX, or a rule or file of that
+  name of your own) is left alone: `omacvm check` names it, and switching x86
+  apps on fails until it is gone.
 - **Off:** `omacvm disable x86-apps` removes the package (`omacvm-box64`,
-  not `box64`, so Omarchy's update does not swap it for the AUR's box64)
-  and its binfmt rule. A box64 you installed yourself is left alone.
-- `omacvm check` runs a tiny x86_64 program to show it works.
+  not `box64`, so Omarchy's update does not swap it for the AUR's box64),
+  its binfmt rule and OmacVM's file, so qemu-user's x86_64 rule is back. A
+  box64 you installed yourself is left alone.
+- `omacvm check` runs a tiny x86_64 program to show it works and says which
+  rule gets x86_64 programs when it is not box64's.
 
 **Speed**, the same program and version, the x86_64 build through box64
 against the native ARM build, in an OmacVM.app VM (6 cores, 8 GB) on a
@@ -499,4 +511,5 @@ of 3 runs of the benchmark. **Not covered:** 32-bit x86 programs and
 Windows programs (Wine).
 
 Installing or removing box64 restarts systemd-binfmt, which drops binfmt rules that were
-added by hand and are not in a binfmt.d folder.
+added by hand and are not in a binfmt.d folder. So does the first apply of 3.4.2 or newer on a
+VM that has x86 apps on and qemu-user's x86_64 rule live.

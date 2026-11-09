@@ -6,6 +6,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import os
 import pathlib
 import shutil
 import struct
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 import zlib
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -589,13 +591,19 @@ class VideoOutputs(unittest.TestCase):
         self.electron_dir = self.tmp / "usr/lib/electron39"
         self.electron_dir.mkdir(parents=True)
         (self.electron_dir / "icudtl.dat").write_bytes(b"")
+        self.firefox_dir = self.tmp / "usr/lib/firefox"
+        self.firefox_dir.mkdir(parents=True)
+        (self.firefox_dir / "libxul.so").write_bytes(b"")
+        self.firefox = str(self.firefox_dir / "firefox")
+        self.logged = []
         for target, value in [("hypr_json", self.h.json), ("screen_locked", lambda: self.locked),
                               ("CHROMIUM_EXE", str(self.chromium_dir / "chromium")),
-                              ("PACMAN_LOCAL", self.local), ("log", lambda m: None)]:
+                              ("PACMAN_LOCAL", self.local), ("log", self.logged.append)]:
             patcher = mock.patch.object(od, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
         od._chromium_cache.clear()
+        od._gecko_cache.clear()
         self.start = {}
         self.locks = od.DisplayLocks(proc=self.proc)
 
@@ -615,9 +623,11 @@ class VideoOutputs(unittest.TestCase):
         self.fake_proc()
         return od.player_counts(pid, proc=self.proc, local=self.local, locks=self.locks)
 
-    def outputs(self):
+    def outputs(self, counted=None):
+        self.fake_proc()
         return od.inhibiting_outputs(self.h.json("j/clients"), self.h.json("j/monitors"),
-                                     od.idle_rule_free, od.screen_locked, counts=self.counts)
+                                     od.idle_rule_free, od.screen_locked, counts=self.counts,
+                                     asks=self.locks.gecko_holds, counted=counted)
 
     def chromium(self, version):
         for d in self.local.iterdir():
@@ -800,16 +810,21 @@ class VideoOutputs(unittest.TestCase):
         self.display_lock()
         self.assertEqual(self.outputs(), ["Virtual-1"])
 
-    def test_only_chromium_based_callers_get_a_lock(self):
+    def test_only_chromium_and_gecko_based_callers_get_a_lock(self):
         self.exe[100] = "/usr/bin/mpv"
-        self.exe[101] = "/usr/lib/firefox/firefox"
+        self.exe[101] = str(self.tmp / "opt/firefox/firefox")   # no libxul.so beside it: not Gecko
+        self.exe[103] = "/usr/bin/python3.14"
         self.assertIsNone(self.display_lock(100))
         self.assertIsNone(self.display_lock(101))
         self.assertIsNone(self.display_lock(102))         # no such process
+        self.assertIsNone(self.display_lock(103))
         for pid in (0, -1, True, "100", None):
             self.assertIsNone(self.locks.inhibit(":1.9", pid), pid)
         self.assertIsNone(self.locks.inhibit(None, 100))
         self.assertEqual(self.locks.count(), 0)
+        self.exe[104] = self.firefox
+        self.assertIsInstance(self.display_lock(104), int)
+        self.assertEqual(self.locks.count(), 1)
 
     def test_display_locks_are_capped(self):
         self.exe[100] = str(self.chromium_dir / "chromium")
@@ -819,20 +834,197 @@ class VideoOutputs(unittest.TestCase):
 
     def test_screensaver_answers(self):
         self.exe[100] = str(self.chromium_dir / "chromium")
-        self.exe[101] = "/usr/lib/firefox/firefox"
+        self.exe[101] = self.firefox
+        self.exe[102] = "/usr/bin/mpv"
         self.fake_proc()
         kind, cookie = od.screensaver_answer(self.locks, "Inhibit", ":1.49",
                                              ("/usr/lib/chromium/chromium", "Video Wake Lock"), 100)
         self.assertEqual(kind, "cookie")
         self.assertTrue(self.locks.holds(100))
-        # Firefox, SDL and the rest get an error, so they fall back as when nobody serves the name
-        self.assertEqual(od.screensaver_answer(self.locks, "Inhibit", ":1.50", ("firefox", "video-playing"), 101)[0],
-                         "error")
+        # Firefox gets a cookie for every reason; the reason says whether it counts
+        self.assertEqual(od.screensaver_answer(self.locks, "Inhibit", ":1.50", ("Firefox", "Playing audio"), 101)[0],
+                         "cookie")
+        self.assertFalse(self.locks.gecko_holds(101))
+        self.assertEqual(od.screensaver_answer(self.locks, "Inhibit", ":1.50", ("Firefox", "Playing video"), 101)[0],
+                         "cookie")
+        self.assertTrue(self.locks.gecko_holds(101))
+        self.assertEqual(od.screensaver_answer(self.locks, "Inhibit", ":1.50", ("Firefox",), 101)[0], "cookie")
+        # SDL, mpv and the rest get an error, so they fall back as when nobody serves the name
+        self.assertEqual(od.screensaver_answer(self.locks, "Inhibit", ":1.52", ("mpv", "Playing video"), 102),
+                         ("error", "org.freedesktop.DBus.Error.NotSupported",
+                          "only Chromium's and Firefox's wake locks"))
         self.assertEqual(od.screensaver_answer(self.locks, "Inhibit", ":1.51", ("x", "y"), None)[0], "error")
         self.assertEqual(od.screensaver_answer(self.locks, "UnInhibit", ":1.49", (cookie,), None), ("done", None))
         self.assertFalse(self.locks.holds(100))
         self.assertEqual(od.screensaver_answer(self.locks, "UnInhibit", ":1.49", ("x",), None), ("done", None))
         self.assertEqual(od.screensaver_answer(self.locks, "GetActive", ":1.49", (), 100)[0], "error")
+
+    # Firefox: every wake lock goes to org.freedesktop.ScreenSaver with its reason, never to Wayland.
+
+    def gecko_lock(self, reason="Playing video", pid=100, sender=":1.60"):
+        self.exe[pid] = self.firefox
+        self.fake_proc()
+        return self.locks.inhibit(sender, pid, reason)
+
+    def test_firefox_video_counts_without_a_wayland_inhibit(self):
+        self.h.window("0x1", inhibiting=False)
+        self.exe[100] = self.firefox
+        self.assertEqual(self.outputs(), [])                 # no lock: nothing
+        self.assertIsInstance(self.gecko_lock(), int)
+        counted = set()
+        self.assertEqual(self.outputs(counted), ["Virtual-1"])
+        self.assertEqual(counted, {100})
+        self.assertTrue(self.locks.gecko_holds(100))
+
+    def test_firefox_screen_wake_lock_counts(self):
+        self.h.window("0x1", inhibiting=False)
+        self.gecko_lock("Screen lock")
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+
+    def test_firefox_other_reasons_get_a_cookie_and_never_count(self):
+        self.h.window("0x1", inhibiting=False)
+        for reason in ("Playing audio", "Autoscroll", "Download in progress", "Video abspielen", "", None, 5,
+                       "playing video", "Playing video "):
+            self.assertIsInstance(self.gecko_lock(reason), int, reason)
+            self.assertEqual(self.outputs(), [], reason)
+            self.assertFalse(self.locks.gecko_holds(100))
+            self.assertFalse(self.locks.holds(100))
+        self.assertEqual(self.locks.count(), 9)
+        self.assertEqual(self.locks.gecko_pids(), set())
+
+    def langpack(self, lang, text, when):
+        """A language pack installed with this Firefox (browser/extensions), as pacman's firefox-i18n-*."""
+        ext = self.firefox_dir / "browser/extensions"
+        ext.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(ext / f"langpack-{lang}@firefox.mozilla.org.xpi", "w") as z:
+            z.writestr("manifest.json", "{}")
+            z.writestr(f"chrome/{lang}/locale/{lang}/global/dom/dom.properties", text)
+        os.utime(ext, (when, when))
+
+    def test_a_language_packs_names_count(self):
+        # Firefox 158 with firefox-i18n-de and its interface in German sent "Video abspielen" (row R16).
+        self.langpack("de", "# comment\nWakeLockVideoPlaying = Video abspielen\nWakeLockAudioPlaying = Audiowiedergabe\n"
+                            "WakeLockScreenLock = Sperrbildschirm\nWakeLockAutoscroll = Automatisches Scrollen\n", 1000)
+        self.h.window("0x1", inhibiting=False)
+        for reason in ("Video abspielen", "Sperrbildschirm", "Playing video"):
+            cookie = self.gecko_lock(reason)
+            self.assertEqual(self.outputs(), ["Virtual-1"], reason)
+            self.locks.uninhibit(":1.60", cookie)
+        for reason in ("Audiowiedergabe", "Automatisches Scrollen", "Playing audio"):
+            self.gecko_lock(reason)
+            self.assertEqual(self.outputs(), [], reason)
+        self.assertEqual(self.logged, [])                    # known names: nothing to explain
+        self.gecko_lock("Lecture vid\u00e9o")
+        self.assertEqual(len(self.logged), 1)                # a language pack not installed with it
+
+    def test_a_language_pack_added_later_is_read(self):
+        self.langpack("de", "WakeLockVideoPlaying=Video abspielen\n", 1000)
+        self.assertEqual(od.gecko_reasons(self.firefox)[0], {"Playing video", "Screen lock", "Video abspielen"})
+        self.langpack("fr", "WakeLockVideoPlaying = Lecture vid\\u00e9o\n", 2000)   # an escape, as .properties allow
+        self.assertIn("Lecture vid\u00e9o", od.gecko_reasons(self.firefox)[0])
+
+    def test_a_broken_language_pack_is_ignored(self):
+        ext = self.firefox_dir / "browser/extensions"
+        ext.mkdir(parents=True)
+        (ext / "langpack-xx@firefox.mozilla.org.xpi").write_bytes(b"not a zip")
+        self.langpack("de", "WakeLockVideoPlaying\n=\nWakeLockScreenLock =\n", 3000)   # no names in it
+        self.assertEqual(od.gecko_reasons(self.firefox), (frozenset(od.GECKO_DISPLAY_REASONS),
+                                                          frozenset(od.GECKO_OTHER_REASONS)))
+        self.h.window("0x1", inhibiting=False)
+        self.gecko_lock()
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+
+    def test_an_unknown_firefox_reason_is_logged_once(self):
+        for _ in range(3):
+            self.gecko_lock("Video abspielen")
+            self.gecko_lock("Playing audio")
+            self.gecko_lock("Playing video")
+        self.assertEqual(len(self.logged), 1)
+        self.assertIn("'Video abspielen'", self.logged[0])
+        for n in range(20):
+            self.gecko_lock(f"x{n}")
+        self.assertEqual(len(self.logged), 8)               # at most 8 different ones
+
+    def test_firefox_lock_released(self):
+        self.h.window("0x1", inhibiting=False)
+        cookie = self.gecko_lock()
+        self.locks.uninhibit(":1.7", cookie)                # another caller cannot release it
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+        self.locks.uninhibit(":1.60", cookie)               # paused, ended, the window hidden
+        self.assertEqual(self.outputs(), [])
+        self.gecko_lock()
+        self.locks.gone(":1.60")                            # quit or killed: its name leaves the bus
+        self.assertEqual(self.outputs(), [])
+        self.gecko_lock()
+        self.start[100] = 9999                              # another process got its pid
+        self.assertEqual(self.outputs(), [])
+        self.assertEqual(self.locks.count(), 0)
+
+    def test_firefox_lock_where_it_cannot_be_seen_does_not_count(self):
+        self.gecko_lock()
+        cases = [dict(ws=2), dict(hidden=True), dict(mapped=False)]
+        for extra in cases:
+            self.h.clients = []
+            self.h.window("0x1", inhibiting=False, **extra)
+            self.assertEqual(self.outputs(), [], extra)
+        self.h.clients = []
+        self.h.window("0x1", inhibiting=False)
+        self.h.window("0x2", inhibiting=False, fullscreen=1, pid=200)   # Omarchy's screensaver, say
+        self.assertEqual(self.outputs(), [])
+        self.h.clients = []
+        self.h.window("0x1", inhibiting=False)
+        self.h.rules["0x1"] = 1                             # a window rule says no idle: not a video
+        self.assertEqual(self.outputs(), [])
+        self.h.rules = {}
+        self.h.monitors[0]["dpmsStatus"] = False
+        self.assertEqual(self.outputs(), [])
+        self.h.monitors[0]["dpmsStatus"] = True
+        self.locked = True
+        counted = set()
+        self.assertEqual(self.outputs(counted), [])
+        self.assertEqual(counted, set())
+        self.locked = False
+        self.h.window("0x3", inhibiting=False, fullscreen=1)            # the video itself full screen
+        self.h.clients = [self.h.clients[-1]]
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+
+    def test_firefox_with_a_wayland_inhibit_counts_as_before(self):
+        self.exe[100] = self.firefox
+        self.h.window("0x1")                                # MOZ_WAKE_LOCK_TYPE, or nobody serves the name
+        counted = set()
+        self.assertEqual(self.outputs(counted), ["Virtual-1"])
+        self.assertEqual(self.locks.gecko_pids() & counted, set())   # no guest hold for it
+
+    def test_another_process_with_a_firefox_lock_does_not_count(self):
+        self.gecko_lock(pid=101)
+        self.h.window("0x1", inhibiting=False, pid=100)
+        self.assertEqual(self.outputs(), [])
+
+    def test_full_locks_firefox_still_gets_a_cookie(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        for _ in range(od.DISPLAY_LOCKS_MAX):
+            self.display_lock()
+        self.assertIsNone(self.display_lock())                # Chromium: an error
+        for reason in ("Playing video", "Playing audio", ""):
+            cookie = self.gecko_lock(reason, pid=101)
+            self.assertIsInstance(cookie, int, reason)        # Firefox: never an error
+            self.locks.uninhibit(":1.60", cookie)
+        self.assertFalse(self.locks.gecko_holds(101))         # not kept, never counts
+        self.assertEqual(self.locks.count(), od.DISPLAY_LOCKS_MAX)
+        self.assertEqual(len({self.gecko_lock(pid=101) for _ in range(3)}), 3)
+
+    def test_video_outputs_asks_for_a_firefox_lock(self):
+        self.h.window("0x1", inhibiting=False)
+        self.assertEqual(od.video_outputs(locks=self.locks), [])
+        self.assertEqual(self.h.asked, ["j/clients"])         # nothing asks: one request
+        self.gecko_lock()
+        counted = set()
+        real = od.player_counts
+        with mock.patch.object(od, "player_counts",
+                               lambda pid, locks: real(pid, proc=self.proc, local=self.local, locks=locks)):
+            self.assertEqual(od.video_outputs(counted, locks=self.locks), ["Virtual-1"])
+        self.assertEqual(counted, {100})
+        self.assertIn("j/monitors", self.h.asked)
 
     def test_proc_start(self):
         self.exe[100] = "/usr/bin/mpv"
@@ -939,9 +1131,34 @@ class ScreenSaverOnTheBus(unittest.TestCase):
                 time.sleep(0.1)
             self.assertFalse(locks.holds(os.getpid()))
 
-            caller_is("/usr/lib/firefox/firefox")
+            (tmp / "firefox").mkdir()
+            (tmp / "firefox/libxul.so").write_bytes(b"")
+            caller_is(str(tmp / "firefox/firefox"))
+            (cookie,) = call(conn, "Inhibit", GLib.Variant("(ss)", ("Firefox", "Playing video")), "(u)").unpack()
+            self.assertTrue(locks.gecko_holds(os.getpid()))
+            call(conn, "UnInhibit", GLib.Variant("(u)", (cookie,)), "()")
+            self.assertFalse(locks.gecko_holds(os.getpid()))
+            call(conn, "Inhibit", GLib.Variant("(ss)", ("Firefox", "Playing audio")), "(u)")   # a cookie, not counted
+            self.assertFalse(locks.gecko_holds(os.getpid()))
+            ff = connect()
+            call(ff, "Inhibit", GLib.Variant("(ss)", ("Firefox", "Playing video")), "(u)")
+            self.assertTrue(locks.gecko_holds(os.getpid()))
+            ff.close_sync(None)                        # Firefox quit or was killed
+            for _ in range(50):
+                if not locks.gecko_holds(os.getpid()):
+                    break
+                time.sleep(0.1)
+            self.assertFalse(locks.gecko_holds(os.getpid()))
+            conn.close_sync(None)
+            conn = connect()
+            for _ in range(50):
+                if locks.count() == 0:
+                    break
+                time.sleep(0.1)
+
+            caller_is("/usr/bin/mpv")
             with self.assertRaises(GLib.Error) as refused:
-                call(conn, "Inhibit", GLib.Variant("(ss)", ("firefox", "video-playing")), "(u)")
+                call(conn, "Inhibit", GLib.Variant("(ss)", ("mpv", "Playing video")), "(u)")
             self.assertIn("NotSupported", refused.exception.message)
             self.assertEqual(locks.count(), 0)
 
@@ -961,6 +1178,9 @@ class VideoToTheMac(unittest.TestCase):
         a.outbox = b""
         a.inhibit = []
         a.last_inhibit = 0.0
+        a.locks = od.DisplayLocks(proc=pathlib.Path("/nonexistent"))
+        self.held = []
+        a.awake = mock.Mock(want=self.held.append, release=lambda: self.held.append("released"))
         self.sent = []
         a.flush = lambda: None
         self.clock = [1000.0]
@@ -979,18 +1199,18 @@ class VideoToTheMac(unittest.TestCase):
 
     def test_change_refresh_end(self):
         a = self.make()
-        a.check_inhibit(lambda: [])
+        a.check_inhibit(lambda _c: [])
         self.assertEqual(a.outbox, b"")                    # nothing plays: nothing said
-        a.check_inhibit(lambda: ["Virtual-1"])
+        a.check_inhibit(lambda _c: ["Virtual-1"])
         self.assertEqual(self.lines(a), [{"inhibit": ["Virtual-1"]}])
         a.outbox = b""
-        a.check_inhibit(lambda: ["Virtual-1"])              # the refresh (the Mac's lease)
+        a.check_inhibit(lambda _c: ["Virtual-1"])              # the refresh (the Mac's lease)
         self.assertEqual(self.lines(a), [{"inhibit": ["Virtual-1"]}])
         a.outbox = b""
-        a.check_inhibit(lambda: [])
+        a.check_inhibit(lambda _c: [])
         self.assertEqual(self.lines(a), [{"inhibit": []}])  # [] once
         a.outbox = b""
-        a.check_inhibit(lambda: [])
+        a.check_inhibit(lambda _c: [])
         self.assertEqual(a.outbox, b"")
 
     def test_status_shows_what_the_agent_counts(self):
@@ -999,17 +1219,17 @@ class VideoToTheMac(unittest.TestCase):
         a = self.make()
         with mock.patch.object(od, "video_outputs", lambda: ["Virtual-9"]):
             self.assertEqual(od.status_inhibit(), ["Virtual-9"])     # no agent: the Wayland view
-            a.check_inhibit(lambda: ["Virtual-1"])
+            a.check_inhibit(lambda _c: ["Virtual-1"])
             self.assertEqual(od.status_inhibit(), ["Virtual-1"])
             self.clock[0] += 10
-            a.check_inhibit(lambda: ["Virtual-1"])                    # refreshed while it plays
+            a.check_inhibit(lambda _c: ["Virtual-1"])                    # refreshed while it plays
             self.clock[0] += 20
             self.assertEqual(od.status_inhibit(), ["Virtual-1"])
-            a.check_inhibit(lambda: [])
+            a.check_inhibit(lambda _c: [])
             self.assertEqual(od.status_inhibit(), [])
             self.clock[0] += 31
             self.assertEqual(od.status_inhibit(), ["Virtual-9"])     # stale (the agent stopped looking)
-            a.check_inhibit(lambda: ["Virtual-1"])
+            a.check_inhibit(lambda _c: ["Virtual-1"])
             with self.assertRaises(SystemExit):
                 a.stop()
             self.assertEqual(od.status_inhibit(), ["Virtual-9"])     # the agent stopped
@@ -1018,22 +1238,22 @@ class VideoToTheMac(unittest.TestCase):
 
     def test_no_answer_sends_nothing(self):
         a = self.make()
-        a.check_inhibit(lambda: ["Virtual-1"])
+        a.check_inhibit(lambda _c: ["Virtual-1"])
         a.outbox = b""
-        a.check_inhibit(lambda: None)                       # Hyprland gone: the Mac's lease runs out
+        a.check_inhibit(lambda _c: None)                       # Hyprland gone: the Mac's lease runs out
         self.assertEqual(a.outbox, b"")
         self.assertEqual(a.inhibit, ["Virtual-1"])
 
     def test_only_the_newest_list_waits(self):
         a = self.make()
         a.outbox = b'{"monitors":[]}\n'
-        a.check_inhibit(lambda: ["Virtual-1"])
-        a.check_inhibit(lambda: ["Virtual-1"])
-        a.check_inhibit(lambda: ["Virtual-1", "Virtual-2"])
+        a.check_inhibit(lambda _c: ["Virtual-1"])
+        a.check_inhibit(lambda _c: ["Virtual-1"])
+        a.check_inhibit(lambda _c: ["Virtual-1", "Virtual-2"])
         self.assertEqual(self.lines(a), [{"monitors": []}, {"inhibit": ["Virtual-1", "Virtual-2"]}])
         # A line half written stays whole.
         a.outbox = b'hibit":["Virtual-1"]}\n'
-        a.check_inhibit(lambda: [])
+        a.check_inhibit(lambda _c: [])
         self.assertEqual(a.outbox, b'hibit":["Virtual-1"]}\n{"inhibit":[]}\n')
 
     def test_asked_every_10_s_with_the_report(self):
@@ -1053,7 +1273,7 @@ class VideoToTheMac(unittest.TestCase):
 
     def test_stop_says_no_video(self):
         a = self.make()
-        a.check_inhibit(lambda: ["Virtual-1"])
+        a.check_inhibit(lambda _c: ["Virtual-1"])
         with self.assertRaises(SystemExit):
             a.stop()
         self.assertEqual(self.lines(a)[-1], {"inhibit": []})
@@ -1067,6 +1287,256 @@ class VideoToTheMac(unittest.TestCase):
         self.assertNotIn("stay-awake", src)
         self.assertNotIn("no-idle-lock", src.split('"""', 2)[2])   # only the docstring names it
         self.assertEqual(src.count('self.send({"inhibit": outputs})'), 1)
+
+
+class FakeChild:
+    """A started omacvm-awake (subprocess.Popen's part GuestAwake uses)."""
+
+    def __init__(self, pid):
+        self.pid = pid
+        self.returncode = None
+        self.stopped = False
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.stopped = True
+        self.returncode = -15
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
+class GuestAwakeTest(unittest.TestCase):
+    """Omarchy's own idle held for a Firefox video: a child Quickshell while it
+    counts, a 25 s lease renewed at each check, stopped when it ends, a limit on
+    failed starts."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.path = self.tmp / "omacvm/guest-awake"
+        self.clock = [100.0]
+        self.children = []
+        self.layers = {}
+        self.logged = []
+        patcher = mock.patch.object(od, "log", self.logged.append)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def start(self):
+        child = FakeChild(500 + len(self.children))
+        self.children.append(child)
+        return child
+
+    def make(self, start=None):
+        return od.GuestAwake(path=self.path, qml=self.tmp / "omacvm-awake.qml", start=start or self.start,
+                             layers=lambda: self.layers, clock=lambda: self.clock[0],
+                             qs_runtime=self.tmp / "quickshell")
+
+    def instance(self, pid, name):
+        """Quickshell's folder for an instance: by-id/<name> (log, lock), by-pid/<pid> linking to it."""
+        qs = self.tmp / "quickshell"
+        folder = qs / "by-id" / name
+        folder.mkdir(parents=True)
+        (folder / "log.qslog").write_text("x")
+        (qs / "by-pid").mkdir(exist_ok=True)
+        (qs / "by-pid" / str(pid)).symlink_to(folder)
+        return folder
+
+    def show(self, child, namespace=od.AWAKE_NAMESPACE):
+        self.layers = {"Virtual-1": {"levels": {"0": [], "2": [{"namespace": "omarchy-bar", "pid": 7},
+                                                                 {"namespace": namespace, "pid": child.pid}]}}}
+
+    def until(self):
+        return json.loads(self.path.read_text())["until"]
+
+    def test_hold_renew_release(self):
+        a = self.make()
+        a.want(True)
+        self.assertEqual(len(self.children), 1)
+        self.assertAlmostEqual(self.until(), od.time.time() + od.AWAKE_LEASE, delta=2)
+        self.show(self.children[0])
+        self.clock[0] += 10
+        a.want(True)
+        self.assertEqual(len(self.logged), 1)                       # holding, said once
+        self.clock[0] += 10
+        a.want(True)
+        self.assertEqual(len(self.children), 1)                     # one child, the lease renewed
+        self.assertEqual(len(self.logged), 1)
+        a.want(False)
+        self.assertFalse(self.path.exists())
+        self.assertTrue(self.children[0].stopped)
+        self.assertEqual(len(self.logged), 2)
+        a.want(False)
+        self.assertEqual(len(self.logged), 2)
+
+    def test_never_without_a_firefox_video(self):
+        a = self.make()
+        for _ in range(3):
+            a.want(False)
+        self.assertEqual(self.children, [])
+        self.assertFalse(self.path.exists())
+
+    def test_a_leftover_lease_is_removed_at_start(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text('{"until": 9999999999}')
+        self.make()
+        self.assertFalse(self.path.exists())
+
+    def test_a_child_that_ends_is_started_again(self):
+        a = self.make()
+        a.want(True)
+        self.show(self.children[0])
+        a.want(True)
+        self.children[0].returncode = 1                             # Quickshell crashed
+        self.clock[0] += 10
+        a.want(True)
+        self.assertEqual(len(self.children), 2)
+        self.assertTrue(self.path.exists())
+
+    def test_a_child_that_held_and_ended_never_uses_up_the_tries(self):
+        a = self.make()
+        rounds = od.AWAKE_TRIES + 3
+        for n in range(1, rounds + 1):
+            a.want(True)                                            # (re)started
+            self.assertEqual(len(self.children), n)
+            self.show(self.children[-1])
+            self.clock[0] += 10
+            a.want(True)                                            # held
+            self.children[-1].returncode = 0                        # quit by itself: a stale lease, killed by hand
+            self.clock[0] += 10
+        a.want(True)
+        self.assertEqual(len(self.children), rounds + 1)
+        self.assertTrue(self.path.exists())
+        self.assertFalse(any("not tried again" in l for l in self.logged))
+
+    def test_failed_starts_count_in_a_row_only(self):
+        a = self.make()
+        a.want(True)
+        self.children[-1].returncode = 1                            # failed before it showed
+        a.want(True)
+        self.children[-1].returncode = 1
+        a.want(True)                                                # 2 failures in a row
+        self.show(self.children[-1])
+        a.want(True)                                                # this one shows: the count is cleared
+        for _ in range(od.AWAKE_TRIES - 1):
+            self.children[-1].returncode = 1
+            a.want(True)
+        self.assertFalse(any("not tried again" in l for l in self.logged))
+        self.children[-1].returncode = 1
+        a.want(True)                                                # AWAKE_TRIES in a row now
+        self.assertIn("not tried again", self.logged[-1])
+
+    def test_the_childs_quickshell_folder_goes_with_it(self):
+        omarchy = self.instance(1101, "omarchyshell")                # Omarchy's own shell: never touched
+        a = self.make()
+        a.want(True)
+        mine = self.instance(self.children[0].pid, "awake1")
+        self.show(self.children[0])
+        a.want(True)
+        a.want(False)                                               # no Firefox video: stopped
+        self.assertFalse(mine.exists())
+        self.assertFalse((self.tmp / "quickshell/by-pid" / str(self.children[0].pid)).is_symlink())
+        a.want(True)                                                # a new child that ends by itself
+        mine = self.instance(self.children[1].pid, "awake2")
+        self.children[1].returncode = 0
+        a.want(True)
+        self.assertFalse(mine.exists())
+        self.assertTrue(omarchy.exists())
+        self.assertTrue((self.tmp / "quickshell/by-pid/1101").is_symlink())
+
+    def test_a_folder_outside_by_id_is_never_removed(self):
+        outside = self.tmp / "elsewhere"
+        outside.mkdir()
+        a = self.make()
+        a.want(True)
+        (self.tmp / "quickshell/by-pid").mkdir(parents=True)
+        (self.tmp / "quickshell/by-pid" / str(self.children[0].pid)).symlink_to(outside)
+        a.want(False)
+        self.assertTrue(outside.exists())
+        a.want(True)                                                # no folder at all: nothing happens
+        a.want(False)
+        self.assertEqual(len(self.children), 2)
+
+    def test_no_surface_counts_as_a_failure_and_three_stop_it(self):
+        a = self.make()
+        for n in range(1, od.AWAKE_TRIES + 1):
+            a.want(True)
+            self.assertEqual(len(self.children), n)
+            self.clock[0] += od.AWAKE_SETTLE - 1
+            a.want(True)
+            self.assertFalse(self.children[-1].stopped)             # still has time
+            self.clock[0] += 2
+            a.want(True)                                            # an old Quickshell: no IdleInhibitor
+            self.assertTrue(self.children[-1].stopped)
+        self.assertFalse(self.path.exists())
+        self.assertIn("not tried again", self.logged[-1])
+        for _ in range(5):
+            self.clock[0] += 10
+            a.want(True)
+        self.assertEqual(len(self.children), od.AWAKE_TRIES)        # given up for this agent
+        self.assertFalse(self.path.exists())
+        self.assertEqual(sum("not tried again" in l for l in self.logged), 1)
+
+    def test_another_programs_surface_is_not_ours(self):
+        a = self.make()
+        a.want(True)
+        self.layers = {"Virtual-1": {"levels": {"2": [{"namespace": od.AWAKE_NAMESPACE, "pid": 1}]}}}
+        for garbage in (None, [], {"x": 1}, {"Virtual-1": {"levels": [1]}}, {"Virtual-1": {"levels": {"0": "x"}}}):
+            self.layers = garbage
+            a.want(True)
+        self.assertEqual(self.logged, [])
+
+    def test_no_quickshell(self):
+        def missing():
+            raise FileNotFoundError(2, "No such file or directory")
+        a = self.make(start=missing)
+        for _ in range(od.AWAKE_TRIES + 2):
+            a.want(True)
+        self.assertEqual(sum("not tried again" in l for l in self.logged), 1)
+        self.assertFalse(self.path.exists())
+
+    def test_the_agent_holds_only_for_a_firefox_window(self):
+        a = od.Agent.__new__(od.Agent)
+        a.outbox = b""
+        a.inhibit = []
+        a.last_inhibit = 0.0
+        a.flush = lambda: None
+        a.locks = mock.Mock(gecko_pids=lambda: {100})
+        wants = []
+        a.awake = mock.Mock(want=wants.append, release=lambda: wants.append("released"))
+        with mock.patch.object(od, "INHIBIT_STATE", self.tmp / "video-outputs"):
+            a.check_inhibit(lambda c: c.add(100) or ["Virtual-1"])        # Firefox's window counted
+            a.check_inhibit(lambda c: c.add(200) or ["Virtual-1"])        # Chromium's or mpv's
+            a.check_inhibit(lambda c: [])
+            a.check_inhibit(lambda c: c.add(100) or None)                 # no answer: nothing changes
+            with self.assertRaises(SystemExit):
+                a.stop()
+        self.assertEqual(wants, [True, False, False, "released"])
+
+    def test_the_qml(self):
+        qml = (HERE.parent / "omacvm-awake.qml").read_text()
+        self.assertIn(f'WlrLayershell.namespace: "{od.AWAKE_NAMESPACE}"', qml)
+        self.assertIn("mask: Region {}", qml)                      # takes no input
+        self.assertIn("exclusionMode: ExclusionMode.Ignore", qml)  # reserves no space
+        self.assertIn("WlrLayershell.layer: WlrLayer.Top", qml)
+        self.assertIn('color: "transparent"', qml)
+        # Made once after the surface maps, never switched (Hyprland 0.56 rechecks only when it is made or goes)
+        self.assertRegex(qml, r"IdleInhibitor \{\s*window: surface\s*enabled: root\.armed\s*\}")
+        self.assertRegex(qml, r"interval: 2000\s*running: surface\.backingWindowVisible\s*onTriggered: root\.armed = true")
+        self.assertEqual(qml.count("armed = "), 1)
+        self.assertIn('"/omacvm/guest-awake"', qml)
+        self.assertEqual(od.AWAKE.name, "guest-awake")
+        self.assertIn("if (until <= Date.now() / 1000)\n      Qt.quit()", qml)   # a stale lease: it goes
+        self.assertIn("onLoadFailed: Qt.quit()", qml)
+        install = (HERE.parent / "install.sh").read_text()
+        self.assertIn(f"install -Dm644 omacvm-awake.qml {od.AWAKE_QML}", install)
+        self.assertLess(install.index("omacvm-awake.qml"), install.index("restart omacvm-displays.service"))
 
 
 class FakeHypr:
@@ -1322,6 +1792,127 @@ class PauseTest(PauseCase):
         a.pause.apply.assert_called_once_with()
         ws.assert_not_called()
         rs.assert_not_called()
+
+
+class PauseNotesTest(PauseCase):
+    """The journal says why a display the Mac called unseen is not off (the
+    user's 2026-11-07 VM: 20 minutes out of sight, never paused, no line
+    saying why), once until that changes: the Mac's lease every 5 s adds none."""
+
+    def lines(self, p, looks=6):
+        """The agent's journal lines while the Mac says "unseen" looks times, 5 s apart."""
+        with mock.patch.object(od, "log") as log:
+            for _ in range(looks):
+                p.mac(["Virtual-1"])
+                p.apply()
+                self.t[0] += 5
+        return [c.args[0] for c in log.call_args_list]
+
+    def test_a_normal_pause_adds_no_note(self):
+        p = self.make("Virtual-1")
+        self.assertEqual(self.lines(p), ["drawing paused on Virtual-1: its Mac window is out of sight",
+                                         "Hyprland's wake on key presses and pointer moves off while a display is paused"])
+
+    def test_a_window_share_is_named_once(self):
+        p = self.make("Virtual-1")
+        p.cast(True, "window", "5a3b1c")
+        got = self.lines(p)
+        self.assertEqual(got, ["drawing not paused on Virtual-1: a window share is running (window 5a3b1c): "
+                               "it may be on any display"])
+        p.cast(False, "window", "5a3b1c")
+        self.assertIn("drawing paused on Virtual-1: its Mac window is out of sight", self.lines(p, 1))
+        # Seen, then out of sight again with a share: said again for the new period.
+        with mock.patch.object(od, "log"):
+            p.mac([])
+            p.apply()
+        p.cast(True, "window", "77aa")
+        self.assertEqual(len([l for l in self.lines(p) if "window share" in l]), 1)
+
+    def test_a_share_of_the_output_is_named_once(self):
+        p = self.make("Virtual-1", "Virtual-2")
+        p.cast(True, "monitor", "Virtual-1")
+        with mock.patch.object(od, "log") as log:
+            for _ in range(4):
+                p.mac(["Virtual-1", "Virtual-2"])
+                p.apply()
+        got = [c.args[0] for c in log.call_args_list]
+        self.assertEqual([l for l in got if "not paused" in l],
+                         ["drawing not paused on Virtual-1: a share of it is running"])
+        self.assertFalse(self.h.dpms["Virtual-2"])
+
+    def test_a_refused_dpms_request_is_said_once_with_hyprlands_answer(self):
+        p = self.make("Virtual-1")
+        p.failed = lambda: "no answer from Hyprland in 2 s"
+        self.h.refuse = True
+        got = self.lines(p)
+        self.assertEqual(got, ["drawing not paused on Virtual-1: Hyprland did not turn it off "
+                               "(no answer from Hyprland in 2 s); trying again at the next word"])
+        self.h.refuse = False
+        self.assertEqual(self.lines(p, 1)[0], "drawing paused on Virtual-1: its Mac window is out of sight")
+        self.h.refuse = True                       # refused again later in the same period: said again
+        self.h.dpms["Virtual-1"] = True            # a key press turned it on
+        self.assertEqual(len(self.lines(p)), 1)
+
+    def test_no_answer_for_the_outputs_is_said_once(self):
+        p = self.make("Virtual-1")
+        p.monitors = lambda: None
+        self.assertEqual(self.lines(p), ["drawing not paused: no answer from Hyprland for its outputs"])
+
+    def test_a_display_the_guest_turned_off_is_said_once(self):
+        p = self.make("Virtual-1", off=("Virtual-1",))
+        self.assertEqual(self.lines(p), ["drawing not paused on Virtual-1: the guest had turned it off itself"])
+        self.assertEqual(self.h.calls, [])
+
+    def test_a_refused_turn_on_is_said_once(self):
+        p = self.make("Virtual-1")
+        self.lines(p, 1)
+        self.h.refuse = True
+        with mock.patch.object(od, "log") as log:
+            for _ in range(5):
+                p.mac([])
+                p.apply()
+        got = [c.args[0] for c in log.call_args_list]
+        self.assertEqual(got, ["Virtual-1 not on again yet: Hyprland did not turn it on; trying again"])
+
+    def test_at_most_ten_notes_a_minute(self):
+        self.t = [1000.0]
+        n = od.Notes(clock=lambda: self.t[0])
+        with mock.patch.object(od, "log") as log:
+            for i in range(15):
+                n.say(f"k{i}", f"note {i}")
+        got = [c.args[0] for c in log.call_args_list]
+        self.assertEqual(got[:od.NOTES_MAX], [f"note {i}" for i in range(od.NOTES_MAX)])
+        self.assertEqual(got[od.NOTES_MAX:], ["more notes on the pause this minute are left out"])
+        self.t[0] += 60
+        with mock.patch.object(od, "log") as log:
+            n.say("k20", "note 20")
+        self.assertEqual([c.args[0] for c in log.call_args_list], ["note 20"])
+
+    def test_a_note_left_out_by_the_cap_is_said_after_the_minute(self):
+        self.t = [1000.0]
+        n = od.Notes(clock=lambda: self.t[0])
+        with mock.patch.object(od, "log"):
+            for i in range(od.NOTES_MAX):
+                n.say(f"k{i}", f"note {i}")
+        with mock.patch.object(od, "log") as log:
+            n.say("late", "the late note")             # capped: left out
+            self.t[0] += 5
+            n.say("late", "the late note")             # the next look, same minute: still left out
+        self.assertEqual(log.call_args_list, [])
+        self.t[0] += 60
+        with mock.patch.object(od, "log") as log:
+            n.say("late", "the late note")             # the next minute: said
+            n.say("late", "the late note")             # and then once only
+        self.assertEqual([c.args[0] for c in log.call_args_list], ["the late note"])
+
+    def test_what_hyprland_said_to_a_failed_dpms_request(self):
+        for reply, want in ((None, "no answer from Hyprland in 2 s"), ("error: no such monitor\n",
+                                                                      "Hyprland said 'error: no such monitor'")):
+            with mock.patch.object(od, "hypr_request", return_value=reply):
+                self.assertFalse(od.dpms("Virtual-1", False))
+            self.assertEqual(od.DPMS_FAILED, want)
+        with mock.patch.object(od, "hypr_request", return_value="ok"):
+            self.assertTrue(od.dpms("Virtual-1", False))
 
 
 class WakeGuardTest(PauseCase):
@@ -1793,6 +2384,21 @@ class ConfigWatchTest(unittest.TestCase):
             self.assertFalse(w.ok)
 
 
+# Omarchy 4.5's monitors.lua (omarchy-settings 4.5.0-3, /usr/share/omarchy/config/hypr/monitors.lua)
+# and the rule its omarchy-hyprland-monitor-scaling adds after the catch-all (persist_scale).
+LUA_45 = """-- See https://wiki.hypr.land/Configuring/Basics/Monitors/
+local omarchy_monitor_scale = "auto"
+hl.monitor({ output = "", mode = "preferred", position = "auto", scale = omarchy_monitor_scale })
+
+-- Configure a specific monitor.
+-- hl.monitor({ output = "DP-2", mode = "2560x1440@144", position = "0x0", scale = 1 })
+
+local omarchy_gdk_scale = 2
+hl.env("GDK_SCALE", tostring(omarchy_gdk_scale))
+"""
+RULE_45 = 'hl.monitor({{ output = "Virtual-1", mode = "preferred", position = "auto", scale = {} }})\n'
+
+
 class Scale(unittest.TestCase):
     """#355: every scale in "Full screen including notch". The agent tells the
     Mac the scale the main output wants; `scale` asks the Mac for a size that
@@ -1898,20 +2504,133 @@ class Scale(unittest.TestCase):
         return rc, pokes, calls
 
     def test_scale_in_fullpanel(self):
+        self.lua.write_text(LUA_45)
         rc, pokes, calls = self.set_scale([(2940, 1912), (2940, 1912), (2944, 1912)])
         self.assertEqual((rc, pokes), (0, [b"scale 1.6\n"]))
-        self.assertEqual(calls, [["omarchy-hyprland-monitor-scaling", "1.6"]])   # once the size fits
+        self.assertEqual(calls, [[od.SYNC, "--once"]])                # once the size fits
+        self.assertIn("\nlocal omarchy_monitor_scale = 1.6\n", self.lua.read_text())
 
-    def test_scale_elsewhere_is_omarchys(self):
+    def test_scale_elsewhere(self):
+        # Window mode: no Mac size to wait for; Omarchy's clean value for the size now.
+        self.lua.write_text(LUA_45)
         rc, pokes, calls = self.set_scale([(2940, 1840)], fullpanel=False)
-        self.assertEqual((pokes, calls), ([], [["omarchy-hyprland-monitor-scaling", "1.6"]]))
+        self.assertEqual((rc, pokes, calls), (0, [], [[od.SYNC, "--once"]]))
+        self.assertIn("\nlocal omarchy_monitor_scale = 1.666667\n", self.lua.read_text())
         rc, pokes, calls = self.set_scale([(3840, 2160)], focused="Virtual-2")   # an external display
         self.assertEqual(pokes, [])
+        rc, pokes, calls = self.set_scale([(3840, 2160)], fullpanel=False, focused="DP-1")   # not a VM output
+        self.assertEqual(calls, [["omarchy-hyprland-monitor-scaling", "1.6"]])
 
     def test_scale_old_mac_falls_back(self):
         # An OmacVM.app without #355 never changes the size: Omarchy's nearest after the wait.
+        self.lua.write_text(LUA_45)
         rc, pokes, calls = self.set_scale([(2940, 1912)])
+        self.assertEqual(calls, [[od.SYNC, "--once"]])
+        self.assertIn("\nlocal omarchy_monitor_scale = 2\n", self.lua.read_text())
+
+    # #738: Omarchy 4.5's command keeps the scale in a rule for the output whose
+    # "preferred" mode undid the Mac's size (1.6 -> 1.333, then 2).
+    def test_main_scale_never_writes_omarchys_rule(self):
+        user = 'hl.monitor({ output = "Virtual-2", mode = "1920x1080@60", position = "auto", scale = 1 })\n'
+        self.lua.write_text(LUA_45 + RULE_45.format(2) + user)
+        rc, pokes, calls = self.set_scale([(3024, 1964), (3024, 1968)])
+        self.assertEqual((rc, calls), (0, [[od.SYNC, "--once"]]))
+        text = self.lua.read_text()
+        self.assertEqual(text, LUA_45.replace('local omarchy_monitor_scale = "auto"', "local omarchy_monitor_scale = 1.6")
+                         + user)                                      # only the local; the user's rule stays
+        self.assertEqual(od.wanted_scale(), 1.6)
+        for value, size in (("1.25", (3025, 1965)), ("2", (3024, 1964)), ("1.333", (3024, 1964))):
+            self.set_scale([size], value=value)
+            self.assertEqual(od.wanted_scale(), round(od.clean_scale(float(value), *size), 6))
+            self.assertNotIn('output = "Virtual-1"', self.lua.read_text())
+
+    def test_main_scale_with_the_users_own_rule_is_omarchys(self):
+        # A rule of the user's for Virtual-1 wins at every reload, so writing the
+        # local would change nothing on screen: Omarchy's command, as before #738
+        # (Omarchy 4.5 changes the scale in such a one-line rule).
+        for own in ('hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "0x0", scale = 1 })\n',
+                    'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 2 }) -- mine\n',
+                    "hl.monitor({\n  output = 'Virtual-1',\n  scale = 2,\n})\n"):
+            for fullpanel in (True, False):
+                with self.subTest(own=own, fullpanel=fullpanel):
+                    self.lua.write_text(LUA_45 + own)
+                    rc, pokes, calls = self.set_scale([(3024, 1964), (3024, 1968)], fullpanel=fullpanel)
+                    self.assertEqual((rc, calls), (0, [["omarchy-hyprland-monitor-scaling", "1.6"]]))
+                    self.assertEqual(self.lua.read_text(), LUA_45 + own)
+        # A commented-out rule, Omarchy's own rule or one for another output: not the user's.
+        for other in ('-- hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "0x0", scale = 1 })\n',
+                      RULE_45.format(2),
+                      'hl.monitor({ output = "Virtual-2", mode = "preferred", position = "auto", scale = 1 })\n'):
+            with self.subTest(other=other):
+                self.lua.write_text(LUA_45 + other)
+                rc, pokes, calls = self.set_scale([(3024, 1964), (3024, 1968)])
+                self.assertEqual((rc, calls), (0, [[od.SYNC, "--once"]]))
+                self.assertIn("\nlocal omarchy_monitor_scale = 1.6\n", self.lua.read_text())
+
+    def test_main_scale_gdk_follows_the_lowest_output(self):
+        self.lua.write_text(LUA_45)
+        self.set_scale([(3024, 1968)])
+        self.assertIn("\nlocal omarchy_gdk_scale = 2\n", self.lua.read_text())
+        self.set_scale([(3024, 1968)], value="1")
+        self.assertIn("\nlocal omarchy_gdk_scale = 1\n", self.lua.read_text())
+        self.lua.write_text('local omarchy_monitor_scale = 2\nhl.env("GDK_SCALE", "2")\n')
+        self.set_scale([(3024, 1964)], value="1", fullpanel=False)
+        self.assertEqual(self.lua.read_text(), 'local omarchy_monitor_scale = 1\nhl.env("GDK_SCALE", "1")\n')
+
+    def test_main_scale_without_omarchys_local_is_omarchys(self):
+        # The user's own monitors.lua (no omarchy_monitor_scale): left to Omarchy's command.
+        own = 'hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 2 })\n'
+        self.lua.write_text(own)
+        rc, pokes, calls = self.set_scale([(3024, 1968)])
         self.assertEqual(calls, [["omarchy-hyprland-monitor-scaling", "1.6"]])
+        self.assertEqual(self.lua.read_text(), own)
+
+    def test_main_scale_keeps_a_symlink_and_its_mode(self):
+        real = self.tmp / "dotfiles-monitors.lua"
+        real.write_text(LUA_45)
+        real.chmod(0o640)
+        self.lua.symlink_to(real)
+        self.set_scale([(3024, 1968)])
+        self.assertTrue(self.lua.is_symlink())
+        self.assertIn("local omarchy_monitor_scale = 1.6\n", real.read_text())
+        self.assertEqual(real.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir() if p.name.startswith(".")), [])
+
+    def test_wanted_scale_reads_omarchys_rule(self):
+        self.lua.write_text(LUA_45 + RULE_45.format(1.6))
+        self.assertEqual(od.wanted_scale(), 1.6)
+        self.lua.write_text(LUA_45.replace('"auto"', "2") + RULE_45.format(1.25))
+        self.assertEqual(od.wanted_scale(), 1.25)                     # Hyprland takes the named rule
+        self.lua.write_text(LUA_45.replace('"auto"', "2") +
+                            'hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "0x0", scale = 1 })\n')
+        self.assertEqual(od.wanted_scale(), 2)                        # the user's own rule: not Omarchy's scale
+
+    def test_fold_heals_omarchys_rule(self):
+        self.lua.write_text(LUA_45 + RULE_45.format(1.6))
+        with mock.patch("sys.stderr"):
+            od.fold_scale_rule()
+        self.assertEqual(self.lua.read_text(),
+                         LUA_45.replace('local omarchy_monitor_scale = "auto"', "local omarchy_monitor_scale = 1.6"))
+        before = self.lua.stat().st_mtime_ns
+        od.fold_scale_rule()                                          # nothing more to do: no write
+        self.assertEqual(self.lua.stat().st_mtime_ns, before)
+
+    def test_fold_leaves_other_rules(self):
+        for other in ('hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "auto", scale = 1.6 })\n',
+                      'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 1.6 }) -- mine\n',
+                      'hl.monitor({ output = "Virtual-2", mode = "preferred", position = "auto", scale = 1.6 })\n',
+                      'hl.monitor({\n  output = "Virtual-1", mode = "preferred", position = "auto", scale = 1.6 })\n'):
+            with self.subTest(other=other):
+                self.lua.write_text(LUA_45 + other)
+                od.fold_scale_rule()
+                self.assertEqual(self.lua.read_text(), LUA_45 + other)
+        own = 'hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 2 })\n' + RULE_45.format(1.6)
+        self.lua.write_text(own)                                      # no omarchy_monitor_scale: left alone
+        od.fold_scale_rule()
+        self.assertEqual(self.lua.read_text(), own)
+        self.lua.unlink()
+        od.fold_scale_rule()                                          # no file: nothing
+        self.assertFalse(self.lua.exists())
 
     def test_secondary_choice_is_saved_without_changing_global_scale(self):
         import tempfile
