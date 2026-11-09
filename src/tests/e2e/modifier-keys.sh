@@ -67,7 +67,7 @@ QPAT='(runtime/bin/OmacVM|MacOS/OmacVM-VM) -name'
 PID=$(LC_ALL=C pgrep -f "$QPAT $VM( |$)" | head -1)
 [[ -n $PID ]] || { echo "modifier-keys: $VM does not run" >&2; exit 3; }
 port() { sed -n "s/^SSH_PORT=//p" "$VMD/vm.env" | tr -d "'"; }
-gssh() { ssh -i "$KEY" -p "$(port)" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+gssh() { ssh -i "$VMD/ssh-key" -i "$KEY" -p "$(port)" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@127.0.0.1 "$@"; }
 
 KS="$OUT/keyseq"
