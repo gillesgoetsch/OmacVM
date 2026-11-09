@@ -89,10 +89,12 @@ other displays are not touched. Omarchy's hidden indicators (Dictate, Screen
 Recording and the others) open where they are when they fit right of the
 notch; when they don't, they open left of it, so the rest of the bar stays
 where it is and the notch looks untouched until you point at the bar. On
-Omarchy 4.5 they open while the pointer is on the indicators (from the ones
-left of the notch across it to the active ones, when they open there), never
-under the notch, and Omarchy's own rule (the bar left of its centre) counts
-only where the indicators sit there (bar patch v42, #763). Omarchy
+Omarchy 4.5 they open when the pointer comes onto the indicators, or onto the
+place left of the notch where they open; once open, they stay open while it
+crosses the notch and the items between the two. The notch and those items
+never open them, and Omarchy's own rule (the bar left of its centre) counts
+only left of the notch, where the indicators sit there (bar patch v42,
+#763). Omarchy
 4.5's tray counts with its drawer open: it sits where the drawer opens in full,
 and does not move while the drawer slides open; what jumps left of the notch
 keeps clear of the room 4.5's hidden indicators open into there (so on a full
@@ -176,8 +178,9 @@ VM — `systemctl --user edit notchcast`, `Environment=…`:
   and middle clicks and scrolling are. The one hover the strip passes on: the
   pointer on the bar's free space shows Omarchy's auto-hidden indicators, and
   they stay until it leaves the strip, as on the bar itself. On Omarchy 4.5
-  the strip does what the bar does: the indicators open on their own place
-  (and left of the centre where they sit there), not under the notch.
+  the strip does what the bar does: the indicators open on their own places
+  (and left of the notch where they sit there); under the notch they only
+  stay open once they are.
 - Omarchy's tray works in the strip (#662): its icons take left, right and
   middle clicks and scrolling as on the bar itself, and a left click on the
   drawer's arrow opens or closes the drawer (on the bar it opens on hover,

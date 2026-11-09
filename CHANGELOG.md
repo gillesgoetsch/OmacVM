@@ -6,15 +6,17 @@ in more words.
 ## 3.4.3 (unreleased)
 
 - **Omanotch** on Omarchy 4.5 (#763, #764, reported by the project owner on an M4 Max; the same
-  symptom as #734 on an M1 Max): the hidden indicators now open while the pointer is on the
-  indicators themselves, stay open on the way to one of them, and no longer open under the notch.
+  symptom as #734 on an M1 Max): the hidden indicators now open when the pointer comes onto the
+  indicators themselves (or, with Skip the notch, onto the place left of the notch where they
+  open), stay open on the way from one to the other, and no longer open under the notch.
   In "Full screen including notch" with the indicators in the bar's right part (where a VM moved
   from Omarchy 4.0 keeps them), they opened when the pointer was anywhere left of about the notch's
   right edge, notch included, and shut as it moved right towards them; on an active indicator (the
   bell) they opened and shut again after about 120 ms, so none of them could be clicked. With Skip
-  the notch opening them left of the notch, the pointer stays covered from the active ones across
-  the notch to them. Omarchy's own rule (the bar left of its centre) still counts where the
-  indicators sit there, as in Omarchy's own layout. Only Omanotch's bar has this: with Omanotch off
+  the notch opening them left of the notch, they stay open from the active ones across the notch
+  to them; the notch and the items between (clock, tray) do not open them. Omarchy's own rule (the
+  bar left of its centre) still counts where the indicators sit there, as in Omarchy's own layout,
+  but only left of the notch. Only Omanotch's bar has this: with Omanotch off
   (Omarchy's own bar) the indicators still follow Omarchy's rule. Update VM brings it (bar patch
   v42).
 
