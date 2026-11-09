@@ -13,6 +13,30 @@ in more words.
   Graphics › Vulkan and a prebuilt VM's first update. A move that stopped like this: update the app,
   then Resume. When Omarchy's update stops, the move now shows Omarchy's own line, not just "did not
   finish". For your own `omarchy update`: troubleshooting 62.
+- **Omanotch** on Omarchy 4.5 (#763, #764, reported by the project owner on an M4 Max; the same
+  symptom as #734 on an M1 Max): the hidden indicators now open when the pointer comes onto the
+  indicators themselves (or, with Skip the notch, onto the place left of the notch where they
+  open), stay open on the way from one to the other, and no longer open under the notch.
+  In "Full screen including notch" with the indicators in the bar's right part (where a VM moved
+  from Omarchy 4.0 keeps them), they opened when the pointer was anywhere left of about the notch's
+  right edge, notch included, and shut as it moved right towards them. On an active indicator (the
+  bell) they opened and shut again after about 120 ms, so none of them could be clicked: on 3.4.1
+  in every mode, on 3.4.2 in a window and in full screen without the notch. With Skip
+  the notch opening them left of the notch, they stay open from the active ones across the notch
+  to them; the notch and the items between (clock, tray) do not open them. When Skip the notch opens
+  them left of the notch (the owner's layout on a 14" MacBook Pro or a MacBook Air), the left part
+  of the bar (the workspaces) no longer opens them either, and once open they shut when the pointer
+  goes left of them. Omarchy's own rule (the bar left of its centre) counts only in Omarchy's own
+  layout (the indicators in the centre's left part, not moved by Skip the notch), and only left of
+  the notch. Only Omanotch's bar has this: with Omanotch off (Omarchy's own bar) the indicators
+  still follow Omarchy's rule. Update VM brings it (bar patch v42).
+- **Omanotch** with Skip the notch, on Omarchy 4.0 and 4.5 (#757, reported by the project owner on
+  an M1 Max): tray apps that start about a second apart (often at login) no longer show the tray
+  right of the notch first and then move it left. A tray that shows up now waits until its apps
+  stop coming (1.5 s without a new one, 8 s at most) and shows once, on the side it stays on.
+  While it waits, its place on the bar is empty and it can't be clicked, on the notch strip too
+  (before, that lasted 150 ms). An app that starts later than that can still move the shown tray
+  once, at once. Update VM brings it (bar patch v42).
 
 ## 3.4.2
 

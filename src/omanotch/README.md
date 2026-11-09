@@ -88,15 +88,25 @@ is full too. The menu and the clock at the far right stay put, and bars on
 other displays are not touched. Omarchy's hidden indicators (Dictate, Screen
 Recording and the others) open where they are when they fit right of the
 notch; when they don't, they open left of it, so the rest of the bar stays
-where it is and the notch looks untouched until you point at the bar. Omarchy
+where it is and the notch looks untouched until you point at the bar. On
+Omarchy 4.5 they open when the pointer comes onto the indicators, or onto the
+place left of the notch where they open; once open, they stay open while it
+crosses the notch and the items between the two, and shut when it goes left
+of them. The notch and those items never open them, and Omarchy's own rule
+(the bar left of its centre) counts only in Omarchy's own layout (the
+indicators there, not moved by Skip the notch) and only left of the notch
+(bar patch v42, #763, #765). Omarchy
 4.5's tray counts with its drawer open: it sits where the drawer opens in full,
 and does not move while the drawer slides open; what jumps left of the notch
 keeps clear of the room 4.5's hidden indicators open into there (so on a full
 bar a few more items hide there than on 4.0). An item shows where it stays: one
 that grows or shrinks takes its new place at once, and one that shows up (the
 tray when its first app starts) waits unseen until its own place has been
-quiet for 150 ms (1 s at most). Only items pushed by others glide. Tray apps that start seconds
-apart can still move the tray to the other side once. The bar patch does the layout
+quiet for 150 ms (1 s at most); the tray waits until its apps stop coming
+(1.5 s without a new one, 8 s at most, also at login), so apps that start a
+second or so apart show it once, on the side it stays on (#757). Meanwhile its
+place is empty and takes no clicks. Only items pushed by others glide. A tray
+app that starts later than that can still move the tray to the other side once. The bar patch does the layout
 (`notchSkipPlace`); the app tells the VM through `/run/omacvm/host.env`
 (`OMACVM_NOTCHSKIP=1`) and `/run/omacvm/notch-skip`.
 
@@ -171,7 +181,10 @@ VM — `systemctl --user edit notchcast`, `Environment=…`:
 - Hover effects (tooltips, hover highlights) are not mirrored; clicks, right
   and middle clicks and scrolling are. The one hover the strip passes on: the
   pointer on the bar's free space shows Omarchy's auto-hidden indicators, and
-  they stay until it leaves the strip, as on the bar itself.
+  they stay until it leaves the strip, as on the bar itself. On Omarchy 4.5
+  the strip does what the bar does: the indicators open on their own places
+  (and left of the notch where they sit there); under the notch they only
+  stay open once they are.
 - Omarchy's tray works in the strip (#662): its icons take left, right and
   middle clicks and scrolling as on the bar itself, and a left click on the
   drawer's arrow opens or closes the drawer (on the bar it opens on hover,

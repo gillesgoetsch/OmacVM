@@ -66,7 +66,20 @@ What the patch adds:
     changed takes its new place at once (only items pushed by others
     glide); an item that shows up (it had no width, as the tray before its
     first app) waits unseen until its own place has been quiet for 150 ms
-    (1 s at most).
+    (1 s at most); the tray until its size with the drawer open has been
+    quiet for 1.5 s (8 s at most), also at login, so apps that start a
+    second or so apart show it once, on its side.
+  * Omarchy 4.5's indicators (#763, #764): their hidden ones also open
+    while the pointer is on the indicators' own place or where Skip the
+    notch opens the hidden ones left of the housing, and stay while it is
+    there, whatever their own hover says; the stretch between those two
+    places (the housing and the widgets there) only keeps them open on the
+    way from one to the other, it never opens them, and left of the hidden
+    ones they shut. Omarchy's rule (the bar left of the centre box) counts
+    only in Omarchy's own layout (they sit inside that stretch and Skip the
+    notch did not move their hidden ones), and only left of the housing:
+    nothing opens under the camera housing.
+    Only this copy of the bar: Omarchy's own bar keeps its rule.
 
 Omarchy's Bar.qml changed in October 2026 (upstream's notch floor from
 display-cutouts.json, a bar thickness per screen, the centre's hover area):
@@ -80,13 +93,14 @@ the centre is three sections (centerBegin, the center box, centerEnd). The
 same pieces go in there: a notch role's window is its strip, the centre
 sections lie around the camera housing (centerBegin ends left of it, the
 box and centerEnd start right of it, as the centre did before), and the
-peek follows 4.5's own rule (left of the centre box).
+peek follows 4.5's own rule (left of the centre box) where the indicators
+sit inside that stretch, unmoved, else their own places (step 10).
 """
 import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 41
+VERSION = 42
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -146,6 +160,9 @@ PIECES_45 = COMMON + [
     "          : more > 0 ? [w, w + more] : w\n",                              # 8. a tray counts open
     "      ? [beginList.notchRest, centerBox.notchRest + endList.notchRest, beginList.notchPeekMore] : [0, 0]\n",  # 5. the peek's room
     "    readonly property real notchRest: boxList.notchRest\n",              # 5. the centre at rest
+    "hovered && root.notchPeeksAt(barWindow, parent, point.position, ",       # 10. the peek where the indicators are
+    "    function onCenterSectionRevealHeldChanged() { Qt.callLater(root.notchPeekHeldTick) }\n",  # 10. ... held open
+    "    onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)\n",  # 10.
 ]
 
 
@@ -512,6 +529,50 @@ def lists_45(text):
             notchShift: root.notchShiftAt(moduleListRoot.notchShift, notchSlotIndex)
             notchShown: moduleListRoot.notchShown
             notchHold: moduleListRoot.notchHold
+''')
+    return text
+
+
+def peek_45(text):
+    """Step 10 on Omarchy 4.5's bar: the bar's hover handler peeks where the
+    indicators are (root.notchPeeksAt; point.position and the indicators'
+    place both in the handler's item), from root.notchIndicatorSpans, which
+    their slot refreshes after it moved and the handler when the pointer
+    comes onto the bar (after step 9, in the slot's body), and from
+    root.notchPeekHeld, a copy of centerSectionRevealHeld set once its change
+    is done (the handler's own answer changes centerSectionRevealHeld)."""
+    text = replace_once(text, '''  property bool centerSectionRevealHeld: false
+''', '''  property bool centerSectionRevealHeld: false
+  // omarchy-notch-bar: centerSectionRevealHeld as it was once its last change
+  // was done, for the bar's hover (root.notchPeeksAt): read straight, the
+  // hover's own opening would change what it reads while it is being set.
+  // A Connections, so a handler of Omarchy's own on root still fits.
+  property bool notchPeekHeld: false
+  function notchPeekHeldTick() { notchPeekHeld = centerSectionRevealHeld }
+  Connections {
+    target: root
+    function onCenterSectionRevealHeldChanged() { Qt.callLater(root.notchPeekHeldTick) }
+  }
+''')
+    text = replace_once(text, '''          readonly property bool peeking: hovered && BarModel.peeksAt(point.position, barWindow.peekEdge, root.vertical)
+''', '''          // omarchy-notch-bar: also over the indicators' places, never under
+          // the camera housing (root.notchPeeksAt).
+          readonly property bool peeking: hovered && root.notchPeeksAt(barWindow, parent, point.position, BarModel.peeksAt(point.position, barWindow.peekEdge, root.vertical), null, root.notchPeekHeld)
+          onHoveredChanged: if (hovered) Qt.callLater(root.notchIndicatorTick)
+''')
+    text = replace_once(text, '''    onNotchPeekBlockChanged: notchPeekApply()
+''', '''    onNotchPeekBlockChanged: { notchPeekApply(); Qt.callLater(root.notchIndicatorTick) }
+    // The indicators' place on their bar (their row, Skip the notch's place
+    // and peek): when it changes, root.notchIndicatorSpans is read again once
+    // this change is done.
+    readonly property string notchPeekPlace: {
+      if (!notchPeekBlock) return ""
+      var a = [width, notchShownX, notchPlaceX, notchShiftGone, notchAppearing, notchPeekFull,
+               notchShift ? notchShift.peekAt : "", notchShift ? notchShift.peekHidden : ""]
+      for (var p = slot; p && p.parent; p = p.parent) a.push(p.x)
+      return a.join(" ")
+    }
+    onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)
 ''')
     return text
 
@@ -899,14 +960,92 @@ def main():
   property bool notchHovering: false
   // Omarchy 4.5 peeks while the pointer is on the bar left of where its
   // centre box starts (the bar window's peekEdge), over widgets too; the
-  // strip does the same with the parked bar's edge.
+  // strip does the same on the parked bar (notchPeeksAt).
   property bool notchPeeking: false
-  function notchPeekEdge() {
+  function notchParkedWindow() {
     var ps = typeof notchBarVariants !== "undefined" ? notchBarVariants.instances : []
     for (var i = 0; i < ps.length; i++)
-      if (ps[i] && ps[i].screen && String(ps[i].screen.name) === notchParkedScreen && ps[i].peekEdge !== undefined)
-        return Number(ps[i].peekEdge)
-    return -1
+      if (ps[i] && ps[i].screen && String(ps[i].screen.name) === notchParkedScreen) return ps[i]
+    return null
+  }
+  function notchPeekEdge() {
+    var w = notchParkedWindow()
+    return w && w.peekEdge !== undefined ? Number(w.peekEdge) : -1
+  }
+  // Omarchy 4.5's indicator peek opens over the bar left of the centre box,
+  // where its own layout keeps the indicators (centerBegin). Where they sit
+  // right of that edge (the right list, as a layout moved from 4.0 keeps
+  // them), it opened far from them and shut on the way there, and their own
+  // hover let go of them as they widened under the pointer (#763, #764). So
+  // the peek also opens over their own place and over the place Skip the
+  // notch opens their hidden ones at (left of the housing); the stretch
+  // between those two (the housing and the widgets there) only keeps an open
+  // peek open, on the way from one to the other, and left of the hidden ones
+  // it shuts. Omarchy's rule counts only in Omarchy's own layout (they sit
+  // inside its stretch and Skip the notch did not move their hidden ones),
+  // and only left of the housing on a bar in the notch strip: nothing opens
+  // under the housing (the pointer cannot be seen there) or in the gap
+  // between it and the centre box. With their hidden ones moved left of the
+  // housing, the left half (the workspaces) opened them from far away.
+  // The bar's hover reads where they are only from notchIndicatorSpans, which
+  // their slot refreshes once a move is done (their row, Skip the notch, a
+  // tray's drawer pushing them, the peek's own opening): read straight from
+  // the items, the peek's own opening changed what it read while it was being
+  // set (QML: "Binding loop detected for property peeking").
+  property var notchIndicatorSpans: ({})
+  function notchIndicatorTick() {
+    // Qt.callLater may run it after a reload took the bar away.
+    if (typeof notchIndicatorSpansNow !== "function") return
+    var now = notchIndicatorSpansNow()
+    if (JSON.stringify(now) !== JSON.stringify(notchIndicatorSpans)) notchIndicatorSpans = now
+  }
+  // The indicators' places on each bar window, by screen name, in the
+  // window's content coordinates: [start, end] of their own place, then
+  // [start, end] of where their hidden ones open when Skip the notch moved
+  // them left of the housing (peekAt; else their own place again), or null
+  // where Skip the notch hides their hidden ones. With none of theirs showing
+  // (nothing active), their own place is where the hidden ones open. A slot
+  // still waiting unseen to show (notchAppearing) has no place yet.
+  function notchIndicatorSpansNow() {
+    var out = {}
+    for (var i = 0; i < moduleSlots.length; i++) {
+      var s = moduleSlots[i]
+      if (!s || !s.notchPeekBlock || s.visible === false || s.notchShiftGone === true || s.notchAppearing === true) continue
+      var w = slotWindow(s), n = w && w.screen && w.contentItem ? String(w.screen.name) : ""
+      if (!n || out.hasOwnProperty(n)) continue
+      var sh = s.notchShift, x = s.mapToItem(w.contentItem, 0, 0).x, f = Number(s.notchPeekFull) || 0
+      if (sh && sh.peekHidden) { out[n] = null; continue }
+      var own = s.width > 0 ? [x, x + s.width]
+        : !(f > 0) ? null
+        : s.fixedEdge === "start" ? [x, x + f] : s.fixedEdge === "end" ? [x - f, x] : [x - f / 2, x + f / 2]
+      // peekAt is on the bar; the slot shows at notchShownX less its width.
+      var at = sh && sh.peekAt !== undefined ? sh.peekAt + x - (s.notchShownX - (s.notchEnd ? s.width : 0)) : NaN
+      out[n] = !isNaN(at) ? (own || [x, x]).concat([at, at + f]) : own ? own.concat(own) : null
+    }
+    return out
+  }
+  // On bar window win in item into's coordinates (the content's when null).
+  function notchIndicatorSpan(win, into, spans) {
+    var n = win && win.screen ? String(win.screen.name) : "", sp = (spans || notchIndicatorSpans)[n]
+    if (!sp) return null
+    var o = into && win.contentItem ? into.mapToItem(win.contentItem, 0, 0).x : 0
+    return [sp[0] - o, sp[1] - o, sp[2] - o, sp[3] - o]
+  }
+  // The peek at pos (into's coordinates) on bar window win; stock: Omarchy's
+  // own answer there; spans: notchIndicatorSpans unless given; held: the
+  // peek is open now (the stretch between their places keeps it open).
+  function notchPeeksAt(win, into, pos, stock, spans, held) {
+    if (!pos || root.vertical || !win) return stock
+    var x = Number(pos.x), sp = notchIndicatorSpan(win, into, spans)
+    if (!sp) return stock
+    if ((x >= sp[0] && x < sp[1]) || (x >= sp[2] && x < sp[3])) return true
+    var a = Math.min(sp[0], sp[2]), b = Math.max(sp[1], sp[3])
+    if (held === true && x >= a && x < b) return true
+    if (win.notchLayout && x >= notchLeft) return false
+    // Not Omarchy's own layout: their own place right of the centre box, or
+    // their hidden ones moved (sp[2..3] is their own place again when not).
+    if (sp[2] !== sp[0] || sp[0] >= Number(win.peekEdge)) return false
+    return stock
   }
   function notchHover(x) {
     // Leaving the strip closes a tray's drawer, as leaving the drawer does.
@@ -925,7 +1064,11 @@ def main():
       var edge = root.notchPeekEdge()
       if (!(edge >= 0)) return "unsupported"
       root.notchHovering = true
-      var peek = x < edge
+      // On the parked copy, at the place of the item the strip shows at x.
+      var px = root.notchParkedX(x)
+      if (isNaN(px)) px = x
+      var peek = root.notchPeeksAt(root.notchParkedWindow(), null, { x: px }, px < edge, root.notchIndicatorSpansNow(),
+                                   root.notchPeeking)
       if (peek !== root.notchPeeking) { root.notchPeeking = peek; root.setBarHovered(peek) }
       return root.notchTargetAt(x, 0) ? "widget" : "free"
     }
@@ -2105,9 +2248,14 @@ EXCLUSION
     property real notchOwnAt: 0
     // An item that shows up (its widget had no width, as Omarchy's tray before
     // its first app) waits unseen at its place until that place has been
-    // quiet for 150 ms, then shows there: apps that register one by one give
-    // one showing, where the tray stays. Only its own place counts (other
+    // quiet for 150 ms, then shows there. Only its own place counts (other
     // items changing size do not), and it shows after 1 s at the latest.
+    // Omarchy's tray waits until its size with the drawer open has been quiet
+    // for 1.5 s (8 s at the most), also before the bar settled (login): apps
+    // that start a second or so apart each grow its drawer, not its place, so
+    // it showed right of the housing and the 4th or 5th moved it left (#757).
+    // Now it shows once, on the side it stays on; meanwhile its place on the
+    // bar is empty and it takes no clicks.
     // Never on a drag (the widget keeps its width) or the indicators' peek or
     // a drawer's slide (they never start from no width).
     readonly property real notchContentWidth: NOTCH_CONTENT_WIDTH
@@ -2115,14 +2263,23 @@ EXCLUSION
     property bool notchAppearing: false
     property real notchAppearEdge: 0
     property bool notchAppearGone: false
+    readonly property bool notchTrayAppear: !!activeItem && root.notchIsTray(activeItem)
+    // Its width with the drawer open (the part of the drawer that shows less
+    // the whole drawer): a slide does not change it, a new app does. The list
+    // reads the tray's drawer before this does, so a new app that leaves its
+    // place as it was comes after the layout's round (no new notchShift): its
+    // own change starts the wait again.
+    readonly property real notchOpenWidth: notchContentWidth + notchOpenExtent
+      - (notchTrayAppear ? Number(activeItem.revealExtent) || 0 : 0)
+    onNotchOpenWidthChanged: if (notchAppearing && notchTrayAppear) notchShowEnd.restart()
     Timer {
       id: notchShowEnd
-      interval: 150
+      interval: slot.notchTrayAppear ? 1500 : 150
       onTriggered: slot.notchShowNow()
     }
     Timer {
       id: notchShowLimit
-      interval: 1000
+      interval: slot.notchTrayAppear ? 8000 : 1000
       onTriggered: slot.notchShowNow()
     }
     function notchShowNow() {
@@ -2236,10 +2393,11 @@ EXCLUSION
         return
       }
       if (gone !== notchShiftGone) notchShiftGone = gone
-      if (notchAppearing || (appeared && animate)) {
+      if (notchAppearing || (appeared && (animate || notchTrayAppear))) {
         // It showed up: unseen at its place until that is quiet (notchShowEnd),
         // at most 1 s (notchShowLimit). Only a change of its own place (its
-        // kept edge, or hidden) starts the 150 ms again.
+        // kept edge, or hidden) starts the 150 ms again; for the tray also a
+        // change of its size with the drawer open (onNotchOpenWidthChanged).
         var edge = notchEdge(s)
         notchFade.enabled = false
         if (!notchAppearing) {
@@ -2294,6 +2452,10 @@ EXCLUSION
     // expander and the weather keep their own hover and clicks.
     z: modulePointer.dragging ? 100 : (slot.notchShift && slot.notchShift.peekAt !== undefined ? -1 : 0)
 ''')
+
+    # 10. Omarchy 4.5's indicator peek where the indicators are (#763, #764).
+    if form45:
+        text = peek_45(text)
 
     open(path, "w").write(text)
     print("patched")
