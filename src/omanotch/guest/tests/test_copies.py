@@ -655,6 +655,50 @@ class Copies(unittest.TestCase):
                           f"2026-11-09 18:00:00.000  WARN scene: file:///home/x/.config/omarchy/plugins/tester.bar/Bar.qml:1012: {line}"):
                 self.assertFalse(self.m.ERROR.search(entry), entry)
 
+    def test_notch_workspaces_warns_when_the_copys_widget_is_not_patched(self):
+        # Omarchy 4.5 (#760): the strip's workspaces are the bar copy's own
+        # widget with the patch; gone or unpatched, check says so and how.
+        self.reset(UP45)
+        self.follow(install=True)
+        self.assertNotIn("NOTCH workspaces", self.check())
+        ws = self.copy() / "widgets/Workspaces.qml"
+        stock = (SHELLS / UP45 / "shell/plugins/bar/widgets/Workspaces.qml").read_bytes()
+        ws.write_bytes(stock)
+        st, d = self.check()["NOTCH workspaces"]
+        self.assertEqual(st, "warn")
+        self.assertIn("widgets/Workspaces.qml has no Omanotch patch", d)
+        self.assertIn(f"Delete ~/.config/omarchy/plugins/{USER}.bar, then repair Omanotch", d)
+        ws.unlink()
+        st, d = self.check()["NOTCH workspaces"]
+        self.assertEqual(st, "warn")
+        self.assertIn("widgets/Workspaces.qml is gone", d)
+        # Omarchy changed its widget so the patch does not fit: re-cloning
+        # would not help, so the line says that instead.
+        changed = stock.replace(b"return screen ? Hyprland.monitorFor(screen) : Hyprland.focusedMonitor",
+                                b"return Hyprland.focusedMonitor")
+        self.assertNotEqual(changed, stock)
+        (self.omarchy / "shell/plugins/bar/widgets/Workspaces.qml").write_bytes(changed)
+        st, d = self.check()["NOTCH workspaces"]
+        self.assertEqual(st, "warn")
+        self.assertIn("Omarchy changed its workspaces widget", d)
+        # No copy: no line (the copy's own line says it is gone).
+        shutil.rmtree(self.copy())
+        self.assertNotIn("NOTCH workspaces", self.check())
+
+    def test_notch_workspaces_no_line_before_45(self):
+        # Omarchy 4.0 (omarchy-mac) and upstream's October bar have no such
+        # widget: OmacVM's own omacvm.workspaces covers NOTCH there.
+        for which in (MAC, UPSTREAM):
+            with self.subTest(which):
+                self.reset(which)
+                self.follow(install=True)
+                self.assertNotIn("NOTCH workspaces", self.check())
+                # Not even with a widget of that name in the copy.
+                ws = self.copy() / "widgets/Workspaces.qml"
+                ws.parent.mkdir(exist_ok=True)
+                ws.write_text("Item {}\n")
+                self.assertNotIn("NOTCH workspaces", self.check())
+
 
 # Omarchy's `omarchy-shell lock status` as omarchy-mac's shell answers it.
 def status(locked, requested=False, sessionLocked=False, secure=False):

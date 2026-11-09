@@ -91,7 +91,9 @@ class Copy:
 
 
 COPIES = [
-    # Omarchy 4.5's workspaces widget: the NOTCH copy shows the built-in display's.
+    # Omarchy 4.5's workspaces widget: the bar's NOTCH surface loads this one
+    # instead of the registry's (bar patch step 11, #760), so the strip shows
+    # the workspaces of the display it stands in for.
     Copy("bar", "omarchy.bar", "Bar.qml", "bar/apply-patch.py", "bar copy", ipc=True,
          extras=[("widgets/Workspaces.qml", "bar/workspaces-patch.py")]),
     Copy("background", "omarchy.background", "Background.qml", "background/apply-patch.py", "background copy", ipc=False),
@@ -831,7 +833,51 @@ def check_lines():
             out.append(("ok", c.title, "back: follows Omarchy's updates from the next login"))
         else:
             out.append(("warn", c.title, f"not updated: {s.get('why')}"))
+    line = notch_workspaces_line()
+    if line:
+        out.append(line)
     return out
+
+
+WORKSPACES = "widgets/Workspaces.qml"
+MARK = "omarchy-notch-bar"   # the patch's mark in a patched file
+
+
+def notch_workspaces_line():
+    """Omarchy 4.5 (#760): the strip's workspaces come from the bar copy's own
+    widget with the patch. A warn line when it is gone or has no patch (the
+    strip then shows NOTCH's own block); None when all is well, or on a bar
+    without 4.5's widget."""
+    c = next(c for c in COPIES if c.name == "bar")
+    sd = stock_dir(c.source)
+    if not sd or not os.path.isdir(c.dir) or not os.path.isfile(os.path.join(sd, WORKSPACES)):
+        return None
+    try:
+        with open(os.path.join(sd, c.entry), errors="replace") as f:
+            if "  component WidgetPool: Item {\n" not in f.read():
+                return None   # not Omarchy 4.5's bar
+        with open(os.path.join(sd, WORKSPACES), "rb") as f:
+            stock = f.read()
+    except OSError:
+        return None
+    try:
+        with open(os.path.join(c.dir, WORKSPACES), errors="replace") as f:
+            mine = f.read()
+    except OSError:
+        mine = None
+    if mine is not None and MARK in mine:
+        return None
+    patcher = dict(c.extras).get(WORKSPACES)
+    try:
+        fits = MARK.encode() in patch_text(c, stock, WORKSPACES, patcher)
+    except Stop:
+        fits = False
+    what = "the strip shows the NOTCH output's own workspaces, not the display's"
+    if not fits:
+        return ("warn", "NOTCH workspaces", f"Omarchy changed its workspaces widget and OmacVM's patch does not fit it: {what}")
+    why = "is gone" if mine is None else "has no Omanotch patch"
+    return ("warn", "NOTCH workspaces", f"the bar copy's {WORKSPACES} {why}: {what}. "
+                                        f"Delete {show(c.dir)}, then repair Omanotch to make it again")
 
 
 def main(argv):
