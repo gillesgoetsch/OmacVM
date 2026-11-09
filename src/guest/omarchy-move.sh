@@ -923,8 +923,21 @@ grub_menu() {
   rm -f "$cfg.omacvm-new"; return 1
 }
 
+# Omarchy's own words for why its update stopped, from the update's output
+# on stdin: the last line before its "Something went wrong during the
+# update!", else the last line; escape sequences (Omarchy's OSC 3008 marks,
+# colours) and other bytes that are not printable ASCII out, at most 200
+# characters, so move-status.json stays valid JSON (#742).
+update_why() {
+  local e=$'\033' b=$'\a'
+  tr '\t\r' ' \n' | LC_ALL=C sed -E -e "s#${e}\][^${b}${e}]*(${b}|${e}\\\\)?##g" -e "s#${e}\[[0-?]*[ -/]*[@-~]##g" \
+      -e "s#${e}[()][0-9A-Za-z]##g" -e 's/[^[:print:]]//g' -e 's/^ +//' -e 's/ +$//' |
+    awk '/^Something went wrong during the update!$/ { if (w == "") w = l; next } /^== / { next } NF { l = $0 }
+         END { print (w != "" ? w : l) }' | cut -c1-200 | sed 's/\.$//'
+}
+
 step_update() {
-  local rc=0 sec u uid started=""
+  local rc=0 sec u uid started="" log=${OMACVM_SYSTEM_UPDATE_LOG:-/var/log/omacvm-system-update.log} at why
   # Omarchy's migrations talk to the user's systemd (systemctl --user): with
   # nobody logged in (the app moves the VM without a window) the user's
   # manager runs for the update and stops after it; system-update hands its
@@ -935,13 +948,17 @@ step_update() {
   if [[ -n $uid && ! -S $ROOT/run/user/$uid/bus ]]; then
     systemctl start "user@$uid.service" >> "$LOG" 2>&1 && started=1
   fi
+  at=$(wc -c 2>/dev/null < "$log") || at=0
   "$S/system-update" >> "$LOG" 2>&1 || rc=$?
   [[ -z $started ]] || systemctl stop "user@$uid.service" >> "$LOG" 2>&1 || true
+  # This run's omarchy update (none when system-update stopped before it):
+  # its section of the log, from what was added to it now.
+  (( $(wc -c 2>/dev/null < "$log" || echo 0) >= at )) || at=0
+  sec=$(tail -c +$((at + 1)) "$log" 2>/dev/null | tr -d '\000' |
+    awk '/ omarchy update -y \(OmacVM\)$/ { b = "" } { b = b $0 "\n" } END { printf "%s", b }')
   # omarchy update builds AUR packages last (after its migrations and the
   # orphan step): one that does not build on aarch64 is a warning here.
   if (( rc == 1 )); then
-    sec=$(awk '/ omarchy update -y \(OmacVM\)$/ { b = "" } { b = b $0 "\n" } END { printf "%s", b }' \
-      "${OMACVM_SYSTEM_UPDATE_LOG:-/var/log/omacvm-system-update.log}" 2>/dev/null)
     if [[ $sec == *"Update AUR packages"* && $sec == *"omarchy update exit 1"* ]]; then
       echo "omarchy update: AUR packages not updated ($(pacman -Qqm 2>/dev/null | grep -vxE 'linux-aarch64-thp(-headers)?|omacvm-vulkan-virtio' | tr '\n' ' ')): see /var/log/omacvm-system-update.log" >> "$J/warnings"
       return 0
@@ -950,7 +967,9 @@ step_update() {
   case $rc in
     0) return 0 ;;
     2) REASON="omarchy update ran, but the desktop's graphics would not start (see /var/log/omacvm-system-update.log)" ;;
-    *) REASON="omarchy update did not finish (see /var/log/omacvm-system-update.log)" ;;
+    *) why=$([[ -z $sec ]] || update_why <<<"$sec")
+       if [[ -n $why ]]; then REASON="omarchy update stopped: $why (see /var/log/omacvm-system-update.log)"
+       else REASON="omarchy update did not finish (see /var/log/omacvm-system-update.log)"; fi ;;
   esac
   return 1
 }
