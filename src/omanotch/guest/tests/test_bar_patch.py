@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 42)
+        self.assertEqual(V, 43)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -847,9 +847,10 @@ console.log(JSON.stringify(out))
             bar, backup = self.dir / "Bar.qml", self.dir / "Bar.qml.before-notchbar"
             backup.write_text(stock)
             # An older version (3.1.2 had v21; 3.4.0 v37; v38 = the test builds of
-            # #733 and #735 alone; 3.4.1 v39; v40 = #759 alone; 3.4.2 v41), a
-            # version line alone, each piece missing.
-            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v%d" % v) for v in (21, 37, 38, 39, 40, 41)]
+            # #733 and #735 alone; 3.4.1 v39; v40 = #759 alone; 3.4.2 v41; v42 =
+            # #765 alone; this one 3.4.3's v43), a version line alone, each
+            # piece missing.
+            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v%d" % v) for v in (21, 37, 38, 39, 40, 41, 42)]
             olds.append(VERSION_LINE + "\n")
             mod = load_patch()
             olds += [full.replace(p, "") for p in (mod.PIECES_45 if is_45(stock) else mod.PIECES)]
@@ -3873,6 +3874,159 @@ console.log(JSON.stringify([pick("NOTCH", "Virtual-1"), pick("NOTCH", "Virtual-2
 """.replace("BODY", body)
         r = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
         self.assertEqual(json.loads(r.stdout), ["Virtual-1", "Virtual-2", "Virtual-1", "NOTCH", "NOTCH", "Virtual-2"])
+
+
+class NotchWorkspacesHook(unittest.TestCase):
+    """#760: Omarchy 4.5 loads every bar widget from its registry, so the bar
+    copy's patched widgets/Workspaces.qml never ran and the strip showed
+    NOTCH's own workspaces. Step 11 has the NOTCH bar load the copy's file
+    for Omarchy's own omarchy.workspaces; everything else stays the
+    registry's."""
+
+    HOOKS = [
+        "  readonly property var notchWorkspacesComponent: notchWorkspacesLoad()\n",
+        "  function notchRegistryComponent(name, entry, custom, role, ours, firstParty) {\n",
+        "  function notchWorkspacesFrom() {\n",
+        "    // omarchy-notch-bar: its bar window's notch role (\"notch\" on NOTCH).\n    property string notchRole: \"\"\n",
+        "        WidgetPool { id: horizontalPool; notchRole: barWindow.notchRole }\n",
+        "      return root.notchRegistryComponent(registryName, w[registryName], customType, "
+        "pool ? pool.notchRole : \"\", root.notchWorkspacesComponent, firstParty)\n",
+        "skip: root.notchSkipOn, workspaces: root.notchWorkspacesFrom(),\n",
+        "    // copy's (notchRegistryComponent): they need this bar itself.\n"
+        "    readonly property bool firstParty: registryMetadata && registryMetadata.firstParty === true\n",
+    ]
+
+    def full(self, stock):
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        f = d / "Bar.qml"
+        f.write_text(stock)
+        out = patch_file(f)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return f.read_text()
+
+    def full45(self):
+        return self.full(next(b.read_text() for b in SHELLS if is_45(b.read_text())))
+
+    def node(self, js):
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def test_45_once_and_never_on_the_other_bars(self):
+        for bar in SHELLS:
+            stock = bar.read_text()
+            with self.subTest(omarchy=bar.parts[-5]):
+                full = self.full(stock)
+                if not is_45(stock):
+                    for word in ("notchRegistryComponent", "notchWorkspaces", "notchRole: barWindow.notchRole",
+                                 "workspaces: root."):
+                        self.assertNotIn(word, full)
+                    continue
+                for hook in self.HOOKS:
+                    self.assertEqual(full.count(hook), 1, hook)
+                # Omarchy's binding keeps its start (it follows the registry,
+                # custom widgets first); only its answer goes through the patch.
+                self.assertIn("""    readonly property var registryComponent: {
+      var w = root.barWidgetRegistry.widgets
+      if (customType) return null
+      var registryName = root.canonicalWidgetId(moduleName)
+      // omarchy-notch-bar: the NOTCH bar's workspaces are the copy's.
+      return root.notchRegistryComponent(""", full)
+                self.assertNotIn("      return w[registryName] ? w[registryName].component : null\n", full)
+                # A notch role is a top bar's alone: the vertical pool stays Omarchy's.
+                self.assertEqual(full.count("        WidgetPool { id: verticalPool }\n"), 1)
+                self.assertIn('Qt.createComponent(Qt.resolvedUrl("widgets/Workspaces.qml"), Component.PreferSynchronous)', full)
+
+    def roles(self, full):
+        return """
+var position = "top", notchPanelOn = false, notchPanelScreen = "", notchParked = true, notchParkedScreen = "Virtual-1";
+function notchRoleFor(s) {%s}
+function notchRegistryComponent(name, entry, custom, role, ours, firstParty) {%s}
+""" % (function(full, "notchRoleFor"), function(full, "notchRegistryComponent"))
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_which_component_a_widget_gets(self):
+        full = self.full45()
+        js = self.roles(full) + """
+var OURS = "copy", STOCK = "omarchy", MINE = "mine";
+var omarchy = { component: STOCK, metadata: { firstParty: true } };
+var plugin = { component: MINE, metadata: { firstParty: false, pluginId: "tester.workspaces" } };
+// fp: the host's firstParty (Omarchy's metadataFor); by default what the entry says.
+function at(screen, name, entry, custom, ours, fp) {
+  if (fp === undefined) fp = !!(entry && entry.metadata && entry.metadata.firstParty === true);
+  return notchRegistryComponent(name, entry, custom, notchRoleFor({ name: screen }), ours === undefined ? OURS : ours, fp);
+}
+var out = [
+  at("NOTCH", "omarchy.workspaces", omarchy, ""),                    // ours
+  at("Virtual-1", "omarchy.workspaces", omarchy, ""),                // the parked bar: Omarchy's
+  at("Virtual-2", "omarchy.workspaces", omarchy, ""),                // another display: Omarchy's
+  at("NOTCH", "omarchy.workspaces", omarchy, "", null),              // the copy's file gone or broken
+  at("NOTCH", "omarchy.workspaces", plugin, ""),                     // not Omarchy's own entry
+  at("NOTCH", "omarchy.workspaces", { component: STOCK }, ""),       // no metadata
+  at("NOTCH", "tester.workspaces", plugin, ""),                      // the user's own clone
+  at("NOTCH", "omarchy.clock", { component: "clock", metadata: { firstParty: true } }, ""),
+  at("NOTCH", "omarchy.workspaces", omarchy, "qml"),                 // a custom widget: none, as Omarchy's
+  at("NOTCH", "omarchy.workspaces", undefined, ""),                  // not in the registry: none
+  at("NOTCH", "omarchy.workspaces", omarchy, "", OURS, false),       // the host would hand it no bar: Omarchy's
+  at("NOTCH", "omarchy.workspaces", { component: STOCK }, "", OURS, true),  // the host's word counts, not the entry's
+];
+position = "left";                                                   // no notch role off the top edge
+out.push(at("NOTCH", "omarchy.workspaces", omarchy, ""));
+console.log(JSON.stringify(out));
+"""
+        self.assertEqual(self.node(js), ["copy", "omarchy", "omarchy", "omarchy", "mine", "omarchy", "mine",
+                                         "clock", None, None, "omarchy", "copy", "omarchy"])
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_the_state_says_where_notchs_widget_comes_from(self):
+        full = self.full45()
+        js = """
+var OURS = { ours: 1 }, STOCK = { stock: 1 };
+var notchWorkspacesComponent = OURS, widgetHosts = [];
+function canonicalWidgetId(n) { return n === "workspaces" ? "omarchy.workspaces" : n }
+function notchWorkspacesFrom() {%s}
+function host(role, name, comp) { return { pool: { notchRole: role }, moduleName: name, registryComponent: comp } }
+var out = [notchWorkspacesFrom()];
+widgetHosts = [host("parked", "omarchy.workspaces", STOCK), host("", "omarchy.clock", STOCK)];
+out.push(notchWorkspacesFrom());                                       // no NOTCH bar (Omanotch off, FullPanel)
+widgetHosts.push(host("notch", "omarchy.clock", STOCK));
+out.push(notchWorkspacesFrom());                                       // NOTCH without the widget
+widgetHosts.push(host("notch", "workspaces", OURS));
+out.push(notchWorkspacesFrom());
+widgetHosts[3] = host("notch", "omarchy.workspaces", STOCK);
+out.push(notchWorkspacesFrom());
+widgetHosts[3] = host("notch", "omarchy.workspaces", null);
+out.push(notchWorkspacesFrom());                                       // not loaded: none
+console.log(JSON.stringify(out));
+""" % function(full, "notchWorkspacesFrom")
+        self.assertEqual(self.node(js), ["none", "none", "none", "copy", "omarchy", "none"])
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_the_copys_file_loads_once_or_warns_once_without_a_path(self):
+        full = self.full45()
+        js = """
+var Component = { Null: 0, Ready: 1, Loading: 2, Error: 3, PreferSynchronous: 1 };
+var warned = [], asked = [];
+var console = { warn: function (m) { warned.push(m) } };
+var NEXT;
+var Qt = { resolvedUrl: function (u) { return "file:///home/tester/.config/omarchy/plugins/tester.bar/" + u },
+           createComponent: function (u, mode) { asked.push([u, mode]); return NEXT } };
+function notchWorkspacesLoad() {%s}
+var out = [];
+NEXT = { status: Component.Ready, errorString: function () { return "" } };
+out.push(notchWorkspacesLoad() === NEXT);
+NEXT = { status: Component.Error, errorString: function () {
+  return "file:///home/tester/.config/omarchy/plugins/tester.bar/widgets/Workspaces.qml: No such file or directory" } };
+out.push(notchWorkspacesLoad());
+NEXT = { status: Component.Error, errorString: function () { return "Workspaces.qml:12 Expected token `}'" } };
+out.push(notchWorkspacesLoad());
+console.log = undefined;
+process.stdout.write(JSON.stringify([out, warned, asked]));
+""" % function(full, "notchWorkspacesLoad")
+        out, warned, asked = self.node(js)
+        self.assertEqual(out, [True, None, None])
+        self.assertEqual(warned, ["omanotch: NOTCH workspaces: Omarchy's widget (missing)",
+                                  "omanotch: NOTCH workspaces: Omarchy's widget (error)"])
+        self.assertEqual(asked, [["file:///home/tester/.config/omarchy/plugins/tester.bar/widgets/Workspaces.qml", 1]] * 3)
 
 if __name__ == "__main__":
     unittest.main()

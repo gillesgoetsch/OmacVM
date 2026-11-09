@@ -63,6 +63,16 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   Update VM (3.4.3, #765). With Omanotch off, Omarchy's own bar opens them
   only left of its centre; moving the indicators there (Omarchy's own layout,
   `centerBegin`) avoids it.
+- **The notch strip's workspaces stay on 1 while you switch workspaces**
+  (Omarchy 4.5, Omanotch; OmacVM 3.4.2 and older): Update VM (3.4.3, bar
+  patch v43; #760). Then `omarchy-shell notchbar state` says
+  `"workspaces": "copy"` and `omacvm check` has no "NOTCH workspaces" line.
+  If the state says `"omarchy"`, or `omacvm check` has that line (the copy's
+  widget can load without its fix), the line has the fix (delete
+  `~/.config/omarchy/plugins/$USER.bar`, then repair Omanotch). If you made
+  your own copy of the workspaces widget and put it in the bar's layout,
+  put Omarchy's own Workspaces back in the layout: the fix is for Omarchy's
+  widget only (`"none"`: no Workspaces of Omarchy's on the strip's bar).
 - **The tray or other bar items show right of the notch, then move left of
   it** (Omarchy 4.5, Omanotch with Skip the notch; on OmacVM 3.4.1 the shell
   log may say `Binding loop detected for property "notchWidths"`): Update VM

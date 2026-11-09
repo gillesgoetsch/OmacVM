@@ -95,7 +95,11 @@ crosses the notch and the items between the two, and shut when it goes left
 of them. The notch and those items never open them, and Omarchy's own rule
 (the bar left of its centre) counts only in Omarchy's own layout (the
 indicators there, not moved by Skip the notch) and only left of the notch
-(bar patch v42, #763, #765). Omarchy
+(bar patch v42, #763, #765). On Omarchy 4.5 the strip's workspaces are those
+of the display the strip stands for, as on 4.0: Omarchy 4.5 loads its
+workspaces widget from its own folder, so the strip's bar uses the bar copy's
+own `widgets/Workspaces.qml` instead (bar patch v43, #760; the other bars keep
+Omarchy's; `omarchy-shell notchbar state` says `"workspaces": "copy"`). Omarchy
 4.5's tray counts with its drawer open: it sits where the drawer opens in full,
 and does not move while the drawer slides open; what jumps left of the notch
 keeps clear of the room 4.5's hidden indicators open into there (so on a full

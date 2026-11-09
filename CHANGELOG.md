@@ -37,6 +37,16 @@ in more words.
   While it waits, its place on the bar is empty and it can't be clicked, on the notch strip too
   (before, that lasted 150 ms). An app that starts later than that can still move the shown tray
   once, at once. Update VM brings it (bar patch v42).
+- **Omanotch's strip shows the workspace you are on** on Omarchy 4.5 (#760, reported by
+  @mlamoure): its workspaces stayed on slot 1 whatever the display showed, because Omarchy 4.5 loads
+  its workspaces widget from its own folder, so the copy Omanotch fixed for the strip never ran and
+  the strip showed the hidden NOTCH output's own workspaces. With a window on another workspace the
+  strip's widget also had another width than the bar that takes its clicks, so clicks to its right
+  could land beside the item. The strip's bar now uses Omanotch's copy of the widget; the bars on
+  your displays keep Omarchy's. Omarchy 4.0 was not affected. If you had made your own copy of the
+  workspaces widget for this, put Omarchy's Workspaces back in the bar's layout. Update VM brings
+  it (bar patch v43); `omacvm check` warns when the strip's copy of the widget is gone,
+  unpatched or does not load.
 
 ## 3.4.2
 

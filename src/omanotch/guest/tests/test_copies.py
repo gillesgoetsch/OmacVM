@@ -227,6 +227,9 @@ class Copies(unittest.TestCase):
         self.assertEqual(self.check()["bar copy"][0], "ok")
         self.assertEqual(self.entry("background").read_bytes(), self.patched("background", UP45))
         self.assertIn("notchParkedScreen", (self.copy() / "widgets/Workspaces.qml").read_text())
+        # ... and the bar's NOTCH surface loads that widget (#760).
+        self.assertEqual(text.count("pool ? pool.notchRole : \"\", root.notchWorkspacesComponent, firstParty)"), 1)
+        self.assertNotIn("NOTCH workspaces", self.check())
 
     def test_your_edits_stay_when_they_merge(self):
         self.follow(install=True)
@@ -369,43 +372,69 @@ class Copies(unittest.TestCase):
         self.assertIn("  // mine\n", text)
         self.assertIn("// newer patch", text)
 
-    def test_a_45_copy_from_bar_v41_with_your_edit_becomes_v42(self):
-        # 3.4.2's patch (v41) made a 4.5 VM's copy, which has an edit of the
-        # owner's; the next patch (v42: the indicators' peek, #763 #764)
-        # merges in, the edit stays, and patching again changes nothing.
+    # What each older bar patch left out, made from this one (so the inputs
+    # follow it): v42 (#765) without step 11 (#760), 3.4.2's v41 without
+    # step 10 either.
+    STEP_11 = ("    # 11. Omarchy 4.5: the NOTCH bar's workspaces from the copy (#760).\n"
+               "    if form45:\n        text = workspaces_45(text)\n",
+               '    "  function notchRegistryComponent(name, entry, custom, role, ours, firstParty) {\\n",  # 11. NOTCH\'s workspaces (#760)\n',
+               '    "        WidgetPool { id: horizontalPool; notchRole: barWindow.notchRole }\\n",  # 11.\n',
+               '    "      return root.notchRegistryComponent(registryName, w[registryName], customType, '
+               'pool ? pool.notchRole : \\"\\", root.notchWorkspacesComponent, firstParty)\\n",  # 11.\n',
+               '    "skip: root.notchSkipOn, workspaces: root.notchWorkspacesFrom(),\\n",  # 11.\n')
+    STEP_10 = ("    if form45:\n        text = peek_45(text)\n",
+               '    "hovered && root.notchPeeksAt(barWindow, parent, point.position, ",       # 10. the peek where the indicators are\n',
+               '    "    onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)\\n",  # 10.\n')
+
+    def older_patcher(self, real, version):
+        cur = int(re.search(r"^VERSION = (\d+)$", real, re.M).group(1))
+        old = real.replace("VERSION = %d\n" % cur, "VERSION = %d\n" % version)
+        for piece in self.STEP_11 + (self.STEP_10 if version < 42 else ()):
+            self.assertEqual(old.count(piece), 1, piece)
+            old = old.replace(piece, "")
+        return old
+
+    def test_a_45_copy_from_an_older_bar_patch_with_your_edit_becomes_the_current_one(self):
+        # 3.4.2's patch (v41) or #765's (v42) made a 4.5 VM's copy, which has
+        # an edit of the owner's; this patch (v43: the NOTCH bar's workspaces
+        # from the copy, #760; v42's indicators' peek, #763 #764) merges in,
+        # the edit stays, the widget stays patched, and patching again
+        # changes nothing.
         real = (self.lib / "bar/apply-patch.py").read_text()
-        v41 = real.replace("VERSION = 42\n", "VERSION = 41\n")
-        for old in ("    if form45:\n        text = peek_45(text)\n",
-                    '    "hovered && root.notchPeeksAt(barWindow, parent, point.position, ",       # 10. the peek where the indicators are\n',
-                    '    "    onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)\\n",  # 10.\n'):
-            self.assertEqual(v41.count(old), 1, old)
-            v41 = v41.replace(old, "")
-        (self.lib / "bar/apply-patch.py").write_text(v41)
-        self.reset(UP45)
-        self.follow(install=True)
-        text = self.entry().read_text()
-        self.assertIn("// omarchy-notch-bar patch v41\n", text)
-        self.assertNotIn("root.notchPeeksAt(barWindow", text)
-        mine = self.quiet_line(self.entry().read_bytes(), self.patched("bar", UP45))
-        self.edit(self.entry(), mine, mine + "  // mine: stays\n")
-        (self.lib / "bar/apply-patch.py").write_text(real)
-        n = self.restarts
-        self.assertEqual(self.follow(), 0)
-        self.assertEqual(self.restarts, n + 1)
-        text = self.entry().read_text()
-        self.assertEqual(text.replace(mine + "  // mine: stays\n", mine), self.patched("bar", UP45).decode())
-        self.assertIn("// omarchy-notch-bar patch v42\n", text)
-        self.assertEqual(text.count("root.notchPeeksAt(barWindow, parent, point.position, "), 1)
-        self.assertEqual(self.check()["bar copy"][0], "ok")
-        self.assertEqual(self.state()["edits"], ["Bar.qml"])
-        # Patching it again: the patcher says so and writes nothing.
-        out = subprocess.run([sys.executable, str(self.lib / "bar/apply-patch.py"), str(self.entry())],
-                             capture_output=True, text=True)
-        self.assertEqual((out.returncode, out.stdout.strip()), (0, "already patched (v42)"))
-        self.assertEqual(self.entry().read_text(), text)
-        n = self.restarts
-        self.assertEqual(self.follow(), 0)
-        self.assertEqual(self.restarts, n, "nothing changed: no restart")
+        cur = int(re.search(r"^VERSION = (\d+)$", real, re.M).group(1))
+        self.assertEqual(cur, 43)
+        for version in (41, 42):
+            with self.subTest(version=version):
+                (self.lib / "bar/apply-patch.py").write_text(self.older_patcher(real, version))
+                self.reset(UP45)
+                self.follow(install=True)
+                text = self.entry().read_text()
+                self.assertIn("// omarchy-notch-bar patch v%d\n" % version, text)
+                self.assertNotIn("notchRegistryComponent", text)
+                self.assertEqual("root.notchPeeksAt(barWindow" in text, version >= 42)
+                mine = self.quiet_line(self.entry().read_bytes(), self.patched("bar", UP45))
+                self.edit(self.entry(), mine, mine + "  // mine: stays\n")
+                (self.lib / "bar/apply-patch.py").write_text(real)
+                n = self.restarts
+                self.assertEqual(self.follow(), 0)
+                self.assertEqual(self.restarts, n + 1)
+                text = self.entry().read_text()
+                self.assertEqual(text.replace(mine + "  // mine: stays\n", mine), self.patched("bar", UP45).decode())
+                self.assertIn("// omarchy-notch-bar patch v%d\n" % cur, text)
+                self.assertEqual(text.count("root.notchPeeksAt(barWindow, parent, point.position, "), 1)
+                self.assertEqual(text.count("pool ? pool.notchRole : \"\", root.notchWorkspacesComponent, firstParty)"), 1)
+                self.assertIn("notchParkedScreen", (self.copy() / "widgets/Workspaces.qml").read_text())
+                self.assertEqual(self.check()["bar copy"][0], "ok")
+                self.assertNotIn("NOTCH workspaces", self.check())
+                self.assertEqual(self.state()["edits"], ["Bar.qml"])
+                # Patching it again: the patcher says so and writes nothing.
+                out = subprocess.run([sys.executable, str(self.lib / "bar/apply-patch.py"), str(self.entry())],
+                                     capture_output=True, text=True)
+                self.assertEqual((out.returncode, out.stdout.strip()), (0, "already patched (v%d)" % cur))
+                self.assertEqual(self.entry().read_text(), text)
+                n = self.restarts
+                self.assertEqual(self.follow(), 0)
+                self.assertEqual(self.restarts, n, "nothing changed: no restart")
 
     def newer_patch(self):
         """OmacVM's patch changes: the bar patcher adds a line."""
@@ -612,6 +641,65 @@ class Copies(unittest.TestCase):
         bad = [e for e in self.m.log_entries(log) if where in e and self.m.ERROR.search(e) and "Binding loop" not in e]
         self.assertEqual(len(bad), 1)
         self.assertIn("Cannot read property", bad[0])
+        # The bar's own warning when the copy's workspaces widget is gone or
+        # does not load (#760) is no failure to load, also with the copy's
+        # path in front: else a widget the owner deleted would roll back every
+        # later patch.
+        src = (GUEST / "bar/apply-patch.py").read_text()
+        m = re.search(r'console\.warn\("(omanotch: NOTCH workspaces: [^"]*\()" \+ \(gone \? "(\w+)" : "(\w+)"\) \+ "(\))"\)', src)
+        self.assertIsNotNone(m)
+        for word in (m.group(2), m.group(3)):
+            line = m.group(1).replace("\\'", "'") + word + m.group(4)
+            self.assertNotIn("/", line)
+            for entry in (f"2026-11-09 18:00:00.000  WARN qml: {line}",
+                          f"2026-11-09 18:00:00.000  WARN scene: file:///home/x/.config/omarchy/plugins/tester.bar/Bar.qml:1012: {line}"):
+                self.assertFalse(self.m.ERROR.search(entry), entry)
+
+    def test_notch_workspaces_warns_when_the_copys_widget_is_not_patched(self):
+        # Omarchy 4.5 (#760): the strip's workspaces are the bar copy's own
+        # widget with the patch; gone or unpatched, check says so and how.
+        self.reset(UP45)
+        self.follow(install=True)
+        self.assertNotIn("NOTCH workspaces", self.check())
+        ws = self.copy() / "widgets/Workspaces.qml"
+        stock = (SHELLS / UP45 / "shell/plugins/bar/widgets/Workspaces.qml").read_bytes()
+        ws.write_bytes(stock)
+        st, d = self.check()["NOTCH workspaces"]
+        self.assertEqual(st, "warn")
+        self.assertIn("widgets/Workspaces.qml has no Omanotch patch", d)
+        # $USER as typed, not the login: no user name in a report (#760).
+        self.assertIn("Delete ~/.config/omarchy/plugins/$USER.bar, then repair Omanotch", d)
+        self.assertNotIn(USER, d)
+        ws.unlink()
+        st, d = self.check()["NOTCH workspaces"]
+        self.assertEqual(st, "warn")
+        self.assertIn("widgets/Workspaces.qml is gone", d)
+        # Omarchy changed its widget so the patch does not fit: re-cloning
+        # would not help, so the line says that instead.
+        changed = stock.replace(b"return screen ? Hyprland.monitorFor(screen) : Hyprland.focusedMonitor",
+                                b"return Hyprland.focusedMonitor")
+        self.assertNotEqual(changed, stock)
+        (self.omarchy / "shell/plugins/bar/widgets/Workspaces.qml").write_bytes(changed)
+        st, d = self.check()["NOTCH workspaces"]
+        self.assertEqual(st, "warn")
+        self.assertIn("Omarchy changed its workspaces widget", d)
+        # No copy: no line (the copy's own line says it is gone).
+        shutil.rmtree(self.copy())
+        self.assertNotIn("NOTCH workspaces", self.check())
+
+    def test_notch_workspaces_no_line_before_45(self):
+        # Omarchy 4.0 (omarchy-mac) and upstream's October bar have no such
+        # widget: OmacVM's own omacvm.workspaces covers NOTCH there.
+        for which in (MAC, UPSTREAM):
+            with self.subTest(which):
+                self.reset(which)
+                self.follow(install=True)
+                self.assertNotIn("NOTCH workspaces", self.check())
+                # Not even with a widget of that name in the copy.
+                ws = self.copy() / "widgets/Workspaces.qml"
+                ws.parent.mkdir(exist_ok=True)
+                ws.write_text("Item {}\n")
+                self.assertNotIn("NOTCH workspaces", self.check())
 
 
 # Omarchy's `omarchy-shell lock status` as omarchy-mac's shell answers it.

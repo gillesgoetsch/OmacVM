@@ -3,11 +3,16 @@
 # output sit? On the built-in display's top edge (the
 # app's fallback) or, under OmacVM.app, right above it (notch-place.h). Any
 # other place is still flagged. Offline: notch_spot from check.sh on fixtures.
+# Also its "NOTCH workspaces" line (#760, Omarchy 4.5): notch_ws_unloaded on
+# made-up `notchbar state` answers and bar copy widgets.
 set -u
 R=$(cd "$(dirname "$0")/../.." && pwd)
 command -v jq >/dev/null || { echo "SKIP: no jq"; exit 0; }
 fn=$(awk '/^notch_spot\(\) \{$/ {on = 1} on {print} on && /^}$/ {exit}' "$R/src/guest/check.sh")
 [[ -n $fn ]] || { echo "FAIL check.sh has no notch_spot"; exit 1; }
+eval "$fn"
+fn=$(awk '/^notch_ws_unloaded\(\) \{$/ {on = 1} on {print} on && /^}$/ {exit}' "$R/src/guest/check.sh")
+[[ -n $fn ]] || { echo "FAIL check.sh has no notch_ws_unloaded"; exit 1; }
 eval "$fn"
 fail=0
 
@@ -45,6 +50,46 @@ grep -qF 'notch_spot "$mons" "$b" "$TYPE"' "$R/src/guest/check.sh" && echo "ok  
   { echo "FAIL check.sh's notch display row does not use notch_spot"; fail=1; }
 grep -qF '$(at NOTCH) != "$(at "$b")"' "$R/src/guest/check.sh" &&
   { echo "FAIL check.sh still wants NOTCH exactly on the display"; fail=1; }
+
+# The "NOTCH workspaces" line: only a state that says "omarchy" while the
+# copy's widget has the patch (it is there but does not load). Gone or
+# unpatched is copies.py's line; "copy" is fine; "none" is no NOTCH bar (or no
+# Omarchy workspaces on it); 4.0's state has no key.
+D=$(mktemp -d); trap 'rm -rf "$D"' EXIT
+printf '// omarchy-notch-bar: the display the strip stands in for\nItem {}\n' > "$D/patched.qml"
+printf 'Item {}\n' > "$D/stock.qml"
+LOCALE='  WARN: Detected locale "C" with character encoding "ANSI_X3.4-1968", which is not UTF-8.
+Qt depends on a UTF-8 locale, and has switched to "C.UTF-8" instead.'
+state() {  # workspaces value ("" = no key, Omarchy 4.0)
+  local w=""; [[ -n $1 ]] && w=",\"workspaces\":\"$1\""
+  echo "{\"parked\":true,\"screen\":\"Virtual-1\",\"fullpanel\":\"off\",\"skip\":false$w,\"bars\":[[\"Virtual-1\",\"parked\",true,26,26,null]]}"
+}
+w() {  # want(warn|-) state widget name
+  local got=-; notch_ws_unloaded "$2" "$3" && got=warn
+  if [[ $got == "$1" ]]; then echo "ok   $4"; else echo "FAIL $4: want $1, got $got"; fail=1; fi
+}
+for loc in "" "$LOCALE"; do
+  pre=${loc:+"$loc"$'\n'}; tag=${loc:+" (after Qt's locale warning)"}
+  w warn "$pre$(state omarchy)" "$D/patched.qml" "omarchy + patched copy widget: does not load$tag"
+  w -    "$pre$(state omarchy)" "$D/stock.qml"   "omarchy + unpatched copy widget: copies.py's line$tag"
+  w -    "$pre$(state omarchy)" "$D/gone.qml"    "omarchy + no copy widget: copies.py's line$tag"
+  w -    "$pre$(state copy)"    "$D/patched.qml" "copy: loads$tag"
+  w -    "$pre$(state none)"    "$D/patched.qml" "none: no NOTCH bar$tag"
+  w -    "$pre$(state "")"      "$D/patched.qml" "no workspaces key (Omarchy 4.0)$tag"
+done
+w - "" "$D/patched.qml" "the bar does not answer"
+w - "not json" "$D/patched.qml" "the state is not JSON"
+# check.sh's line uses it on the bar copy's widget, names no login and does
+# not promise a reason the log does not hold.
+grep -qF 'notch_ws_unloaded "$st" "$H/.config/omarchy/plugins/$U.bar/widgets/Workspaces.qml"' "$R/src/guest/check.sh" &&
+  echo "ok   check.sh's NOTCH workspaces line uses notch_ws_unloaded" ||
+  { echo "FAIL check.sh's NOTCH workspaces line does not use notch_ws_unloaded on the copy's widget"; fail=1; }
+line=$(grep -F 'warn "NOTCH workspaces"' "$R/src/guest/check.sh")
+[[ $line == *'plugins/\$USER.bar'* && $line != *'says why'* && $line == *"'omanotch: NOTCH workspaces'"* ]] &&
+  echo "ok   the line names \$USER.bar and the log line it can point to" ||
+  { echo "FAIL the NOTCH workspaces line: $line"; fail=1; }
+grep -qF 'console.warn("omanotch: NOTCH workspaces: ' "$R/src/omanotch/guest/bar/apply-patch.py" &&
+  echo "ok   the bar writes that log line" || { echo "FAIL the bar patch no longer writes 'omanotch: NOTCH workspaces'"; fail=1; }
 
 echo "notch-check: $([[ $fail == 0 ]] && echo all ok || echo FAILED)"
 exit $fail
