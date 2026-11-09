@@ -1604,11 +1604,12 @@ class FullPanelLayout(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class FullPanelZone(unittest.TestCase):
-    """#758: FullPanel's bar reserves its strip less half of Omarchy's top
-    window gap (5 px at most), so windows sit closer under the notch but
-    never in the strip; every other role reserves what it did (v40). The
-    owner's MacBook Pro 14" at the guest's scale 2: strip 33.5, bar 26,
-    gaps_out 10: reserved 29, windows at 29 + 10 + border 2 = 41."""
+    """#758: FullPanel's bar reserves its strip less 5 px of Omarchy's top
+    window gap (all of the gap when it is under 5), so windows sit closer
+    under the notch but never in the strip; every other role reserves what
+    it did (v40). The owner's MacBook Pro 14" at the guest's scale 2: strip
+    33.5, bar 26, gaps_out 10: reserved 29, windows at 29 + 10 + border 2 =
+    41."""
 
     def setUp(self):
         self.dir = pathlib.Path(tempfile.mkdtemp())
@@ -1639,10 +1640,14 @@ class FullPanelZone(unittest.TestCase):
                             r'      when: (.*); restoreMode: Binding\.RestoreNone\n    \}\n', full)
         js = """
 const ExclusionMode = { Ignore: "Ignore", Normal: "Normal", Auto: "Auto" };
-const root = { barSize: 26, barHidden: false, notchHeight: 33.5, notchGapsTop: GAPS };
+const root = { barSize: 26, barHidden: false, notchHeight: 33.5, notchGapsSure: { top: GAPS, rules: [] },
+               notchGapsSeen: { top: GAPS, rules: [] }, notchSpecials: {}, notchFlush: false };
+const screen = { name: "Virtual-1" };
 function notchBox(outH, strip, flush, size, scale) { BOX }
 function notchPanelZoneFor(size, gapsTop) { ZONEFOR }
-root.notchBox = notchBox; root.notchPanelZoneFor = notchPanelZoneFor;
+function notchGapsFor(output, state, specials, flush) { GAPSFOR }
+function notchGapsAt(output, sure, seen, specials, flush) { GAPSAT }
+Object.assign(root, { notchBox, notchPanelZoneFor, notchGapsFor, notchGapsAt });
 const out = [];
 for (const [role, parkedSize] of [["", STOCK], ["parked", 1], ["notch", 34], ["fullpanel", 34]]) {
   const notchPanelFit = notchBox(0, root.notchHeight, 0, root.barSize, 2);
@@ -1663,6 +1668,8 @@ console.log(JSON.stringify(out));
         js = (js.replace("MODE", mode).replace("ZONEPROP", zoneprop.group(1).replace("notchPanelFit", "barWindow.notchPanelFit")
                                                 if zoneprop else "0")
               .replace("ZONEFOR", function(full, "notchPanelZoneFor") if "function notchPanelZoneFor(" in full else "return 0")
+              .replace("GAPSFOR", function(full, "notchGapsFor") if "function notchGapsFor(" in full else "return 0")
+              .replace("GAPSAT", function(full, "notchGapsAt") if "function notchGapsAt(" in full else "return 0")
               .replace("ZONE", normal).replace("BOX", function(full, "notchBox"))
               .replace("STOCK", str(stock_height)).replace("GAPS", "10"))
         return self.node(js)
@@ -1752,21 +1759,111 @@ console.log(JSON.stringify(CASES.map(function (c) {
             "BODY", function(text, "notchGapsParse")).replace("CASES", json.dumps(cases))
         self.assertEqual(self.node(js), [10, 20, 8, 7, 0, 10, -1, -1, -1, -1])
 
+    def run_js(self, names, body):
+        """body run with the patch's root functions (by name) defined."""
+        text = patched()
+        js = "".join("function %s(%s) { %s }\n" % (n, re.search(r"function %s\(([^)]*)\)" % n, text).group(1),
+                                                    function(text, n)) for n in names)
+        return self.node(js + body)
+
+    GAPS = ["notchGapsFor", "notchGapsAt", "notchPanelZoneFor", "notchGapsMerge", "notchGapRulesParse",
+            "notchSpecialsParse", "notchSpecialEvent"]
+
+    def test_the_whole_strip_while_a_special_workspace_with_top_gap_0_shows(self):
+        # Omarchy 4.5's drop-down console (Super+`) and 4.0's scratchpad
+        # (Super+S) have a workspace rule with top gap 0 and no border: while
+        # one shows on the bar's output the zone is the whole strip (34), so
+        # the console starts at 34, not in the strip; when it hides, 29 again.
+        # A rule for a special workspace on another output, or one not shown,
+        # changes nothing; a rule for a normal workspace or with a selector
+        # (smart gaps: w[tv1]) counts always; unreadable rules with a special
+        # workspace shown: the whole strip.
+        out = self.run_js(self.GAPS, """
+const rules = [{ name: "special:qconsole", top: 0 }, { name: "special:scratchpad", top: 0 }];
+const st = { top: 10, rules: rules };
+const zone = (state, specials, flush) => notchPanelZoneFor(34, notchGapsAt("Virtual-1", state, state, specials, flush));
+console.log(JSON.stringify([
+  zone(st, {}, false),
+  zone(st, { "Virtual-1": "special:qconsole" }, false),
+  zone(st, { "Virtual-1": "special:scratchpad" }, false),
+  zone(st, { "Virtual-1": "special:magic" }, false),
+  zone(st, { "Virtual-2": "special:qconsole" }, false),
+  zone(st, { "Virtual-1": "" }, false),
+  zone({ top: 10, rules: [{ name: "w[tv1]", top: 0 }] }, {}, false),
+  zone({ top: 10, rules: [{ name: "3", top: 2 }] }, {}, false),
+  zone({ top: 10, rules: [{ name: "special:qconsole", top: 7 }] }, { "Virtual-1": "special:qconsole" }, false),
+  zone({ top: 10, rules: null }, { "Virtual-1": "special:qconsole" }, false),
+  zone({ top: 10, rules: null }, {}, false),
+  zone(st, {}, true),
+]))""")
+        self.assertEqual(out, [29, 34, 34, 29, 29, 29, 34, 32, 29, 34, 29, 34])
+
+    def test_a_larger_gap_counts_only_from_the_later_read(self):
+        # The zone grows at once, it shrinks only from the later read: at
+        # start the whole strip until then; after a reload Hyprland's default
+        # (10) shows first and a script's 0 (omarchy-mac's flush-bar) after.
+        out = self.run_js(self.GAPS, """
+const zoneOf = (s) => notchPanelZoneFor(34, notchGapsAt("Virtual-1", s[0], s[1], {}, false));
+const read = (s, top, late) => notchGapsMerge(s[0], s[1], { late: late, top: top, rules: [] });
+let s = [{ top: 0, rules: null }, { top: 0, rules: null }];
+const seen = [zoneOf(s)];
+s = read(s, 10, false); seen.push(zoneOf(s));   // start, soon: still the whole strip
+s = read(s, 10, true); seen.push(zoneOf(s));    // start, later: 29
+s = read(s, 0, false); seen.push(zoneOf(s));    // a smaller gap: at once
+s = read(s, 0, true); seen.push(zoneOf(s));
+s = read(s, 10, false); seen.push(zoneOf(s));   // reload: Hyprland's default first
+s = read(s, 0, true); seen.push(zoneOf(s));     // flush-bar's 0 after it: never 29
+s = read(s, -1, true); seen.push(zoneOf(s));    // unreadable: the last one seen
+s = read(s, 10, true); seen.push(zoneOf(s));
+console.log(JSON.stringify(seen))""")
+        self.assertEqual(out, [34, 34, 29, 34, 34, 34, 34, 34, 29])
+
+    def test_hyprland_answers_parsed(self):
+        out = self.run_js(self.GAPS, """
+console.log(JSON.stringify([
+  notchGapRulesParse('[{"workspaceString": "special:qconsole", "gapsIn": [0, 0, 0, 0], "gapsOut": [0, 378, 471, 378], '
+                     + '"border": false}, {"workspaceString": "1", "monitor": "Virtual-1"}, '
+                     + '{"workspaceString": "w[tv1]", "gapsOut": {"top": 0}}, {"workspaceString": "2", "gapsOut": 4.6}]'),
+  notchGapRulesParse("[]"), notchGapRulesParse(""), notchGapRulesParse("{}"),
+  notchSpecialsParse('[{"name": "Virtual-1", "specialWorkspace": {"id": -98, "name": "special:qconsole"}}, '
+                     + '{"name": "Virtual-2", "specialWorkspace": {"id": 0, "name": ""}}, {"name": "NOTCH-1"}]'),
+  notchSpecialsParse("nope"),
+  notchSpecialEvent({ "Virtual-2": "special:a" }, "special:qconsole,Virtual-1"),
+  notchSpecialEvent({ "Virtual-1": "special:qconsole" }, ",Virtual-1"),
+  notchSpecialEvent({}, "garbage"),
+]))""")
+        self.assertEqual(out, [
+            [{"name": "special:qconsole", "top": 0}, {"name": "w[tv1]", "top": 0}, {"name": "2", "top": 4}],
+            [], None, None,
+            {"Virtual-1": "special:qconsole", "Virtual-2": "", "NOTCH-1": ""}, None,
+            {"Virtual-2": "special:a", "Virtual-1": "special:qconsole"}, {"Virtual-1": ""}, {}])
+
     def test_gaps_read_at_start_after_a_reload_and_a_look_change(self):
         for bar in SHELLS:
             stock = bar.read_text()
             with self.subTest(omarchy=bar.parts[-5]):
                 full = self.full(stock)
-                self.assertEqual(full.count('command: ["hyprctl", "-j", "getoption", "general:gaps_out"]'), 1)
-                soon = full[full.index("    id: notchGapsSoon\n"):]
-                self.assertTrue(soon.startswith("    id: notchGapsSoon\n    interval: 200\n    running: true  // at start\n"))
-                self.assertEqual(full.count('if (String(event.name) === "configreloaded") notchGapsSoon.restart()'), 1)
-                self.assertEqual(full.count("function onTransparentChanged() { notchGapsSoon.restart() }"), 1)
+                for cmd in ('"getoption", "general:gaps_out"', '"workspacerules"', '"monitors"'):
+                    self.assertEqual(full.count('command: ["hyprctl", "-j", %s]' % cmd), 1, cmd)
+                self.assertIn("Timer { id: notchGapsSoon; interval: 200; running: true; "
+                              "onTriggered: root.notchReadGaps(false) }", full)
+                self.assertIn("Timer { id: notchGapsLate; interval: 3500; running: true; "
+                              "onTriggered: root.notchReadGaps(true) }", full)
+                self.assertEqual(full.count('if (n === "configreloaded") root.notchGapsCheck(1500)'), 1)
+                self.assertEqual(full.count('else if (n === "activespecial") {'), 1)
+                self.assertEqual(full.count("function onTransparentChanged() { root.notchGapsCheck(1500) }"), 1)
+                # flush-bar (omarchy-mac 4.0) under a transparent top bar: the
+                # whole strip from the moment the bar turns transparent.
+                self.assertIn('readonly property bool notchFlush: notchFlushBar && transparent && position === "top"', full)
+                self.assertIn('"/shell/plugins/flush-bar/manifest.json"', full)
                 # The stock root has the properties the patch listens to.
                 self.assertIn("  property bool transparent: ", stock)
                 self.assertIn("  property string position: ", stock)
-                # A value read while a read runs is read again, not lost.
-                self.assertIn("onExited: if (root.notchGapsAgain) {", full)
+                self.assertIn("  property string omarchyPath: ", full)
+                # A read asked while one runs is run after it; a hyprctl that
+                # never answers ends the read with what it has.
+                self.assertIn("if (notchGapsQueued > 0) notchGapsRetry.restart()", full)
+                self.assertIn("Timer { id: notchGapsGuard; interval: 2000; onTriggered: root.notchGapsCommit() }", full)
                 # Toasts keep the whole strip (barSizeFor is unchanged).
                 self.assertIn("return root.notchBox(0, root.notchHeight, 0, root.barSize, 1)[0]", function(full, "barSizeFor"))
 
