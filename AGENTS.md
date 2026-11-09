@@ -717,6 +717,19 @@ The less obvious ones, with causes and where the fix lives, are in
   An Omarchy-styled password field on the Mac would be fake.
 - Never edit `/usr/share/omarchy` (updates replace it); extend through plugins,
   `~/.config`, and `/usr/local/bin` replacements (remember the shell's PATH).
+- Do not read `bar.<property>` straight in a bar widget's bindings. Omarchy's
+  bar sets a widget's `bar` from outside, and when the shell reloads a plugin
+  in place (the bar copy or a widget written, `rescanPlugins`) the old bar
+  goes before its widgets, so `bar` is null for a moment: up to 246 TypeError
+  lines per reload from OmacVM's widgets (3.4.1). Read the bar's colours and
+  font through one guarded property (`barFg`, `barFont`, `barUrgent`: Omarchy's
+  `Commons.Color.bar.text`, `Style.font.family`, `Commons.Color.bar.active`
+  while `bar` is null); OmacVM.app's display panel, a build of Omarchy's own,
+  gets the same in `monitor-widget/build.py` (`guard_bar`);
+  `src/tests/plugin-bar-null.sh` checks both. A shell started by
+  `omarchy-restart-shell` logs only to its
+  `$XDG_RUNTIME_DIR/quickshell/by-id/*/log.qslog` (`quickshell log FILE`), not
+  the journal: count its errors there.
 - Root never writes into the desktop user's home itself, not even with
   `chown` after it. The guest scripts run as root at every apply, and a link
   the user put in the home (`~/.config/hypr -> /etc`) would point root's

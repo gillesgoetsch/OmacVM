@@ -25,6 +25,14 @@ Panel {
   // target: a clone keeping the stock target would be ignored).
   manageIpc: false
 
+  // `bar` is null while there is no bar: Omarchy's bar sets it from outside,
+  // and when the shell reloads a plugin in place (a widget or the bar copy
+  // written, Update VM) the old bar goes before its widgets. Then Omarchy's
+  // own bar colours and font, so no binding reads a property of null.
+  readonly property color barFg: bar ? bar.foreground : Commons.Color.bar.text
+  readonly property string barFont: bar ? bar.fontFamily : Style.font.family
+  readonly property color barUrgent: bar ? bar.urgent : Commons.Color.bar.active
+
   // ---- the Mac's Bluetooth (omacvm-bridge events) ----
   property bool available: false
   property var bt: null
@@ -460,8 +468,8 @@ Panel {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: root.icon
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
+            color: root.barFg
+            font.family: root.barFont
             font.pixelSize: Style.font.display
             opacity: root.btOn ? 1.0 : 0.5
           }
@@ -471,7 +479,7 @@ Panel {
             visible: root.available
             checked: root.btOn
             hasCursor: root.headerHasCursor
-            foreground: root.bar.foreground
+            foreground: root.barFg
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             onHovered: function(on) { if (on) root.setHeaderCursor() }
@@ -480,7 +488,7 @@ Panel {
             PanelToolTip {
               visible: powerSwitch.containsMouse
               text: root.toggleHint
-              fontFamily: root.bar.fontFamily
+              fontFamily: root.barFont
             }
           }
 
@@ -495,8 +503,8 @@ Panel {
 
             Text {
               text: "Bluetooth"
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
+              color: root.barFg
+              font.family: root.barFont
               font.pixelSize: Style.font.title
               font.bold: true
               elide: Text.ElideRight
@@ -507,8 +515,8 @@ Panel {
               id: heroStatus
               textFormat: Text.PlainText
               text: root.heroStatusText.toUpperCase()
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
+              color: Qt.darker(root.barFg, 1.4)
+              font.family: root.barFont
               font.pixelSize: Style.font.caption
               font.bold: true
               font.letterSpacing: 1.2
@@ -525,13 +533,13 @@ Panel {
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           text: "To connect devices from here, allow Bluetooth for OmacVM Bridge on the Mac: System Settings → Privacy & Security → Bluetooth."
-          color: root.bar.urgent
-          font.family: root.bar.fontFamily
+          color: root.barUrgent
+          font.family: root.barFont
           font.pixelSize: Style.font.bodySmall
         }
 
         PanelSeparator {
-          foreground: root.bar.foreground
+          foreground: root.barFg
         }
 
         Column {
@@ -542,8 +550,8 @@ Panel {
 
           PanelSectionHeader {
             text: "CONNECTED"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+            foreground: root.barFg
+            fontFamily: root.barFont
           }
 
           Repeater {
@@ -561,7 +569,7 @@ Panel {
 
         PanelSeparator {
           visible: root.connectedDevices.length > 0 && root.knownDevices.length > 0
-          foreground: root.bar.foreground
+          foreground: root.barFg
         }
 
         // Paired devices: a ListView owns the viewport, so a long list scrolls
@@ -569,8 +577,8 @@ Panel {
         PanelSectionHeader {
           visible: root.knownDevices.length > 0
           text: "PAIRED"
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
+          foreground: root.barFg
+          fontFamily: root.barFont
         }
 
         ListView {
@@ -608,8 +616,8 @@ Panel {
           text: root.kind === "unavailable" ? "Waiting for OmacVM Bridge on the Mac"
               : root.kind === "off" ? "Turn Bluetooth on to use your devices"
               : "No devices paired with the Mac yet"
-          color: Qt.darker(root.bar.foreground, 1.5)
-          font.family: root.bar.fontFamily
+          color: Qt.darker(root.barFg, 1.5)
+          font.family: root.barFont
           font.pixelSize: Style.font.bodySmall
           wrapMode: Text.WordWrap
           width: parent.width
@@ -617,7 +625,7 @@ Panel {
 
         PanelSeparator {
           visible: root.available
-          foreground: root.bar.foreground
+          foreground: root.barFg
         }
 
         // Pairing: macOS's own dialog, in the Mac's Bluetooth settings.
@@ -626,7 +634,7 @@ Panel {
           visible: root.available
           width: parent.width
           hasCursor: root.pairHasCursor
-          foreground: root.bar.foreground
+          foreground: root.barFg
           fill: root.hoverFill
           implicitHeight: pairContent.implicitHeight + Style.spacing.rowPaddingX
 
@@ -647,7 +655,7 @@ Panel {
           PanelToolTip {
             visible: pairMouse.containsMouse
             text: "Opens Bluetooth settings on the Mac"
-            fontFamily: root.bar.fontFamily
+            fontFamily: root.barFont
           }
 
           Item {
@@ -663,8 +671,8 @@ Panel {
               id: pairIcon
               textFormat: Text.PlainText
               text: "󰐕"
-              color: Qt.darker(root.bar.foreground, 1.5)
-              font.family: root.bar.fontFamily
+              color: Qt.darker(root.barFg, 1.5)
+              font.family: root.barFont
               font.pixelSize: Style.font.heading
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
@@ -681,8 +689,8 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 text: "Pair a new device…"
-                color: root.bar.foreground
-                font.family: root.bar.fontFamily
+                color: root.barFg
+                font.family: root.barFont
                 font.pixelSize: Style.font.body
                 elide: Text.ElideRight
                 width: parent.width
@@ -690,8 +698,8 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 text: "On the Mac"
-                color: Qt.darker(root.bar.foreground, 1.5)
-                font.family: root.bar.fontFamily
+                color: Qt.darker(root.barFg, 1.5)
+                font.family: root.barFont
                 font.pixelSize: Style.font.caption
                 elide: Text.ElideRight
                 width: parent.width
@@ -723,7 +731,7 @@ Panel {
 
     hasCursor: rowSelected && !root.actionFocused
     current: isConnected
-    foreground: root.bar.foreground
+    foreground: root.barFg
     fill: root.hoverFill
     currentFill: root.selectedFill
 
@@ -738,9 +746,9 @@ Panel {
     }
 
     readonly property color statusColor: {
-      if (failure !== "") return root.bar.urgent
-      if (isConnected || action !== "") return root.bar.foreground
-      return Qt.darker(root.bar.foreground, 1.5)
+      if (failure !== "") return root.barUrgent
+      if (isConnected || action !== "") return root.barFg
+      return Qt.darker(root.barFg, 1.5)
     }
 
     implicitHeight: rowContent.implicitHeight + Style.spacing.rowPaddingX
@@ -773,7 +781,7 @@ Panel {
     PanelToolTip {
       visible: row.actionTooltip !== "" && rowMouse.containsMouse && !root.actionFocused
       text: row.actionTooltip
-      fontFamily: root.bar.fontFamily
+      fontFamily: root.barFont
     }
 
     Item {
@@ -790,7 +798,7 @@ Panel {
         textFormat: Text.PlainText
         text: row.isConnected ? "󰂱" : "󰂯"
         color: row.statusColor
-        font.family: root.bar.fontFamily
+        font.family: root.barFont
         font.pixelSize: Style.font.heading
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
@@ -808,8 +816,8 @@ Panel {
         Text {
           textFormat: Text.PlainText
           text: row.dev ? row.dev.name : "Device"
-          color: root.bar.foreground
-          font.family: root.bar.fontFamily
+          color: root.barFg
+          font.family: root.barFont
           font.pixelSize: Style.font.body
           elide: Text.ElideRight
           width: parent.width
@@ -819,7 +827,7 @@ Panel {
           visible: row.statusText !== ""
           text: row.statusText
           color: row.statusColor
-          font.family: root.bar.fontFamily
+          font.family: root.barFont
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
           width: parent.width
@@ -833,9 +841,9 @@ Panel {
         visible: row.showForgetButton
         iconText: "󰅙"
         tooltipText: "Forget on the Mac"
-        foreground: root.bar.foreground
-        hoverColor: root.bar.foreground
-        fontFamily: root.bar.fontFamily
+        foreground: root.barFg
+        hoverColor: root.barFg
+        fontFamily: root.barFont
         hasCursor: row.rowSelected && root.actionFocused
         onHovered: function(isHovered) {
           if (!isHovered) {

@@ -24,6 +24,7 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import pathlib
+import re
 import shutil
 import sys
 import textwrap
@@ -34,6 +35,13 @@ DEFAULT_SOURCE = "/usr/share/omarchy/shell/plugins/panels/monitor"
 NOTCH_PATCH = HERE.parents[2] / "omanotch/guest/monitor/display-panel.py"
 
 PROPS = """
+  // `bar` is null while there is no bar: Omarchy's bar sets it from outside,
+  // and when the shell reloads a plugin in place (a widget or the bar copy
+  // written, Update VM) the old bar goes before its widgets. Then Omarchy's
+  // own bar colours and font, so no binding reads a property of null.
+  readonly property color barFg: bar ? bar.foreground : Commons.Color.bar.text
+  readonly property string barFont: bar ? bar.fontFamily : Style.font.family
+  readonly property color barUrgent: bar ? bar.urgent : Commons.Color.bar.active
   // OmacVM.app: in full screen, Omarchy on every Mac display (omacvm-displays).
   property bool macDisplays: false
   property bool macExternal: true
@@ -567,6 +575,18 @@ def add_extra(panel: str, source: pathlib.Path) -> str:
     return panel
 
 
+# Omarchy's panel reads the bar's colours and font straight from `bar`; the
+# copy reads them through the guarded properties in PROPS.
+BAR_READS = {"root.bar.foreground": "root.barFg", "root.bar.fontFamily": "root.barFont",
+             "root.bar.urgent": "root.barUrgent"}
+
+
+def guard_bar(panel: str) -> str:
+    for read, guarded in BAR_READS.items():
+        panel = re.sub(re.escape(read) + r"\b", guarded, panel)
+    return panel
+
+
 def hide_notch(panel: str) -> str:
     """Leave Omanotch's NOTCH output out; the panel as it is if that fails."""
     try:
@@ -606,6 +626,7 @@ def main() -> int:
               "only the scales its size fits", file=sys.stderr)
     panel = add_extra(panel, source)
     panel = hide_notch(panel)
+    panel = guard_bar(panel)
     out.mkdir(parents=True, exist_ok=True)
     for item in source.iterdir():
         if item.name not in ("Panel.qml", "manifest.json") and item.is_file():

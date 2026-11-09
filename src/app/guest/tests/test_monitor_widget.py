@@ -112,7 +112,7 @@ class Build(unittest.TestCase):
         # imports it itself).
         self.assertEqual(self.build(), 0)
         text = (self.out / "Panel.qml").read_text()
-        self.assertIn("Style.hoverFillFor(root.bar.foreground, Commons.Color.accent)", text)
+        self.assertIn("Style.hoverFillFor(root.barFg, Commons.Color.accent)", text)
         self.assertNotIn(", Color.accent)", text)
         self.assertEqual(text.count(build.COMMONS_ALIAS), 1)
         (self.source / "Panel.qml").write_text(build.COMMONS_ALIAS + panel())

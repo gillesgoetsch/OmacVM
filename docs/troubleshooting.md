@@ -1766,3 +1766,43 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   (`user_rule`), `src/app/guest/monitor-widget/build.py`; tests
   `src/app/guest/tests/test_omacvm_displays.py` (`Scale`),
   `test_display_sync.py`, `omacvm_app_test.lua`, `test_monitor_widget.py`.
+
+## 59. The shell's log fills with `TypeError: Cannot read property 'foreground' of null`
+
+- **Symptom:** after Update VM, Omanotch's first-login install or an
+  Omarchy update, the shell's log has a few hundred lines like
+  `TypeError: Cannot read property 'foreground' of null` (also
+  `'fontFamily'` and `'urgent'`) from `omacvm.wifi/Panel.qml`,
+  `omacvm.bluetooth/Panel.qml`, `omacvm.audio/Panel.qml`,
+  `omacvm.nightshift/NightShift.qml` and, on Omarchy 4.0,
+  `omacvm.monitor/Panel.qml`. The bar works and looks right. The lines
+  come only when the shell reloads a plugin in place (a widget or the bar
+  copy written, or a plugin rescan), never at login or after
+  `omarchy-restart-shell`. 3.4.0 and 3.4.1.
+- **Where to look:** a shell started at login logs to the journal
+  (`journalctl -b`). A shell started by `omarchy-restart-shell`
+  logs only to its own file, `$XDG_RUNTIME_DIR/quickshell/by-id/*/log.qslog`
+  (read it with `quickshell log <file>`), not the journal.
+- **Cause:** the bar sets each widget's `bar` from outside. During an
+  in-place reload the old bar goes before its widgets, so `bar` is null for
+  a moment, and OmacVM's widgets read `bar.foreground`, `bar.fontFamily`
+  and `bar.urgent` with no check. The display panel (`omacvm.monitor`) is
+  built in the VM from Omarchy's own panel and had the same reads.
+- **Fix (3.4.2):** Update VM (`omacvm apply`). The widgets read the bar
+  through `barFg`, `barFont` and `barUrgent`, which use Omarchy's own bar
+  colour and font while `bar` is null. Nothing changes on screen.
+- **What stays (Omarchy's own, harmless, not OmacVM's):**
+  `bar/widgets/Indicators.qml:511` (`Cannot read property 'bar' of null`),
+  `Ui/BarIndicator.qml:21` (`Unable to assign [undefined] to bool`),
+  `Ui/WidgetButton.qml` (`Property 'hideTooltip' ... is not a function`),
+  `QQmlVMEMetaObject: Internal error - attempted to evaluate a function in
+  an invalid context`, and on Omarchy 4.0 the same `'foreground'` /
+  `'fontFamily'` lines from `panels/power/Panel.qml` and
+  `panels/weather/Panel.qml`. With Omanotch's Skip the notch, about 10
+  `Binding loop detected for property "notchWidths"` (or `"notchSkip"`)
+  lines from the bar copy when a Skip bar is torn down.
+- **Where:** `src/bridge/plugins/omacvm.wifi/Panel.qml`,
+  `omacvm.bluetooth/Panel.qml`, `omacvm.audio/Panel.qml`,
+  `omacvm.nightshift/NightShift.qml`;
+  `src/app/guest/monitor-widget/build.py` (`guard_bar`); test
+  `src/tests/plugin-bar-null.sh`.

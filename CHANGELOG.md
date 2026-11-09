@@ -30,6 +30,12 @@ in more words.
   turn a display off, or did not answer. Each is said once until it changes, so hours out of sight
   add no lines. A VM started while the Mac's displays sleep now counts its window as out of sight
   until they wake, as it already did for a locked Mac. Update VM brings the agent's part.
+- **Bar widgets**: the Mac's Wi-Fi, Bluetooth, audio and Night Shift widgets and the display panel
+  no longer fill the shell's log with `TypeError: Cannot read property 'foreground' of null` (a
+  few hundred lines each time the shell reloads a plugin in place: Omanotch's first-login install,
+  Update VM, Omarchy updates; 3.4.0 and 3.4.1). While the shell swaps the bar, they use Omarchy's
+  own bar colour and font. Nothing changes on screen. Update VM brings it
+  ([troubleshooting 59](docs/troubleshooting.md#59-the-shells-log-fills-with-typeerror-cannot-read-property-foreground-of-null)).
 
 ## 3.4.1
 

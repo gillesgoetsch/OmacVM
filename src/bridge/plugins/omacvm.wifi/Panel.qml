@@ -31,6 +31,14 @@ Panel {
 
   Bridge { id: bridge }
 
+  // `bar` is null while there is no bar: Omarchy's bar sets it from outside,
+  // and when the shell reloads a plugin in place (a widget or the bar copy
+  // written, Update VM) the old bar goes before its widgets. Then Omarchy's
+  // own bar colours and font, so no binding reads a property of null.
+  readonly property color barFg: bar ? bar.foreground : Commons.Color.bar.text
+  readonly property string barFont: bar ? bar.fontFamily : Style.font.family
+  readonly property color barUrgent: bar ? bar.urgent : Commons.Color.bar.active
+
   readonly property bool available: bridge.available
   readonly property var wifi: bridge.wifi || ({})
   readonly property string kind: Model.kindFor(bridge.available, bridge.wifi)
@@ -341,8 +349,8 @@ Panel {
           id: heroIcon
           textFormat: Text.PlainText
           text: root.icon
-          color: root.bar.foreground
-          font.family: root.bar.fontFamily
+          color: root.barFg
+          font.family: root.barFont
           font.pixelSize: Style.font.display
           opacity: root.available ? 1.0 : 0.5
           anchors.left: parent.left
@@ -360,8 +368,8 @@ Panel {
             visible: root.canShareWifi
             iconText: "󰐲"
             tooltipText: "Show QR code"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+            foreground: root.barFg
+            fontFamily: root.barFont
             iconSize: Style.font.subtitle * 1.5
             horizontalPadding: Style.space(5)
             verticalPadding: Style.space(2)
@@ -376,8 +384,8 @@ Panel {
             visible: root.canRunSpeedTest
             iconText: "󰓅"
             tooltipText: "Run a speed test"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+            foreground: root.barFg
+            fontFamily: root.barFont
             iconSize: Style.font.subtitle * 1.5
             horizontalPadding: Style.space(5)
             verticalPadding: Style.space(2)
@@ -394,7 +402,7 @@ Panel {
             interactive: root.powerSupported
             opacity: root.powerSupported ? 1.0 : 0.5
             hasCursor: root.toggleHeaderHasCursor
-            foreground: root.bar.foreground
+            foreground: root.barFg
             Layout.alignment: Qt.AlignVCenter
             onHovered: function(on) { if (on) root.setHeaderCursor(root.toggleHeaderIndex) }
             onToggled: root.toggleNetwork()
@@ -409,7 +417,7 @@ Panel {
             PanelToolTip {
               visible: powerHover.hovered || root.toggleHeaderHasCursor
               text: root.toggleHint
-              fontFamily: root.bar.fontFamily
+              fontFamily: root.barFont
             }
           }
         }
@@ -439,8 +447,8 @@ Panel {
               ? Model.bandLabel(root.wifi.channel.band) : ""
 
             text: heroSsid.detail !== "" ? heroSsid.title + " (" + heroSsid.detail + ")" : heroSsid.title
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
+            color: root.barFg
+            font.family: root.barFont
             font.pixelSize: Style.font.title
             font.bold: true
             elide: Text.ElideRight
@@ -457,8 +465,8 @@ Panel {
               if (root.kind === "disconnected") return "NOT CONNECTED"
               return root.connectionPhrase.toUpperCase()
             }
-            color: Qt.darker(root.bar.foreground, 1.4)
-            font.family: root.bar.fontFamily
+            color: Qt.darker(root.barFg, 1.4)
+            font.family: root.barFont
             font.pixelSize: Style.font.caption
             font.bold: true
             font.letterSpacing: 1.2
@@ -474,8 +482,8 @@ Panel {
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         text: "Location Services is off for omacvm-bridge on the Mac, so network names are hidden. Turn it on in System Settings → Privacy & Security → Location Services."
-        color: root.bar.urgent
-        font.family: root.bar.fontFamily
+        color: root.barUrgent
+        font.family: root.barFont
         font.pixelSize: Style.font.bodySmall
       }
 
@@ -519,14 +527,14 @@ Panel {
 
       PanelSeparator {
         visible: root.available
-        foreground: root.bar.foreground
+        foreground: root.barFg
       }
 
       PanelSectionHeader {
         visible: root.available && root.scanning
         text: "SCANNING WI-FI…"
-        foreground: root.bar.foreground
-        fontFamily: root.bar.fontFamily
+        foreground: root.barFg
+        fontFamily: root.barFont
       }
 
       // Scrollable network list — cap the height so a busy neighbourhood
@@ -562,8 +570,8 @@ Panel {
             PanelSectionHeader {
               visible: sectionTitle !== ""
               text: sectionTitle
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
+              foreground: root.barFg
+              fontFamily: root.barFont
               height: visible ? implicitHeight : 0
             }
 
@@ -591,12 +599,12 @@ Panel {
 
     hasCursor: root.cursorActive && isSelected
     current: isConnected
-    foreground: root.bar.foreground
+    foreground: root.barFg
     fill: root.hoverFill
     currentFill: root.selectedFill
 
     readonly property string statusText: isConnected ? "Connected" : ""
-    readonly property color statusColor: isConnected ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.5)
+    readonly property color statusColor: isConnected ? root.barFg : Qt.darker(root.barFg, 1.5)
 
     implicitHeight: rowBody.implicitHeight
 
@@ -612,7 +620,7 @@ Panel {
     PanelToolTip {
       visible: rowMouse.containsMouse && !row.isConnected && !root.joinSupported
       text: "Join networks on the Mac for now"
-      fontFamily: root.bar.fontFamily
+      fontFamily: root.barFont
     }
 
     Item {
@@ -629,7 +637,7 @@ Panel {
         textFormat: Text.PlainText
         text: row.net ? root.wifiIconFor(row.net.signal) : ""
         color: row.statusColor
-        font.family: root.bar.fontFamily
+        font.family: root.barFont
         font.pixelSize: Style.font.title
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
@@ -644,8 +652,8 @@ Panel {
         anchors.verticalCenter: parent.verticalCenter
         horizontalAlignment: Text.AlignHCenter
         text: "󰌾"
-        color: Qt.darker(root.bar.foreground, 1.4)
-        font.family: root.bar.fontFamily
+        color: Qt.darker(root.barFg, 1.4)
+        font.family: root.barFont
         font.pixelSize: Style.font.subtitle
       }
 
@@ -661,8 +669,8 @@ Panel {
         Text {
           textFormat: Text.PlainText
           text: row.net ? (row.net.ssid || "Hidden") : ""
-          color: root.bar.foreground
-          font.family: root.bar.fontFamily
+          color: root.barFg
+          font.family: root.barFont
           font.pixelSize: Style.font.body
           elide: Text.ElideRight
           width: parent.width
@@ -673,7 +681,7 @@ Panel {
           visible: row.statusText !== ""
           height: visible ? implicitHeight : 0
           color: row.statusColor
-          font.family: root.bar.fontFamily
+          font.family: root.barFont
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
           width: parent.width
@@ -701,22 +709,22 @@ Panel {
     PanelToolTip {
       visible: valueMouse.enabled && valueMouse.containsMouse
       text: tooltipText
-      fontFamily: root.bar.fontFamily
+      fontFamily: root.barFont
     }
   }
 
   component InfoLabel: Text {
     textFormat: Text.PlainText
-    color: root.bar.foreground
+    color: root.barFg
     opacity: 0.6
-    font.family: root.bar.fontFamily
+    font.family: root.barFont
     font.pixelSize: Style.font.bodySmall
   }
 
   component InfoValue: Text {
     textFormat: Text.PlainText
-    color: root.bar.foreground
-    font.family: root.bar.fontFamily
+    color: root.barFg
+    font.family: root.barFont
     font.pixelSize: Style.font.bodySmall
   }
 }
