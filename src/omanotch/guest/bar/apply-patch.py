@@ -128,6 +128,7 @@ COMMON = [
     "  function notchGapsFor(output, state, specials, flush) {\n",             # 1. ... a workspace rule's gap (#758)
     "    id: notchGapRulesProc\n",                                             # 1.
     "    id: notchFlushBarFile\n",                                             # 1. ... flush-bar
+    "  readonly property bool notchFlush: notchFlushBar && requestedTransparent && position === \"top\"\n",  # 1.
 ]
 PIECES = COMMON + [
     "      when: barWindow.notchRole === \"fullpanel\" && !barWindow.parked; restoreMode: Binding.RestoreNone\n",  # 3. #758
