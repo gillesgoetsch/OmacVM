@@ -2265,10 +2265,13 @@ EXCLUSION
     property bool notchAppearGone: false
     readonly property bool notchTrayAppear: !!activeItem && root.notchIsTray(activeItem)
     // Its width with the drawer open (the part of the drawer that shows less
-    // the whole drawer): a slide does not change it, a new app does.
+    // the whole drawer): a slide does not change it, a new app does. The list
+    // reads the tray's drawer before this does, so a new app that leaves its
+    // place as it was comes after the layout's round (no new notchShift): its
+    // own change starts the wait again.
     readonly property real notchOpenWidth: notchContentWidth + notchOpenExtent
       - (notchTrayAppear ? Number(activeItem.revealExtent) || 0 : 0)
-    property real notchAppearSize: 0
+    onNotchOpenWidthChanged: if (notchAppearing && notchTrayAppear) notchShowEnd.restart()
     Timer {
       id: notchShowEnd
       interval: slot.notchTrayAppear ? 1500 : 150
@@ -2394,18 +2397,16 @@ EXCLUSION
         // It showed up: unseen at its place until that is quiet (notchShowEnd),
         // at most 1 s (notchShowLimit). Only a change of its own place (its
         // kept edge, or hidden) starts the 150 ms again; for the tray also a
-        // change of its size with the drawer open (an app came or went).
-        var edge = notchEdge(s), size = notchOpenWidth
+        // change of its size with the drawer open (onNotchOpenWidthChanged).
+        var edge = notchEdge(s)
         notchFade.enabled = false
         if (!notchAppearing) {
           notchAppearing = true
           notchShowLimit.restart()
           notchShowEnd.restart()
-        } else if (Math.abs(edge - notchAppearEdge) > 0.01 || gone !== notchAppearGone ||
-                   (notchTrayAppear && Math.abs(size - notchAppearSize) > 0.01)) notchShowEnd.restart()
+        } else if (Math.abs(edge - notchAppearEdge) > 0.01 || gone !== notchAppearGone) notchShowEnd.restart()
         notchAppearEdge = edge
         notchAppearGone = gone
-        notchAppearSize = size
         notchSlide.enabled = false
         notchPlaceX = s.n
         notchShiftX = s.x
