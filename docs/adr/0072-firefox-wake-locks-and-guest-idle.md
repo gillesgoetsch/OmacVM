@@ -83,7 +83,11 @@ anyway. Accepting the D-Bus call alone would gain about 30 s.
    the spike's surface.) Hyprland counts a mapped layer surface's inhibitor
    whatever the layer, so nothing has to sit above a full-screen video. The child is stopped when no
    Firefox window counts, on SIGTERM, and a leftover lease is removed at the
-   agent's start. A start whose surface is not in Hyprland's `j/layers`
+   agent's start. Quickshell leaves a folder per instance in
+   `$XDG_RUNTIME_DIR/quickshell` (by-id/<id> with its logs, lock and IPC
+   socket, about 6 KB, linked from by-pid/<pid>) also when it quits by
+   itself; the agent removes its child's once the child has gone, or every
+   play would leave one in the session's RAM until logout. A start whose surface is not in Hyprland's `j/layers`
    within 15 s fails, and so does a child that ends; after 3 failures in a
    row the agent stops trying until it restarts and logs it once (the Mac
    side still works). A shown surface clears the count, so a child that held

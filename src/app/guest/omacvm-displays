@@ -140,6 +140,7 @@ import os
 from pathlib import Path
 import re
 import select
+import shutil
 import signal
 import socket
 import struct
@@ -1248,6 +1249,7 @@ AWAKE_NAMESPACE = "omacvm-awake"         # its surface's layer namespace
 AWAKE_LEASE = 25.0    # seconds the hold lasts after the agent's last check (a hung agent lets go)
 AWAKE_SETTLE = 15.0   # seconds a start has to show its surface
 AWAKE_TRIES = 3       # failed starts in a row before the agent stops trying (until it starts again)
+QS_RUNTIME = RUNTIME / "quickshell"   # Quickshell's folder per instance: by-id/<id>, linked from by-pid/<pid>
 
 
 class GuestAwake:
@@ -1272,8 +1274,10 @@ class GuestAwake:
     again however often that happens."""
 
     def __init__(self, path: Path = AWAKE, qml: Path = AWAKE_QML, start=None,
-                 layers=lambda: hypr_json("j/layers"), clock=time.monotonic) -> None:
+                 layers=lambda: hypr_json("j/layers"), clock=time.monotonic,
+                 qs_runtime: Path = QS_RUNTIME) -> None:
         self.path = path
+        self.qs_runtime = qs_runtime
         self.qml = qml
         self.start = start or (lambda: subprocess.Popen(
             ["quickshell", "-p", str(self.qml)], stdin=subprocess.DEVNULL,
@@ -1359,12 +1363,42 @@ class GuestAwake:
         child, self.child = self.child, None
         if child is None:
             return
+        folder = self.instance_folder(child.pid)   # read before it is reaped: the pid cannot be reused yet
         try:
             child.terminate()
             child.wait(timeout=2)
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait(timeout=2)
+        except OSError:
+            pass
+        if folder is not None and child.poll() is not None:
+            self.forget(child.pid, folder)
+
+    def instance_folder(self, pid) -> Path | None:
+        """The child's Quickshell instance folder (by-pid/<pid> -> by-id/<id>), if it is one."""
+        link = self.qs_runtime / "by-pid" / str(pid)
+        try:
+            target = Path(os.readlink(link))
+        except (OSError, ValueError):
+            return None
+        if not target.is_absolute():
+            target = link.parent / target
+        by_id = self.qs_runtime / "by-id"
+        if target.parent != by_id or target.name in ("", ".", "..") or target.is_symlink():
+            return None
+        return target
+
+    def forget(self, pid, folder: Path) -> None:
+        """Quickshell leaves its instance folder (its logs, lock and IPC socket, about
+        6 KB in the session's RAM) after it ends, also when it quits by itself: one per
+        start until the session ends. The child's is removed once it has gone."""
+        try:
+            shutil.rmtree(folder)
+        except OSError:
+            pass
+        try:
+            (self.qs_runtime / "by-pid" / str(pid)).unlink()
         except OSError:
             pass
 

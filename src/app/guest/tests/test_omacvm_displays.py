@@ -1335,7 +1335,18 @@ class GuestAwakeTest(unittest.TestCase):
 
     def make(self, start=None):
         return od.GuestAwake(path=self.path, qml=self.tmp / "omacvm-awake.qml", start=start or self.start,
-                             layers=lambda: self.layers, clock=lambda: self.clock[0])
+                             layers=lambda: self.layers, clock=lambda: self.clock[0],
+                             qs_runtime=self.tmp / "quickshell")
+
+    def instance(self, pid, name):
+        """Quickshell's folder for an instance: by-id/<name> (log, lock), by-pid/<pid> linking to it."""
+        qs = self.tmp / "quickshell"
+        folder = qs / "by-id" / name
+        folder.mkdir(parents=True)
+        (folder / "log.qslog").write_text("x")
+        (qs / "by-pid").mkdir(exist_ok=True)
+        (qs / "by-pid" / str(pid)).symlink_to(folder)
+        return folder
 
     def show(self, child, namespace=od.AWAKE_NAMESPACE):
         self.layers = {"Virtual-1": {"levels": {"0": [], "2": [{"namespace": "omarchy-bar", "pid": 7},
@@ -1420,6 +1431,37 @@ class GuestAwakeTest(unittest.TestCase):
         self.children[-1].returncode = 1
         a.want(True)                                                # AWAKE_TRIES in a row now
         self.assertIn("not tried again", self.logged[-1])
+
+    def test_the_childs_quickshell_folder_goes_with_it(self):
+        omarchy = self.instance(1101, "omarchyshell")                # Omarchy's own shell: never touched
+        a = self.make()
+        a.want(True)
+        mine = self.instance(self.children[0].pid, "awake1")
+        self.show(self.children[0])
+        a.want(True)
+        a.want(False)                                               # no Firefox video: stopped
+        self.assertFalse(mine.exists())
+        self.assertFalse((self.tmp / "quickshell/by-pid" / str(self.children[0].pid)).is_symlink())
+        a.want(True)                                                # a new child that ends by itself
+        mine = self.instance(self.children[1].pid, "awake2")
+        self.children[1].returncode = 0
+        a.want(True)
+        self.assertFalse(mine.exists())
+        self.assertTrue(omarchy.exists())
+        self.assertTrue((self.tmp / "quickshell/by-pid/1101").is_symlink())
+
+    def test_a_folder_outside_by_id_is_never_removed(self):
+        outside = self.tmp / "elsewhere"
+        outside.mkdir()
+        a = self.make()
+        a.want(True)
+        (self.tmp / "quickshell/by-pid").mkdir(parents=True)
+        (self.tmp / "quickshell/by-pid" / str(self.children[0].pid)).symlink_to(outside)
+        a.want(False)
+        self.assertTrue(outside.exists())
+        a.want(True)                                                # no folder at all: nothing happens
+        a.want(False)
+        self.assertEqual(len(self.children), 2)
 
     def test_no_surface_counts_as_a_failure_and_three_stop_it(self):
         a = self.make()
