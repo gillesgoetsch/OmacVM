@@ -58,7 +58,7 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 - **The hidden indicators open far from them (left part of the bar, under
   the notch) and shut on the way to them, or open on the bell and shut again**
   (Omarchy 4.5, Omanotch, the indicators in the bar's right part): Update VM
-  (3.4.3, bar patch v42; #763, #764). With Skip the notch opening them left
+  (3.4.3, bar patch v43; #763, #764). With Skip the notch opening them left
   of the notch, the left part of the bar (the workspaces) opened them too:
   Update VM (3.4.3, #765). With Omanotch off, Omarchy's own bar opens them
   only left of its centre; moving the indicators there (Omarchy's own layout,
@@ -78,7 +78,7 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   log may say `Binding loop detected for property "notchWidths"`): Update VM
   (3.4.2, bar patch v41). Tray apps that start about a second apart (at
   login) moved it once, at once, on Omarchy 4.0 and 4.5: Update VM (3.4.3,
-  bar patch v42; #757). The tray then shows once its apps stop coming (1.5 s
+  bar patch v43; #757). The tray then shows once its apps stop coming (1.5 s
   after the last, 8 s at most); an app that starts later can still move it
   once.
 - **In Full screen including notch the windows start well below the notch**

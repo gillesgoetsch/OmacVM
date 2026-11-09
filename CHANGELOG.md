@@ -21,14 +21,14 @@ in more words.
   goes left of them. Omarchy's own rule (the bar left of its centre) counts only in Omarchy's own
   layout (the indicators in the centre's left part, not moved by Skip the notch), and only left of
   the notch. Only Omanotch's bar has this: with Omanotch off (Omarchy's own bar) the indicators
-  still follow Omarchy's rule. Update VM brings it (bar patch v42).
+  still follow Omarchy's rule. Update VM brings it (bar patch v43).
 - **Omanotch** with Skip the notch, on Omarchy 4.0 and 4.5 (#757, reported by the project owner on
   an M1 Max): tray apps that start about a second apart (often at login) no longer show the tray
   right of the notch first and then move it left. A tray that shows up now waits until its apps
   stop coming (1.5 s without a new one, 8 s at most) and shows once, on the side it stays on.
   While it waits, its place on the bar is empty and it can't be clicked, on the notch strip too
   (before, that lasted 150 ms). An app that starts later than that can still move the shown tray
-  once, at once. Update VM brings it (bar patch v42).
+  once, at once. Update VM brings it (bar patch v43).
 - **The move to Omarchy 4.5 finishes when your shell sets `OMARCHY_PATH`** (#742, reported by
   @epicoun): the move stopped at its last step, Omarchy's own update, and every Resume stopped there
   again ("OMARCHY_PATH does not match this Omarchy command."). `omarchy update` runs itself again
