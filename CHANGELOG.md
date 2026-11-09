@@ -3,16 +3,8 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.4.3 (unreleased)
+## 3.4.3
 
-- **The move to Omarchy 4.5 finishes when your shell sets `OMARCHY_PATH`** (#742, reported by
-  @epicoun): the move stopped at its last step, Omarchy's own update, and every Resume stopped there
-  again ("OMARCHY_PATH does not match this Omarchy command."). `omarchy update` runs itself again
-  through your login shell, and a line in zsh's or fish's startup files that sets `OMARCHY_PATH` won
-  over OmacVM's. OmacVM now runs it under bash, which reads no startup file there; this also covers
-  Graphics › Vulkan and a prebuilt VM's first update. A move that stopped like this: update the app,
-  then Resume. When Omarchy's update stops, the move now shows Omarchy's own line, not just "did not
-  finish". For your own `omarchy update`: troubleshooting 62.
 - **Omanotch** on Omarchy 4.5 (#763, #764, reported by the project owner on an M4 Max; the same
   symptom as #734 on an M1 Max): the hidden indicators now open when the pointer comes onto the
   indicators themselves (or, with Skip the notch, onto the place left of the notch where they
@@ -37,6 +29,14 @@ in more words.
   While it waits, its place on the bar is empty and it can't be clicked, on the notch strip too
   (before, that lasted 150 ms). An app that starts later than that can still move the shown tray
   once, at once. Update VM brings it (bar patch v42).
+- **The move to Omarchy 4.5 finishes when your shell sets `OMARCHY_PATH`** (#742, reported by
+  @epicoun): the move stopped at its last step, Omarchy's own update, and every Resume stopped there
+  again ("OMARCHY_PATH does not match this Omarchy command."). `omarchy update` runs itself again
+  through your login shell, and a line in zsh's or fish's startup files that sets `OMARCHY_PATH` won
+  over OmacVM's. OmacVM now runs it under bash, which reads no startup file there; this also covers
+  Graphics › Vulkan and a prebuilt VM's first update. A move that stopped like this: update the app,
+  then Resume. When Omarchy's update stops, the move now shows Omarchy's own line, not just "did not
+  finish". For your own `omarchy update`: troubleshooting 62.
 - **Omanotch's strip shows the workspace you are on** on Omarchy 4.5 (#760, reported by
   @mlamoure): its workspaces stayed on slot 1 whatever the display showed, because Omarchy 4.5 loads
   its workspaces widget from its own folder, so the copy Omanotch fixed for the strip never ran and
