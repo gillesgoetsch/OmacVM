@@ -1293,6 +1293,14 @@ elif systemctl --user -M "$U@" list-unit-files notchcast.service 2>/dev/null | g
     # What Hyprland composites, whatever the bar says about itself.
     bad "notch display" "the strip shows the bar and a bar is also on $b: two bars on the MacBook (omarchy-restart-shell)"
   else ok "notch display" "$b$([[ $spot == above ]] && echo ", NOTCH right above it")$([[ $parked == true ]] && echo ", its bar in the strip")"; fi
+  # Omarchy 4.5 (#760): the strip's workspaces come from the bar copy's own
+  # widget. One that is there with the patch but does not load (the bar fell
+  # back to Omarchy's); gone or unpatched is copies.py's line below. Each
+  # line on its own: Qt's locale warning can come first.
+  wsf=$H/.config/omarchy/plugins/$U.bar/widgets/Workspaces.qml
+  if [[ $(jq -rR 'fromjson? | .workspaces // empty' <<<"$st" 2>/dev/null) == omarchy ]] && grep -qs omarchy-notch-bar "$wsf"; then
+    warn "NOTCH workspaces" "the bar copy's widgets/Workspaces.qml does not load (the shell's log says why): the strip shows the NOTCH output's own workspaces. Delete ~/.config/omarchy/plugins/$U.bar, then repair Omanotch to make it again"
+  fi
 else skip "Omanotch" "not installed (omacvm enable omanotch, on a MacBook with a notch)"; fi
 # Its copies of Omarchy's bar and background follow Omarchy's updates
 # (src/omanotch/guest/copies.py; WARN: kept as they are, and why).
