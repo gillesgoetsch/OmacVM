@@ -992,6 +992,8 @@ def main():
   // set (QML: "Binding loop detected for property peeking").
   property var notchIndicatorSpans: ({})
   function notchIndicatorTick() {
+    // Qt.callLater may run it after a reload took the bar away.
+    if (typeof notchIndicatorSpansNow !== "function") return
     var now = notchIndicatorSpansNow()
     if (JSON.stringify(now) !== JSON.stringify(notchIndicatorSpans)) notchIndicatorSpans = now
   }

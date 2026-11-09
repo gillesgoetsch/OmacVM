@@ -2047,6 +2047,23 @@ out.push(["a refresh with nothing moved keeps the same object", notchIndicatorSp
         self.assertEqual(r, {"before any refresh: Omarchy's answer": False, "moved, not refreshed yet": True,
                              "refreshed": False, "a refresh with nothing moved keeps the same object": True})
 
+    def test_a_late_tick_after_the_bar_is_gone(self):
+        # A queued Qt.callLater(notchIndicatorTick) can run after a reload
+        # took the old bar away (its functions are gone then): it does
+        # nothing instead of throwing (the shell logged a TypeError).
+        r = self.run_js("""
+var win = Win("Virtual-1", 962.5, true), into = Item(0);
+moduleSlots = [Slot(win, 1164, 32, { full: 84 })];
+notchIndicatorTick();
+var before = notchIndicatorSpans;
+notchIndicatorSpansNow = undefined;
+var threw = false;
+try { notchIndicatorTick() } catch (e) { threw = String(e) }
+out.push(["threw", threw]);
+out.push(["spans kept", notchIndicatorSpans === before]);
+""")
+        self.assertEqual(r, {"threw": False, "spans kept": True})
+
     def test_omarchys_layout_keeps_its_rule_but_not_under_the_housing(self):
         r = self.run_js("""
 var win = Win("Virtual-1", 962.5, true), into = Item(0);
