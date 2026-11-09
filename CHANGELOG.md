@@ -37,8 +37,8 @@ in more words.
   could land beside the item. The strip's bar now uses Omanotch's copy of the widget; the bars on
   your displays keep Omarchy's. Omarchy 4.0 was not affected. If you had made your own copy of the
   workspaces widget for this, put Omarchy's Workspaces back in the bar's layout. Update VM brings
-  it (bar patch v43); `omacvm check` warns when the strip's copy of the widget is gone or
-  unpatched.
+  it (bar patch v43); `omacvm check` warns when the strip's copy of the widget is gone,
+  unpatched or does not load.
 
 ## 3.4.2
 
