@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 40)
+        self.assertEqual(V, 41)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -705,7 +705,8 @@ class RealOmarchy(unittest.TestCase):
                       '(screen ? screen.height : thickness) : barWindow.parkedSize)\n', full)
         self.assertIn('      height: root.vertical ? parent.height : (barWindow.notchRole === "" ? barWindow.thickness : parent.height)\n', full)
         self.assertIn('    exclusionMode: barWindow.parked ? ExclusionMode.Ignore : ExclusionMode.Normal\n'
-                      '    exclusiveZone: barWindow.notchRole === "" ? thickness : barWindow.parkedSize\n', full)
+                      '    exclusiveZone: barWindow.notchRole === "" ? thickness\n'
+                      '      : barWindow.notchRole === "fullpanel" ? barWindow.notchPanelZone : barWindow.parkedSize\n', full)
         self.assertIn('      : notchRole === "notch" ? notchFit[0] : notchRole === "fullpanel" ? notchPanelFit[0] : barWindow.parkDistance\n', full)
         strip = full[full.index("      id: barStrip\n"):full.index("    PopupWindow {")]
         self.assertIn("        anchors.topMargin: barWindow.notchPadTop\n        anchors.bottomMargin: barWindow.notchPadBottom\n"
@@ -846,8 +847,9 @@ console.log(JSON.stringify(out))
             bar, backup = self.dir / "Bar.qml", self.dir / "Bar.qml.before-notchbar"
             backup.write_text(stock)
             # An older version (3.1.2 had v21; 3.4.0 v37; v38 = the test builds of
-            # #733 and #735 alone; 3.4.1 v39), a version line alone, each piece missing.
-            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v%d" % v) for v in (21, 37, 38, 39)]
+            # #733 and #735 alone; 3.4.1 v39; v40 = #759 alone), a version line
+            # alone, each piece missing.
+            olds = [full.replace(VERSION_LINE, "// omarchy-notch-bar patch v%d" % v) for v in (21, 37, 38, 39, 40)]
             olds.append(VERSION_LINE + "\n")
             mod = load_patch()
             olds += [full.replace(p, "") for p in (mod.PIECES_45 if is_45(stock) else mod.PIECES)]
@@ -1598,6 +1600,175 @@ class FullPanelLayout(unittest.TestCase):
     def test_state_says_fullpanel(self):
         self.assertIn('fullpanel: root.notchPanel.length ? (root.notchPanelOn ? "strip" : "waiting") : "off"', self.text)
         self.assertIn('fullpanel: notchPanel.length ? (notchPanelOn ? "strip" : "waiting") : "off"', self.text)
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class FullPanelZone(unittest.TestCase):
+    """#758: FullPanel's bar reserves its strip less half of Omarchy's top
+    window gap (5 px at most), so windows sit closer under the notch but
+    never in the strip; every other role reserves what it did (v40). The
+    owner's MacBook Pro 14" at the guest's scale 2: strip 33.5, bar 26,
+    gaps_out 10: reserved 29, windows at 29 + 10 + border 2 = 41."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def full(self, stock):
+        f = self.dir / "Bar.qml"
+        f.write_text(stock)
+        out = patch_file(f)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return f.read_text()
+
+    def node(self, js):
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def expr(self, text, name):
+        """A window property's expression, with its continuation lines."""
+        m = re.search(r"^    %s: (.*\n(?:      .*\n)*)" % name, text, re.M)
+        return " ".join(m.group(1).split()) if m else None
+
+    def reserved(self, full, stock_height):
+        """[role, reserved px or null for none] per role, from the patch's own
+        expressions (Quickshell: Ignore = none, Auto = the window's height,
+        Normal = exclusiveZone; on 4.0 FullPanel's zone comes from its Binding)."""
+        mode = self.expr(full, "exclusionMode")
+        zone = self.expr(full, "exclusiveZone")
+        binding = re.search(r'    Binding \{\n      target: barWindow; property: "exclusiveZone"; value: (.*)\n'
+                            r'      when: (.*); restoreMode: Binding\.RestoreNone\n    \}\n', full)
+        js = """
+const ExclusionMode = { Ignore: "Ignore", Normal: "Normal", Auto: "Auto" };
+const root = { barSize: 26, barHidden: false, notchHeight: 33.5, notchGapsTop: GAPS };
+function notchBox(outH, strip, flush, size, scale) { BOX }
+function notchPanelZoneFor(size, gapsTop) { ZONEFOR }
+root.notchBox = notchBox; root.notchPanelZoneFor = notchPanelZoneFor;
+const out = [];
+for (const [role, parkedSize] of [["", STOCK], ["parked", 1], ["notch", 34], ["fullpanel", 34]]) {
+  const notchPanelFit = notchBox(0, root.notchHeight, 0, root.barSize, 2);
+  const barWindow = { notchRole: role, parked: role === "parked", parkedSize: parkedSize, thickness: STOCK,
+                      notchPanelFit: notchPanelFit };
+  barWindow.notchPanelZone = ZONEPROP;
+  const thickness = STOCK;
+  const mode = MODE;
+  let px = null;
+  if (mode === "Auto") px = role === "" ? STOCK : parkedSize;
+  if (mode === "Normal") px = ZONE;
+  out.push([role, px]);
+}
+console.log(JSON.stringify(out));
+"""
+        zoneprop = re.search(r"readonly property int notchPanelZone: (.*)\n", full)
+        normal = zone if zone else ("(%s) ? %s : 0" % (binding.group(2), binding.group(1)) if binding else "0")
+        js = (js.replace("MODE", mode).replace("ZONEPROP", zoneprop.group(1).replace("notchPanelFit", "barWindow.notchPanelFit")
+                                                if zoneprop else "0")
+              .replace("ZONEFOR", function(full, "notchPanelZoneFor") if "function notchPanelZoneFor(" in full else "return 0")
+              .replace("ZONE", normal).replace("BOX", function(full, "notchBox"))
+              .replace("STOCK", str(stock_height)).replace("GAPS", "10"))
+        return self.node(js)
+
+    def test_zone_per_role_in_every_omarchy(self):
+        for bar in SHELLS:
+            stock = bar.read_text()
+            with self.subTest(omarchy=bar.parts[-5]):
+                full = self.full(stock)
+                self.assertEqual(self.reserved(full, 26),
+                                 [["", 26], ["parked", None], ["notch", 34], ["fullpanel", 29]])
+
+    def test_40_only_fullpanel_leaves_auto(self):
+        # Omarchy 4.0's bar (omarchy-mac and upstream's October form): the
+        # normal and parked roles keep Auto and Ignore as before; FullPanel's
+        # zone is written only in that role, and its value does not follow
+        # the role (a write switches Quickshell to Normal: never while the
+        # role changes to another).
+        for bar in SHELLS:
+            stock = bar.read_text()
+            if is_45(stock):
+                continue
+            with self.subTest(omarchy=bar.parts[-5]):
+                full = self.full(stock)
+                self.assertEqual(self.expr(full, "exclusionMode"),
+                                 'barWindow.parked ? ExclusionMode.Ignore : barWindow.notchRole === "fullpanel" ? '
+                                 'ExclusionMode.Normal : ExclusionMode.Auto')
+                self.assertIsNone(self.expr(full, "exclusiveZone"))
+                self.assertEqual(full.count('property: "exclusiveZone"'), 1)
+                self.assertIn('      when: barWindow.notchRole === "fullpanel" && !barWindow.parked; '
+                              'restoreMode: Binding.RestoreNone\n', full)
+                zone = re.search(r"readonly property int notchPanelZone: (.*)\n", full).group(1)
+                self.assertNotIn("notchRole", zone)
+                self.assertNotIn("parkedSize", zone)
+
+    def test_45_only_fullpanels_zone_changes(self):
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        full = self.full(stock)
+        self.assertEqual(self.expr(full, "exclusiveZone"),
+                         'barWindow.notchRole === "" ? thickness : barWindow.notchRole === "fullpanel" ? '
+                         'barWindow.notchPanelZone : barWindow.parkedSize')
+        self.assertEqual(self.expr(full, "exclusionMode"), "barWindow.parked ? ExclusionMode.Ignore : ExclusionMode.Normal")
+        self.assertNotIn('property: "exclusiveZone"', full)
+
+    def zones(self, cases):
+        text = patched()
+        js = """
+function notchBox(outH, strip, flush, size, scale) { BOX }
+function notchPanelZoneFor(size, gapsTop) { ZONEFOR }
+console.log(JSON.stringify(CASES.map(function (c) {
+  const size = notchBox(0, c[0], 0, 26, c[1])[0];
+  return [size, notchPanelZoneFor(size, c[2])];
+})));
+"""
+        js = (js.replace("BOX", function(text, "notchBox")).replace("ZONEFOR", function(text, "notchPanelZoneFor"))
+              .replace("CASES", json.dumps(cases)))
+        return self.node(js)
+
+    def test_windows_never_in_the_strip(self):
+        # zone + gap >= the strip (as the bar rounds it, parkedSize): for
+        # every gap; gaps_out 0 (Omarchy's window-no-gaps, flush-bar under a
+        # transparent bar) reserves the whole strip as before.
+        cases = [[strip, scale, gap] for strip in (24, 32, 33, 33.5, 37, 41.875, 43, 53.75)
+                 for scale in (1, 1.6, 2) for gap in range(0, 31)]
+        for (strip, scale, gap), (size, zone) in zip(cases, self.zones(cases)):
+            self.assertGreaterEqual(zone + gap, size, (strip, scale, gap))
+            self.assertLessEqual(zone, size)
+            self.assertEqual(zone, size - min(5, gap), (strip, scale, gap))
+            if gap == 0:
+                self.assertEqual(zone, size)
+
+    def test_the_owners_numbers(self):
+        # 3024x1964/1968 at scale 2: the strip 33.5 logical: bar 34, zone 29,
+        # windows at 41 (were 46); 34 >= ceil(33.5) - 10. At the owner's
+        # full-screen scale 1.6 (1890 logical wide): strip 41.875, bar 42,
+        # zone 37, windows at 49 (were 54). A user's gaps_out 0: 34 as before.
+        self.assertEqual(self.zones([[33.5, 2, 10], [33.5 * 1890 / 1512, 1.6, 10], [33.5, 2, 0], [33.5, 2, 3]]),
+                         [[34, 29], [42, 37], [34, 34], [34, 31]])
+        self.assertGreaterEqual(29 + 10, math.ceil(33.5))
+
+    def test_gaps_out_as_hyprland_says_it(self):
+        text = patched()
+        cases = ['{"option":"general:gaps_out","css":"10 10 10 10","set":true}', '{"custom":"20 5 5 5"}',
+                 '{"css":"8 12 8 12"}', '{"int":7}', '{"css":"0 0 0 0"}', '{"css":"10.6 10 10 10"}',
+                 '{"css":"-3 0 0 0"}', '{"css":""}', "not json", ""]
+        js = "function f(text) { BODY }\nconsole.log(JSON.stringify(CASES.map(f)))".replace(
+            "BODY", function(text, "notchGapsParse")).replace("CASES", json.dumps(cases))
+        self.assertEqual(self.node(js), [10, 20, 8, 7, 0, 10, -1, -1, -1, -1])
+
+    def test_gaps_read_at_start_after_a_reload_and_a_look_change(self):
+        for bar in SHELLS:
+            stock = bar.read_text()
+            with self.subTest(omarchy=bar.parts[-5]):
+                full = self.full(stock)
+                self.assertEqual(full.count('command: ["hyprctl", "-j", "getoption", "general:gaps_out"]'), 1)
+                soon = full[full.index("    id: notchGapsSoon\n"):]
+                self.assertTrue(soon.startswith("    id: notchGapsSoon\n    interval: 200\n    running: true  // at start\n"))
+                self.assertEqual(full.count('if (String(event.name) === "configreloaded") notchGapsSoon.restart()'), 1)
+                self.assertEqual(full.count("function onTransparentChanged() { notchGapsSoon.restart() }"), 1)
+                # The stock root has the properties the patch listens to.
+                self.assertIn("  property bool transparent: ", stock)
+                self.assertIn("  property string position: ", stock)
+                # A value read while a read runs is read again, not lost.
+                self.assertIn("onExited: if (root.notchGapsAgain) {", full)
+                # Toasts keep the whole strip (barSizeFor is unchanged).
+                self.assertIn("return root.notchBox(0, root.notchHeight, 0, root.barSize, 1)[0]", function(full, "barSizeFor"))
 
 
 class Hover(unittest.TestCase):

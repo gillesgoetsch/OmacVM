@@ -36,7 +36,9 @@ What the patch adds:
     covers the strip itself (/run/omacvm/host.env: OMACVM_FULLPANEL, the
     camera housing in Mac points), the bar on the built-in display sits in
     the strip, as tall as it, split around the housing, and reserves it
-    (windows start below it; black over full-screen windows). Hidden
+    less half of Omarchy's top window gap, 5 px at most (#758: windows keep
+    the rest of the gap below the strip, never in it; black over
+    full-screen windows). Hidden
     (Super+Shift+Space), it still reserves the strip but is see-through, so
     Omarchy's wallpaper shows there up to the top edge. Only while the app
     says that output covers the whole display in full screen
@@ -81,7 +83,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 40
+VERSION = 41
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -118,15 +120,18 @@ COMMON = [
     "      function notchParkEnd() {\n",                                    # 3. mapped again after the park (#727)
     "    property bool notchAppearing: false\n",                              # 9. shows up where it stays (#757)
     "      id: notchShowLimit\n",                                             # 9. ... 1 s at most
+    "  function notchPanelZoneFor(size, gapsTop) {\n",                         # 1. FullPanel's zone (#758)
+    "    readonly property int notchPanelZone: root.notchPanelZoneFor(notchPanelFit[0], root.notchGapsTop)\n",  # 3.
 ]
 PIECES = COMMON + [
+    "      when: barWindow.notchRole === \"fullpanel\" && !barWindow.parked; restoreMode: Binding.RestoreNone\n",  # 3. #758
     "        Item { id: notchLeftEdge; ",                                     # 5. around the housing
     "    property var notchBeside: [0, 0]\n",                                # 5.
     "            notchShift: root.notchShiftAt(moduleListRoot.notchShift, index)\n",  # 8. lists
 ]
 PIECES_45 = COMMON + [
     '      height: root.vertical ? parent.height : (barWindow.notchRole === "" ? barWindow.thickness : parent.height)\n',  # 3.
-    "    exclusiveZone: barWindow.notchRole === \"\" ? thickness : barWindow.parkedSize\n",  # 3.
+    "      : barWindow.notchRole === \"fullpanel\" ? barWindow.notchPanelZone : barWindow.parkedSize\n",  # 3. #758
     "    readonly property var notchBeside: notchSections.notchBeside\n",      # 5. around the housing
     "(sections.notchLayout ? root.notchRight + Style.space(6) : ",           # 5.
     "            notchSlotIndex: moduleListRoot.keys.indexOf(modelData.key)\n",  # 8. lists
@@ -634,6 +639,65 @@ def main():
           n.indexOf("monitor") === 0)
         notchFullscreenDebounce.restart()
     }
+  }
+  // FullPanel's bar reserves its strip less half of Omarchy's top window
+  // gap, 5 px at most (#758; Omarchy keeps half of it between its panels and
+  // the edge too, Style.gapsOut): windows sit that much closer under the
+  // notch, and never in the strip (zone + gap >= the strip). The top of
+  // general:gaps_out, read from Hyprland at start, after a config reload
+  // and after the bar's look changes (omarchy-mac's flush-bar sets the
+  // bar's edge to 0 under a transparent bar); 0 until read: the whole strip.
+  property int notchGapsTop: 0
+  property bool notchGapsAgain: false
+  // hyprctl -j getoption general:gaps_out -> its top, -1 if unreadable.
+  function notchGapsParse(text) {
+    try {
+      var o = JSON.parse(String(text))
+      var parts = String(o.css || o.custom || "").match(/-?[0-9]+(?:\\.[0-9]+)?/g) || []
+      var n = parts.length > 0 ? Number(parts[0]) : Number(o.int)
+      return isFinite(n) && n >= 0 ? Math.floor(n) : -1
+    } catch (e) {
+      return -1
+    }
+  }
+  function notchPanelZoneFor(size, gapsTop) {
+    return Math.max(0, size - Math.min(5, Math.max(0, gapsTop)))
+  }
+  function notchReadGaps() {
+    if (notchGapsProc.running) notchGapsAgain = true
+    else notchGapsProc.running = true
+  }
+  Process {
+    id: notchGapsProc
+    command: ["hyprctl", "-j", "getoption", "general:gaps_out"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var n = root.notchGapsParse(text)
+        if (n >= 0) root.notchGapsTop = n
+      }
+    }
+    onExited: if (root.notchGapsAgain) {
+      root.notchGapsAgain = false
+      running = true
+    }
+  }
+  // Hyprland's options settle a moment after its reload event (Style.qml
+  // waits 200 ms too); flush-bar's script runs detached: once more later.
+  Timer {
+    id: notchGapsSoon
+    interval: 200
+    running: true  // at start
+    onTriggered: { root.notchReadGaps(); notchGapsLate.restart() }
+  }
+  Timer { id: notchGapsLate; interval: 1500; onTriggered: root.notchReadGaps() }
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) { if (String(event.name) === "configreloaded") notchGapsSoon.restart() }
+  }
+  Connections {
+    target: root
+    function onTransparentChanged() { notchGapsSoon.restart() }
+    function onPositionChanged() { notchGapsSoon.restart() }
   }
   // FullPanel (OmacVM.app): the camera housing from host.env, in Mac points
   // [left, right, strip, width, height]; [] when this boot is not one.
@@ -1476,18 +1540,32 @@ def main():
     #    Omarchy's own visible condition stays (from about October 2026 a top
     #    bar also waits for its notch floor), with the remap below added.
     #    Omarchy 4.5 reserves an explicit zone (its window spans the screen):
-    #    a notch role reserves its own window, FullPanel's strip.
+    #    a notch role reserves its own window, FullPanel's bar its strip less
+    #    half of the window gap (notchPanelZone, #758).
+    #    FullPanel's bar reserves less than its window (#758): on 4.0 that
+    #    role alone takes an explicit zone, the others keep Auto.
     auto = ("    exclusionMode: root.barHidden ? ExclusionMode.Ignore : ExclusionMode.Auto\n",
-            "    exclusionMode: barWindow.parked ? ExclusionMode.Ignore : ExclusionMode.Auto\n")
+            """    // omarchy-notch-bar: FullPanel's bar reserves an explicit zone (its strip
+    // less half of the window gap, notchPanelZone), the other roles Auto.
+    exclusionMode: barWindow.parked ? ExclusionMode.Ignore
+      : barWindow.notchRole === "fullpanel" ? ExclusionMode.Normal : ExclusionMode.Auto
+    // Only in that role: setting exclusiveZone switches Quickshell to Normal.
+    Binding {
+      target: barWindow; property: "exclusiveZone"; value: barWindow.notchPanelZone
+      when: barWindow.notchRole === "fullpanel" && !barWindow.parked; restoreMode: Binding.RestoreNone
+    }
+""")
     zone = ('''    // An explicit zone instead of Auto: the reserved area stays the strip's
     // thickness though the window spans its screen.
     exclusionMode: root.barHidden ? ExclusionMode.Ignore : ExclusionMode.Normal
     exclusiveZone: thickness
 ''', '''    // An explicit zone instead of Auto: the reserved area stays the strip's
     // thickness though the window spans its screen. omarchy-notch-bar: a
-    // notch role's window is its strip.
+    // notch role's window is its strip; FullPanel's bar reserves its strip
+    // less half of the window gap (notchPanelZone).
     exclusionMode: barWindow.parked ? ExclusionMode.Ignore : ExclusionMode.Normal
-    exclusiveZone: barWindow.notchRole === "" ? thickness : barWindow.parkedSize
+    exclusiveZone: barWindow.notchRole === "" ? thickness
+      : barWindow.notchRole === "fullpanel" ? barWindow.notchPanelZone : barWindow.parkedSize
 ''')
     cutout = "!remapGuard.remapping && (cutoutWaitOver || !cutoutPending)"
     stock_visible = [("!remapGuard.remapping", auto), (cutout, auto), (cutout, zone)]
@@ -1524,6 +1602,10 @@ def main():
                                                        screen ? screen.devicePixelRatio : 1)
     readonly property int parkedSize: notchRole === "parked" ? 1
       : notchRole === "notch" ? notchFit[0] : notchRole === "fullpanel" ? notchPanelFit[0] : STOCK_SIZE
+    // FullPanel's zone: the strip less half of the window gap (#758), see
+    // root.notchGapsTop; the same in every role, so it is never written
+    // while the role changes.
+    readonly property int notchPanelZone: root.notchPanelZoneFor(notchPanelFit[0], root.notchGapsTop)
     readonly property real notchPadTop: notchRole === "notch" ? notchFit[1] : notchRole === "fullpanel" ? notchPanelFit[1] : 0
     readonly property real notchPadBottom: notchRole === "notch" || notchRole === "fullpanel"
       ? parkedSize - root.barSize - notchPadTop : 0
