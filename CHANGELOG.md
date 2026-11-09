@@ -98,6 +98,25 @@ in more words.
   what hung is written down (#744); the e2e kits log in to a test VM with its own key first (#745),
   turn a MacBook's built-in display back on after a test that switched it off, close the test app
   after it updated itself and say 60 s where they wait for a person (#740).
+- **Omanotch** on Omarchy 4.5 with Skip the notch (#757, reported by the project owner on an M1
+  Max): the bar's layout no longer goes stale, nothing slides under the notch, and tray apps that
+  start together show the tray once, where it stays. With bar patch v39 (3.4.1), after a widget
+  was added or its settings changed, the layout could stay as it was until the pointer came onto
+  the bar (the shell log says "Binding loop detected for property notchWidths"), and a tray that
+  showed up or grew after the bar slid under the notch from right to left. Now the layout counts
+  the size each item asks for, an item that grows takes its new place at once, and a tray that
+  shows up waits unseen until its own place has been quiet for 150 ms (1 s at most). Not fixed
+  yet: tray apps that start seconds apart (often the case at login) can still show the tray right
+  of the notch first and move it left once, at once. Update VM brings it (bar patch v41).
+- **Full screen including notch** (#758, reported by the project owner on an M1 Max): windows start
+  closer under the notch. The bar in the strip now reserves the strip less 5 px of Omarchy's top
+  window gap (all of the gap when it is under 5), so with Omarchy's 10 px gap a tiled window's
+  border is about 7 pt below the notch instead of 12 at the guest's scale 2 (5 px below the bar,
+  not 10). The bar reserves the whole strip, as before, while a workspace with a top gap of 0 shows
+  (Omarchy's drop-down console, Super+`; 4.0's scratchpad, Super+S), with a gap of 0 (Omarchy's
+  no-gaps toggle) and under a transparent bar on Omarchy 4.0 (its flush-bar sets the gap to 0).
+  Window, the notch via Omanotch and the moment before the full screen starts are unchanged.
+  Update VM brings it (bar patch v41).
 
 ## 3.4.1
 

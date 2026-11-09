@@ -36,7 +36,12 @@ What the patch adds:
     covers the strip itself (/run/omacvm/host.env: OMACVM_FULLPANEL, the
     camera housing in Mac points), the bar on the built-in display sits in
     the strip, as tall as it, split around the housing, and reserves it
-    (windows start below it; black over full-screen windows). Hidden
+    less 5 px of Omarchy's top window gap, all of the gap when it is under 5
+    (#758: windows keep the rest of the gap below the strip, not in it; the
+    whole strip while a workspace with a smaller top gap shows, such as
+    Omarchy's drop-down console; a gap set with hyprctl eval alone is seen
+    at the next shell start or config reload; black over full-screen
+    windows). Hidden
     (Super+Shift+Space), it still reserves the strip but is see-through, so
     Omarchy's wallpaper shows there up to the top edge. Only while the app
     says that output covers the whole display in full screen
@@ -81,7 +86,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 40
+VERSION = 41
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -118,15 +123,22 @@ COMMON = [
     "      function notchParkEnd() {\n",                                    # 3. mapped again after the park (#727)
     "    property bool notchAppearing: false\n",                              # 9. shows up where it stays (#757)
     "      id: notchShowLimit\n",                                             # 9. ... 1 s at most
+    "  function notchPanelZoneFor(size, gapsTop) {\n",                         # 1. FullPanel's zone (#758)
+    "    readonly property int notchPanelZone: root.notchPanelZoneFor(notchPanelFit[0], root.notchGapsAt(screen ? screen.name : \"\", root.notchGapsSure, root.notchGapsSeen, root.notchSpecials, root.notchFlush))\n",  # 3.
+    "  function notchGapsFor(output, state, specials, flush) {\n",             # 1. ... a workspace rule's gap (#758)
+    "    id: notchGapRulesProc\n",                                             # 1.
+    "    id: notchFlushBarFile\n",                                             # 1. ... flush-bar
+    "  readonly property bool notchFlush: notchFlushBar && requestedTransparent && position === \"top\"\n",  # 1.
 ]
 PIECES = COMMON + [
+    "      when: barWindow.notchRole === \"fullpanel\" && !barWindow.parked; restoreMode: Binding.RestoreNone\n",  # 3. #758
     "        Item { id: notchLeftEdge; ",                                     # 5. around the housing
     "    property var notchBeside: [0, 0]\n",                                # 5.
     "            notchShift: root.notchShiftAt(moduleListRoot.notchShift, index)\n",  # 8. lists
 ]
 PIECES_45 = COMMON + [
     '      height: root.vertical ? parent.height : (barWindow.notchRole === "" ? barWindow.thickness : parent.height)\n',  # 3.
-    "    exclusiveZone: barWindow.notchRole === \"\" ? thickness : barWindow.parkedSize\n",  # 3.
+    "      : barWindow.notchRole === \"fullpanel\" ? barWindow.notchPanelZone : barWindow.parkedSize\n",  # 3. #758
     "    readonly property var notchBeside: notchSections.notchBeside\n",      # 5. around the housing
     "(sections.notchLayout ? root.notchRight + Style.space(6) : ",           # 5.
     "            notchSlotIndex: moduleListRoot.keys.indexOf(modelData.key)\n",  # 8. lists
@@ -634,6 +646,197 @@ def main():
           n.indexOf("monitor") === 0)
         notchFullscreenDebounce.restart()
     }
+  }
+  // FullPanel's bar reserves its strip less 5 px of Omarchy's top window
+  // gap (all of the gap when it is under 5; #758): windows sit up to 5 px
+  // closer under the notch, and never in the strip (zone + gap >= the
+  // strip). The gap is the smallest top gap a window on the bar's output can
+  // have now (notchGapsFor): general:gaps_out, and the gaps_out of each
+  // workspace rule that sets one. A rule for a special workspace counts
+  // while that workspace shows on the output: Omarchy's drop-down console
+  // (4.5, special:qconsole) and 4.0's scratchpad have top 0, so the whole
+  // strip then. Any other rule (a normal workspace, a selector such as
+  // w[tv1]) counts always. Under a transparent top bar with omarchy-mac's
+  // flush-bar plugin, which sets that edge's gap to 0, the whole strip at
+  // once.
+  // Read from Hyprland at start, after a config reload and after the bar's
+  // look changes, soon and once more later: a smaller gap counts from the
+  // first read, a larger one only from the later read (after a reload
+  // Hyprland has its default first, and a script such as flush-bar sets
+  // its own value after it). Until read: the whole strip. A gap changed
+  // with hyprctl eval or keyword alone sends no event: the bar sees it at
+  // its next start (a config reload sets the configured gap again).
+  property var notchGapsSure: ({ top: 0, rules: null })  // the last later read
+  property var notchGapsSeen: ({ top: 0, rules: null })  // the last read
+  // Output name -> the special workspace shown on it ("" none).
+  property var notchSpecials: ({})
+  property int notchSpecialSerial: 0
+  property bool notchFlushBar: false
+  // requestedTransparent: the bar's setting, as flush-bar sees it (the bar
+  // turns transparent itself only after it picked a text colour).
+  readonly property bool notchFlush: notchFlushBar && requestedTransparent && position === "top"
+  property var notchGapsPass: null
+  property int notchGapsQueued: 0  // a read asked while one runs: 1 soon, 2 later
+  // hyprctl -j getoption general:gaps_out -> its top, -1 if unreadable.
+  function notchGapsParse(text) {
+    try {
+      var o = JSON.parse(String(text))
+      var parts = String(o.css || o.custom || "").match(/-?[0-9]+(?:\\.[0-9]+)?/g) || []
+      var n = parts.length > 0 ? Number(parts[0]) : Number(o.int)
+      return isFinite(n) && n >= 0 ? Math.floor(n) : -1
+    } catch (e) {
+      return -1
+    }
+  }
+  // hyprctl -j workspacerules -> [{name, top}] of the rules that set
+  // gaps_out (top first, as CSS), null if unreadable.
+  function notchGapRulesParse(text) {
+    try {
+      var list = JSON.parse(String(text)), out = []
+      if (!Array.isArray(list)) return null
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i] || {}, g = r.gapsOut
+        if (g === undefined || g === null) continue
+        var top = Number(Array.isArray(g) ? g[0] : typeof g === "object" ? g.top : g)
+        if (isFinite(top)) out.push({ name: String(r.workspaceString || ""), top: Math.max(0, Math.floor(top)) })
+      }
+      return out
+    } catch (e) {
+      return null
+    }
+  }
+  // hyprctl -j monitors -> {output: the special workspace shown on it, or
+  // ""}, null if unreadable (by name: Hyprland 0.57 gives no id for none).
+  function notchSpecialsParse(text) {
+    try {
+      var list = JSON.parse(String(text)), out = {}
+      if (!Array.isArray(list)) return null
+      for (var i = 0; i < list.length; i++) {
+        var s = list[i].specialWorkspace
+        out[String(list[i].name)] = s && s.name ? String(s.name) : ""
+      }
+      return out
+    } catch (e) {
+      return null
+    }
+  }
+  // Hyprland's activespecial event ("NAME,OUTPUT", NAME empty when it hides)
+  // -> the map with that output's entry changed.
+  function notchSpecialEvent(specials, data) {
+    var s = String(data), i = s.lastIndexOf(","), out = {}
+    for (var k in specials) out[k] = specials[k]
+    if (i >= 0) out[s.slice(i + 1)] = s.slice(0, i)
+    return out
+  }
+  function notchGapsFor(output, state, specials, flush) {
+    if (flush) return 0
+    var g = state.top, shown = specials[output] || "", rules = state.rules
+    if (rules === null) return shown !== "" ? 0 : g
+    for (var i = 0; i < rules.length; i++) {
+      if (rules[i].name.indexOf("special:") !== 0 || rules[i].name === shown) g = Math.min(g, rules[i].top)
+    }
+    return g
+  }
+  function notchGapsAt(output, sure, seen, specials, flush) {
+    return Math.min(notchGapsFor(output, sure, specials, flush), notchGapsFor(output, seen, specials, flush))
+  }
+  function notchPanelZoneFor(size, gapsTop) {
+    return Math.max(0, size - Math.min(5, Math.max(0, gapsTop)))
+  }
+  // A read's result -> [sure, seen]: a later read sets both; an unreadable
+  // gap keeps the last one seen.
+  function notchGapsMerge(sure, seen, pass) {
+    var now = { top: pass.top >= 0 ? pass.top : seen.top, rules: pass.rules }
+    return [pass.late ? now : sure, now]
+  }
+  function notchReadGaps(late) {
+    if (notchGapsPass !== null) {
+      notchGapsQueued = Math.max(notchGapsQueued, late ? 2 : 1)
+      return
+    }
+    notchGapsPass = { late: late, top: -1, rules: null, specials: null, serial: notchSpecialSerial, left: 3 }
+    notchGapsGuard.restart()
+    notchGapsProc.running = true
+    notchGapRulesProc.running = true
+    notchSpecialsProc.running = true
+  }
+  function notchGapsGot(key, value) {
+    var p = notchGapsPass
+    if (p === null) return
+    p[key] = value
+    if (--p.left <= 0) notchGapsCommit()
+  }
+  function notchGapsCommit() {
+    var p = notchGapsPass
+    if (p === null) return
+    notchGapsPass = null
+    notchGapsGuard.stop()
+    if (p.specials !== null && p.serial === notchSpecialSerial) notchSpecials = p.specials
+    var m = notchGapsMerge(notchGapsSure, notchGapsSeen, p)
+    notchGapsSure = m[0]
+    notchGapsSeen = m[1]
+    if (notchGapsQueued > 0) notchGapsRetry.restart()
+  }
+  function notchGapsCheck(later) {
+    notchReadGaps(false)
+    notchGapsSoon.restart()
+    notchGapsLate.interval = later
+    notchGapsLate.restart()
+  }
+  Process {
+    id: notchGapsProc
+    command: ["hyprctl", "-j", "getoption", "general:gaps_out"]
+    stdout: StdioCollector { onStreamFinished: root.notchGapsGot("top", root.notchGapsParse(text)) }
+  }
+  Process {
+    id: notchGapRulesProc
+    command: ["hyprctl", "-j", "workspacerules"]
+    stdout: StdioCollector { onStreamFinished: root.notchGapsGot("rules", root.notchGapRulesParse(text)) }
+  }
+  Process {
+    id: notchSpecialsProc
+    command: ["hyprctl", "-j", "monitors"]
+    stdout: StdioCollector { onStreamFinished: root.notchGapsGot("specials", root.notchSpecialsParse(text)) }
+  }
+  // A read at once (a smaller gap then counts within a frame or two) and
+  // again 200 ms on: Hyprland's options can settle a moment after its
+  // reload event (Style.qml waits 200 ms). The later read: at start after
+  // flush-bar's last startup pass (6 x 0.5 s), else 1.5 s on.
+  Timer { id: notchGapsSoon; interval: 200; running: true; onTriggered: root.notchReadGaps(false) }
+  Timer { id: notchGapsLate; interval: 3500; running: true; onTriggered: root.notchReadGaps(true) }
+  // A read whose hyprctl never answers ends with what it has.
+  Timer { id: notchGapsGuard; interval: 2000; onTriggered: root.notchGapsCommit() }
+  Timer {
+    id: notchGapsRetry
+    interval: 50
+    onTriggered: {
+      var late = root.notchGapsQueued > 1
+      root.notchGapsQueued = 0
+      root.notchReadGaps(late)
+    }
+  }
+  FileView {
+    id: notchFlushBarFile
+    path: (root.omarchyPath || "/usr/share/omarchy") + "/shell/plugins/flush-bar/manifest.json"
+    printErrors: false
+    onLoaded: root.notchFlushBar = true
+    onLoadFailed: root.notchFlushBar = false
+  }
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) {
+      var n = String(event.name)
+      if (n === "configreloaded") root.notchGapsCheck(1500)
+      else if (n === "activespecial") {
+        root.notchSpecialSerial++
+        root.notchSpecials = root.notchSpecialEvent(root.notchSpecials, event.data)
+      }
+    }
+  }
+  Connections {
+    target: root
+    function onRequestedTransparentChanged() { root.notchGapsCheck(1500) }
+    function onPositionChanged() { root.notchGapsCheck(1500) }
   }
   // FullPanel (OmacVM.app): the camera housing from host.env, in Mac points
   // [left, right, strip, width, height]; [] when this boot is not one.
@@ -1476,18 +1679,32 @@ def main():
     #    Omarchy's own visible condition stays (from about October 2026 a top
     #    bar also waits for its notch floor), with the remap below added.
     #    Omarchy 4.5 reserves an explicit zone (its window spans the screen):
-    #    a notch role reserves its own window, FullPanel's strip.
+    #    a notch role reserves its own window, FullPanel's bar its strip less
+    #    5 px of the top window gap (notchPanelZone, #758).
+    #    FullPanel's bar reserves less than its window (#758): on 4.0 that
+    #    role alone takes an explicit zone, the others keep Auto.
     auto = ("    exclusionMode: root.barHidden ? ExclusionMode.Ignore : ExclusionMode.Auto\n",
-            "    exclusionMode: barWindow.parked ? ExclusionMode.Ignore : ExclusionMode.Auto\n")
+            """    // omarchy-notch-bar: FullPanel's bar reserves an explicit zone (its strip
+    // less 5 px of the top window gap, notchPanelZone), the other roles Auto.
+    exclusionMode: barWindow.parked ? ExclusionMode.Ignore
+      : barWindow.notchRole === "fullpanel" ? ExclusionMode.Normal : ExclusionMode.Auto
+    // Only in that role: setting exclusiveZone switches Quickshell to Normal.
+    Binding {
+      target: barWindow; property: "exclusiveZone"; value: barWindow.notchPanelZone
+      when: barWindow.notchRole === "fullpanel" && !barWindow.parked; restoreMode: Binding.RestoreNone
+    }
+""")
     zone = ('''    // An explicit zone instead of Auto: the reserved area stays the strip's
     // thickness though the window spans its screen.
     exclusionMode: root.barHidden ? ExclusionMode.Ignore : ExclusionMode.Normal
     exclusiveZone: thickness
 ''', '''    // An explicit zone instead of Auto: the reserved area stays the strip's
     // thickness though the window spans its screen. omarchy-notch-bar: a
-    // notch role's window is its strip.
+    // notch role's window is its strip; FullPanel's bar reserves its strip
+    // less 5 px of the top window gap (notchPanelZone).
     exclusionMode: barWindow.parked ? ExclusionMode.Ignore : ExclusionMode.Normal
-    exclusiveZone: barWindow.notchRole === "" ? thickness : barWindow.parkedSize
+    exclusiveZone: barWindow.notchRole === "" ? thickness
+      : barWindow.notchRole === "fullpanel" ? barWindow.notchPanelZone : barWindow.parkedSize
 ''')
     cutout = "!remapGuard.remapping && (cutoutWaitOver || !cutoutPending)"
     stock_visible = [("!remapGuard.remapping", auto), (cutout, auto), (cutout, zone)]
@@ -1524,6 +1741,10 @@ def main():
                                                        screen ? screen.devicePixelRatio : 1)
     readonly property int parkedSize: notchRole === "parked" ? 1
       : notchRole === "notch" ? notchFit[0] : notchRole === "fullpanel" ? notchPanelFit[0] : STOCK_SIZE
+    // FullPanel's zone: the strip less 5 px of the top window gap (all of it
+    // when the gap is under 5; #758), see root.notchGapsFor; the same in
+    // every role, so it is never written while the role changes.
+    readonly property int notchPanelZone: root.notchPanelZoneFor(notchPanelFit[0], root.notchGapsAt(screen ? screen.name : "", root.notchGapsSure, root.notchGapsSeen, root.notchSpecials, root.notchFlush))
     readonly property real notchPadTop: notchRole === "notch" ? notchFit[1] : notchRole === "fullpanel" ? notchPanelFit[1] : 0
     readonly property real notchPadBottom: notchRole === "notch" || notchRole === "fullpanel"
       ? parkedSize - root.barSize - notchPadTop : 0
