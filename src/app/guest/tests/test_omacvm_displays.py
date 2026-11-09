@@ -1793,6 +1793,21 @@ class ConfigWatchTest(unittest.TestCase):
             self.assertFalse(w.ok)
 
 
+# Omarchy 4.5's monitors.lua (omarchy-settings 4.5.0-3, /usr/share/omarchy/config/hypr/monitors.lua)
+# and the rule its omarchy-hyprland-monitor-scaling adds after the catch-all (persist_scale).
+LUA_45 = """-- See https://wiki.hypr.land/Configuring/Basics/Monitors/
+local omarchy_monitor_scale = "auto"
+hl.monitor({ output = "", mode = "preferred", position = "auto", scale = omarchy_monitor_scale })
+
+-- Configure a specific monitor.
+-- hl.monitor({ output = "DP-2", mode = "2560x1440@144", position = "0x0", scale = 1 })
+
+local omarchy_gdk_scale = 2
+hl.env("GDK_SCALE", tostring(omarchy_gdk_scale))
+"""
+RULE_45 = 'hl.monitor({{ output = "Virtual-1", mode = "preferred", position = "auto", scale = {} }})\n'
+
+
 class Scale(unittest.TestCase):
     """#355: every scale in "Full screen including notch". The agent tells the
     Mac the scale the main output wants; `scale` asks the Mac for a size that
@@ -1898,20 +1913,133 @@ class Scale(unittest.TestCase):
         return rc, pokes, calls
 
     def test_scale_in_fullpanel(self):
+        self.lua.write_text(LUA_45)
         rc, pokes, calls = self.set_scale([(2940, 1912), (2940, 1912), (2944, 1912)])
         self.assertEqual((rc, pokes), (0, [b"scale 1.6\n"]))
-        self.assertEqual(calls, [["omarchy-hyprland-monitor-scaling", "1.6"]])   # once the size fits
+        self.assertEqual(calls, [[od.SYNC, "--once"]])                # once the size fits
+        self.assertIn("\nlocal omarchy_monitor_scale = 1.6\n", self.lua.read_text())
 
-    def test_scale_elsewhere_is_omarchys(self):
+    def test_scale_elsewhere(self):
+        # Window mode: no Mac size to wait for; Omarchy's clean value for the size now.
+        self.lua.write_text(LUA_45)
         rc, pokes, calls = self.set_scale([(2940, 1840)], fullpanel=False)
-        self.assertEqual((pokes, calls), ([], [["omarchy-hyprland-monitor-scaling", "1.6"]]))
+        self.assertEqual((rc, pokes, calls), (0, [], [[od.SYNC, "--once"]]))
+        self.assertIn("\nlocal omarchy_monitor_scale = 1.666667\n", self.lua.read_text())
         rc, pokes, calls = self.set_scale([(3840, 2160)], focused="Virtual-2")   # an external display
         self.assertEqual(pokes, [])
+        rc, pokes, calls = self.set_scale([(3840, 2160)], fullpanel=False, focused="DP-1")   # not a VM output
+        self.assertEqual(calls, [["omarchy-hyprland-monitor-scaling", "1.6"]])
 
     def test_scale_old_mac_falls_back(self):
         # An OmacVM.app without #355 never changes the size: Omarchy's nearest after the wait.
+        self.lua.write_text(LUA_45)
         rc, pokes, calls = self.set_scale([(2940, 1912)])
+        self.assertEqual(calls, [[od.SYNC, "--once"]])
+        self.assertIn("\nlocal omarchy_monitor_scale = 2\n", self.lua.read_text())
+
+    # #738: Omarchy 4.5's command keeps the scale in a rule for the output whose
+    # "preferred" mode undid the Mac's size (1.6 -> 1.333, then 2).
+    def test_main_scale_never_writes_omarchys_rule(self):
+        user = 'hl.monitor({ output = "Virtual-2", mode = "1920x1080@60", position = "auto", scale = 1 })\n'
+        self.lua.write_text(LUA_45 + RULE_45.format(2) + user)
+        rc, pokes, calls = self.set_scale([(3024, 1964), (3024, 1968)])
+        self.assertEqual((rc, calls), (0, [[od.SYNC, "--once"]]))
+        text = self.lua.read_text()
+        self.assertEqual(text, LUA_45.replace('local omarchy_monitor_scale = "auto"', "local omarchy_monitor_scale = 1.6")
+                         + user)                                      # only the local; the user's rule stays
+        self.assertEqual(od.wanted_scale(), 1.6)
+        for value, size in (("1.25", (3025, 1965)), ("2", (3024, 1964)), ("1.333", (3024, 1964))):
+            self.set_scale([size], value=value)
+            self.assertEqual(od.wanted_scale(), round(od.clean_scale(float(value), *size), 6))
+            self.assertNotIn('output = "Virtual-1"', self.lua.read_text())
+
+    def test_main_scale_with_the_users_own_rule_is_omarchys(self):
+        # A rule of the user's for Virtual-1 wins at every reload, so writing the
+        # local would change nothing on screen: Omarchy's command, as before #738
+        # (Omarchy 4.5 changes the scale in such a one-line rule).
+        for own in ('hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "0x0", scale = 1 })\n',
+                    'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 2 }) -- mine\n',
+                    "hl.monitor({\n  output = 'Virtual-1',\n  scale = 2,\n})\n"):
+            for fullpanel in (True, False):
+                with self.subTest(own=own, fullpanel=fullpanel):
+                    self.lua.write_text(LUA_45 + own)
+                    rc, pokes, calls = self.set_scale([(3024, 1964), (3024, 1968)], fullpanel=fullpanel)
+                    self.assertEqual((rc, calls), (0, [["omarchy-hyprland-monitor-scaling", "1.6"]]))
+                    self.assertEqual(self.lua.read_text(), LUA_45 + own)
+        # A commented-out rule, Omarchy's own rule or one for another output: not the user's.
+        for other in ('-- hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "0x0", scale = 1 })\n',
+                      RULE_45.format(2),
+                      'hl.monitor({ output = "Virtual-2", mode = "preferred", position = "auto", scale = 1 })\n'):
+            with self.subTest(other=other):
+                self.lua.write_text(LUA_45 + other)
+                rc, pokes, calls = self.set_scale([(3024, 1964), (3024, 1968)])
+                self.assertEqual((rc, calls), (0, [[od.SYNC, "--once"]]))
+                self.assertIn("\nlocal omarchy_monitor_scale = 1.6\n", self.lua.read_text())
+
+    def test_main_scale_gdk_follows_the_lowest_output(self):
+        self.lua.write_text(LUA_45)
+        self.set_scale([(3024, 1968)])
+        self.assertIn("\nlocal omarchy_gdk_scale = 2\n", self.lua.read_text())
+        self.set_scale([(3024, 1968)], value="1")
+        self.assertIn("\nlocal omarchy_gdk_scale = 1\n", self.lua.read_text())
+        self.lua.write_text('local omarchy_monitor_scale = 2\nhl.env("GDK_SCALE", "2")\n')
+        self.set_scale([(3024, 1964)], value="1", fullpanel=False)
+        self.assertEqual(self.lua.read_text(), 'local omarchy_monitor_scale = 1\nhl.env("GDK_SCALE", "1")\n')
+
+    def test_main_scale_without_omarchys_local_is_omarchys(self):
+        # The user's own monitors.lua (no omarchy_monitor_scale): left to Omarchy's command.
+        own = 'hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 2 })\n'
+        self.lua.write_text(own)
+        rc, pokes, calls = self.set_scale([(3024, 1968)])
         self.assertEqual(calls, [["omarchy-hyprland-monitor-scaling", "1.6"]])
+        self.assertEqual(self.lua.read_text(), own)
+
+    def test_main_scale_keeps_a_symlink_and_its_mode(self):
+        real = self.tmp / "dotfiles-monitors.lua"
+        real.write_text(LUA_45)
+        real.chmod(0o640)
+        self.lua.symlink_to(real)
+        self.set_scale([(3024, 1968)])
+        self.assertTrue(self.lua.is_symlink())
+        self.assertIn("local omarchy_monitor_scale = 1.6\n", real.read_text())
+        self.assertEqual(real.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir() if p.name.startswith(".")), [])
+
+    def test_wanted_scale_reads_omarchys_rule(self):
+        self.lua.write_text(LUA_45 + RULE_45.format(1.6))
+        self.assertEqual(od.wanted_scale(), 1.6)
+        self.lua.write_text(LUA_45.replace('"auto"', "2") + RULE_45.format(1.25))
+        self.assertEqual(od.wanted_scale(), 1.25)                     # Hyprland takes the named rule
+        self.lua.write_text(LUA_45.replace('"auto"', "2") +
+                            'hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "0x0", scale = 1 })\n')
+        self.assertEqual(od.wanted_scale(), 2)                        # the user's own rule: not Omarchy's scale
+
+    def test_fold_heals_omarchys_rule(self):
+        self.lua.write_text(LUA_45 + RULE_45.format(1.6))
+        with mock.patch("sys.stderr"):
+            od.fold_scale_rule()
+        self.assertEqual(self.lua.read_text(),
+                         LUA_45.replace('local omarchy_monitor_scale = "auto"', "local omarchy_monitor_scale = 1.6"))
+        before = self.lua.stat().st_mtime_ns
+        od.fold_scale_rule()                                          # nothing more to do: no write
+        self.assertEqual(self.lua.stat().st_mtime_ns, before)
+
+    def test_fold_leaves_other_rules(self):
+        for other in ('hl.monitor({ output = "Virtual-1", mode = "3024x1964@120", position = "auto", scale = 1.6 })\n',
+                      'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 1.6 }) -- mine\n',
+                      'hl.monitor({ output = "Virtual-2", mode = "preferred", position = "auto", scale = 1.6 })\n',
+                      'hl.monitor({\n  output = "Virtual-1", mode = "preferred", position = "auto", scale = 1.6 })\n'):
+            with self.subTest(other=other):
+                self.lua.write_text(LUA_45 + other)
+                od.fold_scale_rule()
+                self.assertEqual(self.lua.read_text(), LUA_45 + other)
+        own = 'hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 2 })\n' + RULE_45.format(1.6)
+        self.lua.write_text(own)                                      # no omarchy_monitor_scale: left alone
+        od.fold_scale_rule()
+        self.assertEqual(self.lua.read_text(), own)
+        self.lua.unlink()
+        od.fold_scale_rule()                                          # no file: nothing
+        self.assertFalse(self.lua.exists())
 
     def test_secondary_choice_is_saved_without_changing_global_scale(self):
         import tempfile

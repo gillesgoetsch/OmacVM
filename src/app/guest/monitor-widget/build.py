@@ -68,13 +68,14 @@ FUNCS = """
     }
   }
 
-  // ---- OmacVM.app: independent secondary zoom and full-panel sizing ----
+  // ---- OmacVM.app: independent secondary zoom, full-panel sizing, and the
+  // main output's scale kept where the screen still follows the window (#738) ----
   function macScaleManagedFocused() {
     for (var i = 0; i < displays.length; i++) {
       var display = displays[i]
       if (display && display.focused)
         return (root.macFullPanel !== "" && display.name === root.macFullPanel)
-          || (display.name !== "Virtual-1" && /^Virtual-[1-9][0-9]*$/.test(display.name))
+          || /^Virtual-[1-9][0-9]*$/.test(display.name)
     }
     return false
   }
@@ -221,7 +222,7 @@ COMMONS_ALIAS = "import qs.Commons as Commons\n"
 
 # (anchor, replacement): every anchor must be found exactly once.
 EDITS = [
-    # Keep normal primary/non-VM scaling under Omarchy's original policy.
+    # The VM's outputs through omacvm-displays; anything else stays Omarchy's.
     ('    actionProc.command = ["bash", "-c", "omarchy-hyprland-monitor-scaling " + scale]\n',
      '    actionProc.command = root.macScaleManagedFocused() ? ["/usr/local/bin/omacvm-displays", "scale", String(scale)]\n'
      '      : ["bash", "-c", "omarchy-hyprland-monitor-scaling " + scale]\n'),

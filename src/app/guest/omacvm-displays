@@ -103,7 +103,9 @@ The switch "Use external displays" is ~/.config/omacvm/displays.conf
   omacvm-displays fullpanel         the output in "Full screen including notch" (nothing otherwise)
   omacvm-displays scale SCALE       Omarchy's scale for the focused output (the display
                                     panel's buttons): in "Full screen including notch" the Mac
-                                    first gives a size that fits it, then Omarchy sets it
+                                    first gives a size that fits it; the main output's goes into
+                                    omarchy_monitor_scale (Omarchy 4.5's own rule for Virtual-1
+                                    is read as its scale and moved there, #738)
 
 A display can come up without wallpaper or bar, only Hyprland's dark grey:
 when the shell lost its GPU context (QEMU refused a large texture's memory,
@@ -128,6 +130,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import json
+from math import gcd
 import os
 from pathlib import Path
 import re
@@ -192,18 +195,151 @@ def config_mtime() -> float:
         return 0.0
 
 
+# Omarchy 4.5's scale buttons, keys and menu no longer write omarchy_monitor_scale:
+# they add this one-line rule for the focused output after the catch-all, or
+# change its scale (omarchy-hyprland-monitor-scaling's persist_scale). For
+# Virtual-1 it is Omarchy's scale, not the user's own rule (#738).
+OMARCHY_SCALE_RULE = re.compile(r'hl\.monitor\(\{ output = "Virtual-1", mode = "preferred", '
+                                r'position = "auto", scale = ([0-9]+(?:\.[0-9]+)?) \}\)[ \t]*')
+LOCAL_SCALE = re.compile(r"^local omarchy_monitor_scale = .*$", re.MULTILINE)
+
+
+def omarchy_scale_rules(text: str) -> list[str]:
+    """The scales of Omarchy's scale rules for Virtual-1, in file order."""
+    return [m.group(1) for m in map(OMARCHY_SCALE_RULE.fullmatch, text.splitlines()) if m]
+
+
+def own_main_rule(text: str) -> bool:
+    """A rule naming Virtual-1 (not in a comment) other than Omarchy's scale
+    rule: the user's own, which display-sync leaves alone too."""
+    return any(re.search(r"""output\s*=\s*["']Virtual-1["']""", line.split("--", 1)[0])
+               for line in text.splitlines() if not OMARCHY_SCALE_RULE.fullmatch(line))
+
+
 def wanted_scale() -> float | None:
-    """Omarchy's scale for the main output (omarchy_monitor_scale in
-    monitors.lua, which its scale buttons write); None for automatic."""
+    """Omarchy's scale for the main output: its scale rule for Virtual-1 (the
+    last, as Hyprland takes it), else omarchy_monitor_scale in monitors.lua;
+    None for automatic."""
     try:
-        m = re.search(r"^\s*local\s+omarchy_monitor_scale\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*(?:--[^\n]*)?$",
-                      MONITORS_LUA.read_text(), re.MULTILINE)
+        text = MONITORS_LUA.read_text()
     except OSError:
         return None
-    if not m:
-        return None
-    value = float(m.group(1))
+    rules = omarchy_scale_rules(text)
+    if rules:
+        value = float(rules[-1])
+    else:
+        m = re.search(r"^\s*local\s+omarchy_monitor_scale\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*(?:--[^\n]*)?$",
+                      text, re.MULTILINE)
+        if not m:
+            return None
+        value = float(m.group(1))
     return round(value, 6) if 1 <= value <= 4 else None
+
+
+def clean_scale(scale: float, width: int, height: int) -> float:
+    """Omarchy's clean_scale: the scale rounded up to one that keeps whole
+    logical pixels (1/120 steps)."""
+    g = gcd(width * 120, height * 120)
+    k = int(scale * 120 + 0.5)
+    if g <= 0 or k <= 0:
+        return scale
+    k = min(k, g)
+    while g % k:
+        k += 1
+    return k / 120
+
+
+def write_lua(text: str) -> None:
+    """monitors.lua at once (Hyprland reloads on every write): a temp file
+    beside the real one, through a symlink, then renamed over it."""
+    target = MONITORS_LUA.resolve()
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.chmod(tmp, target.stat().st_mode & 0o7777)
+        os.replace(tmp, target)
+    except OSError:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def lua_scale_text(text: str, scale: float | None, gdk: int | None = None) -> str | None:
+    """monitors.lua with Omarchy's scale rules for Virtual-1 taken out and
+    their scale (or SCALE) in omarchy_monitor_scale; None when it has no such
+    local (the user's own file: left as it is)."""
+    rules = omarchy_scale_rules(text)
+    if scale is None:
+        if not rules:
+            return text
+        scale = float(rules[-1])
+    if not LOCAL_SCALE.search(text):
+        return None
+    text = "".join(line for line in text.splitlines(keepends=True)
+                   if not OMARCHY_SCALE_RULE.fullmatch(line.rstrip("\r\n")))
+    value = f"{scale:.6f}".rstrip("0").rstrip(".")
+    text = LOCAL_SCALE.sub(f"local omarchy_monitor_scale = {value}", text, count=1)
+    if gdk is not None:
+        text = re.sub(r"^local omarchy_gdk_scale = .*$", f"local omarchy_gdk_scale = {gdk}", text, flags=re.MULTILINE)
+        text = re.sub(r'^hl\.env\("GDK_SCALE", "[^"]*"\)', f'hl.env("GDK_SCALE", "{gdk}")', text, flags=re.MULTILINE)
+    return text
+
+
+def fold_scale_rule() -> None:
+    """A VM where Omarchy 4.5 (or OmacVM's panel before #738) wrote its scale
+    rule for Virtual-1: its scale goes back into omarchy_monitor_scale and the
+    rule out, so the screen follows the window again with that scale. Only
+    that exact rule; any other rule stays the user's."""
+    try:
+        text = MONITORS_LUA.read_text()
+    except OSError:
+        return
+    new = lua_scale_text(text, None)
+    if new is not None and new != text:
+        try:
+            write_lua(new)
+            log(f"Omarchy's scale rule for Virtual-1 moved into omarchy_monitor_scale ({wanted_scale()})")
+        except OSError as error:
+            log(f"could not move Omarchy's scale rule for Virtual-1: {error}")
+
+
+def set_main_scale(scale: float, focused: dict) -> int:
+    """The main output's scale, as Omarchy 4.0 kept it: omarchy_monitor_scale
+    (Omarchy's clean value for the output's size now), then display-sync
+    applies it to the window's mode. Never Omarchy 4.5's per-output rule, whose
+    "preferred" mode undid the Mac's size (#738). None of Omarchy's locals in
+    monitors.lua, or the user's own rule for Virtual-1 (which would win at the
+    next reload): Omarchy's own command, as before."""
+    try:
+        text = MONITORS_LUA.read_text()
+    except OSError:
+        text = ""
+    if own_main_rule(text):
+        log(f"scale {scale:g}: Virtual-1 has its own rule in {MONITORS_LUA}: Omarchy's command")
+        return subprocess.call(["omarchy-hyprland-monitor-scaling", f"{scale:g}"])
+    width, height = int(focused.get("width", 0)), int(focused.get("height", 0))
+    new = clean_scale(scale, width, height) if width > 0 and height > 0 else scale
+    scales = [new]
+    for m in hypr_json("j/monitors") or []:
+        if (isinstance(m, dict) and not m.get("disabled") and m.get("name") != "Virtual-1"
+                and re.fullmatch(r"Virtual-[1-9][0-9]*", str(m.get("name", "")))):
+            try:
+                scales.append(float(m.get("scale") or 1))
+            except (TypeError, ValueError):
+                pass
+    gdk = max(1, int(min(scales) + 0.5))
+    out = lua_scale_text(text, new, gdk)
+    if out is None:
+        log(f"scale {scale:g}: no omarchy_monitor_scale in {MONITORS_LUA}: Omarchy's command")
+        return subprocess.call(["omarchy-hyprland-monitor-scaling", f"{scale:g}"])
+    if out != text:
+        try:
+            write_lua(out)
+        except OSError as error:
+            log(f"scale {scale:g}: could not write {MONITORS_LUA}: {error}")
+            return 1
+    return subprocess.call([SYNC, "--once"])
 
 
 def fullpanel_output() -> str | None:
@@ -238,7 +374,8 @@ def set_scale(value: str, wait: float = SCALE_WAIT) -> int:
     """A scale button of the display panel. In "Full screen including notch"
     on that output the Mac first gives the output a size the scale fits (the
     agent passes it on). Secondary outputs keep their own zoom; the main
-    output still uses Omarchy's command; named secondary rules are refused."""
+    output keeps omarchy_monitor_scale (set_main_scale); named secondary rules
+    are refused."""
     try:
         scale = float(value)
     except ValueError:
@@ -268,10 +405,12 @@ def set_scale(value: str, wait: float = SCALE_WAIT) -> int:
         while time.monotonic() < end:
             m = focused_monitor()
             if m and scale_fits(int(m.get("width", 0)), int(m.get("height", 0)), scale):
+                focused = m
                 break
             time.sleep(0.1)
         else:
             log(f"scale {scale:g}: the Mac gave {out} no size that fits it (older OmacVM.app?): Omarchy's nearest")
+            focused = focused_monitor() or focused
     if secondary:
         # Omarchy persists a global scale even when it changed an external
         # output. Keep that choice separately: no fixed mode, no change to
@@ -283,6 +422,8 @@ def set_scale(value: str, wait: float = SCALE_WAIT) -> int:
             f.write(f"{scale:g}\n")
         Path(f.name).replace(folder / name)
         return subprocess.call([SYNC, "--once"])
+    if name == "Virtual-1" and focused:
+        return set_main_scale(scale, focused)
     return subprocess.call(["omarchy-hyprland-monitor-scaling", value])
 
 
@@ -1899,6 +2040,7 @@ def main(argv: list[str]) -> int:
     if not PORT.exists():
         log(f"{PORT} is missing (an OmacVM.app without external displays)")
         return 0
+    fold_scale_rule()
     threading.Thread(target=refresh_widget, name="widget", daemon=True).start()
     threading.Thread(target=serve_display_locks, name="screensaver", daemon=True).start()
     agent = Agent()

@@ -1717,3 +1717,44 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 - **Where:** `src/gestures/guest/install.sh`, `src/guest/check.sh`
   ("trackpad taps"); tests `src/gestures/guest/test-install-gestures.sh`,
   `src/tests/trackpad-taps.sh`.
+
+## 58. The display panel's scale does not stick on the main screen
+
+- **Symptom:** in "Full screen including notch", a scale button of
+  Omarchy's display panel (1.6, say) holds for a moment, then the screen
+  shows another scale (1.333); the next press gives yet another (2). After
+  one press (also in a window, or with Omarchy's scale keys or menu) the
+  screen no longer follows the VM window's size, and the journal says
+  `omacvm-display-sync: Virtual-1 has its own rule in
+  ~/.config/hypr/monitors.lua; not following the window`. Up to 3.4.1.
+- **Cause:** Omarchy's newer scaling command (`omarchy-hyprland-monitor-scaling`,
+  seen in omarchy 4.5.0-3) no longer saves the scale in
+  `local omarchy_monitor_scale`. It adds a rule for the screen after the
+  catch-all, or changes its scale:
+  `hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 1.6 })`.
+  OmacVM ran that command for the button and then took the rule for one of
+  yours: display-sync stopped following the window, and the rule's
+  `preferred` mode put the old size back, where 1.6 does not fit, so
+  Hyprland picked another scale. omarchy 4.0.3rc4-2 and 4.0.5-1 still write
+  the local.
+- **Fix (3.4.2):** Update VM (`omacvm apply`). The panel no longer runs
+  Omarchy's command for Virtual-1: it writes the scale (Omarchy's clean value
+  for the screen's size) into `omarchy_monitor_scale` itself and runs
+  display-sync. A Virtual-1 rule written exactly in Omarchy's form (the line
+  above, any scale) counts as Omarchy's scale: display-sync,
+  `omacvm_app.lua` and the display agent read it, and the agent moves it into
+  `omarchy_monitor_scale` at every login. To keep such a rule as your own,
+  write it any other way, for example with a trailing `-- mine` comment.
+  Any other rule naming Virtual-1 stays yours: the screen follows it, not
+  the window, and the panel's buttons go through Omarchy's command as before.
+  A `monitors.lua` with no `omarchy_monitor_scale` line also gets Omarchy's
+  command (the journal says so).
+- **Before 3.4.2:** delete the Virtual-1 line above from
+  `~/.config/hypr/monitors.lua` and set the scale in
+  `local omarchy_monitor_scale = 1.6`.
+- **Where:** `src/app/guest/omacvm-displays` (`set_main_scale`,
+  `fold_scale_rule`, `wanted_scale`), `src/app/guest/omacvm-display-sync`
+  (`scale_for_mode`, `user_rule`), `src/app/guest/omacvm_app.lua`
+  (`user_rule`), `src/app/guest/monitor-widget/build.py`; tests
+  `src/app/guest/tests/test_omacvm_displays.py` (`Scale`),
+  `test_display_sync.py`, `omacvm_app_test.lua`, `test_monitor_widget.py`.

@@ -1093,10 +1093,21 @@ window per guest screen:
   window code to `omacvm-displays` in the VM (a user service), which writes
   it for `omacvm-display-sync`; that places each output as the Mac's
   displays are. A display with its own rule in `monitors.lua` keeps it.
+  Not counted as a rule of yours: Omarchy's own one-line scale rule for the
+  main output, exactly `hl.monitor({ output = "Virtual-1", mode = "preferred",
+  position = "auto", scale = S })` on one line (Omarchy's newer scaling
+  command writes it, seen in omarchy 4.5.0-3). That is Omarchy's scale for
+  Virtual-1: display-sync and `omacvm_app.lua` read it, and `omacvm-displays`
+  moves it into `omarchy_monitor_scale` at every login (#738).
 - The display panel keeps zoom separately for each secondary output in
   `~/.config/omacvm/scales/Virtual-N` (`$XDG_CONFIG_HOME` when set). Its
-  buttons call `omacvm-displays scale SCALE` for secondary and full-panel
-  outputs; normal primary scaling keeps Omarchy's original command. The
+  buttons call `omacvm-displays scale SCALE` for every VM output (Virtual-N,
+  the main output Virtual-1 in a window too); only outputs that are not the
+  VM's keep Omarchy's original command. For Virtual-1 it writes the scale
+  (Omarchy's clean value for the output's size) into `omarchy_monitor_scale`
+  itself and runs display-sync, never Omarchy's command; with a rule of your
+  own for Virtual-1, or no `omarchy_monitor_scale` line, it runs Omarchy's
+  command as before. The
   wrapper also works from a terminal on the focused output. A secondary
   output with a named rule in `monitors.lua` is refused without changes:
   edit that rule, or remove it to use automatic sizing and independent zoom.
