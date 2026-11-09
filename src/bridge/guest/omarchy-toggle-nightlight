@@ -1,13 +1,21 @@
 #!/bin/bash
-# OmacVM: Omarchy's nightlight toggle (Super+Ctrl+N, the menu) drives the
-# Mac's Night Shift instead of hyprsunset, so the whole screen is tinted once,
-# on the Mac's schedule and strength. Installed to /usr/local/bin, ahead of
-# Omarchy's own /usr/bin/omarchy-toggle-nightlight on PATH.
+# OmacVM: Omarchy's nightlight toggle (the menu's Nightlight; on Omarchy 4.0
+# also Super+Ctrl+N) drives the Mac's Night Shift instead of hyprsunset, so
+# the whole screen is tinted once, on the Mac's schedule and strength.
+# Installed to /usr/local/bin and linked from /usr/local/lib/omacvm/
+# omarchy-overrides, which omacvm_vm.lua puts ahead of Omarchy's own bin on
+# the session's PATH (#748).
 #   omarchy-toggle-nightlight            toggle
 #   omarchy-toggle-nightlight --status   {"enabled": bool, "temperature": null}
 set -euo pipefail
 if [[ ${1:-} == --status ]]; then
-  omacvm-bridge display | jq -c '{enabled: (.night_shift.enabled // false), temperature: null}'
+  # Omarchy 4.5's menu runs this each time it opens (one batch for all its
+  # rows): a Bridge that does not answer within 2 s reads as off and never
+  # holds the menu. timeout stops omacvm-bridge's curl with it.
+  s=$(timeout 2 omacvm-bridge display 2>/dev/null |
+      jq -c '{enabled: (.night_shift.enabled // false), temperature: null}' 2>/dev/null) || s=""
+  [[ $s == "{"* ]] || s='{"enabled":false,"temperature":null}'
+  echo "$s"
   exit 0
 fi
 # The VM's own night light stays off: one tint, the Mac's.

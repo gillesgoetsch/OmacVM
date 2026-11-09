@@ -39,6 +39,7 @@ wl-clipboard
 libva-utils
 imagemagick
 file
+ffmpeg
 pipewire-alsa
 pipewire-pulse
 pipewire-jack

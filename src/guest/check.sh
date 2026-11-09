@@ -46,6 +46,37 @@ queued_when() {
   if user_active omacvm-restart-shell.service; then echo "right after the next unlock"; else echo "log out and in"; fi
 }
 connected_to() { ss -Htn state established "dst $1:$2" | grep -q .; }
+# "Night Shift toggle" (#748): what the menu's Nightlight and a night light key
+# run. Omarchy puts its own bin first on the session's PATH; omacvm_vm.lua puts
+# OmacVM's folder (the Bridge's toggle) ahead of it. Read from the PATH of the
+# running Omarchy shell (the menu runs there; "-": no shell) and Hyprland's
+# binds (Omarchy 4.0 has Super+Ctrl+N "Toggle nightlight"; 4.5 none, that key
+# is its Network panel).
+OMARCHY_OVERRIDES=/usr/local/lib/omacvm/omarchy-overrides
+nightlight_line() {   # SHELL_PATH BINDS_JSON
+  local w key
+  if [[ ! -x $OMARCHY_OVERRIDES/omarchy-toggle-nightlight ]]; then
+    bad "Night Shift toggle" "OmacVM's night light toggle is not installed: omacvm apply"; return
+  fi
+  if [[ $1 == - ]]; then skip "Night Shift toggle" "no Omarchy shell running"; return; fi
+  w=$(PATH=$1; command -v omarchy-toggle-nightlight 2>/dev/null)
+  if [[ $w != "$OMARCHY_OVERRIDES/omarchy-toggle-nightlight" ]]; then
+    if [[ $(queued_when) == "log out and in" ]]; then
+      warn "Night Shift toggle" "the shell runs Omarchy's own night light (hyprsunset), not the Mac's Night Shift: log out and in" human
+    else
+      warn "Night Shift toggle" "the shell runs Omarchy's own night light (hyprsunset) until it restarts, right after the next unlock"
+    fi
+    return
+  fi
+  # The first bind whose description or command names the night light, as Super+Ctrl+N.
+  key=$(jq -r 'def has(b): ((.modmask // 0) / b | floor) % 2 == 1;
+    [.[]? | select(((.description // "") + " " + (.arg // "") | test("night ?light"; "i")))
+     | [(if has(64) then "Super" else empty end), (if has(4) then "Ctrl" else empty end),
+        (if has(8) then "Alt" else empty end), (if has(1) then "Shift" else empty end), .key] | join("+")]
+    | first // empty' <<<"$2" 2>/dev/null)
+  if [[ -n $key ]]; then ok "Night Shift toggle" "the menu's Nightlight and $key drive the Mac"
+  else ok "Night Shift toggle" "the menu's Nightlight and the bar's Night Shift drive the Mac (no key for it)"; fi
+}
 ev_device() { grep -q "^N: Name=\"$1\"" /proc/bus/input/devices; }
 # missing_pkgs PKG...: why a feature is not set up when pacman could not
 # install what it needs ("" when all are there). On a VM whose package list
@@ -417,7 +448,9 @@ if [[ $BRIDGE == on ]]; then
   done
   if jq -e '.plugins[]? | select(.id == "omacvm.wifiqr")' "$H/.config/omarchy/shell.json" >/dev/null 2>&1; then ok "Wi-Fi QR card" "omacvm.wifiqr"
   else bad "Wi-Fi QR card" "omacvm.wifiqr not enabled"; fi
-  check "Night Shift toggle" "Super+Ctrl+N drives the Mac" test -x /usr/local/bin/omarchy-toggle-nightlight
+  qs=$(pgrep -u "$U" -f '(^|/)(quickshell|qs) (.* )?-p [^ ]+/shell( |$)' | head -n 1)
+  qpath=-; [[ -n $qs ]] && qpath=$(tr '\0' '\n' < "/proc/$qs/environ" 2>/dev/null | sed -n 's/^PATH=//p')
+  nightlight_line "$qpath" "$(as_user hyprctl -j binds 2>/dev/null)"
   if jq -e '[.bar.layout[]?[]? | select(.id == "omarchy.indicators") | (.items // ["NightLight"]) | index("NightLight")] | all(. == null)' "$H/.config/omarchy/shell.json" >/dev/null 2>&1 && ! pgrep -x hyprsunset >/dev/null; then
     ok "one night light" "the Mac's Night Shift; Omarchy's own is off"
   else bad "one night light" "Omarchy's night light (hyprsunset) is still reachable or running: omacvm apply"; fi
@@ -1137,6 +1170,16 @@ n=$(sed -n 's/^NUMBER_LIMIT="\([0-9]*\)"$/\1/p' /etc/snapper/configs/root 2>/dev
 if [[ -z $d ]]; then bad "freeing disk space" "nothing trims: deleted files keep their space (omacvm apply)"
 elif [[ $n == 5 && ! -e /var/lib/omacvm/update-snapshots ]]; then warn "freeing disk space" "$d; 5 update snapshots keep deleted system files (omacvm apply keeps fewer)"
 else ok "freeing disk space" "$d${n:+; $n update snapshots}"; fi
+# Omarchy's update stops under 10 GiB free on / (omarchy-update-requires-free-space,
+# the same in Omarchy 4.0 and 4.5): the same measure and limit here, said first.
+FREE_MIN=$((10 * 1024 * 1024 * 1024))
+avail=$(df --output=avail --block-size=1 / 2>/dev/null | tail -n 1 | tr -d ' ')
+if [[ $avail =~ ^[0-9]+$ ]]; then
+  gib=$(awk -v b="$avail" 'BEGIN { printf "%.1f", b / 1073741824 }')
+  if (( avail < FREE_MIN )); then
+    warn "free space" "$gib GiB free on /, Omarchy's update needs 10 GiB: delete files in your home you no longer need, or give the VM a larger disk (VM window, Disk › Change… with the VM shut down)" human
+  else ok "free space" "$gib GiB free on /"; fi
+fi
 # The desktop user's runtime folder (/run/user/UID), a tmpfs of 10 % of the
 # VM's memory: when it is full, Hyprland and apps that draw through shared
 # memory there die of SIGBUS (2026-10-19: OmacVM.app's hyprpicker up to 3.1.24

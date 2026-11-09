@@ -6,6 +6,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 U=${1:?usage: install.sh <desktop-user>}
 ../../guest/pkg-add imagemagick file
+# A video background's first frame (#747). Omarchy has it already (4.5's base,
+# 4.0 through ffmpegthumbnailer); missing, only a video is not sent.
+../../guest/pkg-add ffmpeg || true
 install -m755 omacvm-wallpaper /usr/local/bin/omacvm-wallpaper
 install -m644 omacvm-wallpaper.service omacvm-wallpaper.path /etc/systemd/user/
 systemctl --user -M "$U@" daemon-reload

@@ -451,7 +451,8 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   (`KEEP`; omarchy-mac's 5 held deleted files for 5 updates; a number set by
   hand stays), `fstrim.timer` on, then btrfs's cleaner and a trim, both
   waited for (at most a minute together); `@factory` stays (factory reset). Check line "freeing disk space";
-  `src/tests/disk-space.sh`.
+  `src/tests/disk-space.sh`. Check line "free space": WARN under 10 GiB free on `/`, where Omarchy's
+  update stops (`omarchy-update-requires-free-space`, the same `df` reading).
   OmacVM.app's QEMU turns each guest flush into `fcntl(F_BARRIERFSYNC)`
   (`qemu-darwin-disk-flush-barrier.patch`, ADR 0053; `OMACVM_DISK_FLUSH=full|fsync`), qemu.log
   "OmacVM: disk flush: ...", check line "disk flush"; `src/tests/disk-flush.sh`,
@@ -674,6 +675,13 @@ The less obvious ones, with causes and where the fix lives, are in
   `apple-inc.-magic-trackpad-(omacvm)`, gestures/guest/install.sh). Omarchy 4.5
   keeps Hyprland's default (on): scroll momentum lifts the two still fingers when
   macOS calls a pinch, a two-finger tap, so every pinch began with a right click.
+- Do not count on `/usr/local/bin` to replace an Omarchy command: Omarchy's
+  `envs.lua` puts `$OMARCHY_PATH/bin` first on the session's PATH (`hl.env`,
+  4.0 and 4.5), so the menu, the keys and the shell run Omarchy's. Link the
+  replacement into `/usr/local/lib/omacvm/omarchy-overrides`, which
+  `omacvm_vm.lua` puts ahead of it (#748), or call it by full path. Read the
+  session's PATH from the shell's `/proc/<pid>/environ`, not Hyprland's: that
+  is the environment before its config ran.
 - Keep zram small and memory capped. OmacVM.app's QEMU gives what Linux frees back to the Mac
   (free page reporting, ADR 0059; from 3.2.12 it moves the old pages aside
   and advises them `MADV_FREE_REUSABLE`, ADR 0062; up to 3.2.11 macOS kept

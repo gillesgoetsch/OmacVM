@@ -201,7 +201,7 @@ jobs:
       - name: Building behind a proxy (scutil samples, the VM's variables, sudo, systemd-run, retries, a stub proxy)
         run: src/tests/proxy.sh
 
-      - name: Freeing disk space (2 update snapshots kept, a trim at apply, omacvm check's line)
+      - name: Freeing disk space (2 update snapshots kept, a trim at apply, omacvm check's lines; the 10 GiB warning, #749)
         run: src/tests/disk-space.sh
 
       - name: Free page reporting in 256 KiB blocks (page_reporting_order 6, omacvm check's line)
@@ -986,6 +986,12 @@ jobs:
 
       - name: Transparent panels on Hyprland 0.57 (#630) on every route; omacvm_vm.lua, its installer, its check line
         run: LUA=/tmp/lua-5.5.0/src/lua src/tests/dmabuf-alpha.sh
+
+      - name: The Mac's Night Shift from Omarchy's menu and keys (#748); OmacVM's folder ahead of Omarchy's bin, --status's time limit, check's line, the one shell restart
+        run: LUA=/tmp/lua-5.5.0/src/lua src/tests/nightlight-path.sh
+
+      - name: A video or animated background sends the Mac its first frame, never an empty picture (#747)
+        run: src/tests/wallpaper-video.sh
 
       - name: No tap-to-click on the virtual trackpad (a pinch's start was a right click on Omarchy 4.5); input.lua parses as Lua 5.5; check's line
         run: |

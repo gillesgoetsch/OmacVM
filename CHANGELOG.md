@@ -55,6 +55,25 @@ in more words.
   holds that one rule back (`/etc/binfmt.d/qemu-x86_64-static.conf`, removed when off; qemu-user's
   other architectures stay). Update VM fixes it, no restart and no box64 build. `omacvm check`'s
   "x86 apps" row now says which rule gets x86_64 programs when it is not box64's.
+- **Night Shift from the Omarchy menu** (#748): the menu's Nightlight switches the Mac's Night Shift
+  again, on Omarchy 4.0 and 4.5, and on 4.0 so does Super+Ctrl+N. Both ran Omarchy's own night light
+  (hyprsunset in the VM) instead: Omarchy puts its own commands first on the desktop's PATH, ahead of
+  OmacVM's. OmacVM now puts one folder of its own ahead of them, with only the Bridge's night light
+  toggle in it. On Omarchy 4.5 Super+Ctrl+N stays Omarchy's Network panel; the menu and the bar's
+  Night Shift drive the Mac there. Update VM brings it and restarts Omarchy's bar once (after the
+  unlock when the VM is locked); with the Bridge off then, switching it on later does that restart. `omacvm check`'s "Night Shift toggle" line now reads what the
+  running shell really runs and names the key only where there is one. 4.5's menu also reads the
+  Mac's Night Shift for its row: when the Bridge does not answer within 2 s, the row says off.
+- **Wallpaper with a video background** (#747): on Omarchy 4.5, which can play a video as the
+  background, the Mac's wallpaper now becomes the video's first frame. Before, OmacVM sent the Mac an
+  empty picture, the Mac refused it and kept the old wallpaper, and each try left one picture per
+  frame of the video in the VM's `/tmp` (its memory). An animated picture also sends its first frame.
+  When no picture comes out of a file, nothing is sent. Update VM brings it (it adds ffmpeg where it
+  is missing) and removes the frame files once.
+- **`omacvm check` warns when the VM's disk is nearly full** (#749): a "free space" line, a warning
+  under 10 GiB free, where Omarchy's own update stops ("You need at least 10 GiB free to safely
+  update Omarchy."). It says what to do: delete files in your home, or give the VM a larger disk
+  (Disk › Change… in the VM window, with the VM shut down).
 
 ## 3.4.1
 
