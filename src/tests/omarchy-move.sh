@@ -456,6 +456,23 @@ expect "... no 'Something went wrong': the last line" \
 { echo "== 2026-11-08 09:21:00 omarchy update -y (OmacVM)"; printf 'x%.0s' $(seq 1 300); echo; echo "== omarchy update exit 1"; } > "$T/su-out"
 fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1
 expect "... a long line: 200 characters of it" 200 "$(reason | sed -e 's/^omarchy update stopped: //' -e 's/ (see .*//' | tr -d '\n' | wc -c | tr -d ' ')"
+# What comes after the exit line (keep-explicit's stderr) is not the update's.
+{ echo "== 2026-11-08 09:21:30 omarchy update -y (OmacVM)"; echo "error: target not found: foo"; echo "== omarchy update exit 1"
+  echo "error: keep-explicit could not mark omacvm-vulkan-virtio"; } > "$T/su-out"
+fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "... a line after the exit line: not read" \
+  "omarchy update stopped: error: target not found: foo (see /var/log/omacvm-system-update.log)" "$(reason)"
+# OmacVM stopped the update (10 minutes without output, or its 40 are up): no exit line, or a signal's
+# 128+N. Its last line (pacman's progress, even an Omarchy line printed while it stops) is not why.
+{ echo "== 2026-11-08 09:22:00 omarchy update -y (OmacVM)"; echo "(213/340) upgrading linux-firmware [###---] 45%"; } > "$T/su-out"
+fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "... stopped by OmacVM, no exit line: the old text" \
+  "omarchy update did not finish (see /var/log/omacvm-system-update.log)" "$(reason)"
+{ echo "== 2026-11-08 09:23:00 omarchy update -y (OmacVM)"; echo "(213/340) upgrading linux-firmware"
+  echo "Something went wrong during the update!"; echo "== omarchy update exit 130"; } > "$T/su-out"
+fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "... stopped by OmacVM, exit 130 (SIGINT): the old text" \
+  "omarchy update did not finish (see /var/log/omacvm-system-update.log)" "$(reason)"
 # system-update stopped before omarchy update (nothing new in its log): an older run's words are not this one's.
 fresh; : > "$P/update-fails"; o run >/dev/null 2>&1
 expect "... nothing new in the log (an older failed run there): today's text" \

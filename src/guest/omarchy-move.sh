@@ -925,15 +925,19 @@ grub_menu() {
 
 # Omarchy's own words for why its update stopped, from the update's output
 # on stdin: the last line before its "Something went wrong during the
-# update!", else the last line; escape sequences (Omarchy's OSC 3008 marks,
-# colours) and other bytes that are not printable ASCII out, at most 200
-# characters, so move-status.json stays valid JSON (#742).
+# update!", else the last line before the "== omarchy update exit N" line;
+# escape sequences (Omarchy's OSC 3008 marks, colours) and other bytes that
+# are not printable ASCII out, at most 200 characters, so move-status.json
+# stays valid JSON (#742). Nothing when there is no exit line, or N is 128 or
+# more (a signal): OmacVM stopped the update (no new output for 10 minutes,
+# or 40 minutes up), so its last line is not Omarchy's error.
 update_why() {
   local e=$'\033' b=$'\a'
   tr '\t\r' ' \n' | LC_ALL=C sed -E -e "s#${e}\][^${b}${e}]*(${b}|${e}\\\\)?##g" -e "s#${e}\[[0-?]*[ -/]*[@-~]##g" \
       -e "s#${e}[()][0-9A-Za-z]##g" -e 's/[^[:print:]]//g' -e 's/^ +//' -e 's/ +$//' |
-    awk '/^Something went wrong during the update!$/ { if (w == "") w = l; next } /^== / { next } NF { l = $0 }
-         END { print (w != "" ? w : l) }' | cut -c1-200 | sed 's/\.$//'
+    awk '/^== omarchy update exit [0-9]+$/ { x = ($5 + 0 < 128); exit }
+         /^Something went wrong during the update!$/ { if (w == "") w = l; next } /^== / { next } NF { l = $0 }
+         END { if (x) print (w != "" ? w : l) }' | cut -c1-200 | sed 's/\.$//'
 }
 
 step_update() {
