@@ -2246,9 +2246,14 @@ EXCLUSION
     property real notchOwnAt: 0
     // An item that shows up (its widget had no width, as Omarchy's tray before
     // its first app) waits unseen at its place until that place has been
-    // quiet for 150 ms, then shows there: apps that register one by one give
-    // one showing, where the tray stays. Only its own place counts (other
+    // quiet for 150 ms, then shows there. Only its own place counts (other
     // items changing size do not), and it shows after 1 s at the latest.
+    // Omarchy's tray waits until its size with the drawer open has been quiet
+    // for 1.5 s (8 s at the most), also before the bar settled (login): apps
+    // that start a second or so apart each grow its drawer, not its place, so
+    // it showed right of the housing and the 4th or 5th moved it left (#757).
+    // Now it shows once, on the side it stays on; meanwhile its place on the
+    // bar is empty and it takes no clicks.
     // Never on a drag (the widget keeps its width) or the indicators' peek or
     // a drawer's slide (they never start from no width).
     readonly property real notchContentWidth: NOTCH_CONTENT_WIDTH
@@ -2256,14 +2261,20 @@ EXCLUSION
     property bool notchAppearing: false
     property real notchAppearEdge: 0
     property bool notchAppearGone: false
+    readonly property bool notchTrayAppear: !!activeItem && root.notchIsTray(activeItem)
+    // Its width with the drawer open (the part of the drawer that shows less
+    // the whole drawer): a slide does not change it, a new app does.
+    readonly property real notchOpenWidth: notchContentWidth + notchOpenExtent
+      - (notchTrayAppear ? Number(activeItem.revealExtent) || 0 : 0)
+    property real notchAppearSize: 0
     Timer {
       id: notchShowEnd
-      interval: 150
+      interval: slot.notchTrayAppear ? 1500 : 150
       onTriggered: slot.notchShowNow()
     }
     Timer {
       id: notchShowLimit
-      interval: 1000
+      interval: slot.notchTrayAppear ? 8000 : 1000
       onTriggered: slot.notchShowNow()
     }
     function notchShowNow() {
@@ -2377,19 +2388,22 @@ EXCLUSION
         return
       }
       if (gone !== notchShiftGone) notchShiftGone = gone
-      if (notchAppearing || (appeared && animate)) {
+      if (notchAppearing || (appeared && (animate || notchTrayAppear))) {
         // It showed up: unseen at its place until that is quiet (notchShowEnd),
         // at most 1 s (notchShowLimit). Only a change of its own place (its
-        // kept edge, or hidden) starts the 150 ms again.
-        var edge = notchEdge(s)
+        // kept edge, or hidden) starts the 150 ms again; for the tray also a
+        // change of its size with the drawer open (an app came or went).
+        var edge = notchEdge(s), size = notchOpenWidth
         notchFade.enabled = false
         if (!notchAppearing) {
           notchAppearing = true
           notchShowLimit.restart()
           notchShowEnd.restart()
-        } else if (Math.abs(edge - notchAppearEdge) > 0.01 || gone !== notchAppearGone) notchShowEnd.restart()
+        } else if (Math.abs(edge - notchAppearEdge) > 0.01 || gone !== notchAppearGone ||
+                   (notchTrayAppear && Math.abs(size - notchAppearSize) > 0.01)) notchShowEnd.restart()
         notchAppearEdge = edge
         notchAppearGone = gone
+        notchAppearSize = size
         notchSlide.enabled = false
         notchPlaceX = s.n
         notchShiftX = s.x

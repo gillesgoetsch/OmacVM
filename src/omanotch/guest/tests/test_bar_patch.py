@@ -3409,6 +3409,11 @@ function Slot(name, memory) {
   Object.defineProperty(this, "notchContentWidth", { get: function () { return cw !== null ? cw : self.implicitWidth },
                                                      set: function (v) { cw = v } });
   this.notchOwnAt = 0; this.notchOpenExtent = 0; this.notchLastOpen = 0; this.notchLastContent = 20; this.notchAppearing = false;
+  // A tray (notchTrayAppear) waits for its size with the drawer open: its
+  // width less the drawer's part that shows (notchReveal) plus the drawer.
+  this.notchTrayAppear = false; this.notchAppearSize = 0; this.notchReveal = 0;
+  Object.defineProperty(this, "notchOpenWidth", { get: function () {
+    return self.notchContentWidth + self.notchOpenExtent - self.notchReveal } });
   this.showRestarts = 0; this.limitStarts = 0;
   this.notchShowEnd = { restart: function () { self.showRestarts++ }, stop: function () {} };
   this.notchShowLimit = { restart: function () { self.limitStarts++ }, stop: function () {} };
@@ -3638,21 +3643,22 @@ out.push([c.moves.slice(), c.notchAppearing, c.showRestarts]);
 """)
         self.assertEqual(out[0], [[], False, 0])
 
-    def test_a_shown_up_slot_waits_unseen_then_shows_once_at_its_end_place(self):
-        # Omarchy's tray had no width (no app yet). Its apps register one by
-        # one: the first fits right of the housing, the later ones do not. The
-        # tray stays unseen at each place while they come, then shows once
-        # where it stays (#757). The indicators beside it do not hold.
+    def test_a_shown_up_widget_waits_unseen_then_shows_once_at_its_end_place(self):
+        # A widget other than the tray had no width (nothing to show yet),
+        # then shows up and grows: the first width fits right of the
+        # housing, the next does not. It stays unseen at each place, then
+        # shows once where it stays (150 ms after its place stopped moving).
+        # The indicators beside it do not hold.
         out = self.run_steps("""
 var mem = {};
-var t = new Slot("tray", mem); t.notchEnd = true; t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
+var t = new Slot("weather", mem); t.notchEnd = true; t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
 t.set({x: 0, n: 1000, hidden: false, animate: true}); flush(); t.moves = [];
 t.width = 60; t.set({x: 0, n: 940, hidden: false, animate: true}); flush();
 out.push([t.moves.slice(), t.notchAppearing, t.showRestarts]); t.moves = [];
-t.width = 90; t.notchOpenExtent = 30; t.set({x: -430, n: 910, hidden: false, animate: true}); flush();
+t.width = 90; t.set({x: -430, n: 910, hidden: false, animate: true}); flush();
 out.push([t.moves.slice(), t.notchAppearing, t.showRestarts]); t.moves = [];
 t.endShow(); flush();
-out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, mem.tray]);
+out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, mem.weather]);
 var i = new Slot("indicators", mem); i.notchEnd = true; i.notchPeekFull = 68; i.width = 40;
 i.set({x: 0, n: 1100, hidden: false, animate: false}); flush(); i.moves = [];
 i.width = 108; i.set({x: 0, n: 1032, hidden: false, animate: true}); flush();
@@ -3664,26 +3670,29 @@ out.push([i.moves.slice(), i.notchAppearing, i.showRestarts]);
         self.assertEqual(shown, [[], False, True, {"x": 570, "ours": True}])  # shows (fades in) where it stays
         self.assertEqual(peek, [[], False, 0])
 
-    def test_a_shown_up_slot_waits_only_for_its_own_place_and_1_s_at_most(self):
-        # While the tray waits unseen, other items on the bar change size (the
-        # indicators' peek, workspace pills): the layout gives every slot a new
-        # shift each time, with the tray's place unchanged. That does not start
-        # its 150 ms again; a change of its own place does. Whatever moves, it
-        # shows when the 1 s limit ends, at its place then; a limit after it
-        # showed does nothing.
+    def test_a_shown_up_widget_waits_only_for_its_own_place_and_1_s_at_most(self):
+        # While a widget (not the tray) waits unseen, other items on the bar
+        # change size (the indicators' peek, workspace pills): the layout
+        # gives every slot a new shift each time, with its place unchanged.
+        # That does not start its 150 ms again, nor does its own size with
+        # its kept edge where it was; a change of its own place does.
+        # Whatever moves, it shows when the 1 s limit ends, at its place
+        # then; a limit after it showed does nothing.
         out = self.run_steps("""
 var mem = {};
-var t = new Slot("tray", mem); t.notchEnd = true; t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
+var t = new Slot("weather", mem); t.notchEnd = true; t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
 t.set({x: 0, n: 1000, hidden: false, animate: true}); flush(); t.moves = [];
 t.width = 60; t.set({x: -430, n: 940, hidden: false, animate: true}); flush();
 for (var k = 0; k < 12; k++) { t.set({x: -430, n: 940, hidden: false, animate: true}); flush() }
+t.width = 70; t.set({x: -430, n: 930, hidden: false, animate: true}); flush();
+t.width = 60; t.set({x: -430, n: 940, hidden: false, animate: true}); flush();
 out.push([t.moves.slice(), t.notchAppearing, t.showRestarts, t.limitStarts]); t.moves = [];
 t.set({x: -400, n: 940, hidden: false, animate: true}); flush();
 t.set({x: -400, n: 940, hidden: true, animate: true}); flush();
 t.set({x: -400, n: 940, hidden: false, animate: true}); flush();
 out.push([t.moves.slice(), t.notchAppearing, t.showRestarts, t.limitStarts]); t.moves = [];
 t.endShow(); flush();
-out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, mem.tray]);
+out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, mem.weather]);
 t.notchFade.enabled = false; t.endShow(); flush();
 t.set({x: -400, n: 940, hidden: false, animate: true}); flush();
 out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, t.showRestarts, t.limitStarts]);
@@ -3694,8 +3703,83 @@ out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, t.showRestarts
         self.assertEqual(limit, [[], False, True, {"x": 600, "ours": True}])  # the limit shows it where it is
         self.assertEqual(after, [[], False, True, 4, 1])             # a late timer does nothing; no new wait
         text = patched()
-        self.assertRegex(text, r"      id: notchShowLimit\n      interval: 1000\n      onTriggered: slot.notchShowNow\(\)\n")
-        self.assertRegex(text, r"      id: notchShowEnd\n      interval: 150\n      onTriggered: slot.notchShowNow\(\)\n")
+        self.assertRegex(text, r"      id: notchShowLimit\n      interval: slot.notchTrayAppear \? 8000 : 1000\n"
+                               r"      onTriggered: slot.notchShowNow\(\)\n")
+        self.assertRegex(text, r"      id: notchShowEnd\n      interval: slot.notchTrayAppear \? 1500 : 150\n"
+                               r"      onTriggered: slot.notchShowNow\(\)\n")
+
+    def test_a_tray_waits_until_its_apps_are_quiet(self):
+        # Omarchy's tray had no width (no app yet). Its apps start about 1 s
+        # apart (#757): each one grows the drawer (its size with the drawer
+        # open), not its place, so the first three still fit right of the
+        # housing and the fourth moves it left. Each new app starts its wait
+        # again (1.5 s); it stays unseen through the side change and shows
+        # once, where it stays (no visible move). Rounds with nothing of its
+        # own changed restart nothing; the limit (8 s) shows it where it is.
+        out = self.run_steps("""
+var mem = {};
+var t = new Slot("tray", mem); t.notchTrayAppear = true; t.notchEnd = true;
+t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
+t.set({x: 0, n: 1000, hidden: false, animate: true}); flush(); t.moves = [];
+t.width = 27; t.notchOpenExtent = 30; t.set({x: 0, n: 973, hidden: false, animate: true}); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts, t.limitStarts]);
+t.notchOpenExtent = 60; t.set({x: 0, n: 973, hidden: false, animate: true}); flush();
+t.notchOpenExtent = 90; t.set({x: 0, n: 973, hidden: false, animate: true}); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts, t.limitStarts]);
+t.notchOpenExtent = 120; t.set({x: -430, n: 973, hidden: false, animate: true}); flush();
+for (var k = 0; k < 12; k++) { t.set({x: -430, n: 973, hidden: false, animate: true}); flush() }
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts, t.limitStarts]); t.moves = [];
+t.endShow(); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, mem.tray]);
+t.set({x: -430, n: 973, hidden: false, animate: true}); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts]);
+""")
+        first, fits, moved, shown, after = out
+        self.assertEqual(first, [[], True, 1, 1])                     # unseen at its place right of the housing
+        self.assertEqual(fits, [[], True, 3, 1])                      # each new app: the wait starts again
+        self.assertEqual(moved, [[[1000, 570, False]], True, 4, 1])   # the side change while unseen: one restart
+        self.assertEqual(shown, [[], False, True, {"x": 570, "ours": True}])  # shows (fades in) where it stays
+        self.assertEqual(after, [[], False, 4])                       # shown: a new round starts no wait
+
+    def test_a_tray_waits_also_before_the_bar_settled(self):
+        # At login the bar's first 1.5 s are not animated (Skip the notch
+        # places at once); a tray that shows up then still waits for its
+        # apps, then shows where it stays. Other widgets show at once then.
+        out = self.run_steps("""
+var mem = {};
+var t = new Slot("tray", mem); t.notchTrayAppear = true; t.notchEnd = true;
+t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
+t.set({x: 0, n: 1000, hidden: false, animate: false}); flush(); t.moves = [];
+t.width = 27; t.notchOpenExtent = 30; t.set({x: 0, n: 973, hidden: false, animate: false}); flush();
+t.notchOpenExtent = 120; t.set({x: -430, n: 973, hidden: false, animate: false}); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.showRestarts, t.limitStarts]); t.moves = [];
+t.endShow(); flush();
+out.push([t.moves.slice(), t.notchAppearing, t.notchFade.enabled, mem.tray]);
+var w = new Slot("weather", mem); w.notchEnd = true; w.width = 0; w.notchLastWidth = 0; w.notchLastContent = 0;
+w.set({x: 0, n: 900, hidden: false, animate: false}); flush(); w.moves = [];
+w.width = 60; w.set({x: 0, n: 840, hidden: false, animate: false}); flush();
+out.push([w.moves.slice(), w.notchAppearing, w.showRestarts]);
+""")
+        tray, shown, widget = out
+        self.assertEqual(tray, [[[1000, 570, False]], True, 2, 1])
+        self.assertEqual(shown, [[], False, True, {"x": 570, "ours": True}])
+        self.assertEqual(widget, [[], False, 0])
+
+    def test_a_tray_drawer_slide_does_not_restart_its_wait(self):
+        # Its size with the drawer open counts, not the width it shows: the
+        # drawer sliding (its shown part grows, the drawer stays) is no new
+        # app. Nor is another item's change with its place unchanged.
+        out = self.run_steps("""
+var mem = {};
+var t = new Slot("tray", mem); t.notchTrayAppear = true; t.notchEnd = true;
+t.width = 0; t.notchLastWidth = 0; t.notchLastContent = 0;
+t.set({x: 0, n: 1000, hidden: false, animate: true}); flush(); t.moves = [];
+t.width = 27; t.notchOpenExtent = 90; t.set({x: -430, n: 973, hidden: false, animate: true}); flush();
+[30, 60, 90].forEach(function (r) {
+  t.width = 27 + r; t.notchReveal = r; t.set({x: -430, n: 973 - r, hidden: false, animate: true}); flush() });
+out.push([t.notchAppearing, t.showRestarts, t.limitStarts]);
+""")
+        self.assertEqual(out[0], [True, 1, 1])
 
     def test_a_wait_that_ends_while_the_list_is_made_again_does_not_place_it(self):
         # The 150 ms end while Omarchy makes the list again: the tray shows
