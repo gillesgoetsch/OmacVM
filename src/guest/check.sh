@@ -1190,6 +1190,7 @@ if [[ ${OMACVM_FEATURE_x86_apps:-off} == on ]]; then
   if [[ ${x86%% *} != ok ]]; then bad "x86 apps" "${x86#* }"
   elif ! /usr/local/share/omacvm/x86/guest/install.sh --test; then bad "x86 apps" "${x86#* }, but a test x86_64 program does not run"
   else ok "x86 apps" "${x86#* }"; fi
+elif [[ $x86 == "needed qemu-user's x86_64 rule is still held back"* ]]; then bad "x86 apps" "off, but ${x86#* }"
 elif [[ -n $x86 && ${x86%% *} != off && $x86 != *"not OmacVM's"* ]]; then bad "x86 apps" "off, but OmacVM's box64 is still installed: omacvm apply"
 else skip "x86 apps" "off (omacvm enable x86-apps: x86_64 programs through box64)"; fi
 FEATURE=""

@@ -466,10 +466,20 @@ translator: [box64](https://github.com/ptitSeb/box64).
   program or AppImage starts like any other: `./Some-App-x86_64.AppImage`.
   box64 translates the app's own code and uses the VM's native libraries
   (glibc, GTK, X11, Wayland, OpenGL, SDL, FUSE) where it can.
+- **x86_64 programs go to box64 only.** Omarchy 4.5 has qemu-user
+  (`qemu-user-static-binfmt`), whose x86_64 rule would take them first after
+  a restart. While x86 apps is on, OmacVM holds that one rule back with a
+  file of its own, `/etc/binfmt.d/qemu-x86_64-static.conf` (comments only).
+  qemu-user's other architectures stay, and `qemu-x86_64-static ./program`
+  still works by name. Another x86_64 rule (FEX, or a rule or file of that
+  name of your own) is left alone: `omacvm check` names it, and switching x86
+  apps on fails until it is gone.
 - **Off:** `omacvm disable x86-apps` removes the package (`omacvm-box64`,
-  not `box64`, so Omarchy's update does not swap it for the AUR's box64)
-  and its binfmt rule. A box64 you installed yourself is left alone.
-- `omacvm check` runs a tiny x86_64 program to show it works.
+  not `box64`, so Omarchy's update does not swap it for the AUR's box64),
+  its binfmt rule and OmacVM's file, so qemu-user's x86_64 rule is back. A
+  box64 you installed yourself is left alone.
+- `omacvm check` runs a tiny x86_64 program to show it works and says which
+  rule gets x86_64 programs when it is not box64's.
 
 **Speed**, the same program and version, the x86_64 build through box64
 against the native ARM build, in an OmacVM.app VM (6 cores, 8 GB) on a
@@ -499,4 +509,5 @@ of 3 runs of the benchmark. **Not covered:** 32-bit x86 programs and
 Windows programs (Wine).
 
 Installing or removing box64 restarts systemd-binfmt, which drops binfmt rules that were
-added by hand and are not in a binfmt.d folder.
+added by hand and are not in a binfmt.d folder. So does the first apply of 3.4.2 or newer on a
+VM that has x86 apps on and qemu-user's x86_64 rule live.

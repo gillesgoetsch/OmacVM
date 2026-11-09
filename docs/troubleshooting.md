@@ -1837,3 +1837,29 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 - **Where:** `src/memory/guest/install.sh`, `src/memory/guest/90-omacvm-zram.conf`,
   `src/guest/check.sh` (`zram_decider`, `zram_line`); test
   `src/tests/memory-zram-order.sh`.
+
+## 61. x86 programs fail with "Could not open '/lib64/ld-linux-x86-64.so.2'" (Omarchy 4.5)
+
+- **Symptom:** x86 Linux apps is on. After a restart an x86_64 program or
+  AppImage does not start: `qemu-x86_64-static: Could not open
+  '/lib64/ld-linux-x86-64.so.2': No such file or directory`. A VM built with
+  Omarchy 4.5 (a moved 4.0 VM does not have qemu-user). `omacvm check` said
+  ok up to 3.4.1. Right after switching x86 apps on it worked.
+- **Cause:** Omarchy 4.5 has qemu-user (`qemu-user-static-binfmt`). Its
+  binfmt rule for x86_64 is loaded after box64's at every boot (file-name
+  order), and the kernel tries the newest rule first, so qemu-user gets
+  x86_64 programs. It has no x86_64 libraries, so every program that needs
+  glibc fails.
+- **Fix (3.4.2):** Update VM (`omacvm apply`); no restart, no box64 build.
+  While x86 apps is on, OmacVM holds qemu-user's x86_64 rule back with
+  `/etc/binfmt.d/qemu-x86_64-static.conf` (a file of OmacVM's, comments
+  only); its other architectures stay. Switching x86 apps off removes it.
+  `omacvm check`'s "x86 apps" row names any other rule that gets x86_64
+  programs first; one that is not qemu-user's (FEX, or a file of that name
+  of your own) is left alone: remove it to use box64.
+- **Before 3.4.2:** `box64 ./program` runs it through box64 directly.
+- **Also 3.4.2:** switching x86 apps off failed and rolled back (exit 4,
+  "target not found: box64", #751), on 4.0 and 4.5. Update VM, then switch
+  it off again.
+- **Where:** `src/x86/guest/install.sh`, `src/guest/check.sh` ("x86 apps");
+  test `src/tests/x86-apps.sh`; [ADR 0040](adr/0040-x86-apps-box64.md).
