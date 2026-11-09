@@ -11,7 +11,8 @@
 #                      (the line says not to restart)
 # omarchy update runs as the desktop user in its own unit
 # (omacvm-system-update), so a dropped SSH connection does not cut pacman
-# off, and under bash, not the user's login shell (#742, run_unit says why). Its sudo needs no password while it runs: a sudoers file the unit
+# off, and under bash, not the user's login shell (#742, run_unit says
+# why). Its sudo needs no password while it runs: a sudoers file the unit
 # removes when it ends (and the next boot, if the VM went off meanwhile).
 # Nobody is at the keyboard: a question Omarchy asks even with -y (remove
 # orphaned packages?) gets no. An update that shows nothing new for 10
