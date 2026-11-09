@@ -1850,6 +1850,7 @@ console.log(JSON.stringify([
                 self.assertIn("Timer { id: notchGapsLate; interval: 3500; running: true; "
                               "onTriggered: root.notchReadGaps(true) }", full)
                 self.assertEqual(full.count('if (n === "configreloaded") root.notchGapsCheck(1500)'), 1)
+                self.assertTrue(function(full, "notchGapsCheck").startswith("\n    notchReadGaps(false)\n"))
                 self.assertEqual(full.count('else if (n === "activespecial") {'), 1)
                 self.assertEqual(full.count("function onTransparentChanged() { root.notchGapsCheck(1500) }"), 1)
                 # flush-bar (omarchy-mac 4.0) under a transparent top bar: the

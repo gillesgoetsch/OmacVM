@@ -774,6 +774,7 @@ def main():
     if (notchGapsQueued > 0) notchGapsRetry.restart()
   }
   function notchGapsCheck(later) {
+    notchReadGaps(false)
     notchGapsSoon.restart()
     notchGapsLate.interval = later
     notchGapsLate.restart()
@@ -793,9 +794,10 @@ def main():
     command: ["hyprctl", "-j", "monitors"]
     stdout: StdioCollector { onStreamFinished: root.notchGapsGot("specials", root.notchSpecialsParse(text)) }
   }
-  // Hyprland's options settle a moment after its reload event (Style.qml
-  // waits 200 ms too). The later read: at start after flush-bar's last
-  // startup pass (6 x 0.5 s), else 1.5 s on.
+  // A read at once (a smaller gap then counts within a frame or two) and
+  // again 200 ms on: Hyprland's options can settle a moment after its
+  // reload event (Style.qml waits 200 ms). The later read: at start after
+  // flush-bar's last startup pass (6 x 0.5 s), else 1.5 s on.
   Timer { id: notchGapsSoon; interval: 200; running: true; onTriggered: root.notchReadGaps(false) }
   Timer { id: notchGapsLate; interval: 3500; running: true; onTriggered: root.notchReadGaps(true) }
   // A read whose hyprctl never answers ends with what it has.
