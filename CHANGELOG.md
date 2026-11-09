@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.3 (unreleased)
+
+- **The move to Omarchy 4.5 finishes when your shell sets `OMARCHY_PATH`** (#742, reported by
+  @epicoun): the move stopped at its last step, Omarchy's own update, and every Resume stopped there
+  again ("OMARCHY_PATH does not match this Omarchy command."). `omarchy update` runs itself again
+  through your login shell, and a line in zsh's or fish's startup files that sets `OMARCHY_PATH` won
+  over OmacVM's. OmacVM now runs it under bash, which reads no startup file there; this also covers
+  Graphics › Vulkan and a prebuilt VM's first update. A move that stopped like this: update the app,
+  then Resume. When Omarchy's update stops, the move now shows Omarchy's own line, not just "did not
+  finish". For your own `omarchy update`: troubleshooting 62.
+
 ## 3.4.2
 
 - **Display scale sticks on the VM's main screen** (#738, reported by the project owner): the

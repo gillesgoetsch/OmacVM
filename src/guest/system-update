@@ -11,7 +11,8 @@
 #                      (the line says not to restart)
 # omarchy update runs as the desktop user in its own unit
 # (omacvm-system-update), so a dropped SSH connection does not cut pacman
-# off. Its sudo needs no password while it runs: a sudoers file the unit
+# off, and under bash, not the user's login shell (#742, run_unit says
+# why). Its sudo needs no password while it runs: a sudoers file the unit
 # removes when it ends (and the next boot, if the VM went off meanwhile).
 # Nobody is at the keyboard: a question Omarchy asks even with -y (remove
 # orphaned packages?) gets no. An update that shows nothing new for 10
@@ -118,7 +119,12 @@ run_unit() {   # -> the update's exit status
   helpers "$u" || { rm -f "$SUDOERS" "$TMPF"; say "could not prepare omarchy update" >&2; return 1; }
   systemctl reset-failed "$UNIT" >/dev/null 2>&1
   [[ -z $uid ]] || hold_session "$u" "$uid" || echo "OmacVM: no session of $u held for the update" >> "$LOG" 2>/dev/null
-  local env=(-E HOME="$h" -E USER="$u" -E LOGNAME="$u" -E LANG=C.UTF-8 -E TERM=xterm-256color
+  # SHELL: systemd sets the user's login shell, and omarchy update runs
+  # itself again through script(1), which starts $SHELL -c. zsh's .zshenv or
+  # fish's config.fish run there and can set OMARCHY_PATH or PATH back to
+  # another checkout; Omarchy 4.5 then refuses ("OMARCHY_PATH does not match
+  # this Omarchy command", #742). bash -c reads no startup file.
+  local env=(-E HOME="$h" -E USER="$u" -E LOGNAME="$u" -E SHELL=/bin/bash -E LANG=C.UTF-8 -E TERM=xterm-256color
              -E OMARCHY_PATH="$path" -E PATH="$RUN/bin:$path/bin:/usr/local/bin:/usr/bin")
   # The user's runtime folder (Omarchy's update lock is there, so an update
   # the user starts meanwhile waits for this one) and D-Bus; logged in also

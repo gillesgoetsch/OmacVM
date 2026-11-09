@@ -16,6 +16,10 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   their space at once; system files stay in the 2 update snapshots until
   newer ones replace them), or give the VM a larger disk: shut it down, then
   Disk › Change… in its window. The VM grows into it at its next start.
+- **The move to Omarchy 4.5 stops at its last step, or `omarchy update` says
+  "OMARCHY_PATH does not match this Omarchy command."**: a line in your
+  shell's startup files sets `OMARCHY_PATH`. See
+  [62](#62-omarchy_path-does-not-match-this-omarchy-command-omarchy-45).
 - **The Omarchy menu's Nightlight tints the VM, the Mac's Night Shift does
   not change** (Bridge on; up to 3.4.1): Omarchy puts its own commands first
   on the desktop's PATH, so its own night light (hyprsunset) ran instead of
@@ -1920,3 +1924,39 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   it off again.
 - **Where:** `src/x86/guest/install.sh`, `src/guest/check.sh` ("x86 apps");
   test `src/tests/x86-apps.sh`; [ADR 0040](adr/0040-x86-apps-box64.md).
+
+## 62. "OMARCHY_PATH does not match this Omarchy command." (Omarchy 4.5)
+
+- **Symptom:** the move to Omarchy 4.5 stops at its last step, "update" (12
+  of 13), and Resume stops there again. Its log
+  (`/var/log/omacvm-system-update.log` in the VM) shows `omarchy update`
+  stopping right after "Create system snapshot" with that line, then
+  "Something went wrong during the update!". Up to 3.4.2 the move said only
+  "omarchy update did not finish" (#742). The same can happen to an
+  `omarchy update` you start in a terminal on Omarchy 4.5.
+- **Cause:** Omarchy 4.5 refuses to run its update steps when the variable
+  `OMARCHY_PATH` names another Omarchy than the command's own
+  (`/usr/share/omarchy` for Omarchy's package). `omarchy update` runs itself
+  again through `script`, which starts your login shell, so a line in its
+  startup files that sets `OMARCHY_PATH` (for example to Omarchy 4.0's
+  `~/.local/share/omarchy`) wins: zsh reads `~/.zshenv` there, fish
+  `~/.config/fish/config.fish` and `conf.d/`. In a terminal, bash's
+  `~/.bashrc` or `~/.profile` set it as well. Omarchy 4.0 had no such check.
+- **Fix (3.4.3):** OmacVM runs `omarchy update` under bash, which reads no
+  startup file there, so the move, Graphics › Vulkan and a prebuilt VM's
+  first update no longer depend on your shell. Update OmacVM.app, then
+  Resume the move: it brings the new OmacVM into the VM first. The move's
+  card now quotes Omarchy's own line when its update stops.
+- **For your own `omarchy update`:** find the line with
+  `grep -rns OMARCHY_PATH ~/.zshenv ~/.zprofile ~/.zshrc ~/.config/fish ~/.profile ~/.bash_profile ~/.bashrc`,
+  remove it, open a new terminal and run `omarchy update`. Omarchy 4.5's
+  desktop session sets `OMARCHY_PATH=/usr/share/omarchy` itself, also on a
+  kept VM whose migrations have not run; `echo $OMARCHY_PATH` in the new
+  terminal shows it. A VM kept with Keep This Disk… after such a stop (3.4.1,
+  3.4.2) needs this once: Omarchy's migrations did not run in the move, and
+  Update VM does not run `omarchy update`.
+- **Before 3.4.3:** Undo… in the VM's settings puts the Omarchy 4.0 disk back
+  as it was before the move. Or Keep This Disk… and the step above.
+- **Where:** `src/guest/system-update` (`run_unit`, `-E SHELL`),
+  `src/guest/omarchy-move.sh` (`update_why`); tests `src/tests/pkg-safe.sh`,
+  `src/tests/omarchy-move.sh`.
