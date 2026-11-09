@@ -91,18 +91,22 @@ notch; when they don't, they open left of it, so the rest of the bar stays
 where it is and the notch looks untouched until you point at the bar. On
 Omarchy 4.5 they open when the pointer comes onto the indicators, or onto the
 place left of the notch where they open; once open, they stay open while it
-crosses the notch and the items between the two. The notch and those items
-never open them, and Omarchy's own rule (the bar left of its centre) counts
-only left of the notch, where the indicators sit there (bar patch v42,
-#763). Omarchy
+crosses the notch and the items between the two, and shut when it goes left
+of them. The notch and those items never open them, and Omarchy's own rule
+(the bar left of its centre) counts only in Omarchy's own layout (the
+indicators there, not moved by Skip the notch) and only left of the notch
+(bar patch v42, #763, #765). Omarchy
 4.5's tray counts with its drawer open: it sits where the drawer opens in full,
 and does not move while the drawer slides open; what jumps left of the notch
 keeps clear of the room 4.5's hidden indicators open into there (so on a full
 bar a few more items hide there than on 4.0). An item shows where it stays: one
 that grows or shrinks takes its new place at once, and one that shows up (the
 tray when its first app starts) waits unseen until its own place has been
-quiet for 150 ms (1 s at most). Only items pushed by others glide. Tray apps that start seconds
-apart can still move the tray to the other side once. The bar patch does the layout
+quiet for 150 ms (1 s at most); the tray waits until its apps stop coming
+(1.5 s without a new one, 8 s at most, also at login), so apps that start a
+second or so apart show it once, on the side it stays on (#757). Meanwhile its
+place is empty and takes no clicks. Only items pushed by others glide. A tray
+app that starts later than that can still move the tray to the other side once. The bar patch does the layout
 (`notchSkipPlace`); the app tells the VM through `/run/omacvm/host.env`
 (`OMACVM_NOTCHSKIP=1`) and `/run/omacvm/notch-skip`.
 

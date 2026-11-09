@@ -66,7 +66,9 @@ What the patch adds:
     changed takes its new place at once (only items pushed by others
     glide); an item that shows up (it had no width, as the tray before its
     first app) waits unseen until its own place has been quiet for 150 ms
-    (1 s at most).
+    (1 s at most); the tray until its size with the drawer open has been
+    quiet for 1.5 s (8 s at most), also at login, so apps that start a
+    second or so apart show it once, on its side.
   * Omarchy 4.5's indicators (#763, #764): their hidden ones also open
     while the pointer is on the indicators' own place or where Skip the
     notch opens the hidden ones left of the housing, and stay while it is
