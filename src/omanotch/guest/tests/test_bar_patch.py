@@ -2296,7 +2296,8 @@ strip("left the strip", -1);
             self.assertNotIn("moduleSlots", function(full, name))
             self.assertNotRegex(function(full, name), r"\.width\b|notchShownX|centerSectionRevealHeld")
         # Whether it is open: a copy set once the change is done.
-        self.assertEqual(full.count("  onCenterSectionRevealHeldChanged: Qt.callLater(root.notchPeekHeldTick)\n"), 1)
+        self.assertEqual(full.count("    function onCenterSectionRevealHeldChanged() { Qt.callLater(root.notchPeekHeldTick) }\n"), 1)
+        self.assertNotIn("\n  onCenterSectionRevealHeldChanged:", full)   # a handler of Omarchy's own still fits
         self.assertEqual(full.count("  function notchPeekHeldTick() { notchPeekHeld = centerSectionRevealHeld }\n"), 1)
         self.assertIn("moduleSlots", function(full, "notchIndicatorSpansNow"))
         self.assertIn("notchIndicatorSpans = now", function(full, "notchIndicatorTick"))

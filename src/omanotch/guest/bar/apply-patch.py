@@ -157,7 +157,7 @@ PIECES_45 = COMMON + [
     "      ? [beginList.notchRest, centerBox.notchRest + endList.notchRest, beginList.notchPeekMore] : [0, 0]\n",  # 5. the peek's room
     "    readonly property real notchRest: boxList.notchRest\n",              # 5. the centre at rest
     "hovered && root.notchPeeksAt(barWindow, parent, point.position, ",       # 10. the peek where the indicators are
-    "  onCenterSectionRevealHeldChanged: Qt.callLater(root.notchPeekHeldTick)\n",  # 10. ... held open
+    "    function onCenterSectionRevealHeldChanged() { Qt.callLater(root.notchPeekHeldTick) }\n",  # 10. ... held open
     "    onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)\n",  # 10.
 ]
 
@@ -542,9 +542,13 @@ def peek_45(text):
   // omarchy-notch-bar: centerSectionRevealHeld as it was once its last change
   // was done, for the bar's hover (root.notchPeeksAt): read straight, the
   // hover's own opening would change what it reads while it is being set.
+  // A Connections, so a handler of Omarchy's own on root still fits.
   property bool notchPeekHeld: false
   function notchPeekHeldTick() { notchPeekHeld = centerSectionRevealHeld }
-  onCenterSectionRevealHeldChanged: Qt.callLater(root.notchPeekHeldTick)
+  Connections {
+    target: root
+    function onCenterSectionRevealHeldChanged() { Qt.callLater(root.notchPeekHeldTick) }
+  }
 ''')
     text = replace_once(text, '''          readonly property bool peeking: hovered && BarModel.peeksAt(point.position, barWindow.peekEdge, root.vertical)
 ''', '''          // omarchy-notch-bar: also over the indicators' places, never under
