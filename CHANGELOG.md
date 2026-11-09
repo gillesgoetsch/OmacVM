@@ -11,8 +11,9 @@ in more words.
   open), stay open on the way from one to the other, and no longer open under the notch.
   In "Full screen including notch" with the indicators in the bar's right part (where a VM moved
   from Omarchy 4.0 keeps them), they opened when the pointer was anywhere left of about the notch's
-  right edge, notch included, and shut as it moved right towards them; on an active indicator (the
-  bell) they opened and shut again after about 120 ms, so none of them could be clicked. With Skip
+  right edge, notch included, and shut as it moved right towards them. On an active indicator (the
+  bell) they opened and shut again after about 120 ms, so none of them could be clicked: on 3.4.1
+  in every mode, on 3.4.2 in a window and in full screen without the notch. With Skip
   the notch opening them left of the notch, they stay open from the active ones across the notch
   to them; the notch and the items between (clock, tray) do not open them. Omarchy's own rule (the
   bar left of its centre) still counts where the indicators sit there, as in Omarchy's own layout,
