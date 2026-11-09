@@ -51,6 +51,12 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   (Hyprland 0.57): Update VM (3.2.15) or
   `omacvm update`, then log out and in
   ([50](#50-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
+- **The hidden indicators open far from them (left part of the bar, under
+  the notch) and shut on the way to them, or open on the bell and shut again**
+  (Omarchy 4.5, Omanotch, the indicators in the bar's right part): Update VM
+  (3.4.3, bar patch v42; #763, #764). With Omanotch off, Omarchy's own bar
+  opens them only left of its centre; moving the indicators there (Omarchy's
+  own layout, `centerBegin`) avoids it.
 - **The tray or other bar items show right of the notch, then move left of
   it** (Omarchy 4.5, Omanotch with Skip the notch; on OmacVM 3.4.1 the shell
   log may say `Binding loop detected for property "notchWidths"`): Update VM
