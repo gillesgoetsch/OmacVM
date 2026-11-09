@@ -129,9 +129,11 @@ anyway. Accepting the D-Bus call alone would gain about 30 s.
   the screensaver came about 150 s later, as after a Chromium pause on the
   same VM. If a later Quickshell cannot load the QML, the agent gives up
   after 3 failed starts in a row and only the Mac side works.
-- The 1x1 surface takes no input (empty mask, pinned by a test). A click at
-  its pixel in a test VM changed nothing, but Omarchy 4.5's bar does not
-  react at that pixel anyway, so the click test proves little.
+- The 1x1 surface takes no input (empty mask, pinned by a test). Row CLICK2
+  on 4.5 and 4.0: with the bar hidden, a window that logs clicks sat at
+  layout 0,0; a click at 0,0 reached it without the helper and with it
+  (its layer at 0,0 on Top), and did not reach it with the same surface
+  without the empty mask beside it (the control).
 
 ## Rejected
 
