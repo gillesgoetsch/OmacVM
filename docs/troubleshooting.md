@@ -39,8 +39,16 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 - **The tray or other bar items show right of the notch, then move left of
   it** (Omarchy 4.5, Omanotch with Skip the notch; on OmacVM 3.4.1 the shell
   log may say `Binding loop detected for property "notchWidths"`): Update VM
-  (3.4.2, bar patch v40). If tray apps start seconds apart, the tray can
+  (3.4.2, bar patch v41). If tray apps start seconds apart, the tray can
   still move once, at once (#757).
+- **In Full screen including notch the windows start well below the notch**
+  (about 12 pt at the guest's scale 2 on OmacVM 3.4.1 and older: the bar
+  reserved the whole strip, then Omarchy's 10 px window gap): Update VM
+  (3.4.2, bar patch v41) makes it about 7 pt; the bar reserves the strip less
+  half of the gap. A smaller `general:gaps_out` in your Hyprland config moves
+  windows closer still; with 0 the bar reserves the whole strip, so no window
+  goes into it. A gap of about 4 pt is Omarchy's own bar, or the moment
+  before the app says full screen (#758).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
   and Kitty draw on the Mac's GPU; from 3.2.18 the app's experimental switch

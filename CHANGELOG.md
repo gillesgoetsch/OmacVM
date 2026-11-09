@@ -14,7 +14,13 @@ in more words.
   the size each item asks for, an item that grows takes its new place at once, and a tray that
   shows up waits unseen until its own place has been quiet for 150 ms (1 s at most). Not fixed
   yet: tray apps that start seconds apart (often the case at login) can still show the tray right
-  of the notch first and move it left once, at once. Update VM brings it (bar patch v40).
+  of the notch first and move it left once, at once. Update VM brings it (bar patch v41).
+- **Full screen including notch** (#758, reported by the project owner on an M1 Max): windows start
+  closer under the notch. The bar in the strip now reserves the strip less half of Omarchy's window
+  gap (5 px at most), so a tiled window's border is about 7 pt below the notch instead of 12 at the
+  guest's scale 2 (5 px below the bar, not 10). Windows never go into the strip: with a window gap
+  of 0 the bar reserves the whole strip, as before. Window, the notch via Omanotch and the moment
+  before the full screen starts are unchanged. Update VM brings it (bar patch v41).
 
 ## 3.4.1
 

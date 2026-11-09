@@ -105,8 +105,9 @@ its bar there itself:
   VM gets a few pixels more (2944x1912 for 1.6 on the Air, at most 7 more
   each way), shown scaled onto the panel, with no black band. The app keeps
   the scale for the VM, so the next start begins at that size;
-- windows start below the strip, so nothing sits behind the notch, also
-  with the bar hidden (Super+Shift+Space), when the wallpaper fills the
+- windows start below the strip, so nothing sits behind the notch (with
+  half of Omarchy's window gap under the strip, 5 px at most, from 3.4.2),
+  also with the bar hidden (Super+Shift+Space), when the wallpaper fills the
   strip up to the top edge; a full-screen window (a video, Super+F) turns
   the strip black;
 - macOS's menu bar stays hidden over the strip, as in the app's normal
