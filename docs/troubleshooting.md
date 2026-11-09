@@ -1949,8 +1949,10 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   card now quotes Omarchy's own line when its update stops.
 - **For your own `omarchy update`:** find the line with
   `grep -rns OMARCHY_PATH ~/.zshenv ~/.zprofile ~/.zshrc ~/.config/fish ~/.profile ~/.bash_profile ~/.bashrc`,
-  remove it (Omarchy sets `OMARCHY_PATH` itself), open a new terminal and run
-  `omarchy update`. A VM kept with Keep This Disk… after such a stop (3.4.1,
+  remove it, open a new terminal and run `omarchy update`. Omarchy 4.5's
+  desktop session sets `OMARCHY_PATH=/usr/share/omarchy` itself, also on a
+  kept VM whose migrations have not run; `echo $OMARCHY_PATH` in the new
+  terminal shows it. A VM kept with Keep This Disk… after such a stop (3.4.1,
   3.4.2) needs this once: Omarchy's migrations did not run in the move, and
   Update VM does not run `omarchy update`.
 - **Before 3.4.3:** Undo… in the VM's settings puts the Omarchy 4.0 disk back
