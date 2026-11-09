@@ -39,8 +39,9 @@ What the patch adds:
     less 5 px of Omarchy's top window gap, all of the gap when it is under 5
     (#758: windows keep the rest of the gap below the strip, not in it; the
     whole strip while a workspace with a smaller top gap shows, such as
-    Omarchy's drop-down console; a gap set with hyprctl eval alone counts
-    from the next reload; black over full-screen windows). Hidden
+    Omarchy's drop-down console; a gap set with hyprctl eval alone is seen
+    at the next shell start or config reload; black over full-screen
+    windows). Hidden
     (Super+Shift+Space), it still reserves the strip but is see-through, so
     Omarchy's wallpaper shows there up to the top edge. Only while the app
     says that output covers the whole display in full screen
@@ -662,8 +663,8 @@ def main():
   // first read, a larger one only from the later read (after a reload
   // Hyprland has its default first, and a script such as flush-bar sets
   // its own value after it). Until read: the whole strip. A gap changed
-  // with hyprctl eval or keyword alone sends no event: seen at the next
-  // reload.
+  // with hyprctl eval or keyword alone sends no event: the bar sees it at
+  // its next start (a config reload sets the configured gap again).
   property var notchGapsSure: ({ top: 0, rules: null })  // the last later read
   property var notchGapsSeen: ({ top: 0, rules: null })  // the last read
   // Output name -> the special workspace shown on it ("" none).

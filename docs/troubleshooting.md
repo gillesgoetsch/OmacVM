@@ -50,11 +50,12 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   still. With a gap of 0, while Omarchy's drop-down console or 4.0's
   scratchpad shows, and under a transparent bar on Omarchy 4.0 the bar
   reserves the whole strip. Limit: the bar reads the gap at the shell's
-  start and after a config reload, so a gap changed only with `hyprctl eval`
-  or `hyprctl keyword` counts from the next reload (`hyprctl reload`) or
-  shell restart; until then a smaller gap can put the top of a window under
-  the strip. A gap of about 4 pt is Omarchy's own bar, or the moment before
-  the app says full screen (#758).
+  start and after a config reload, so it does not see a gap changed only
+  with `hyprctl eval` or `hyprctl keyword` until the shell restarts or the
+  config reloads (which sets the configured gap again); until then a
+  smaller gap can put the top of a window under the strip. A gap of about
+  4 pt is Omarchy's own bar, or the moment before the app says full screen
+  (#758).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
   and Kitty draw on the Mac's GPU; from 3.2.18 the app's experimental switch
