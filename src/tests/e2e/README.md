@@ -102,7 +102,9 @@ pauses once around all of them with its own holder pid. By hand:
 
 Exit codes of `modifier-keys.sh` and `display-unplug.sh`: 0 every case
 passed, 1 a case failed, 2 a wrong call, 3 it could not run (no VM, another
-VM, a tool), 5 someone stayed at the Mac (BLOCKED rows). `onscreen.sh`: 0
+VM, a tool), 5 someone stayed at the Mac (BLOCKED rows); `display-unplug.sh`
+also 6: the built-in display it switched off is still off after the tool and
+`builtin-display on ID` (it says so loudly; turn it on by hand). `onscreen.sh`: 0
 passed, 1 a row failed, 2 a wrong call, 5 BLOCKED rows and no FAIL (someone
 at the Mac, CI runners on jobs, `--headless`). `cc-switches.sh`
 takes their rows; a code that its rows do not explain (3, a crash, its time

@@ -948,8 +948,24 @@ row_busy() {   # while the move runs, whatever else could touch the VM is refuse
 # runs from too, so its updater sees the move (a new folder per run would ask macOS's Local Network
 # question again: STANDARDS 34b).
 UA=""; UPID=""; FEED_PID=""; ULOCK=$HOME/.omacvm-test-identity.lock; ULOCK_MINE=0; USAVED=""
+# The copy's launchers and its self-update (update-swap.sh, which starts the swapped-in app with
+# --update-check last, after the version in its Info.plist changed).
+ua_re() { printf '%s' "$UA" | sed 's/[][\.*^$+?(){}|]/\\&/g'; }
+ua_launchers() { [[ -n $UA ]] && LC_ALL=C pgrep -f "$(ua_re)/Contents/MacOS/OmacVM( |$)"; }
+ua_swaps() { [[ -n $UA ]] && LC_ALL=C pgrep -f "update-swap\.sh (install|rollback) $(ua_re)( |$)"; }
+ua_settle() {   # SECONDS: the copy's update-swap.sh ended (at most SECONDS), then every launcher of the copy quit
+  local p i end=$(( $(date +%s) + ${1:-150} ))
+  while [[ -n $(ua_swaps) ]] && (( $(date +%s) < end )); do sleep 1; done
+  for p in $(ua_launchers); do kill "$p" 2>/dev/null; done
+  for ((i = 0; i < 15; i++)); do [[ -z $(ua_launchers) ]] && break; sleep 1; done
+  for p in $(ua_launchers); do kill -9 "$p" 2>/dev/null; done
+  for ((i = 0; i < 5; i++)); do [[ -z $(ua_launchers) ]] && break; sleep 1; done
+  [[ -z $(ua_launchers) && -z $(ua_swaps) ]]
+}
 app_clean() {
   [[ -n $UPID ]] && { kill "$UPID" 2>/dev/null; sleep 2; kill -9 "$UPID" 2>/dev/null; }
+  # Only while this run holds the test identity's lock: the copy's launchers are then this run's.
+  (( ULOCK_MINE )) && ua_settle 150
   [[ -n $FEED_PID ]] && kill "$FEED_PID" 2>/dev/null
   [[ -n $USAVED && -f $USAVED ]] && defaults import org.omacvm.app.test "$USAVED"
   (( ULOCK_MINE )) && rm -rf "$ULOCK" && echo "move-45 $(date +%H:%M) done" >> "$ULOCK.wait"
@@ -1097,12 +1113,21 @@ row_app_guards() {
   check "the move finishes" $((rc == 0)) "exit $rc: $(J reason)"
   journal_state done
   # 4. The app opens after the move: the update waiting from step 3 goes in now.
+  local umark; umark=$(upd_mark)
   app_open || { check "the app opens after the move" 0 ""; app_clean; return; }
   for ((i = 0; i < 100; i++)); do [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist" 2>/dev/null) == "$cv" ]] && break; sleep 3; done
   check "after the move the waiting update goes in" $([[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist" 2>/dev/null) == "$cv" ]] && echo 1 || echo 0) "$(upd_log | grep -E 'install|swap|result' | tail -2 | tr '\n' ' ' | cut -c1-240)"
-  sleep 5
-  local p; for p in $(LC_ALL=C pgrep -f "$UA/Contents/MacOS/OmacVM( |$)"); do kill "$p" 2>/dev/null; done
+  # The swapped-in app starts after the version changed (3.4.1's run left it open and the next app row
+  # was BLOCKED): wait for update-swap.sh to end, then quit every launcher of the copy.
   UPID=""
+  check "after the move: the updated app quit, no launcher of the copy left" $(ua_settle 150 && echo 1 || echo 0) \
+    "launchers '$(ua_launchers | tr '\n' ' ')', update-swap.sh '$(ua_swaps | tr '\n' ' ')'"
+  # The version alone passes before the swapped-in app answered: update-swap.sh can still put the old one back.
+  ul=$(upd_since "$umark")
+  check "after the move the updated app started (update.log 'swap: $cv started', still $cv)" \
+    $([[ $ul == *"swap: $cv started"* && $ul != *"swap: $cv did not start"* &&
+         $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist" 2>/dev/null) == "$cv" ]] && echo 1 || echo 0) \
+    "$(grep -E 'swap: (.* started|.* did not start|result)' <<<"$ul" | tail -2 | tr '\n' ' ' | cut -c1-240)"
   check "no QEMU after all of it" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
   app_clean
 }

@@ -439,11 +439,22 @@ came back, another panel size, a head window, the menu bar always shown);
 `src/tests/fullpanel-check.sh`; `src/tests/e2e/display-unplug.sh --only
 fullpanel-clamshell` on a notched test Mac (the built-in display off with
 `builtin-display.m`, a start on a virtual display, the built-in back, the
-virtual display unplugged).
+virtual display unplugged). Its only run so far (D2, M1 Max, 2026-11-08)
+did not get there: the start used the remembered notch and the guest got
+it, but the built-in display stayed off after the kit stopped
+`builtin-display.m` (a kit fault; whether the tool or macOS left it off is
+not proven), so the strip step was never seen on a real display. Until that
+row passes, the step from the external display to the strip is shown only
+by `test-fullpanel-retake.c` and `test-fullpanel-late-arm.sh`. 3.4.2's kit
+turns the built-in back on itself (`builtin-display.m` at its end and on
+TERM, INT and HUP; `display-unplug.sh` checks after each switch and at the
+end, `src/tests/e2e-builtin-display.sh`).
 
 **Not proven here.** A real lid closed and opened, or a real external
 display unplugged, on a notched MacBook: lanes cannot do either. AppKit may
 lay out a Space that arrives from a closed lid differently from the
 built-in-gone-and-back case the retake was proven on (M1 Max, 10-29); the
-fallback is today's behaviour with the retake's lines, and leaving and
-entering full screen covers the strip.
+fallback is today's behaviour with the retake's lines: leave full screen and
+enter it again on the MacBook's display; if the strip is still black, start
+the VM again with the lid open (the same advice as the CHANGELOG and
+docs/troubleshooting.md).

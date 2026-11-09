@@ -407,5 +407,12 @@ wired "display-unplug waits before each case" "$E/display-unplug.sh" \
   '^source "\$HERE/person.sh"' 'gate full && case_run' 'gate fullpanel && case_run' 'gate window && case_run' '&& gate head; then'
 wired "onscreen waits instead of stopping at once, stamps its events" "$E/onscreen.sh" \
   '^source "\$E/person.sh"' 'PAUSE on screen' 'RESUME on screen' 'posted\(\) \{ person_posted' 'ci-runners.sh" pause'
+# The harnesses' texts say person.sh's time (60 s; cc-switches.sh still said 5 minutes in 3.4.1).
+idle_txt=""
+for f in cc-switches.sh onscreen.sh modifier-keys.sh display-unplug.sh move-45.sh README.md; do
+  idle_txt+=$(sed 's/^ *# *//' "$E/$f" | tr '\n' ' ' | grep -oE '(input|idle)[^.;()]{0,50}([0-9]+ ?min(ute)?s?|[0-9]+ ?s)\b' |
+    grep -vE ' 60 ?s$' | sed "s|^|$f: |")
+done
+same "texts: the time nobody was at the Mac is 60 s everywhere" "" "$idle_txt"
 
 exit $fail
