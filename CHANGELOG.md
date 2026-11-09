@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.4.2 (unreleased)
+## 3.4.2
 
 - **Display scale sticks on the VM's main screen** (#738): the display panel's scale buttons kept
   the scale only for a moment ("Full screen including notch": 1.6 became 1.333, then 2), and after
@@ -14,62 +14,32 @@ in more words.
   (Omarchy's keys and menu write it too), and a VM that already has it gets it moved into
   `omarchy_monitor_scale` at the next login. Any other monitor rule of yours stays as it is, and
   with your own rule for the main screen the buttons work as before. Update VM brings it.
-- **Correction to 3.4.1: Full screen including notch after a start with the lid closed (#716).**
-  3.4.1 said QEMU takes the strip beside the notch once the full screen is on the MacBook's display.
-  That step is checked only by QEMU's own tests so far. On a MacBook Pro M1 Max with its built-in
-  display switched off by a test tool, a start used the remembered notch, the VM got it and QEMU
-  waited for the MacBook's display; the test ended before that display came back, so the strip
-  was not seen. A start with the lid really closed, then opened, is still to be checked. If the
-  strip stays black after you open the lid, leave full screen and enter it again on the MacBook's
-  display; if it is still black, start the VM again with the lid open (docs/troubleshooting.md).
-- **Pause drawing while hidden** (experimental): when a VM keeps drawing although its window is out
-  of sight, the logs now say why. The app's log (`logs/qemu.log` in the VM's folder) says when it
-  told the VM to stop or to draw again, or why it could not (the VM's display channel closed, its
-  display agent not ready or too old). The VM's display agent (`journalctl --user -u
-  omacvm-displays`) says when a screen or window share keeps a display on, when Hyprland did not
-  turn a display off, or did not answer. Each is said once until it changes, so hours out of sight
-  add no lines. A VM started while the Mac's displays sleep now counts its window as out of sight
-  until they wake, as it already did for a locked Mac. Update VM brings the agent's part.
-- **Bar widgets**: the Mac's Wi-Fi, Bluetooth, audio and Night Shift widgets and the display panel
-  no longer fill the shell's log with `TypeError: Cannot read property 'foreground' of null` (a
-  few hundred lines each time the shell reloads a plugin in place: Omanotch's first-login install,
-  Update VM, Omarchy updates; 3.4.0 and 3.4.1). While the shell swaps the bar, they use Omarchy's
-  own bar colour and font. Nothing changes on screen. Update VM brings it
-  ([troubleshooting 59](docs/troubleshooting.md#59-the-shells-log-fills-with-typeerror-cannot-read-property-foreground-of-null)).
-- **zram on Omarchy 4.5** (#746): a 4.5 VM, new or moved from 4.0, had zram as big as its whole
-  memory (48 GB of zram in a 48 GB VM), not OmacVM's cap of a quarter of the memory, at most 8 GiB.
-  Omarchy 4.5 ships its own zram file (`/usr/lib/systemd/zram-generator.conf.d/90-omarchy.conf`,
-  `zram-size = ram`), and zram-generator reads such files by name, so it was read after OmacVM's
-  `90-omacvm.conf` and won. OmacVM's file is now `95-omacvm.conf`: after Omarchy's, before a file
-  of your own (`99-local.conf`, as Omarchy suggests), which still decides. Update VM, then restart
-  the VM. `omacvm check`'s "zram swap" line warns when zram is over the cap and says which file
-  sets it. 4.0 VMs keep the same size.
-- **x86 Linux apps** can be switched off again (#751). `omacvm disable x86-apps` and the control centre
-  ended with "x86 Linux apps was not set up" and put the feature back on (exit 4), on Omarchy 4.0 and
-  4.5: `pacman -R` was also given `box64`, a name OmacVM's package `omacvm-box64` only provides, and
-  stopped with "target not found". The same would have stopped the next box64 update. Update VM, then
-  switch it off.
-- **x86 Linux apps** on VMs built with Omarchy 4.5: after a restart, x86_64 programs went to qemu-user
-  instead of box64 and every dynamic one failed ("Could not open '/lib64/ld-linux-x86-64.so.2'", #752).
-  Omarchy 4.5's qemu-user rule for x86_64 was loaded after box64's. While x86 apps is on, OmacVM now
-  holds that one rule back (`/etc/binfmt.d/qemu-x86_64-static.conf`, removed when off; qemu-user's
-  other architectures stay). Update VM fixes it, no restart and no box64 build. `omacvm check`'s
-  "x86 apps" row now says which rule gets x86_64 programs when it is not box64's.
+- **Omanotch** on Omarchy 4.5 with Skip the notch (#757, reported by the project owner on an M1
+  Max): the bar's layout no longer goes stale, nothing slides under the notch, and tray apps that
+  start together show the tray once, where it stays. With bar patch v39 (3.4.1), after a widget
+  was added or its settings changed, the layout could stay as it was until the pointer came onto
+  the bar (the shell log says "Binding loop detected for property notchWidths"), and a tray that
+  showed up or grew after the bar slid under the notch from right to left. Now the layout counts
+  the size each item asks for, an item that grows takes its new place at once, and a tray that
+  shows up waits unseen until its own place has been quiet for 150 ms (1 s at most). Not fixed
+  yet: tray apps that start seconds apart (often the case at login) can still show the tray right
+  of the notch first and move it left once, at once. Update VM brings it (bar patch v40).
 - **Night Shift from the Omarchy menu** (#748): the menu's Nightlight switches the Mac's Night Shift
   again, on Omarchy 4.0 and 4.5, and on 4.0 so does Super+Ctrl+N. Both ran Omarchy's own night light
-  (hyprsunset in the VM) instead: Omarchy puts its own commands first on the desktop's PATH, ahead of
-  OmacVM's. OmacVM now puts one folder of its own ahead of them, with only the Bridge's night light
-  toggle in it. On Omarchy 4.5 Super+Ctrl+N stays Omarchy's Network panel; the menu and the bar's
-  Night Shift drive the Mac there. Update VM brings it and restarts Omarchy's bar once (after the
-  unlock when the VM is locked); with the Bridge off then, switching it on later does that restart. `omacvm check`'s "Night Shift toggle" line now reads what the
-  running shell really runs and names the key only where there is one. 4.5's menu also reads the
-  Mac's Night Shift for its row: when the Bridge does not answer within 2 s, the row says off.
+  (hyprsunset in the VM) instead: Omarchy puts its own commands first on the desktop's PATH, ahead
+  of OmacVM's. OmacVM now puts one folder of its own ahead of them, with only the Bridge's night
+  light toggle in it. On Omarchy 4.5 Super+Ctrl+N stays Omarchy's Network panel; the menu and the
+  bar's Night Shift drive the Mac there. Update VM brings it and restarts Omarchy's bar once (after
+  the unlock when the VM is locked); with the Bridge off then, switching it on later does that
+  restart. `omacvm check`'s "Night Shift toggle" line now reads what the running shell really runs
+  and names the key only where there is one. 4.5's menu also reads the Mac's Night Shift for its
+  row: when the Bridge does not answer within 2 s, the row says off.
 - **Wallpaper with a video background** (#747): on Omarchy 4.5, which can play a video as the
-  background, the Mac's wallpaper now becomes the video's first frame. Before, OmacVM sent the Mac an
-  empty picture, the Mac refused it and kept the old wallpaper, and each try left one picture per
-  frame of the video in the VM's `/tmp` (its memory). An animated picture also sends its first frame.
-  When no picture comes out of a file, nothing is sent. Update VM brings it (it adds ffmpeg where it
-  is missing) and removes the frame files once.
+  background, the Mac's wallpaper now becomes the video's first frame. Before, OmacVM sent the Mac
+  an empty picture, the Mac refused it and kept the old wallpaper, and each try left one picture per
+  frame of the video in the VM's `/tmp` (its memory). An animated picture also sends its first
+  frame. When no picture comes out of a file, nothing is sent. Update VM brings it (it adds ffmpeg
+  where it is missing) and removes the frame files once.
 - **`omacvm check` warns when the VM's disk is nearly full** (#749): a "free space" line, a warning
   under 10 GiB free, where Omarchy's own update stops ("You need at least 10 GiB free to safely
   update Omarchy."). It says what to do: delete files in your home, or give the VM a larger disk
@@ -82,16 +52,52 @@ in more words.
   mpv (a small helper of the display agent holds Omarchy's idle, ADR 0072). Update VM brings it;
   **restart Firefox once after Update VM** (a Firefox that was running during the update does not
   count until then).
-- **Omanotch** on Omarchy 4.5 with Skip the notch (#757, reported by the project owner on an M1
-  Max): the bar's layout no longer goes stale, nothing slides under the notch, and tray apps that
-  start together show the tray once, where it stays. With bar patch v39 (3.4.1), after a widget
-  was added or its settings changed, the layout could stay as it was until the pointer came onto
-  the bar (the shell log says "Binding loop detected for property notchWidths"), and a tray that
-  showed up or grew after the bar slid under the notch from right to left. Now the layout counts
-  the size each item asks for, an item that grows takes its new place at once, and a tray that
-  shows up waits unseen until its own place has been quiet for 150 ms (1 s at most). Not fixed
-  yet: tray apps that start seconds apart (often the case at login) can still show the tray right
-  of the notch first and move it left once, at once. Update VM brings it (bar patch v40).
+- **zram on Omarchy 4.5** (#746): a 4.5 VM, new or moved from 4.0, had zram as big as its whole
+  memory (48 GB of zram in a 48 GB VM), not OmacVM's cap of a quarter of the memory, at most 8 GiB.
+  Omarchy 4.5 ships its own zram file (`/usr/lib/systemd/zram-generator.conf.d/90-omarchy.conf`,
+  `zram-size = ram`), and zram-generator reads such files by name, so it was read after OmacVM's
+  `90-omacvm.conf` and won. OmacVM's file is now `95-omacvm.conf`: after Omarchy's, before a file
+  of your own (`99-local.conf`, as Omarchy suggests), which still decides. Update VM, then restart
+  the VM. `omacvm check`'s "zram swap" line warns when zram is over the cap and says which file
+  sets it. 4.0 VMs keep the same size.
+- **x86 Linux apps** can be switched off again (#751). `omacvm disable x86-apps` and the control
+  centre ended with "x86 Linux apps was not set up" and put the feature back on (exit 4), on Omarchy
+  4.0 and 4.5: `pacman -R` was also given `box64`, a name OmacVM's package `omacvm-box64` only
+  provides, and stopped with "target not found". The same would have stopped the next box64 update.
+  Update VM, then switch it off.
+- **x86 Linux apps** on VMs built with Omarchy 4.5: after a restart, x86_64 programs went to
+  qemu-user instead of box64 and every dynamic one failed ("Could not open
+  '/lib64/ld-linux-x86-64.so.2'", #752). Omarchy 4.5's qemu-user rule for x86_64 was loaded after
+  box64's. While x86 apps is on, OmacVM now holds that one rule back
+  (`/etc/binfmt.d/qemu-x86_64-static.conf`, removed when off; qemu-user's other architectures stay).
+  Update VM fixes it, no restart and no box64 build. `omacvm check`'s "x86 apps" row now says which
+  rule gets x86_64 programs when it is not box64's.
+- **Bar widgets**: the Mac's Wi-Fi, Bluetooth, audio and Night Shift widgets and the display panel
+  no longer fill the shell's log with `TypeError: Cannot read property 'foreground' of null` (a few
+  hundred lines each time the shell reloads a plugin in place: Omanotch's first-login install,
+  Update VM, Omarchy updates; 3.4.0 and 3.4.1). While the shell swaps the bar, they use Omarchy's
+  own bar colour and font. Nothing changes on screen. Update VM brings it ([troubleshooting
+  59](docs/troubleshooting.md#59-the-shells-log-fills-with-typeerror-cannot-read-property-foreground-of-null)).
+- **Pause drawing while hidden** (experimental): when a VM keeps drawing although its window is out
+  of sight, the logs now say why. The app's log (`logs/qemu.log` in the VM's folder) says when it
+  told the VM to stop or to draw again, or why it could not (the VM's display channel closed, its
+  display agent not ready or too old). The VM's display agent (`journalctl --user -u
+  omacvm-displays`) says when a screen or window share keeps a display on, when Hyprland did not
+  turn a display off, or did not answer. Each is said once until it changes, so hours out of sight
+  add no lines. A VM started while the Mac's displays sleep now counts its window as out of sight
+  until they wake, as it already did for a locked Mac. Update VM brings the agent's part.
+- **Correction to 3.4.1: Full screen including notch after a start with the lid closed (#716).**
+  3.4.1 said QEMU takes the strip beside the notch once the full screen is on the MacBook's display.
+  That step is checked only by QEMU's own tests so far. On a MacBook Pro M1 Max with its built-in
+  display switched off by a test tool, a start used the remembered notch, the VM got it and QEMU
+  waited for the MacBook's display; the test ended before that display came back, so the strip
+  was not seen. A start with the lid really closed, then opened, is still to be checked. If the
+  strip stays black after you open the lid, leave full screen and enter it again on the MacBook's
+  display; if it is still black, start the VM again with the lid open (docs/troubleshooting.md).
+- Development: test disk images are made with a time limit, and a hung `hdiutil create` is ended and
+  what hung is written down (#744); the e2e kits log in to a test VM with its own key first (#745),
+  turn a MacBook's built-in display back on after a test that switched it off, close the test app
+  after it updated itself and say 60 s where they wait for a person (#740).
 
 ## 3.4.1
 
