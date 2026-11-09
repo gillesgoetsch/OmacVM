@@ -80,6 +80,14 @@ What the patch adds:
     notch did not move their hidden ones), and only left of the housing:
     nothing opens under the camera housing.
     Only this copy of the bar: Omarchy's own bar keeps its rule.
+  * Omarchy 4.5's workspaces on the NOTCH bar (#760): the copy's own
+    widgets/Workspaces.qml (workspaces-patch.py), which shows the workspaces
+    of the display the strip stands in for, as 4.0's omacvm.workspaces does.
+    4.5 loads every widget from its registry, so the copy's file never ran
+    and the strip showed NOTCH's own block. Only Omarchy's own
+    omarchy.workspaces on the NOTCH bar; every other bar keeps the
+    registry's, and so does NOTCH when the copy's file is gone or does not
+    load (one warning). The notchbar state says which: "workspaces".
 
 Omarchy's Bar.qml changed in October 2026 (upstream's notch floor from
 display-cutouts.json, a bar thickness per screen, the centre's hover area):
@@ -100,7 +108,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 42
+VERSION = 43
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -163,6 +171,10 @@ PIECES_45 = COMMON + [
     "hovered && root.notchPeeksAt(barWindow, parent, point.position, ",       # 10. the peek where the indicators are
     "    function onCenterSectionRevealHeldChanged() { Qt.callLater(root.notchPeekHeldTick) }\n",  # 10. ... held open
     "    onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)\n",  # 10.
+    "  function notchRegistryComponent(name, entry, custom, role, ours) {\n",  # 11. NOTCH's workspaces (#760)
+    "        WidgetPool { id: horizontalPool; notchRole: barWindow.notchRole }\n",  # 11.
+    "      return root.notchRegistryComponent(registryName, w[registryName], customType, pool ? pool.notchRole : \"\", root.notchWorkspacesComponent)\n",  # 11.
+    "skip: root.notchSkipOn, workspaces: root.notchWorkspacesFrom(),\n",  # 11.
 ]
 
 
@@ -573,6 +585,73 @@ def peek_45(text):
       return a.join(" ")
     }
     onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)
+''')
+    return text
+
+
+def workspaces_45(text):
+    """Step 11 on Omarchy 4.5's bar (#760): the NOTCH bar's workspaces are the
+    copy's own widgets/Workspaces.qml (workspaces-patch.py: it shows the
+    display the strip stands in for), not the registry's. 4.5 loads every
+    widget from its registry, so the copy's widget never ran. Only for
+    Omarchy's own omarchy.workspaces, which gets the bar itself (its
+    notchParkedScreen); every other bar, a user's own widget, and a copy whose
+    widget is gone or does not load keep the registry's."""
+    text = replace_once(text, '''  property var widgetHosts: []
+''', '''  property var widgetHosts: []
+  // omarchy-notch-bar: the copy's own workspaces widget, for the NOTCH bar
+  // (notchRegistryComponent); null when it is gone or does not load. Loaded
+  // on every bar, so a widget that stopped loading after an update shows in
+  // the log and in the notchbar state at once. No path in the warning: the
+  // copy's check would count it as the copy not loading.
+  readonly property var notchWorkspacesComponent: notchWorkspacesLoad()
+  function notchWorkspacesLoad() {
+    var c = Qt.createComponent(Qt.resolvedUrl("widgets/Workspaces.qml"), Component.PreferSynchronous)
+    if (c && c.status === Component.Ready) return c
+    var gone = !c || String(c.errorString()).indexOf("No such file") !== -1
+    console.warn("omanotch: NOTCH workspaces: Omarchy's widget (" + (gone ? "missing" : "error") + ")")
+    return null
+  }
+  // The component a widget host loads: the registry's (Omarchy's binding),
+  // or ours on the NOTCH bar for Omarchy's own workspaces widget.
+  function notchRegistryComponent(name, entry, custom, role, ours) {
+    if (custom) return null
+    if (!entry) return null
+    if (role === "notch" && name === "omarchy.workspaces" && ours
+        && entry.metadata && entry.metadata.firstParty === true) return ours
+    return entry.component
+  }
+  // Where the NOTCH bar's workspaces widget comes from (notchbar state):
+  // "copy", "omarchy", or "none" (no NOTCH bar, or no such widget on it).
+  function notchWorkspacesFrom() {
+    for (var i = 0; i < widgetHosts.length; i++) {
+      var h = widgetHosts[i]
+      if (!h || !h.pool || h.pool.notchRole !== "notch" || !h.registryComponent) continue
+      if (canonicalWidgetId(h.moduleName) !== "omarchy.workspaces") continue
+      return h.registryComponent === notchWorkspacesComponent ? "copy" : "omarchy"
+    }
+    return "none"
+  }
+''')
+    # Each bar surface's pool says whether it is the NOTCH bar's from the
+    # start, so a widget is loaded once, from the right file. Only the
+    # horizontal one: a notch role is a top bar's alone (notchRoleFor).
+    text = replace_once(text, '''  component WidgetPool: Item {
+    id: widgetPool
+''', '''  component WidgetPool: Item {
+    id: widgetPool
+    // omarchy-notch-bar: its bar window's notch role ("notch" on NOTCH).
+    property string notchRole: ""
+''')
+    text = replace_once(text, '''        WidgetPool { id: horizontalPool }
+''', '''        WidgetPool { id: horizontalPool; notchRole: barWindow.notchRole }
+''')
+    text = replace_once(text, '''      return w[registryName] ? w[registryName].component : null
+''', '''      // omarchy-notch-bar: the NOTCH bar's workspaces are the copy's.
+      return root.notchRegistryComponent(registryName, w[registryName], customType, pool ? pool.notchRole : "", root.notchWorkspacesComponent)
+''')
+    text = replace_once(text, '''skip: root.notchSkipOn,
+''', '''skip: root.notchSkipOn, workspaces: root.notchWorkspacesFrom(),
 ''')
     return text
 
@@ -2456,6 +2535,10 @@ EXCLUSION
     # 10. Omarchy 4.5's indicator peek where the indicators are (#763, #764).
     if form45:
         text = peek_45(text)
+
+    # 11. Omarchy 4.5: the NOTCH bar's workspaces from the copy (#760).
+    if form45:
+        text = workspaces_45(text)
 
     open(path, "w").write(text)
     print("patched")
