@@ -1989,9 +1989,11 @@ console.log(JSON.stringify(out));
 class PeekWhereTheIndicatorsAre(unittest.TestCase):
     """Omarchy 4.5's indicator peek (#763, #764): opens over the indicators'
     own place and where Skip the notch opens their hidden ones; the stretch
-    between only keeps an open peek open (held); Omarchy's rule (the bar left
-    of the centre box) only while they sit inside that stretch and left of
-    the housing; never opens under the camera housing in the notch strip. The owner's MacBook Pro 16" in Full screen including notch:
+    between only keeps an open peek open (held), and left of the hidden ones
+    it shuts; Omarchy's rule (the bar left of the centre box) only in
+    Omarchy's own layout (the indicators sit inside that stretch, not moved
+    by Skip the notch) and left of the housing; never opens under the camera
+    housing in the notch strip. The owner's MacBook Pro 16" in Full screen including notch:
     housing 771.5-956.5, centre box (peekEdge) at 962.5, their layout keeps
     the indicators in the right list (the bell at 1164-1196, 84 more when
     open); Omarchy's own layout keeps them in centerBegin, ending 6 before
@@ -2082,7 +2084,7 @@ t("Omarchy's layout: left half", win, into, 500, true);
 var win = Win("Virtual-1", 962.5, true), into = Item(0);
 moduleSlots = [Slot(win, 1164, 32, { full: 84, shift: { x: 0, n: 1164, peekAt: 640 } })];
 t("on a moved hidden one", win, into, 680, false);
-t("right of the moved ones, left of the housing: Omarchy's rule", win, into, 740, true);
+t("right of the moved ones, left of the housing", win, into, 740, true);
 t("under the housing between them and the bell", win, into, 860, true);
 t("right of the housing", win, into, 1100, false);
 t("open: right of the moved ones", win, into, 740, true, true);
@@ -2091,17 +2093,19 @@ t("open: right of the housing", win, into, 1100, false, true);
 t("on the bell", win, into, 1180, false);
 t("past the bell", win, into, 1200, false);
 t("open: past the bell", win, into, 1200, false, true);
-t("left of the moved ones: Omarchy's rule", win, into, 400, true);
+t("left of the moved ones", win, into, 400, true);
+t("open: left of the moved ones", win, into, 400, true, true);
 moduleSlots = [Slot(win, 1164, 32, { full: 84, shift: { x: -20, n: 1184, peekAt: 640 } })];
 moduleSlots[0].notchShownX = 1196;
 t("a slot Skip the notch moved: on the bell", win, into, 1170, false);
 t("a slot Skip the notch moved: on a moved hidden one", win, into, 720, false);
 """)
-        self.assertEqual(r, {"on a moved hidden one": True, "right of the moved ones, left of the housing: Omarchy's rule": True,
+        self.assertEqual(r, {"on a moved hidden one": True, "right of the moved ones, left of the housing": False,
                              "under the housing between them and the bell": False, "right of the housing": False,
                              "open: right of the moved ones": True, "open: under the housing": True,
                              "open: right of the housing": True, "on the bell": True, "past the bell": False,
-                             "open: past the bell": False, "left of the moved ones: Omarchy's rule": True,
+                             "open: past the bell": False, "left of the moved ones": False,
+                             "open: left of the moved ones": False,
                              "a slot Skip the notch moved: on the bell": True,
                              "a slot Skip the notch moved: on a moved hidden one": True})
 
@@ -2186,7 +2190,11 @@ out.push(["clock", p.right[3].n + p.right[3].x]);
 t("from rest: under the housing", win, into, 750, true);
 t("from rest: the clock", win, into, p.right[3].n + p.right[3].x + 75, false);
 t("from rest: the tray", win, into, p.right[0].n + p.right[0].x + 48, false);
-t("from rest: left of the housing: Omarchy's rule", win, into, p.right[4].peekAt + 90, true);
+t("from rest: left of the housing", win, into, p.right[4].peekAt + 90, true);
+t("from rest: far left (x 80)", win, into, 80, true);
+t("from rest: the workspaces' end + 30", win, into, 8 + 20 + 26 + 26 + 26 + 30, true);
+t("from rest: just left of the hidden ones", win, into, p.right[4].peekAt - 7, true);
+t("open: left of the hidden ones", win, into, p.right[4].peekAt - 20, true, true);
 t("on the bell", win, into, at + 16, false);
 t("open: the clock", win, into, p.right[3].n + p.right[3].x + 75, false, true);
 t("open: under the housing", win, into, 750, false, true);
@@ -2198,11 +2206,83 @@ t("open: past the bell", win, into, at + 40, false, true);
         self.assertLess(r["peekAt"] + 84, 663.5)
         self.assertGreater(r["clock"], 848.5)   # the clock (and the tray) between the housing and the bell
         self.assertEqual([r[k] for k in ("from rest: under the housing", "from rest: the clock", "from rest: the tray",
-                                         "from rest: left of the housing: Omarchy's rule", "on the bell",
-                                         "open: the clock", "open: under the housing",
+                                         "from rest: left of the housing", "from rest: far left (x 80)",
+                                         "from rest: the workspaces' end + 30",
+                                         "from rest: just left of the hidden ones", "open: left of the hidden ones",
+                                         "on the bell", "open: the clock", "open: under the housing",
                                          "on the hidden one the pointer goes to", "past the bell",
                                          "open: past the bell")],
-                         [False, False, False, True, True, True, True, True, False, False])
+                         [False, False, False, False, False, False, False, False, True, True, True, True, False,
+                          False])
+
+    def test_air_13_inch(self):
+        # The MacBook Air 13.6" (1470 wide, housing 645.5-824.5) with the
+        # owner's layout: the tray right of the housing at 884-1100, the
+        # indicators at 1285-1327, and Skip the notch opening their hidden
+        # ones left of the housing at 553.5-637.5 (notchSkipPlace, as the bar
+        # runs it). v42 opened them from the workspaces (x 79, 169) and 7 px
+        # left of their place (x 525).
+        full = patched()
+        place = "function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) {%s}" % (
+            function(full, "notchSkipPlace"))
+        r = self.run_js(place + """
+var right = [216, 24, 24, 137, [42, 42, 84], 24, 28, 28, 28, 27];
+var p = place(1470, 8, [20, 26, 26, 26], right, [645.5, 824.5], [0, 0], 6, 8, 24);
+var s = p.right[4], at = s.n + s.x;
+out.push(["tray", p.right[0].n + p.right[0].x]);
+out.push(["at", at]);
+out.push(["peekAt", s.peekAt]);
+var win = Win("Virtual-1", 830.5, true), into = Item(0);
+moduleSlots = [Slot(win, at, 42, { full: 84, shift: s })];
+t("from rest: x 79", win, into, 79, true);
+t("from rest: x 169", win, into, 169, true);
+t("from rest: x 525", win, into, 525, true);
+t("from rest: x 585", win, into, 585, true);
+t("from rest: under the housing", win, into, 735, true);
+t("from rest: the tray", win, into, 1000, false);
+t("from rest: on the bell", win, into, 1300, false);
+t("open: under the housing", win, into, 700, false, true);
+t("open: the tray", win, into, 1200, false, true);
+t("open: x 525", win, into, 525, true, true);
+t("open: past them", win, into, 1340, false, true);
+""", left=645.5, right=824.5)
+        self.assertEqual([r["tray"], r["at"], r["peekAt"]], [884, 1285, 553.5])
+        self.assertEqual([r[k] for k in ("from rest: x 79", "from rest: x 169", "from rest: x 525", "from rest: x 585",
+                                         "from rest: under the housing", "from rest: the tray", "from rest: on the bell",
+                                         "open: under the housing", "open: the tray", "open: x 525", "open: past them")],
+                         [False, False, False, True, False, False, True, True, True, False, False])
+
+    def test_indicators_jumped_left_of_the_housing(self):
+        # The right side so full that the indicators themselves jump left of
+        # the housing (their own place left of the centre box too) and their
+        # hidden ones open left of what jumped: still only their places open
+        # it, the left half does not (Omarchy's rule is for its own layout).
+        full = patched()
+        place = "function place(width, pad, left, right, housing, beside, edge, gap, keep, prev, stick) {%s}" % (
+            function(full, "notchSkipPlace"))
+        r = self.run_js(place + """
+var p = place(1512, 8, [20, 26, 26, 26], [40, [32, 32, 84], 330, 330], [663.5, 848.5], [0, 0], 6, 8, 24);
+var s = p.right[1], at = s.n + s.x;
+out.push(["at", at]);
+out.push(["peekAt", s.peekAt]);
+out.push(["peekHidden", s.peekHidden]);
+var win = Win("Virtual-1", 854.5, true), into = Item(0);
+moduleSlots = [Slot(win, at, 32, { full: 84, shift: s })];
+t("left half", win, into, 60, true);
+t("on the bell", win, into, at + 16, true);
+t("on a moved hidden one", win, into, s.peekAt + 20, true);
+t("between them (the tray)", win, into, s.peekAt + 100, true);
+t("open: between them (the tray)", win, into, s.peekAt + 100, true, true);
+t("right of them, left of the housing", win, into, 500, true);
+t("under the housing", win, into, 750, true);
+""", left=663.5, right=848.5)
+        self.assertLess(r["at"] + 32, 663.5)        # the indicators jumped left of the housing
+        self.assertLess(r["peekAt"], r["at"])       # their hidden ones open left of what jumped
+        self.assertFalse(r["peekHidden"])
+        self.assertEqual([r[k] for k in ("left half", "on the bell", "on a moved hidden one", "between them (the tray)",
+                                         "open: between them (the tray)", "right of them, left of the housing",
+                                         "under the housing")],
+                         [False, True, True, False, True, False, False])
 
     def test_strip_peeks_on_the_parked_bar(self):
         # Omanotch's strip (notchHover): the strip's x goes to the parked
@@ -2240,9 +2320,12 @@ moduleSlots = [Slot(parked, 1164, 32, { full: 84, shift: { x: 0, n: 1164, peekAt
                Slot(notch, 1164, 32, { full: 84, shift: { x: 0, n: 1164, peekAt: 640 } })];
 strip("from rest: under the housing", 860);
 strip("from rest: right of the housing", 1100);
+strip("from rest: left of the moved ones", 400);
 strip("on the bell", 1180);
 strip("on to the housing", 860);
 strip("on a moved hidden one", 680);
+strip("open: on to the left of them", 400);
+strip("on the bell again", 1180);
 strip("past the bell", 1200);
 strip("again from rest: under the housing", 860);
 """)
@@ -2251,6 +2334,9 @@ strip("again from rest: under the housing", 860);
         self.assertEqual(r["on the bell"], ["free", ["bar true"]])
         self.assertEqual(r["on to the housing"], ["free", []])
         self.assertEqual(r["on a moved hidden one"], ["free", []])
+        self.assertEqual(r["from rest: left of the moved ones"], ["free", []])
+        self.assertEqual(r["open: on to the left of them"], ["free", ["bar false"]])
+        self.assertEqual(r["on the bell again"], ["free", ["bar true"]])
         self.assertEqual(r["past the bell"], ["free", ["bar false"]])
         self.assertEqual(r["again from rest: under the housing"], ["free", []])
 

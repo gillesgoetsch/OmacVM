@@ -72,9 +72,11 @@ What the patch adds:
     notch opens the hidden ones left of the housing, and stay while it is
     there, whatever their own hover says; the stretch between those two
     places (the housing and the widgets there) only keeps them open on the
-    way from one to the other, it never opens them. Omarchy's rule (the bar
-    left of the centre box) counts only while they sit inside that stretch,
-    and only left of the housing: nothing opens under the camera housing.
+    way from one to the other, it never opens them, and left of the hidden
+    ones they shut. Omarchy's rule (the bar left of the centre box) counts
+    only in Omarchy's own layout (they sit inside that stretch and Skip the
+    notch did not move their hidden ones), and only left of the housing:
+    nothing opens under the camera housing.
     Only this copy of the bar: Omarchy's own bar keeps its rule.
 
 Omarchy's Bar.qml changed in October 2026 (upstream's notch floor from
@@ -90,7 +92,7 @@ same pieces go in there: a notch role's window is its strip, the centre
 sections lie around the camera housing (centerBegin ends left of it, the
 box and centerEnd start right of it, as the centre did before), and the
 peek follows 4.5's own rule (left of the centre box) where the indicators
-sit inside that stretch, else their own place (step 10).
+sit inside that stretch, unmoved, else their own places (step 10).
 """
 import os
 import sys
@@ -976,10 +978,13 @@ def main():
   // the peek also opens over their own place and over the place Skip the
   // notch opens their hidden ones at (left of the housing); the stretch
   // between those two (the housing and the widgets there) only keeps an open
-  // peek open, on the way from one to the other. Omarchy's rule counts only
-  // while they sit inside its stretch, and only left of the housing on a bar
-  // in the notch strip: nothing opens under the housing (the pointer cannot
-  // be seen there) or in the gap between it and the centre box.
+  // peek open, on the way from one to the other, and left of the hidden ones
+  // it shuts. Omarchy's rule counts only in Omarchy's own layout (they sit
+  // inside its stretch and Skip the notch did not move their hidden ones),
+  // and only left of the housing on a bar in the notch strip: nothing opens
+  // under the housing (the pointer cannot be seen there) or in the gap
+  // between it and the centre box. With their hidden ones moved left of the
+  // housing, the left half (the workspaces) opened them from far away.
   // The bar's hover reads where they are only from notchIndicatorSpans, which
   // their slot refreshes once a move is done (their row, Skip the notch, a
   // tray's drawer pushing them, the peek's own opening): read straight from
@@ -1033,7 +1038,9 @@ def main():
     var a = Math.min(sp[0], sp[2]), b = Math.max(sp[1], sp[3])
     if (held === true && x >= a && x < b) return true
     if (win.notchLayout && x >= notchLeft) return false
-    if (a >= Number(win.peekEdge)) return false
+    // Not Omarchy's own layout: their own place right of the centre box, or
+    // their hidden ones moved (sp[2..3] is their own place again when not).
+    if (sp[2] !== sp[0] || sp[0] >= Number(win.peekEdge)) return false
     return stock
   }
   function notchHover(x) {
