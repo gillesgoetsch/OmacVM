@@ -92,7 +92,11 @@ where it is and the notch looks untouched until you point at the bar. Omarchy
 4.5's tray counts with its drawer open: it sits where the drawer opens in full,
 and does not move while the drawer slides open; what jumps left of the notch
 keeps clear of the room 4.5's hidden indicators open into there (so on a full
-bar a few more items hide there than on 4.0). The bar patch does the layout
+bar a few more items hide there than on 4.0). An item shows where it stays: one
+that grows or shrinks takes its new place at once, and one that shows up (the
+tray when its first app starts) waits unseen until its own place has been
+quiet for 150 ms (1 s at most). Only items pushed by others glide. Tray apps that start seconds
+apart can still move the tray to the other side once. The bar patch does the layout
 (`notchSkipPlace`); the app tells the VM through `/run/omacvm/host.env`
 (`OMACVM_NOTCHSKIP=1`) and `/run/omacvm/notch-skip`.
 

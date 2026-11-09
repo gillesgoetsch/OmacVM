@@ -82,6 +82,16 @@ in more words.
   mpv (a small helper of the display agent holds Omarchy's idle, ADR 0072). Update VM brings it;
   **restart Firefox once after Update VM** (a Firefox that was running during the update does not
   count until then).
+- **Omanotch** on Omarchy 4.5 with Skip the notch (#757, reported by the project owner on an M1
+  Max): the bar's layout no longer goes stale, nothing slides under the notch, and tray apps that
+  start together show the tray once, where it stays. With bar patch v39 (3.4.1), after a widget
+  was added or its settings changed, the layout could stay as it was until the pointer came onto
+  the bar (the shell log says "Binding loop detected for property notchWidths"), and a tray that
+  showed up or grew after the bar slid under the notch from right to left. Now the layout counts
+  the size each item asks for, an item that grows takes its new place at once, and a tray that
+  shows up waits unseen until its own place has been quiet for 150 ms (1 s at most). Not fixed
+  yet: tray apps that start seconds apart (often the case at login) can still show the tray right
+  of the notch first and move it left once, at once. Update VM brings it (bar patch v40).
 
 ## 3.4.1
 
