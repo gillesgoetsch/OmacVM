@@ -171,9 +171,9 @@ PIECES_45 = COMMON + [
     "hovered && root.notchPeeksAt(barWindow, parent, point.position, ",       # 10. the peek where the indicators are
     "    function onCenterSectionRevealHeldChanged() { Qt.callLater(root.notchPeekHeldTick) }\n",  # 10. ... held open
     "    onNotchPeekPlaceChanged: if (notchPeekBlock) Qt.callLater(root.notchIndicatorTick)\n",  # 10.
-    "  function notchRegistryComponent(name, entry, custom, role, ours) {\n",  # 11. NOTCH's workspaces (#760)
+    "  function notchRegistryComponent(name, entry, custom, role, ours, firstParty) {\n",  # 11. NOTCH's workspaces (#760)
     "        WidgetPool { id: horizontalPool; notchRole: barWindow.notchRole }\n",  # 11.
-    "      return root.notchRegistryComponent(registryName, w[registryName], customType, pool ? pool.notchRole : \"\", root.notchWorkspacesComponent)\n",  # 11.
+    "      return root.notchRegistryComponent(registryName, w[registryName], customType, pool ? pool.notchRole : \"\", root.notchWorkspacesComponent, firstParty)\n",  # 11.
     "skip: root.notchSkipOn, workspaces: root.notchWorkspacesFrom(),\n",  # 11.
 ]
 
@@ -613,12 +613,13 @@ def workspaces_45(text):
     return null
   }
   // The component a widget host loads: the registry's (Omarchy's binding),
-  // or ours on the NOTCH bar for Omarchy's own workspaces widget.
-  function notchRegistryComponent(name, entry, custom, role, ours) {
+  // or ours on the NOTCH bar for Omarchy's own workspaces widget. firstParty
+  // is the host's own (Omarchy's metadataFor): the same that hands the
+  // widget the bar itself, which our copy needs (notchParkedScreen).
+  function notchRegistryComponent(name, entry, custom, role, ours, firstParty) {
     if (custom) return null
     if (!entry) return null
-    if (role === "notch" && name === "omarchy.workspaces" && ours
-        && entry.metadata && entry.metadata.firstParty === true) return ours
+    if (role === "notch" && name === "omarchy.workspaces" && ours && firstParty === true) return ours
     return entry.component
   }
   // Where the NOTCH bar's workspaces widget comes from (notchbar state):
@@ -646,9 +647,16 @@ def workspaces_45(text):
     text = replace_once(text, '''        WidgetPool { id: horizontalPool }
 ''', '''        WidgetPool { id: horizontalPool; notchRole: barWindow.notchRole }
 ''')
+    # The host's firstParty (Omarchy's metadataFor) decides it with the bar it
+    # hands the widget; a bar without that property is not patched.
+    text = replace_once(text, '''    readonly property bool firstParty: registryMetadata && registryMetadata.firstParty === true
+''', '''    // omarchy-notch-bar: also whether the NOTCH bar's workspaces are the
+    // copy's (notchRegistryComponent): they need this bar itself.
+    readonly property bool firstParty: registryMetadata && registryMetadata.firstParty === true
+''')
     text = replace_once(text, '''      return w[registryName] ? w[registryName].component : null
 ''', '''      // omarchy-notch-bar: the NOTCH bar's workspaces are the copy's.
-      return root.notchRegistryComponent(registryName, w[registryName], customType, pool ? pool.notchRole : "", root.notchWorkspacesComponent)
+      return root.notchRegistryComponent(registryName, w[registryName], customType, pool ? pool.notchRole : "", root.notchWorkspacesComponent, firstParty)
 ''')
     text = replace_once(text, '''skip: root.notchSkipOn,
 ''', '''skip: root.notchSkipOn, workspaces: root.notchWorkspacesFrom(),

@@ -3885,13 +3885,15 @@ class NotchWorkspacesHook(unittest.TestCase):
 
     HOOKS = [
         "  readonly property var notchWorkspacesComponent: notchWorkspacesLoad()\n",
-        "  function notchRegistryComponent(name, entry, custom, role, ours) {\n",
+        "  function notchRegistryComponent(name, entry, custom, role, ours, firstParty) {\n",
         "  function notchWorkspacesFrom() {\n",
         "    // omarchy-notch-bar: its bar window's notch role (\"notch\" on NOTCH).\n    property string notchRole: \"\"\n",
         "        WidgetPool { id: horizontalPool; notchRole: barWindow.notchRole }\n",
         "      return root.notchRegistryComponent(registryName, w[registryName], customType, "
-        "pool ? pool.notchRole : \"\", root.notchWorkspacesComponent)\n",
+        "pool ? pool.notchRole : \"\", root.notchWorkspacesComponent, firstParty)\n",
         "skip: root.notchSkipOn, workspaces: root.notchWorkspacesFrom(),\n",
+        "    // copy's (notchRegistryComponent): they need this bar itself.\n"
+        "    readonly property bool firstParty: registryMetadata && registryMetadata.firstParty === true\n",
     ]
 
     def full(self, stock):
@@ -3938,7 +3940,7 @@ class NotchWorkspacesHook(unittest.TestCase):
         return """
 var position = "top", notchPanelOn = false, notchPanelScreen = "", notchParked = true, notchParkedScreen = "Virtual-1";
 function notchRoleFor(s) {%s}
-function notchRegistryComponent(name, entry, custom, role, ours) {%s}
+function notchRegistryComponent(name, entry, custom, role, ours, firstParty) {%s}
 """ % (function(full, "notchRoleFor"), function(full, "notchRegistryComponent"))
 
     @unittest.skipUnless(shutil.which("node"), "node not installed")
@@ -3948,8 +3950,10 @@ function notchRegistryComponent(name, entry, custom, role, ours) {%s}
 var OURS = "copy", STOCK = "omarchy", MINE = "mine";
 var omarchy = { component: STOCK, metadata: { firstParty: true } };
 var plugin = { component: MINE, metadata: { firstParty: false, pluginId: "tester.workspaces" } };
-function at(screen, name, entry, custom, ours) {
-  return notchRegistryComponent(name, entry, custom, notchRoleFor({ name: screen }), ours === undefined ? OURS : ours);
+// fp: the host's firstParty (Omarchy's metadataFor); by default what the entry says.
+function at(screen, name, entry, custom, ours, fp) {
+  if (fp === undefined) fp = !!(entry && entry.metadata && entry.metadata.firstParty === true);
+  return notchRegistryComponent(name, entry, custom, notchRoleFor({ name: screen }), ours === undefined ? OURS : ours, fp);
 }
 var out = [
   at("NOTCH", "omarchy.workspaces", omarchy, ""),                    // ours
@@ -3962,13 +3966,15 @@ var out = [
   at("NOTCH", "omarchy.clock", { component: "clock", metadata: { firstParty: true } }, ""),
   at("NOTCH", "omarchy.workspaces", omarchy, "qml"),                 // a custom widget: none, as Omarchy's
   at("NOTCH", "omarchy.workspaces", undefined, ""),                  // not in the registry: none
+  at("NOTCH", "omarchy.workspaces", omarchy, "", OURS, false),       // the host would hand it no bar: Omarchy's
+  at("NOTCH", "omarchy.workspaces", { component: STOCK }, "", OURS, true),  // the host's word counts, not the entry's
 ];
 position = "left";                                                   // no notch role off the top edge
 out.push(at("NOTCH", "omarchy.workspaces", omarchy, ""));
 console.log(JSON.stringify(out));
 """
         self.assertEqual(self.node(js), ["copy", "omarchy", "omarchy", "omarchy", "mine", "omarchy", "mine",
-                                         "clock", None, None, "omarchy"])
+                                         "clock", None, None, "omarchy", "copy", "omarchy"])
 
     @unittest.skipUnless(shutil.which("node"), "node not installed")
     def test_the_state_says_where_notchs_widget_comes_from(self):

@@ -228,7 +228,7 @@ class Copies(unittest.TestCase):
         self.assertEqual(self.entry("background").read_bytes(), self.patched("background", UP45))
         self.assertIn("notchParkedScreen", (self.copy() / "widgets/Workspaces.qml").read_text())
         # ... and the bar's NOTCH surface loads that widget (#760).
-        self.assertEqual(text.count("pool ? pool.notchRole : \"\", root.notchWorkspacesComponent)"), 1)
+        self.assertEqual(text.count("pool ? pool.notchRole : \"\", root.notchWorkspacesComponent, firstParty)"), 1)
         self.assertNotIn("NOTCH workspaces", self.check())
 
     def test_your_edits_stay_when_they_merge(self):
@@ -377,10 +377,10 @@ class Copies(unittest.TestCase):
     # step 10 either.
     STEP_11 = ("    # 11. Omarchy 4.5: the NOTCH bar's workspaces from the copy (#760).\n"
                "    if form45:\n        text = workspaces_45(text)\n",
-               '    "  function notchRegistryComponent(name, entry, custom, role, ours) {\\n",  # 11. NOTCH\'s workspaces (#760)\n',
+               '    "  function notchRegistryComponent(name, entry, custom, role, ours, firstParty) {\\n",  # 11. NOTCH\'s workspaces (#760)\n',
                '    "        WidgetPool { id: horizontalPool; notchRole: barWindow.notchRole }\\n",  # 11.\n',
                '    "      return root.notchRegistryComponent(registryName, w[registryName], customType, '
-               'pool ? pool.notchRole : \\"\\", root.notchWorkspacesComponent)\\n",  # 11.\n',
+               'pool ? pool.notchRole : \\"\\", root.notchWorkspacesComponent, firstParty)\\n",  # 11.\n',
                '    "skip: root.notchSkipOn, workspaces: root.notchWorkspacesFrom(),\\n",  # 11.\n')
     STEP_10 = ("    if form45:\n        text = peek_45(text)\n",
                '    "hovered && root.notchPeeksAt(barWindow, parent, point.position, ",       # 10. the peek where the indicators are\n',
@@ -422,7 +422,7 @@ class Copies(unittest.TestCase):
                 self.assertEqual(text.replace(mine + "  // mine: stays\n", mine), self.patched("bar", UP45).decode())
                 self.assertIn("// omarchy-notch-bar patch v%d\n" % cur, text)
                 self.assertEqual(text.count("root.notchPeeksAt(barWindow, parent, point.position, "), 1)
-                self.assertEqual(text.count("pool ? pool.notchRole : \"\", root.notchWorkspacesComponent)"), 1)
+                self.assertEqual(text.count("pool ? pool.notchRole : \"\", root.notchWorkspacesComponent, firstParty)"), 1)
                 self.assertIn("notchParkedScreen", (self.copy() / "widgets/Workspaces.qml").read_text())
                 self.assertEqual(self.check()["bar copy"][0], "ok")
                 self.assertNotIn("NOTCH workspaces", self.check())
