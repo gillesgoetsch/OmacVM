@@ -288,9 +288,26 @@ mkdir -p "$U/guest" "$T/etc/sudoers.d" "$T/etc/tmpfiles.d" "$T/etc/omacvm" "$T/r
 sed -e "s#/etc/#$T/etc/#g" -e "s#/run/#$T/run/#g" -e "s#/var/lib/pacman/#$T/pacman/#g" \
   -e 's/sleep 5$/sleep 0.1/' -e 's/sleep 5;/sleep 0.1;/' -e '/(( EUID == 0 )) ||/d' "$S" > "$U/guest/system-update"
 cp "$G" "$U/guest/"; chmod +x "$U/guest/"*
-cp "$T/bin/omarchy-update" "$T/home/.local/share/omarchy/bin/"
+# Omarchy's own steps before its work: omarchy update runs itself again
+# through script(1), which starts $SHELL -c, and 4.5 refuses an OMARCHY_PATH
+# that is not the command's checkout (omarchy-update-stay-awake).
+cat > "$T/home/.local/share/omarchy/bin/omarchy-update" <<'EOF2'
+#!/bin/bash
+if [[ -z ${OMARCHY_UPDATE_LOGGED:-} ]]; then
+  OMARCHY_UPDATE_LOGGED=1 exec "${SHELL:-/bin/sh}" -c "$(printf '%q ' "$0" "$@")"
+fi
+if [[ ${OMARCHY_PATH:-} != "$(cd "${0%/*}/.." && pwd -P)" ]]; then
+  echo "OMARCHY_PATH does not match this Omarchy command." >&2; echo; echo "Something went wrong during the update!"; exit 1
+fi
+exec "$T/bin/omarchy-update" "$@"
+EOF2
+chmod +x "$T/home/.local/share/omarchy/bin/omarchy-update"
 echo "OMACVM_USER=$(id -un)" > "$T/etc/omacvm/env"
-printf '#!/bin/bash\necho "$(id -un):x:$(id -u):$(id -g)::$T/home:/bin/bash"\n' > "$T/bin/getent"
+# The user's login shell: $T/login-shell, else bash.
+printf '#!/bin/bash\necho "$(id -un):x:$(id -u):$(id -g)::$T/home:$(cat "$T/login-shell" 2>/dev/null || echo /bin/bash)"\n' > "$T/bin/getent"
+# A login shell whose startup file sets OMARCHY_PATH to another checkout (a
+# line in zsh's .zshenv or fish's config.fish, #742).
+printf '#!/bin/bash\nexport OMARCHY_PATH=$T/home/omarchy-4.0\nexec /bin/bash "$@"\n' > "$T/bin/login-sh"
 printf '#!/bin/bash\nexit 0\n' > "$T/bin/visudo"
 printf '#!/bin/bash\n[[ -e $T/pacman-running ]] || exit 1\n[[ $1 != -ax ]] || echo "4242 pacman -S jq"\n' > "$T/bin/pgrep"
 # The unit is a background job; its -p and -E names go to $T/units.
@@ -300,7 +317,8 @@ cat > "$T/bin/systemd-run" <<'EOF2'
 if [[ " $* " == *" --unit=omacvm-system-update-session "* ]]; then
   echo "session: $*" >> "$T/units"; mkdir -p "$T/run/user/$(id -u)"; : > "$T/run/user/$(id -u)/bus"; exit 0
 fi
-envs=() posts=() out=/dev/null
+# systemd sets SHELL to the user's login shell for User=; -E comes after (wins).
+envs=("SHELL=$(getent passwd "$(id -un)" | cut -d: -f7)") posts=() out=/dev/null
 while (( $# )); do
   case $1 in
     --quiet|--unit=*|--uid=*|--gid=*) shift ;;
@@ -332,9 +350,9 @@ esac
 exit 0
 EOF2
 chmod +x "$T/bin/"*
-unit() {   # [VAR=VALUE]...: the script, no unit before it
+unit() {   # [VAR=VALUE]...: the script ($SU, else system-update), no unit before it
   : > "$T/units"; rm -f "$T/unit.pid" "$T/unit.cmd"
-  env -u OMACVM_SYSTEM_UPDATE_RUN -u OMACVM_SYSTEM_UPDATE_DIR -u OMACVM_SYSTEM_UPDATE_LOCK "$@" "$U/guest/system-update" 2>&1
+  env -u OMACVM_SYSTEM_UPDATE_RUN -u OMACVM_SYSTEM_UPDATE_DIR -u OMACVM_SYSTEM_UPDATE_LOCK "$@" "${SU:-$U/guest/system-update}" 2>&1
 }
 left() { find "$T/etc/sudoers.d" "$T/etc/tmpfiles.d" -type f; ls -d "$T/run/omacvm-system-update" 2>/dev/null; }
 
@@ -343,6 +361,7 @@ out=$(unit); rc=$?; rm -f "$T/sudoers-seen" "$T/orphans"
 [[ $rc == 0 && $(tr '\n' ' ' < "$T/calls") == "omarchy update -y gum style Orphan system packages kept zz-omacvm-update " &&
    -z $(left) && $(grep -c '== omarchy update exit 0' "$T/system-update.log") -ge 1 &&
    $(grep -c -e '-p RuntimeMaxSec=2400' -e '-p KillSignal=SIGINT' -e '-E HYPRLAND_INSTANCE_SIGNATURE' -e '-E GUM_CONFIRM_TIMEOUT' "$T/units") == 4 &&
+   $(grep -c '^-E SHELL$' "$T/units") == 1 &&
    $out == *"up to date"* ]] &&
   pass "system-update unit: sudo only while it runs, a time limit, the session's Hyprland, its exit status" ||
   fail "system-update unit: rc $rc, calls '$(tr '\n' ' ' < "$T/calls")', left '$(left)', units '$(tr '\n' ' ' < "$T/units")', said '$out'"
@@ -354,6 +373,22 @@ out=$(unit); rc=$?; rm -f "$T/sudoers-seen" "$T/orphans"
    $(grep -c '^-p ExecStopPost=+/usr/bin/systemctl stop --no-block omacvm-system-update-session' "$T/units") == 1 ]] &&
   pass "system-update unit: a session of the user's held while omarchy update runs (its bus, its runtime folder), ended after" ||
   fail "system-update unit, the user's session: units '$(tr '\n' ' ' < "$T/units")'"
+
+# The user's login shell sets OMARCHY_PATH (#742): the update runs under
+# bash, so Omarchy sees OmacVM's. Without -E SHELL the same VM fails as #742's did.
+vm; echo "$T/bin/login-sh" > "$T/login-shell"
+out=$(unit); rc=$?
+[[ $rc == 0 && $(cat "$T/calls") == "omarchy update -y" && $(grep -c 'does not match' "$T/system-update.log") == 0 ]] &&
+  pass "system-update unit: a login shell that sets OMARCHY_PATH (#742): omarchy update runs under bash, updated" ||
+  fail "system-update unit, login shell sets OMARCHY_PATH: rc $rc, calls '$(cat "$T/calls")', said '$out'"
+sed 's/ -E SHELL=[^ ]*//' "$U/guest/system-update" > "$U/guest/system-update-742"; chmod +x "$U/guest/system-update-742"
+vm; : > "$T/system-update.log"
+out=$(SU=$U/guest/system-update-742 unit); rc=$?
+[[ $(grep -c 'SHELL=' "$U/guest/system-update-742") == 0 && $rc == 1 && ! -s $T/calls &&
+   $(grep -c '^OMARCHY_PATH does not match this Omarchy command.$' "$T/system-update.log") == 1 ]] &&
+  pass "the same without -E SHELL: omarchy update refuses as in #742's log (the test sees the bug)" ||
+  fail "without -E SHELL: rc $rc, calls '$(cat "$T/calls")', log '$(tr '\n' ' ' < "$T/system-update.log")'"
+rm -f "$T/login-shell" "$U/guest/system-update-742"
 
 vm; : > "$T/bus-away"; : > "$T/update-slow"
 out=$(unit); rc=$?; rm -f "$T/update-slow"
