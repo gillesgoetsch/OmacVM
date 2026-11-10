@@ -16,7 +16,8 @@
  *                            driver: KosmicKrisp or MoltenVK ended the process or hung; or
  *                            took spirv-val past 512 MB, 2 s or the process)
  * FILE.lay: the pipeline the module was made into ("stage comp", "entry main", "bind SET
- * BINDING TYPE COUNT" for each layout binding), checked as vkr_stage_shader_ok does: the
+ * BINDING TYPE COUNT" for each layout binding, "spec ID VALUE [SIZE]" for its
+ * specialization: else the defaults count), checked as vkr_stage_shader_ok does: the
  * entry point for the stage, the workgroup size inside an Apple GPU's limits (1024 per
  * axis, 1024 in all), every set and binding the entry point's functions use in the
  * layout.

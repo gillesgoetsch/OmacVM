@@ -1,0 +1,26 @@
+stage comp
+entry main
+bind 0 0 7 1
+bind 0 1 7 1
+bind 0 2 7 1
+bind 0 3 7 1
+bind 0 4 7 1
+bind 0 5 7 1
+bind 0 6 7 1
+bind 0 7 7 1
+spec 0 128
+spec 1 1
+spec 2 32
+spec 3 128
+spec 4 128
+spec 5 0
+spec 6 4
+spec 7 1
+spec 8 32
+spec 9 0
+spec 10 0
+spec 11 0
+spec 12 1
+spec 13 1
+spec 14 2
+spec 15 2

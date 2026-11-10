@@ -5,8 +5,9 @@ driver, no GPU; STANDARDS 14b: invalid and hostile modules never reach a real dr
 
 `pass/`: real modules; each must pass vkr's scan, the interface limits, spirv-val for
 both Mac drivers' targets, the element and Workgroup byte caps and, with a `.lay` beside
-it, the pipeline checks (on MoltenVK under a Vulkan 1.0 or 1.1 app, `mvk11`, those past
-SPIR-V 1.4 must be refused by spirv-val instead). 144 modules:
+it, the pipeline checks (its `spec ID VALUE [SIZE]` lines specialize it as the app does;
+without them the defaults count) (on MoltenVK under a Vulkan 1.0 or 1.1 app, `mvk11`, those past
+SPIR-V 1.4 must be refused by spirv-val instead). 152 modules:
 
 | Prefix | Modules | From | Licence |
 |---|---|---|---|
@@ -18,9 +19,10 @@ SPIR-V 1.4 must be refused by spirv-val instead). 144 modules:
 | `zink-` | 6 | Zink's modules for glxgears in an OmacVM.app test VM (`ZINK_DEBUG=spirv`, KosmicKrisp, 2026-11-04) | MIT (Mesa's Zink) |
 | `naga-zed-` | 24 | Zed 1.27.0's gpui_wgpu shaders as wgpu 30 (Zed's pinned rev cddb2f5d) has naga write them for vkCreateShaderModule: SPIR-V 1.6 (a Vulkan 1.3+ device: the storage set and subpixel text) and 1.4 (quad, paths, subpixel text); naga puts Offset/ArrayStride on the types of Function variables (#710, gfx-rs/wgpu#7696) | Apache-2.0 (gpui_wgpu's LICENSE-APACHE); the contrast functions MIT (Microsoft Terminal, noted in shaders.wgsl) |
 | `naga-wgpu-` | 30 | wgpu 30's own example shaders (same rev) through naga: 22 at SPIR-V 1.6, 8 at 1.4 | MIT or Apache-2.0 (wgpu's LICENSE.MIT / LICENSE.APACHE) |
+| `ggml-b11791-` | 8 | llama.cpp b11791's ggml-vulkan shaders, taken out of its published `libggml-vulkan.so` (ubuntu-vulkan-arm64; glslang): matmul, matmul_id, matmul_id_subgroup, conv2d, conv_transpose_2d, ssm_scan, fwht, flash_attn (its `.lay` gives ggml's 16 spec constants, head size 128). Array lengths from spec constant operations (#624, 3.4.5): all 8 were refused before | MIT (llama.cpp's LICENSE) |
 
 A `NAME.vs.spv` is the vertex shader a `.lay` pipeline pairs a fragment shader with: 16
-more files, 6 different ones; the test runs them as real modules too (160 files in all).
+more files, 6 different ones; the test runs them as real modules too (168 files in all).
 
 The pass corpus is kept per shader compiler, at each SPIR-V version it writes, so that a
 new spirv-val rule that a real compiler breaks shows here before a release (#710: naga's
