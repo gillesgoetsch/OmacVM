@@ -270,6 +270,10 @@ fresh; printf 'hl.gesture({ fingers = 4, direction = "vertical", action = "works
 out=$(bash "$I" me on); rc=$?
 expect "own vertical line: refused, says where" "1 yes" "$rc $(yes_no grep -q '~/.config/hypr/input.lua:2' <<<"$out")"
 expect "own vertical line: nothing written, not enabled" "no no no" "$(there "$P") $(there "$MARK") $(enabled)"
+# One with a modifier (mods =) is another gesture: not refused.
+fresh; printf 'hl.gesture({ fingers = 4, direction = "vertical", mods = "SUPER", action = "workspace" })\n' >> "$H/.config/hypr/input.lua"
+bash "$I" me on >/dev/null
+expect "own vertical line with mods: on works" "yes yes" "$(enabled) $(there "$MARK")"
 # One added after it was on: the check warns.
 sed -i.bak '$d' "$H/.config/hypr/input.lua"; bash "$I" me on >/dev/null
 printf 'hl.gesture({ fingers = 4, direction = "up", action = "fullscreen" })\n' >> "$H/.config/hypr/input.lua"

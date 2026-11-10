@@ -419,7 +419,7 @@ takes it with them.
   ```
 
 - A four-finger up or down gesture of your own (an `hl.gesture` line with 4
-  fingers and a vertical direction in `~/.config/hypr`) takes the same swipe:
+  fingers, a vertical direction and no `mods` in `~/.config/hypr`) takes the same swipe:
   Hyprland keeps yours, without an error. Switching Mission Control on then
   stops and names the file and line; one added later makes `omacvm check`
   warn (⌃↑ still opens it). A config error Hyprland does report once it is on

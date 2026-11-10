@@ -139,13 +139,15 @@ paging() {
 }
 
 # A four-finger up or down (or any-way) swipe of the user's own in
-# ~/.config/hypr, one hl.gesture line, read as the user: Hyprland keeps it
+# ~/.config/hypr, one hl.gesture line without mods (one with a modifier is
+# another gesture), read as the user: Hyprland keeps it
 # over the plugin's without a config error (0.56.2: the swipe switched
 # workspaces and the overview stayed shut). Prints FILE:LINE.
 own_vertical() {
   home_run grep -rnE --include='*.lua' '^[[:space:]]*hl\.gesture[[:space:]]*\(' "$H/.config/hypr" < /dev/null 2>/dev/null |
     grep -E 'fingers[[:space:]]*=[[:space:]]*4([^0-9]|$)' |
-    grep -E 'direction[[:space:]]*=[[:space:]]*"(vertical|vert|up|u|down|d|swipe)"' | head -n 1 | cut -d: -f1,2 |
+    grep -E 'direction[[:space:]]*=[[:space:]]*"(vertical|vert|up|u|down|d|swipe)"' |
+    grep -vE 'mods[[:space:]]*=' | head -n 1 | cut -d: -f1,2 |
     sed "s|^$H/|~/|"
 }
 
