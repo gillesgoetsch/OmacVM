@@ -49,5 +49,5 @@ public enum MissionControl {
     }
 
     /// The (i) text of the window's row.
-    public static let info = "Experimental. Swipe up with four fingers in the full-screen VM and its windows spread out, with your workspaces along the top; four fingers down close it. While it is open, four fingers sideways (two on a Magic Mouse) go through your workspaces; click a window to go to it, or drag it onto a workspace to move it there. ⌃↑ opens it too when Every key combination to the VM is on (otherwise macOS keeps ⌃↑). In a window, macOS's own Mission Control answers. Needs Trackpad gestures and Omarchy 4.5. The Mac Mission Control plugin by Gilles Goetsch (MIT)."
+    public static let info = "Experimental. Swipe up with four fingers in the full-screen VM and its windows spread out, with your workspaces along the top; four fingers down close it. While it is open, four fingers sideways (two on a Magic Mouse) go through your workspaces; click a window to go to it, or drag it onto a workspace to move it there. ⌃↑ stays macOS's Mission Control unless every key combination goes to the VM (a hidden setting, see the docs). In a window, macOS's own Mission Control answers. Needs Trackpad gestures and Omarchy 4.5. The Mac Mission Control plugin by Gilles Goetsch (MIT)."
 }

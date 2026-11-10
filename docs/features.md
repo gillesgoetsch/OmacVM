@@ -395,7 +395,7 @@ takes it with them.
 | a window dragged onto a workspace | moves it there (`+`: a new workspace) |
 | a workspace dragged sideways | reorders them |
 | Esc, a click on the wallpaper | close |
-| ⌃↑ | open or close, only with **Every key combination to the VM** on (otherwise macOS keeps ⌃↑ for its own Mission Control) |
+| ⌃↑ | open or close, only while every key combination goes to the VM (a hidden setting, [Every key combination to the VM](#full-screen-and-the-escape-keys)); otherwise macOS keeps ⌃↑ for its own Mission Control |
 
 - In a window, or with the VM not in front, macOS gets the trackpad: four
   fingers up is macOS's own Mission Control.
@@ -406,9 +406,11 @@ takes it with them.
   (`hl.gesture({ fingers = 4, direction = "horizontal", action = "workspace" })`)
   while it is open, and gives it back after. If you changed or moved that
   line, the plugin leaves it alone and paging is off; `omacvm check` says so.
+- While it is on, Linux apps no longer get ⌃↑ (Ctrl+Up): the plugin binds
+  `CTRL + UP` in Hyprland. The keys setting below changes that.
 - Its settings are the plugin's own (`mac_mission_control_config`, see its
-  README); OmacVM sets none. A key that reaches the VM without Every key
-  combination, in `~/.config/hypr/hyprland.lua`, then `hyprctl reload` (this
+  README); OmacVM sets none. A key that reaches the VM without the hidden
+  setting, in `~/.config/hypr/hyprland.lua`, then `hyprctl reload` (this
   list replaces the plugin's keys; Super+Ctrl+Up is free in Omarchy 4.5, ⌘⌃↑
   on the Mac):
 
