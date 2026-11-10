@@ -18,7 +18,12 @@ in more words.
   refused before; with their default values 8 are now (flash attention, whose defaults give an
   empty array; ggml always sets them, and with its head sizes they pass). Workgroup arrays of
   such a size are counted at their real size against the GPU's shared memory (before they
-  counted as one element). A pipeline that gives the same specialization constant twice is
+  counted as one element). Workgroup arrays and shader input and output arrays of such a size
+  that OmacVM does not work out (VectorShuffle, CompositeInsert, QuantizeToF16, a 64-bit
+  specialization constant, a part taken from a composite of other than 3 parts) or that is no
+  valid size are now refused, input and output ones already at `vkCreateShaderModule` when
+  the size does not depend on the app's specialization; before they passed as one element.
+  None of the 1267 ggml shaders has one. A pipeline that gives the same specialization constant twice is
   refused (Vulkan forbids it; vkr and MoltenVK could read different values).
 
 ## 3.4.4
