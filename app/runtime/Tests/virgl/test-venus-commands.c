@@ -1501,8 +1501,11 @@ static int case_pipeline(const char *c)
                                                   .pPipelineStageCreationFeedbacks = stages };
       if (IS("p-spec-oob"))
          return created(compute_pipeline(w.layout, mod, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_far, NULL));
-      if (IS("p-spec-wrap"))
-         return created(compute_pipeline(w.layout, mod, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_wrap, NULL));
+      /* constantID 0 in two entries (VUID-VkSpecializationInfo-constantID-04911) */
+      static const VkSpecializationMapEntry dup_entries[2] = { { 0, 0, 4 }, { 0, 0, 4 } };
+      static const VkSpecializationInfo spec_dup = { 2, dup_entries, 4, &spec_local_size };
+      if (IS("p-spec-dup-id"))
+         return created(compute_pipeline(w.layout, mod, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_dup, NULL));
       if (IS("p-stage-null-module"))
          return created(compute_pipeline(w.layout, NULL, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
       if (IS("p-inline-spirv-ok"))
@@ -7911,6 +7914,7 @@ static const struct test_case cases[] = {
    /* pipelines, layouts, stages */
    { "p-ok", E_WORKS }, { "p-gfx-ok", E_WORKS }, { "p-cache-garbage", E_KEEP }, { "p-cache-header", E_KEEP },
    { "p-spec-oob", E_REFUSE }, { "p-spec-wrap", E_REFUSE },
+   { "p-spec-dup-id", E_REFUSE, "specialization constant 0 in two entries" },
    { "p-stage-null-module", E_REFUSE }, { "p-inline-spirv-odd", E_REFUSE }, { "p-inline-spirv-ok", E_WORKS },
    { "p-compute-stage-wrong", E_REFUSE }, { "p-stage-bits-bad", E_REFUSE }, { "p-robustness-bad", E_REFUSE },
    { "p-compute-feedback-far", E_REFUSE },

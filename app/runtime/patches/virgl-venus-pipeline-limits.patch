@@ -42,7 +42,7 @@ index 00d30cb..25008cb 100644
  
  static void
  vkr_dispatch_vkCreateShaderModule(struct vn_dispatch_context *dispatch,
-@@ -195,6 +196,316 @@ vkr_pipeline_set_bind_point(struct object_array *arr, VkPipelineBindPoint bind_p
+@@ -195,6 +196,347 @@ vkr_pipeline_set_bind_point(struct object_array *arr, VkPipelineBindPoint bind_p
     }
  }
  
@@ -140,8 +140,16 @@ index 00d30cb..25008cb 100644
 +                 (uint32_t)r->images <= VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS_2);
 +}
 +
++static int
++vkr_cmp_u32(const void *a, const void *b)
++{
++   const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
++   return x < y ? -1 : x > y;
++}
++
 +/* a stage: one bit of the allowed ones, code (a module, or SPIR-V chained into it whose
-+ * size the decoder copied whole), an entry name, specialization entries inside its data */
++ * size the decoder copied whole), an entry name, specialization entries inside its data,
++ * each constant once */
 +static bool
 +vkr_stage_ok(const VkPipelineShaderStageCreateInfo *st,
 +             VkShaderStageFlags allowed,
@@ -168,6 +176,29 @@ index 00d30cb..25008cb 100644
 +      if (!vkr_range_ok(e->offset, e->size, spec->dataSize)) {
 +         snprintf(why, why_size, "stage 0x%x: specialization entry %u, %zu bytes at %u of %zu",
 +                  st->stage, i, e->size, e->offset, spec->dataSize);
++         return false;
++      }
++   }
++   /* each constantID once (VUID-VkSpecializationInfo-constantID-04911): vkr's SPIR-V scan
++    * reads an id's first entry, a driver may read another (MoltenVK sorts them by value) */
++   if (spec && spec->mapEntryCount > 1) {
++      uint32_t *ids = malloc(sizeof(*ids) * spec->mapEntryCount);
++      if (!ids) {
++         snprintf(why, why_size, "stage 0x%x: out of host memory", st->stage);
++         return false;
++      }
++      for (uint32_t i = 0; i < spec->mapEntryCount; i++)
++         ids[i] = spec->pMapEntries[i].constantID;
++      qsort(ids, spec->mapEntryCount, sizeof(*ids), vkr_cmp_u32);
++      uint32_t i = 1;
++      while (i < spec->mapEntryCount && ids[i] != ids[i - 1])
++         i++;
++      const bool twice = i < spec->mapEntryCount;
++      const uint32_t id = twice ? ids[i] : 0;
++      free(ids);
++      if (twice) {
++         snprintf(why, why_size, "stage 0x%x: specialization constant %u in two entries",
++                  st->stage, id);
 +         return false;
 +      }
 +   }
@@ -359,7 +390,7 @@ index 00d30cb..25008cb 100644
  static void
  vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
                                         struct vn_command_vkCreateGraphicsPipelines *args)
-@@ -204,6 +515,16 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+@@ -204,6 +546,16 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
     struct vkr_device *dev = vkr_device_from_handle(args->device);
     struct object_array arr;
  
@@ -376,7 +407,7 @@ index 00d30cb..25008cb 100644
     if (vkr_graphics_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
        return;
  
-@@ -220,6 +541,26 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+@@ -220,6 +572,26 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
     struct vkr_device *dev = vkr_device_from_handle(args->device);
     struct object_array arr;
  
