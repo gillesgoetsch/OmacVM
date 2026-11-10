@@ -20,6 +20,10 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   "OMARCHY_PATH does not match this Omarchy command."**: a line in your
   shell's startup files sets `OMARCHY_PATH`. See
   [62](#62-omarchy_path-does-not-match-this-omarchy-command-omarchy-45).
+- **Windows stay invisible, or Mission Control's overview stays on the
+  screen** (Mission Control on): switch it off in the app's VM window, or
+  `omacvm apply --reinstall mission-control --vm NAME`. See
+  [63](#63-mission-control-windows-stay-hidden-or-the-overview-stays-on-the-screen).
 - **The Omarchy menu's Nightlight tints the VM, the Mac's Night Shift does
   not change** (Bridge on; up to 3.4.1): Omarchy puts its own commands first
   on the desktop's PATH, so its own night light (hyprsunset) ran instead of
@@ -1981,3 +1985,21 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 - **Where:** `src/guest/system-update` (`run_unit`, `-E SHELL`),
   `src/guest/omarchy-move.sh` (`update_why`); tests `src/tests/pkg-safe.sh`,
   `src/tests/omarchy-move.sh`.
+
+## 63. Mission Control: windows stay hidden, or the overview stays on the screen
+
+- **Symptom:** with Mission Control on, the windows are gone after the
+  overview, or the overview stays on the screen and does not answer.
+  `omacvm check` fails on its "Mission Control" line ("windows left hidden",
+  or "the Omarchy shell does not answer").
+- **Cause:** while the overview is open the plugin hides the real windows
+  and shows live copies. The windows come back when the overview closes or
+  when the Omarchy shell goes away; a shell that hangs (does not answer, but
+  still runs) keeps the overview on the screen and the windows hidden.
+- **Fix:** switch **Mission Control** off in the app's VM window (Input), or
+  on the Mac `omacvm apply --reinstall mission-control --vm NAME`. Both show the
+  windows again (the plugin's own reset) and restart a shell that does not
+  answer; while Hyprland holds a session lock they say to unlock first. In
+  the VM, `hyprctl eval 'mac_mission_control.reset()'` shows the windows.
+- **Where:** `src/missioncontrol/guest/install.sh` (`--repair`, `off`,
+  `--status`); tests `src/missioncontrol/tests/run.sh`.

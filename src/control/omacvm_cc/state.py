@@ -255,10 +255,35 @@ def parse_mac_checks(items: list[dict]) -> list[Check]:
 
 # ---- rules ----
 
-def local_avail(f: Feature, vm_type: str) -> Avail | None:
-    """What the VM knows by itself; None: only the Mac can tell."""
+OMARCHY_45_REASON = "needs Omarchy 4.5 (Move to Omarchy 4.5 in OmacVM.app)"
+
+
+def omarchy_below_45(version: str) -> bool:
+    """Omarchy's version (the VM's omarchy package, or the VM folder's omarchy
+    record on the Mac) is below 4.5. The same rule as src/lib/features.sh's
+    omarchy_below_45 and OmacVM.app's OmarchyMove.Record: the first word,
+    the first two numbers in it. Nothing, "none" or a word that is no
+    version: not below (the switch itself decides)."""
+    words = (version or "").split()
+    if not words:
+        return False
+    w = words[0]
+    if w == "none" or len(w) > 40 or not re.fullmatch(r"[A-Za-z0-9._+-]+", w):
+        return False
+    n = [int(x) for x in re.findall(r"[0-9]+", w)[:2]]
+    if not n:
+        return True
+    major, minor = n[0], (n[1] if len(n) > 1 else 0)
+    return major < 4 or (major == 4 and minor < 5)
+
+
+def local_avail(f: Feature, vm_type: str, omarchy: str = "") -> Avail | None:
+    """What the VM knows by itself; None: only the Mac can tell. omarchy:
+    the VM's Omarchy version ("" not known)."""
     if "app-only" in f.tags and vm_type != "app":
         return Avail(False, "OmacVM.app only")
+    if "omarchy-45" in f.tags and omarchy_below_45(omarchy):
+        return Avail(False, OMARCHY_45_REASON)
     return None
 
 
@@ -424,18 +449,23 @@ def build_rows(features: list[Feature], on: dict[str, bool], *, vm_type: str = "
                jobs: list[Job] | None = None, installed: dict | None = None,
                offer: dict | None = None, mac_features: set[str] | None = None,
                show_updates: bool = True, fixed: dict[str, str] | None = None,
-               next_start: set[str] | None = None) -> list[Row]:
+               next_start: set[str] | None = None, omarchy: str = "") -> list[Row]:
     """The features screen. mac_features: what the Mac's OmacVM knows (None:
     not known); a feature it lacks is unavailable until the Mac is updated.
     show_updates False (update checks off): no update marks, but an update
     that runs still shows on the features it changes. fixed: the features
     whose record the Mac fixed to their real state (omacvm features --json
     "fixed"); on must already say that state. next_start: the features that
-    are on but in use only from the VM's next start."""
+    are on but in use only from the VM's next start. omarchy: the VM's
+    Omarchy version; below 4.5 an omarchy-45 feature is unavailable, whatever
+    the Mac said (its record may be older than a move)."""
     active = [j for j in (jobs or []) if j.active]
     rows = []
     for f in features:
-        a = (avail or {}).get(f.name) or local_avail(f, vm_type)
+        loc = local_avail(f, vm_type, omarchy)
+        a = (avail or {}).get(f.name) or loc
+        if loc is not None and not loc.ok and "omarchy-45" in f.tags:
+            a = loc
         if mac_features is not None and f.name not in mac_features and "mac" in f.sides:
             a = Avail(False, "the Mac's OmacVM is older: update it")
         update = part_changed(f.name, installed or {}, offer or {})

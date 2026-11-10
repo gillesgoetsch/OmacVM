@@ -189,6 +189,13 @@ step_check() {
   if gitr show "origin/$head:README.md" | grep -i '(pending' >/dev/null; then   # not -q: see SIGPIPE above
     (( DRY )) && note "README still marks items as pending" || fail "README still marks items as pending"
   fi
+  # The Mission Control plugin goes out at one of its released tags, never a
+  # commit before its release (src/missioncontrol/sync.sh TAG).
+  if gitr cat-file -e "origin/$head:src/missioncontrol/PIN" 2>/dev/null &&
+     ! gitr show "origin/$head:src/missioncontrol/PIN" | "$R/src/missioncontrol/sync.sh" --released >/dev/null 2>&1; then
+    (( DRY )) && note "src/missioncontrol/PIN on $head is no released plugin tag" ||
+      fail "src/missioncontrol/PIN on $head is no released plugin tag (src/missioncontrol/sync.sh TAG)"
+  fi
   if [[ -f $NOTES ]]; then
     grep -qi 'pending' "$NOTES" && { (( DRY )) && note "release text still marks items as pending" || fail "release text still has pending items ($NOTES)"; }
   else

@@ -75,6 +75,7 @@ feature_flag() {   # NAME on|off
     vulkan) [[ $2 == off ]] || usage "Vulkan goes on after the build: omacvm enable vulkan --vm NAME" ;;
     mac-ime) [[ $2 == off ]] || usage "the Mac's input methods go on after the build: omacvm enable mac-ime --vm NAME" ;;
     drag-drop) [[ $2 == off ]] || usage "drag and drop goes on after the build: omacvm enable drag-drop --vm NAME" ;;
+    mission-control) [[ $2 == off ]] || usage "Mission Control goes on after the build: omacvm enable mission-control --vm NAME" ;;
     *) usage "unknown feature '$1' (omacvm features lists them)" ;;
   esac
   [[ $2 == on || $2 == off ]] || usage "--feature $1=$2: on or off"
@@ -297,6 +298,7 @@ explain_features() {
   local i v state
   for ((i = 0; i < ${#FN[@]}; i++)); do
     feature_has_tag "$i" app-only && continue
+    feature_has_tag "$i" omarchy-45 && continue
     v=$(fget "${FN[$i]}")
     state=$( ((v)) && echo on || echo off)
     [[ ${FN[$i]} == no-idle-lock ]] && state=$( ((v)) && echo "on, the Mac's lock" || echo "off, Omarchy's own")
@@ -308,8 +310,9 @@ explain_features() {
 if (( ! YES )); then
   UI_KEYS=(); UI_LABELS=(); UI_DETAILS=(); UI_ON=(); UI_TAG=(); UI_OFF_REASON=(); UI_NEEDS=()
   for ((i = 0; i < ${#FN[@]}; i++)); do
-    # Opt-in after the build (omacvm enable): the fast network.
+    # Opt-in after the build (omacvm enable): the fast network, Mission Control.
     feature_has_tag "$i" app-only && continue
+    feature_has_tag "$i" omarchy-45 && continue
     UI_KEYS+=("${FN[$i]}"); UI_LABELS+=("${FTITLE[$i]}"); UI_DETAILS+=("${FSUM[$i]}")
     UI_ON+=("$(fget "${FN[$i]}")")
     t=""; feature_has_tag "$i" experimental && t=experimental; feature_has_tag "$i" slow && t=slow

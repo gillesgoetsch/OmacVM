@@ -1,0 +1,6 @@
+# The Mac Mission Control plugin OmacVM ships (feature mission-control): the files of
+# this commit of its repository, byte for byte (SHA256SUMS). Never edited here: a change
+# goes to the plugin's repository, then src/missioncontrol/sync.sh pins the new tag.
+repo https://github.com/gillesgoetsch/omarchy-mac-mission-control.git
+tag v1.0.1
+commit 3ea3858cc52e34dd805df931ee903f5368ef6f89

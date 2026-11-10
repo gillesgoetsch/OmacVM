@@ -3,11 +3,14 @@
 # follow. One feature per line, tab-separated:
 #   name  default (on|off|notch: on with a notch|laptop: on with a battery)  sides (mac,vm)  tags  needs  title  summary
 # Tags: experimental, slow (switching it on is a build in the VM: minutes to over an hour, by CPUs; shown in words while off, never as "slow"), notch (needs a MacBook with a notch),
-# laptop (needs a Mac with a battery), app-only (OmacVM.app's VMs only; every VM is one since 3.4.0).
+# laptop (needs a Mac with a battery), app-only (OmacVM.app's VMs only; every VM is one since 3.4.0),
+# omarchy-45 (needs Omarchy 4.5 or newer in the VM: the VM folder's omarchy record on the Mac, `pacman -Q omarchy`
+# in the VM; no record yet: the VM decides).
 bridge	on	mac,vm	-	-	OmacVM Bridge	the Mac's Wi-Fi, Bluetooth, audio, Night Shift and media keys in Omarchy's bar
 wallpaper	on	vm	-	bridge	Wallpaper on the Mac	Omarchy's wallpaper becomes the Mac's, following the theme
 gestures	on	mac,vm	-	-	Trackpad gestures	3/4-finger swipes and pinch in Omarchy while it is full screen (⌃⌥ Esc takes you back to macOS and into the VM again), and Cmd shortcuts as Super
 scroll-momentum	on	mac,vm	experimental	gestures	macOS-native scroll momentum	two-finger scrolling on a trackpad (built-in or Magic Trackpad, also one connected later) with your Mac's own acceleration and momentum; mice scroll as before, one step per notch
+mission-control	off	vm	experimental,omarchy-45	gestures	Mission Control	four fingers up spread out the windows of each display, with its workspaces along the top, as on the Mac; four fingers down close it, and while it is open four fingers sideways go through the workspaces (the VM in full screen; Omarchy 4.5; the Mac Mission Control plugin by Gilles Goetsch)
 omanotch	notch	mac,vm	notch	-	Omanotch	Omarchy's bar beside the MacBook's notch
 mac-clock	on	mac,vm	-	-	The Mac's clock	the clock at the far right of the bar, formatted like the Mac's menu bar
 camera	on	mac,vm	-	-	The Mac's camera	Linux apps and video calls in the browser see it as Mac Camera; it is on only while one of them uses it

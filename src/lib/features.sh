@@ -85,9 +85,29 @@ feature_default() {
   esac
 }
 
-# Can feature INDEX be on, on this Mac for a VM of TYPE? Status 1 and REASON if not.
+# omarchy_below_45 VM_DIR: the VM folder's omarchy record (apply writes it,
+# guest/omarchy-move.sh record) names an Omarchy below 4.5. The same rule as
+# OmacVM.app's OmarchyMove.Record (parse, then isMoved) and the control
+# centre's state.omarchy_below_45: the first word, the first two numbers in
+# it. No record, "none" or a word that is no version: not below (the VM
+# decides at the switch).
+omarchy_below_45() {
+  local v="" maj min
+  [[ -n ${1:-} && -f $1/omarchy ]] || return 1
+  read -r v _ < "$1/omarchy" 2>/dev/null || true
+  [[ -n $v && $v != none && ${#v} -le 40 && $v =~ ^[A-Za-z0-9._+-]+$ ]] || return 1
+  [[ $v =~ ^[^0-9]*([0-9]+)([^0-9]+([0-9]+))? ]] || return 0
+  maj=${BASH_REMATCH[1]} min=${BASH_REMATCH[3]:-0}
+  (( 10#$maj < 4 || (10#$maj == 4 && 10#$min < 5) ))
+}
+
+# Can feature INDEX be on, on this Mac for a VM of TYPE (and the VM folder
+# FEATURES_VM_DIR, when known)? Status 1 and REASON if not.
 feature_available() {
   REASON=""
+  if feature_has_tag "$1" omarchy-45 && omarchy_below_45 "${FEATURES_VM_DIR:-}"; then
+    REASON="needs Omarchy 4.5 (Move to Omarchy 4.5 in OmacVM.app)"; return 1
+  fi
   if feature_has_tag "$1" notch && [[ ${NOTCH:-none} != notch ]]; then REASON="needs a MacBook with a notch"; return 1; fi
   if feature_has_tag "$1" laptop && [[ $(mac_battery) != yes ]]; then REASON="needs a Mac with a battery"; return 1; fi
   if feature_has_tag "$1" app-only && [[ -n ${TYPE:-} && $TYPE != app ]]; then REASON="OmacVM.app only"; return 1; fi
