@@ -22,6 +22,14 @@ expect "PIN: a full commit" yes "$(yes_no grep -Eq '^commit [0-9a-f]{40}$' "$M/P
 tag=$(sed -n 's/^tag //p' "$M/PIN")
 expect "PIN: a tag line (a release, or - before one)" yes "$(yes_no grep -Eq '^(-|v?[0-9]+\.[0-9]+(\.[0-9]+)?)$' <<<"$tag")"
 [[ $tag == - ]] && echo "note pinned to a commit that is no released tag yet: pin one before a release (sync.sh TAG)"
+# release.sh's check refuses a PIN without a released tag (sync.sh --released).
+for t in "v1.0.1 yes" "1.0.1 yes" "- no" "main no"; do
+  printf 'repo x\ntag %s\ncommit %040d\n' "${t% *}" 0 > "$T/PIN"
+  expect "release check: tag ${t% *}" "${t#* }" "$(yes_no eval '"$M/sync.sh" --released < "$T/PIN" >/dev/null 2>&1')"
+done
+expect "release check: a PIN without a tag line" no "$(yes_no eval 'printf "repo x\n" | "$M/sync.sh" --released >/dev/null 2>&1')"
+[[ $tag == - ]] && expect "release check: this PIN (tag -) is refused" no "$(yes_no eval '"$M/sync.sh" --released < "$M/PIN" >/dev/null 2>&1')"
+grep -q 'missioncontrol/sync.sh" --released' "$R/release/release.sh"; expect "release.sh's check step asks sync.sh --released" 0 "$?"
 expect "the copy's files are the ones SHA256SUMS lists" \
   "$(awk '{ print $2 }' "$M/SHA256SUMS" | LC_ALL=C sort)" "$(cd "$PLUG" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)"
 expect "every file has its pinned sha256" yes "$(yes_no eval '(cd "$PLUG" && sha -c "$M/SHA256SUMS") >/dev/null 2>&1')"

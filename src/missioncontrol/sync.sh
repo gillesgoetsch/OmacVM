@@ -7,6 +7,7 @@
 #   sync.sh --commit SHA   pin a commit that is no tag yet (a release not out)
 #   sync.sh --check        the pinned commit and tag as they are on GitHub, and
 #                          the files here the same as at that commit
+#   sync.sh --released     a PIN on stdin names a released tag (release.sh)
 # Prints `git diff --stat` from the previous pin to the new one, for the pull
 # request. Refuses a tag that no longer points at the pinned commit (--check)
 # and a commit that is not the tag's.
@@ -14,9 +15,17 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 PIN=$here/PIN SUMS=$here/SHA256SUMS DEST=$here/plugin/mac.missioncontrol
 FILES=(manifest.json MissionControl.qml Layout.js shadow.frag.qsb hypr/mac-mission-control.lua LICENSE)
-usage() { echo "usage: sync.sh TAG | --commit SHA | --check" >&2; exit 2; }
+usage() { echo "usage: sync.sh TAG | --commit SHA | --check | --released < PIN" >&2; exit 2; }
 pin() { sed -n "s/^$1 //p" "$PIN" | head -n 1; }
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+
+# --released: the PIN on stdin names a released tag (release.sh's check
+# step: a release never ships a commit before the plugin's release).
+if [[ ${1:-} == --released ]]; then
+  t=$(sed -n 's/^tag //p')
+  [[ $t =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] && { echo "ok   the plugin is pinned at its release $t"; exit 0; }
+  echo "the plugin is pinned at a commit that is no release (tag ${t:-none}): sync.sh TAG" >&2; exit 1
+fi
 
 REPO=$(pin repo); OLD=$(pin commit); OLD_TAG=$(pin tag)
 [[ $REPO == https://github.com/gillesgoetsch/omarchy-mac-mission-control.git ]] || { echo "sync.sh: PIN names no known repo: $REPO" >&2; exit 1; }
