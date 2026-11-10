@@ -572,6 +572,21 @@ if [[ $GLIDE == on && $GESTURES == on ]]; then
     ok "scroll settings" "omacvm_glide.lua"
   else bad "scroll settings" "omacvm_glide.lua missing or not loaded from hyprland.lua (omacvm enable scroll-momentum)"; fi
 else skip "scroll momentum" "off (omacvm enable scroll-momentum turns it on: trackpads only)"; fi
+# Mission Control (mission-control, the Mac Mission Control plugin): in place,
+# enabled, its Hyprland half loaded; fails when windows stay hidden or the
+# overview stays on screen while the overview is closed or its shell does
+# not answer (the repair: omacvm apply --only mission-control).
+FEATURE=mission-control
+mc=$(/usr/local/share/omacvm/missioncontrol/guest/install.sh "$U" --status "${OMACVM_FEATURE_mission_control:-off}" 2>/dev/null | tail -n 1)
+case ${mc%% *} in
+  ok) ok "Mission Control" "${mc#* }" ;;
+  warn) warn "Mission Control" "${mc#* }" ;;
+  fail) bad "Mission Control" "${mc#* }" ;;
+  human) skip "Mission Control" "${mc#* }" human ;;
+  skip) skip "Mission Control" "${mc#* }" ;;
+  *) [[ ${OMACVM_FEATURE_mission_control:-off} == on ]] && bad "Mission Control" "its check did not answer: omacvm apply" ||
+       skip "Mission Control" "off (experimental: omacvm enable mission-control)" ;;
+esac
 FEATURE=""
 if [[ $GESTURES == on ]]; then
   check "Cmd as Super" "OmacVM keyboard (Mac shortcuts)" ev_device "OmacVM keyboard (Mac shortcuts)"
