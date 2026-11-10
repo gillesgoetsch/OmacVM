@@ -183,6 +183,53 @@ static const uint32_t spv_comp[] = {
    0x00000012, 0x00060041, 0x00000015, 0x00000016, 0x0000000a, 0x0000000c, 0x00000013, 0x0003003e,
    0x00000016, 0x00000014, 0x000100fd, 0x00010038,
 };
+/* glslc -fshader-stage=comp -O0 --target-env=vulkan1.0 (shaderc v2026.4, spirv-val clean) of a
+ * Function array whose length is a spec constant operation, as ggml's (#624):
+ *   layout(local_size_x = 1) in;
+ *   layout(constant_id = 6) const uint A = 2;
+ *   layout(constant_id = 7) const uint B = 4;
+ *   layout(constant_id = 8) const uint D = 1;
+ *   layout(set = 0, binding = 2) buffer S { float s[]; };
+ *   void main() { float x[A * B / D]; x[gl_LocalInvocationID.x % (A * B / D)] = 1.0; s[0] = x[0]; } */
+static const uint32_t spv_specop[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x00000029, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0006000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x00000012, 0x00060010, 0x00000004,
+   0x00000011, 0x00000001, 0x00000001, 0x00000001, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004,
+   0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365,
+   0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572,
+   0x00657669, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00030005, 0x00000008, 0x00000041,
+   0x00030005, 0x00000009, 0x00000042, 0x00030005, 0x0000000b, 0x00000044, 0x00030005, 0x0000000f,
+   0x00000078, 0x00080005, 0x00000012, 0x4c5f6c67, 0x6c61636f, 0x6f766e49, 0x69746163, 0x44496e6f,
+   0x00000000, 0x00030005, 0x0000001e, 0x00000053, 0x00040006, 0x0000001e, 0x00000000, 0x00000073,
+   0x00030005, 0x00000020, 0x00000000, 0x00040047, 0x00000008, 0x00000001, 0x00000006, 0x00040047,
+   0x00000009, 0x00000001, 0x00000007, 0x00040047, 0x0000000b, 0x00000001, 0x00000008, 0x00040047,
+   0x00000012, 0x0000000b, 0x0000001b, 0x00040047, 0x0000001d, 0x00000006, 0x00000004, 0x00030047,
+   0x0000001e, 0x00000003, 0x00050048, 0x0000001e, 0x00000000, 0x00000023, 0x00000000, 0x00040047,
+   0x00000020, 0x00000021, 0x00000002, 0x00040047, 0x00000020, 0x00000022, 0x00000000, 0x00040047,
+   0x00000028, 0x0000000b, 0x00000019, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002,
+   0x00030016, 0x00000006, 0x00000020, 0x00040015, 0x00000007, 0x00000020, 0x00000000, 0x00040032,
+   0x00000007, 0x00000008, 0x00000002, 0x00040032, 0x00000007, 0x00000009, 0x00000004, 0x00060034,
+   0x00000007, 0x0000000a, 0x00000084, 0x00000008, 0x00000009, 0x00040032, 0x00000007, 0x0000000b,
+   0x00000001, 0x00060034, 0x00000007, 0x0000000c, 0x00000086, 0x0000000a, 0x0000000b, 0x0004001c,
+   0x0000000d, 0x00000006, 0x0000000c, 0x00040020, 0x0000000e, 0x00000007, 0x0000000d, 0x00040017,
+   0x00000010, 0x00000007, 0x00000003, 0x00040020, 0x00000011, 0x00000001, 0x00000010, 0x0004003b,
+   0x00000011, 0x00000012, 0x00000001, 0x0004002b, 0x00000007, 0x00000013, 0x00000000, 0x00040020,
+   0x00000014, 0x00000001, 0x00000007, 0x00060034, 0x00000007, 0x00000017, 0x00000084, 0x00000008,
+   0x00000009, 0x00060034, 0x00000007, 0x00000018, 0x00000086, 0x00000017, 0x0000000b, 0x0004002b,
+   0x00000006, 0x0000001a, 0x3f800000, 0x00040020, 0x0000001b, 0x00000007, 0x00000006, 0x0003001d,
+   0x0000001d, 0x00000006, 0x0003001e, 0x0000001e, 0x0000001d, 0x00040020, 0x0000001f, 0x00000002,
+   0x0000001e, 0x0004003b, 0x0000001f, 0x00000020, 0x00000002, 0x00040015, 0x00000021, 0x00000020,
+   0x00000001, 0x0004002b, 0x00000021, 0x00000022, 0x00000000, 0x00040020, 0x00000025, 0x00000002,
+   0x00000006, 0x0004002b, 0x00000007, 0x00000027, 0x00000001, 0x0006002c, 0x00000010, 0x00000028,
+   0x00000027, 0x00000027, 0x00000027, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003,
+   0x000200f8, 0x00000005, 0x0004003b, 0x0000000e, 0x0000000f, 0x00000007, 0x00050041, 0x00000014,
+   0x00000015, 0x00000012, 0x00000013, 0x0004003d, 0x00000007, 0x00000016, 0x00000015, 0x00050089,
+   0x00000007, 0x00000019, 0x00000016, 0x00000018, 0x00050041, 0x0000001b, 0x0000001c, 0x0000000f,
+   0x00000019, 0x0003003e, 0x0000001c, 0x0000001a, 0x00050041, 0x0000001b, 0x00000023, 0x0000000f,
+   0x00000022, 0x0004003d, 0x00000006, 0x00000024, 0x00000023, 0x00060041, 0x00000025, 0x00000026,
+   0x00000020, 0x00000022, 0x00000022, 0x0003003e, 0x00000026, 0x00000024, 0x000100fd, 0x00010038,
+};
 /* glslc -fshader-stage=comp -O0 --target-env=vulkan1.0 / vulkan1.3 (shaderc v2026.4) of a
  * compute shader using set 0 binding 0 (storage buffer), set 1 binding 0 (combined image
  * sampler) and set 2 binding 3 (uniform buffer) and declaring set 5 binding 1 unused
@@ -1506,6 +1553,22 @@ static int case_pipeline(const char *c)
       static const VkSpecializationInfo spec_dup = { 2, dup_entries, 4, &spec_local_size };
       if (IS("p-spec-dup-id"))
          return created(compute_pipeline(w.layout, mod, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_dup, NULL));
+      /* float x[A * B / D] (SpecIds 6, 7, 8): 4 * 8 / 1 is made; 2^20 * 2 is past the element
+       * cap and D 0 divides by 0, both refused before the driver */
+      static const VkSpecializationMapEntry abd[3] = { { 6, 0, 4 }, { 7, 4, 4 }, { 8, 8, 4 } };
+      static const uint32_t abd_ok[3] = { 4, 8, 1 }, abd_over[3] = { 1u << 20, 2, 1 }, abd_zero[3] = { 4, 8, 0 };
+      if (!strncmp(c, "p-specop-", 9)) {
+         void *specop = shader(spv_specop, sizeof(spv_specop));
+         if (!specop)
+            broken("spec constant operation module");
+         const VkSpecializationInfo spec = { 3, abd, sizeof(abd_ok),
+                                             IS("p-specop-length-ok")     ? abd_ok
+                                             : IS("p-specop-length-over") ? abd_over
+                                                                          : abd_zero };
+         return created(compute_pipeline(w.layout, specop, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec, NULL));
+      }
+      if (IS("p-spec-wrap"))
+         return created(compute_pipeline(w.layout, mod, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_wrap, NULL));
       if (IS("p-stage-null-module"))
          return created(compute_pipeline(w.layout, NULL, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
       if (IS("p-inline-spirv-ok"))
@@ -7915,6 +7978,10 @@ static const struct test_case cases[] = {
    { "p-ok", E_WORKS }, { "p-gfx-ok", E_WORKS }, { "p-cache-garbage", E_KEEP }, { "p-cache-header", E_KEEP },
    { "p-spec-oob", E_REFUSE }, { "p-spec-wrap", E_REFUSE },
    { "p-spec-dup-id", E_REFUSE, "specialization constant 0 in two entries" },
+   /* array lengths from spec constant operations (#624, 3.4.5) */
+   { "p-specop-length-ok", E_WORKS },
+   { "p-specop-length-over", E_REFUSE, "Function and Private variables of 2097152 elements" },
+   { "p-specop-divzero", E_REFUSE, "no valid length after specialization" },
    { "p-stage-null-module", E_REFUSE }, { "p-inline-spirv-odd", E_REFUSE }, { "p-inline-spirv-ok", E_WORKS },
    { "p-compute-stage-wrong", E_REFUSE }, { "p-stage-bits-bad", E_REFUSE }, { "p-robustness-bad", E_REFUSE },
    { "p-compute-feedback-far", E_REFUSE },

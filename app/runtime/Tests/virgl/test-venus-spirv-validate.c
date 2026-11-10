@@ -185,6 +185,8 @@ struct layout {
    uint32_t model;
    char entry[64];
    uint32_t n, set[256], binding[256];
+   /* "spec ID VALUE [SIZE]": the pipeline's specialization (a recorded app's), else none */
+   uint32_t specs, spec_id[64], spec_value[64], spec_size[64];
 };
 
 static void
@@ -210,11 +212,30 @@ load_layout(const char *spv, struct layout *l)
       } else if (sscanf(line, "bind %u %u %u %u", &a, &b, &c, &d) == 4 && l->n < 256) {
          l->set[l->n] = a;
          l->binding[l->n++] = b;
+      } else if ((d = (uint32_t)sscanf(line, "spec %u %u %u", &a, &b, &c)) >= 2 && l->specs < 64) {
+         l->spec_id[l->specs] = a;
+         l->spec_value[l->specs] = b;
+         l->spec_size[l->specs++] = d == 3 ? c : 4;
       }
    }
    fclose(f);
    /* "stage none": a stage the harness did not make a pipeline of (geometry) */
    l->have = l->model != UINT32_MAX;
+}
+
+/* a .lay file's spec lines, as vkr_spec_lookup reads a VkSpecializationInfo */
+static bool
+layout_spec(const void *data, uint32_t spec_id, uint32_t *value, uint32_t *size)
+{
+   const struct layout *l = data;
+   for (uint32_t i = 0; i < l->specs; i++) {
+      if (l->spec_id[i] == spec_id) {
+         *value = l->spec_value[i];
+         *size = l->spec_size[i];
+         return true;
+      }
+   }
+   return false;
 }
 
 static bool
@@ -242,15 +263,18 @@ check_module(const struct vkr_spirv_target *t, const char *path, const uint32_t 
    uint32_t size[3], set, binding;
    bool unsafe = false;
    /* the elements and Workgroup bytes as vkr_stage_shader_ok counts them for the layout's
-    * entry point, else for each entry point (a pipeline may pick any): the most */
+    * entry point, else for each entry point (a pipeline may pick any): the most; with the
+    * .lay's spec lines the way a pipeline specializes them (else the defaults) */
    const bool by_interface = t->options & VKR_SPIRV_INTERFACE_GLOBALS;
    uint64_t elements = 0, shared = 0;
    bool counted = true;
+   const char *count_why = NULL;
+   const vkr_spirv_lookup lookup = l.specs ? layout_spec : NULL;
    for (uint32_t i = 0; i < info->entry_count && counted; i++) {
       const struct vkr_spirv_entry *at = e ? e : &info->entries[i];
       uint64_t a = 0, b = 0;
-      counted = vkr_spirv_function_elements(info, at, by_interface, NULL, NULL, &a) &&
-                vkr_spirv_workgroup_bytes(info, at, by_interface, NULL, NULL, &b);
+      counted = vkr_spirv_function_elements(info, at, by_interface, lookup, &l, &a, &count_why) &&
+                vkr_spirv_workgroup_bytes(info, at, by_interface, lookup, &l, &b, &count_why);
       elements = a > elements ? a : elements;
       shared = b > shared ? b : shared;
       if (e)
@@ -259,8 +283,11 @@ check_module(const struct vkr_spirv_target *t, const char *path, const uint32_t 
    if (!vkr_spirv_validate(t, info, code, bytes, why, why_size, &unsafe)) {
       r = unsafe ? BY_UNSAFE : BY_VALIDATOR;
    } else if (!counted || elements > VKR_SPIRV_MAX_FUNCTION_ELEMENTS) {
-      snprintf(why, why_size, "Function and Private variables of %llu elements",
-               (unsigned long long)elements);
+      if (!counted)
+         snprintf(why, why_size, "a size the scan cannot count: %s", count_why ? count_why : "?");
+      else
+         snprintf(why, why_size, "Function and Private variables of %llu elements",
+                  (unsigned long long)elements);
       r = BY_ELEMENTS;
    } else if (shared > SHARED_MAX) {
       snprintf(why, why_size, "Workgroup variables of %llu bytes", (unsigned long long)shared);
@@ -269,7 +296,7 @@ check_module(const struct vkr_spirv_target *t, const char *path, const uint32_t 
       snprintf(why, why_size, "no entry point %s for the stage", l.entry);
       r = BY_PIPELINE;
    } else if (e && l.model == 5 &&
-              (!vkr_spirv_workgroup_size(info, e, NULL, NULL, size) || !size[0] || !size[1] ||
+              (!vkr_spirv_workgroup_size(info, e, lookup, &l, size) || !size[0] || !size[1] ||
                !size[2] || size[0] > 1024 || size[1] > 1024 || size[2] > 1024 ||
                (uint64_t)size[0] * size[1] * size[2] > 1024)) {
       snprintf(why, why_size, "a workgroup of %u x %u x %u", size[0], size[1], size[2]);
@@ -563,13 +590,18 @@ target_units(void)
 
 /* a compute module with Function and Private variables of the types the caller adds */
 struct mod {
-   uint32_t w[512];
+   uint32_t w[1024];
    uint32_t n, next;
 };
 
 static void
 op(struct mod *m, uint32_t code, uint32_t count, const uint32_t *words)
 {
+   if (m->n + 1 + count > sizeof(m->w) / 4) {
+      printf("FAIL: a unit module past %zu words\n", sizeof(m->w) / 4);
+      failures++;
+      return;
+   }
    m->w[m->n++] = (count + 1) << 16 | code;
    memcpy(&m->w[m->n], words, count * 4);
    m->n += count;
@@ -641,20 +673,33 @@ mod_end(struct mod *m, const uint32_t *vars, uint32_t private_type)
    m->w[3] = m->next;
 }
 
+/* a pipeline's specialization: SpecId -> value, its map entry's size (0: 4 bytes), more
+ * entries in next */
 struct spec {
    uint32_t id, value;
    bool given;
+   uint32_t size;
+   const struct spec *next;
 };
 
+#define SPEC(id, value) (&(struct spec){ (id), (value), true, 0, NULL })
+#define SPEC_SIZE(id, value, size) (&(struct spec){ (id), (value), true, (size), NULL })
+
 static bool
-spec_lookup(const void *data, uint32_t spec_id, uint32_t *value)
+spec_lookup(const void *data, uint32_t spec_id, uint32_t *value, uint32_t *size)
 {
-   const struct spec *s = data;
-   if (!s->given || s->id != spec_id)
-      return false;
-   *value = s->value;
-   return true;
+   for (const struct spec *s = data; s; s = s->next) {
+      if (s->given && s->id == spec_id) {
+         *value = s->value;
+         *size = s->size ? s->size : 4;
+         return true;
+      }
+   }
+   return false;
 }
+
+/* the reason of the last refused count (vkr_spirv_function_elements, _workgroup_bytes) */
+static const char *last_why;
 
 static void
 elements_case(const char *name, struct mod *m, const struct spec *spec, bool want_ok, uint64_t want)
@@ -662,14 +707,15 @@ elements_case(const char *name, struct mod *m, const struct spec *spec, bool wan
    char why[192];
    struct vkr_spirv_info *info = vkr_spirv_scan(m->w, m->n * 4, why, sizeof(why));
    CHECK(info, "elements %s: scan: %s", name, why);
+   last_why = NULL;
    if (!info)
       return;
    uint64_t n = 0;
    const bool ok =
-      vkr_spirv_function_elements(info, NULL, false, spec ? spec_lookup : NULL, spec, &n);
-   CHECK(ok == want_ok && (!ok || n == want), "elements %s: %s %llu, want %s %llu", name,
-         ok ? "ok" : "unknown", (unsigned long long)n, want_ok ? "ok" : "unknown",
-         (unsigned long long)want);
+      vkr_spirv_function_elements(info, NULL, false, spec ? spec_lookup : NULL, spec, &n, &last_why);
+   CHECK(ok == want_ok && (!ok || n == want) && (ok || last_why), "elements %s: %s %llu, want %s %llu (%s)",
+         name, ok ? "ok" : "unknown", (unsigned long long)n, want_ok ? "ok" : "unknown",
+         (unsigned long long)want, last_why ? last_why : "-");
    vkr_spirv_free(info);
 }
 
@@ -710,17 +756,19 @@ elements_units(void)
    a = mod_array(&m, T_UINT, sc);
    mod_end(&m, (uint32_t[]){ mod_array(&m, a, mod_const(&m, 1u << 18)), 0 }, 0);
    elements_case("spec-default", &m, NULL, true, 4u << 18);
-   elements_case("spec-given", &m, &(struct spec){ 7, 8, true }, true, 8u << 18);
-   elements_case("spec-other-id", &m, &(struct spec){ 8, 8, true }, true, 4u << 18);
-   elements_case("spec-huge", &m, &(struct spec){ 7, 0xffffffff, true }, true,
+   elements_case("spec-given", &m, SPEC(7, 8), true, 8u << 18);
+   elements_case("spec-other-id", &m, SPEC(8, 8), true, 4u << 18);
+   elements_case("spec-huge", &m, SPEC(7, 0xffffffff), true,
                  0xffffffffull << 18);
 
-   /* a length the scan cannot know: a spec constant operation; a 64-bit spec constant */
+   /* a spec constant operation's value (spec_op_units has the rest); a 64-bit spec
+    * constant the scan does not evaluate */
    mod_begin(&m);
+   const uint32_t one = mod_const(&m, 1), two = mod_const(&m, 2);
    uint32_t op_id = m.next++;
-   OP(&m, 52, T_UINT, op_id, 128 /* IAdd */, mod_const(&m, 1), mod_const(&m, 2));
+   OP(&m, 52, T_UINT, op_id, 128 /* IAdd */, one, two);
    mod_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, op_id), 0 }, 0);
-   elements_case("spec-op", &m, NULL, false, 0);
+   elements_case("spec-op", &m, NULL, true, 3);
    mod_begin(&m);
    sc = m.next++;
    OP(&m, 71, sc, 1, 3);
@@ -812,11 +860,12 @@ bytes_case(const char *name, struct mod *m, const struct spec *spec, bool want_o
    if (!info)
       return;
    uint64_t n = 0;
+   last_why = NULL;
    const bool ok =
-      vkr_spirv_workgroup_bytes(info, NULL, false, spec ? spec_lookup : NULL, spec, &n);
-   CHECK(ok == want_ok && (!ok || n == want), "bytes %s: %s %llu, want %s %llu", name,
-         ok ? "ok" : "unknown", (unsigned long long)n, want_ok ? "ok" : "unknown",
-         (unsigned long long)want);
+      vkr_spirv_workgroup_bytes(info, NULL, false, spec ? spec_lookup : NULL, spec, &n, &last_why);
+   CHECK(ok == want_ok && (!ok || n == want) && (ok || last_why), "bytes %s: %s %llu, want %s %llu (%s)",
+         name, ok ? "ok" : "unknown", (unsigned long long)n, want_ok ? "ok" : "unknown",
+         (unsigned long long)want, last_why ? last_why : "-");
    vkr_spirv_free(info);
 }
 
@@ -866,15 +915,16 @@ bytes_units(void)
    OP(&m, 50, T_UINT, sc, 16);
    shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, sc), 0 }, false);
    bytes_case("spec-default", &m, NULL, true, 64);
-   bytes_case("spec-given", &m, &(struct spec){ 5, 16384, true }, true, 65536);
+   bytes_case("spec-given", &m, SPEC(5, 16384), true, 65536);
 
    /* a length from a spec constant operation (glslang's shared x[gl_WorkGroupSize.x]):
-    * counted once, not refused */
+    * its value (it was counted once before 3.4.5) */
    mod_begin(&m);
+   const uint32_t one = mod_const(&m, 1), two = mod_const(&m, 2);
    const uint32_t op_id = m.next++;
-   OP(&m, 52, T_UINT, op_id, 128 /* IAdd */, mod_const(&m, 1), mod_const(&m, 2));
+   OP(&m, 52, T_UINT, op_id, 128 /* IAdd */, one, two);
    shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, op_id), 0 }, false);
-   bytes_case("spec-op", &m, NULL, true, 4);
+   bytes_case("spec-op", &m, NULL, true, 12);
 
    /* uint[2^32-1] (passed the scan and spirv-val before this check) */
    mod_begin(&m);
@@ -892,6 +942,404 @@ bytes_units(void)
    mod_begin(&m);
    shared_end(&m, (uint32_t[]){ 0 }, false);
    bytes_case("none", &m, NULL, true, 0);
+}
+
+/* --- units: array lengths from spec constant operations (#624, 3.4.5) --- */
+
+enum { W_KNOWN, W_UNSUPPORTED, W_INVALID };
+
+static uint32_t
+mod_int(struct mod *m, uint32_t width, uint32_t sign)
+{
+   const uint32_t id = m->next++;
+   OP(m, 21, id, width, sign);
+   return id;
+}
+
+static uint32_t
+mod_bool_type(struct mod *m)
+{
+   const uint32_t id = m->next++;
+   OP(m, 20, id);
+   return id;
+}
+
+static uint32_t
+mod_const_t(struct mod *m, uint32_t type, uint32_t value)
+{
+   const uint32_t id = m->next++;
+   OP(m, 43, type, id, value);
+   return id;
+}
+
+static uint32_t
+mod_const64(struct mod *m, uint32_t type, uint64_t value)
+{
+   const uint32_t id = m->next++;
+   OP(m, 43, type, id, (uint32_t)value, (uint32_t)(value >> 32));
+   return id;
+}
+
+/* OpSpecConstant with SpecId spec_id */
+static uint32_t
+mod_spec(struct mod *m, uint32_t type, uint32_t spec_id, uint32_t value)
+{
+   const uint32_t id = m->next++;
+   OP(m, 71, id, 1, spec_id);
+   OP(m, 50, type, id, value);
+   return id;
+}
+
+/* a bool constant: opcode 41/42 (true/false), 48/49 (spec true/false, SpecId spec_id) */
+static uint32_t
+mod_bool(struct mod *m, uint32_t type, uint32_t opcode, uint32_t spec_id)
+{
+   const uint32_t id = m->next++;
+   if (opcode >= 48)
+      OP(m, 71, id, 1, spec_id);
+   OP(m, opcode, type, id);
+   return id;
+}
+
+/* OpSpecConstantOp of `count` operand words */
+static uint32_t
+mod_op(struct mod *m, uint32_t type, uint32_t opcode, uint32_t count, uint32_t a, uint32_t b,
+       uint32_t c)
+{
+   const uint32_t id = m->next++, w[] = { type, id, opcode, a, b, c };
+   op(m, 52, 3 + count, w);
+   return id;
+}
+
+/* the module's one Function variable: uint[len] */
+static void
+mod_len(struct mod *m, uint32_t len)
+{
+   mod_end(m, (uint32_t[]){ mod_array(m, T_UINT, len), 0 }, 0);
+}
+
+static void
+expect(const char *name, struct mod *m, const struct spec *spec, int want, uint64_t length)
+{
+   elements_case(name, m, spec, want == W_KNOWN, length);
+   if (want != W_KNOWN)
+      CHECK(last_why && strstr(last_why, want == W_INVALID ? "no valid length" : "does not evaluate"),
+            "elements %s: the reason names the %s class (%s)", name,
+            want == W_INVALID ? "invalid" : "unsupported", last_why ? last_why : "-");
+}
+
+/* uint[op(a, b)] with operands and result of one int type */
+static void
+binary_case(const char *name, uint32_t opcode, uint32_t width, bool sign, uint64_t a, uint64_t b,
+            int want, uint64_t length)
+{
+   struct mod m;
+   mod_begin(&m);
+   const uint32_t t = width == 32 && !sign ? T_UINT : width == 64 && !sign ? T_ULONG : mod_int(&m, width, sign);
+   const uint32_t x = width == 64 ? mod_const64(&m, t, a) : mod_const_t(&m, t, (uint32_t)a);
+   const uint32_t y = width == 64 ? mod_const64(&m, t, b) : mod_const_t(&m, t, (uint32_t)b);
+   mod_len(&m, mod_op(&m, t, opcode, 2, x, y, 0));
+   expect(name, &m, NULL, want, length);
+}
+
+/* uint[Select(cmp(a, b), 10, 20)]: 10 when the comparison holds */
+static void
+compare_case(const char *name, uint32_t opcode, bool sign, uint32_t a, uint32_t b, bool holds)
+{
+   struct mod m;
+   mod_begin(&m);
+   const uint32_t tb = mod_bool_type(&m), t = sign ? mod_int(&m, 32, 1) : T_UINT;
+   const uint32_t x = mod_const_t(&m, t, a), y = mod_const_t(&m, t, b);
+   const uint32_t ten = mod_const(&m, 10), twenty = mod_const(&m, 20);
+   const uint32_t c = mod_op(&m, tb, opcode, 2, x, y, 0);
+   mod_len(&m, mod_op(&m, T_UINT, 169, 3, c, ten, twenty));
+   expect(name, &m, NULL, W_KNOWN, holds ? 10 : 20);
+}
+
+/* uint[Select(logical(a, b), 10, 20)] of bool constants (41 true, 42 false) */
+static void
+logical_case(const char *name, uint32_t opcode, uint32_t a, uint32_t b, bool holds)
+{
+   struct mod m;
+   mod_begin(&m);
+   const uint32_t tb = mod_bool_type(&m);
+   const uint32_t x = mod_bool(&m, tb, a, 0), y = opcode == 168 ? 0 : mod_bool(&m, tb, b, 0);
+   const uint32_t ten = mod_const(&m, 10), twenty = mod_const(&m, 20);
+   const uint32_t c = mod_op(&m, tb, opcode, opcode == 168 ? 1 : 2, x, y, 0);
+   mod_len(&m, mod_op(&m, T_UINT, 169, 3, c, ten, twenty));
+   expect(name, &m, NULL, W_KNOWN, holds ? 10 : 20);
+}
+
+static void
+spec_op_units(void)
+{
+   struct mod m;
+   /* each operation, values chosen so another one gives another length */
+   binary_case("iadd", 128, 32, false, 5, 3, W_KNOWN, 8);
+   binary_case("isub", 130, 32, false, 9, 4, W_KNOWN, 5);
+   binary_case("imul", 132, 32, false, 6, 7, W_KNOWN, 42);
+   binary_case("udiv", 134, 32, false, 20, 3, W_KNOWN, 6);
+   binary_case("sdiv", 135, 32, true, 21, 4, W_KNOWN, 5);
+   binary_case("umod", 137, 32, false, 23, 7, W_KNOWN, 2);
+   binary_case("srem", 138, 32, true, 23, 5, W_KNOWN, 3);
+   binary_case("smod", 139, 32, true, 23, 6, W_KNOWN, 5);
+   binary_case("srl", 194, 32, false, 64, 2, W_KNOWN, 16);
+   binary_case("sra", 195, 32, true, 64, 3, W_KNOWN, 8);
+   binary_case("sll", 196, 32, false, 3, 4, W_KNOWN, 48);
+   binary_case("sll-int", 196, 32, true, 3, 5, W_KNOWN, 96);
+   binary_case("or", 197, 32, false, 8, 3, W_KNOWN, 11);
+   binary_case("xor", 198, 32, false, 12, 5, W_KNOWN, 9);
+   binary_case("and", 199, 32, false, 13, 6, W_KNOWN, 4);
+   binary_case("iadd-int-neg", 128, 32, true, (uint32_t)-5, 12, W_KNOWN, 7);
+   binary_case("iadd-64", 128, 64, false, 1ull << 33, 1, W_KNOWN, (1ull << 33) + 1);
+   binary_case("iadd-16", 128, 16, false, 1000, 24, W_KNOWN, 1024);
+   binary_case("imul-8", 132, 8, false, 15, 17, W_KNOWN, 255);
+
+   /* unary: Not, SNegate, SConvert int16 -> int32, UConvert u64 -> u32 that fits */
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 200, 1, mod_const(&m, 0xfffffff0), 0, 0));
+   expect("not", &m, NULL, W_KNOWN, 15);
+   mod_begin(&m);
+   uint32_t ti = mod_int(&m, 32, 1);
+   mod_len(&m, mod_op(&m, ti, 126, 1, mod_const_t(&m, ti, (uint32_t)-7), 0, 0));
+   expect("snegate", &m, NULL, W_KNOWN, 7);
+   mod_begin(&m);
+   uint32_t t16 = mod_int(&m, 16, 1);
+   ti = mod_int(&m, 32, 1);
+   mod_len(&m, mod_op(&m, ti, 114, 1, mod_const_t(&m, t16, 9), 0, 0));
+   expect("sconvert-16-32", &m, NULL, W_KNOWN, 9);
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 113, 1, mod_const64(&m, T_ULONG, 1000), 0, 0));
+   expect("uconvert-64-32", &m, NULL, W_KNOWN, 1000);
+
+   /* comparisons through Select, the S ones signed whatever the operand type */
+   compare_case("iequal", 170, false, 3, 3, true);
+   compare_case("inotequal", 171, false, 3, 3, false);
+   compare_case("ugt", 172, false, 5, 3, true);
+   compare_case("sgt", 173, true, (uint32_t)-1, 1, false);
+   compare_case("uge", 174, false, 0xffffffff, 1, true);
+   compare_case("sge", 175, true, (uint32_t)-2, (uint32_t)-2, true);
+   compare_case("ult", 176, false, 0xffffffff, 1, false);
+   compare_case("slt", 177, true, (uint32_t)-1, 1, true);
+   compare_case("ule", 178, false, 4, 4, true);
+   compare_case("sle", 179, true, 5, (uint32_t)-5, false);
+   compare_case("slt-uint", 177, false, 0xffffffff, 1, true); /* S on uint operands: -1 < 1 */
+   compare_case("ugt-int", 172, true, (uint32_t)-1, 1, true); /* U on int operands */
+   logical_case("logical-and", 167, 41, 42, false);
+   logical_case("logical-or", 166, 41, 42, true);
+   logical_case("logical-not", 168, 42, 0, true);
+   logical_case("logical-equal", 164, 41, 41, true);
+   logical_case("logical-not-equal", 165, 41, 41, false);
+
+   /* the opcode's signedness, not the operands': SDiv/SMod on a uint with the top bit (-3:
+    * a negative operand), UDiv on int -4, ShiftRightArithmetic on a uint */
+   binary_case("sdiv-uint", 135, 32, false, 0xfffffffc, 2, W_INVALID, 0);
+   binary_case("smod-uint", 139, 32, false, 5, 0xfffffffd, W_INVALID, 0);
+   binary_case("udiv-int", 134, 32, true, (uint32_t)-4, 2, W_KNOWN, 0x7ffffffe);
+   binary_case("sra-uint", 195, 32, false, 0x80000000, 31, W_KNOWN, 0xffffffff);
+
+   /* wrap, truncation, shifts: invalid */
+   binary_case("iadd-wrap", 128, 32, false, 0xffffffff, 1, W_INVALID, 0);
+   binary_case("imul-wrap", 132, 32, false, 65536, 65536, W_INVALID, 0);
+   binary_case("isub-below", 130, 32, false, 3, 5, W_INVALID, 0);
+   binary_case("imul-64-wrap", 132, 64, false, 1ull << 32, 1ull << 32, W_INVALID, 0);
+   binary_case("iadd-int-wrap", 128, 32, true, 0x7fffffff, 1, W_INVALID, 0);
+   binary_case("imul-8-wrap", 132, 8, false, 16, 16, W_INVALID, 0);
+   binary_case("sdiv-min", 135, 32, true, 0x80000000, (uint32_t)-1, W_INVALID, 0);
+   binary_case("sll-32", 196, 32, false, 1, 32, W_INVALID, 0);
+   binary_case("sll-lost", 196, 32, false, 0x80000000, 1, W_INVALID, 0);
+   binary_case("sll-int-sign", 196, 32, true, 0x40000000, 1, W_INVALID, 0);
+   binary_case("srl-32", 194, 32, false, 8, 32, W_INVALID, 0);
+   binary_case("isub-int-negative", 130, 32, true, 3, 5, W_INVALID, 0); /* -2 as a length */
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 113, 1, mod_const64(&m, T_ULONG, 1ull << 32), 0, 0));
+   expect("uconvert-truncates", &m, NULL, W_INVALID, 0);
+   mod_begin(&m);
+   t16 = mod_int(&m, 16, 1);
+   ti = mod_int(&m, 32, 1);
+   mod_len(&m, mod_op(&m, t16, 114, 1, mod_const_t(&m, ti, 40000), 0, 0));
+   expect("sconvert-truncates", &m, NULL, W_INVALID, 0);
+
+   /* divide by zero: a plain 0; default 2 specialized to 0; default 0 specialized to 2 */
+   static const uint32_t divs[] = { 134, 135, 137, 138, 139 };
+   for (unsigned i = 0; i < sizeof(divs) / sizeof(divs[0]); i++) {
+      char name[64];
+      snprintf(name, sizeof(name), "div-0-op%u", divs[i]);
+      binary_case(name, divs[i], 32, divs[i] == 135 || divs[i] >= 138, 12, 0, W_INVALID, 0);
+      mod_begin(&m);
+      const uint32_t t = divs[i] == 135 || divs[i] >= 138 ? mod_int(&m, 32, 1) : T_UINT;
+      const uint32_t thirteen = mod_const_t(&m, t, 13), d = mod_spec(&m, t, 4, 2);
+      mod_len(&m, mod_op(&m, t, divs[i], 2, thirteen, d, 0));
+      snprintf(name, sizeof(name), "div-spec-default-op%u", divs[i]);
+      expect(name, &m, NULL, W_KNOWN, divs[i] == 134 || divs[i] == 135 ? 6 : 1);
+      snprintf(name, sizeof(name), "div-spec-0-op%u", divs[i]);
+      expect(name, &m, SPEC(4, 0), W_INVALID, 0);
+   }
+   /* a divisor of 0 by default, 2 as the pipeline gives it */
+   mod_begin(&m);
+   uint32_t thirteen = mod_const(&m, 13), d0 = mod_spec(&m, T_UINT, 4, 0);
+   mod_len(&m, mod_op(&m, T_UINT, 137, 2, thirteen, d0, 0));
+   expect("div-default-0", &m, NULL, W_INVALID, 0);
+   expect("div-default-0-given-2", &m, SPEC(4, 2), W_KNOWN, 1);
+   expect("div-default-0-given-0", &m, SPEC(4, 0), W_INVALID, 0);
+
+   /* ggml's float cache_a[WMITER * TM * WNITER * TN / 2] with SpecIds 6-9 */
+   mod_begin(&m);
+   const uint32_t s6 = mod_spec(&m, T_UINT, 6, 2), s7 = mod_spec(&m, T_UINT, 7, 4),
+                  s8 = mod_spec(&m, T_UINT, 8, 2), s9 = mod_spec(&m, T_UINT, 9, 4);
+   const uint32_t half = mod_const(&m, 2);
+   uint32_t p = mod_op(&m, T_UINT, 132, 2, s6, s7, 0);
+   p = mod_op(&m, T_UINT, 132, 2, p, s8, 0);
+   p = mod_op(&m, T_UINT, 132, 2, p, s9, 0);
+   mod_len(&m, mod_op(&m, T_UINT, 134, 2, p, half, 0));
+   expect("ggml-default", &m, NULL, W_KNOWN, 32);
+   const struct spec s9v = { 9, 8, true, 0, NULL }, s8v = { 8, 2, true, 0, &s9v },
+                     s7v = { 7, 8, true, 0, &s8v }, s6v = { 6, 4, true, 0, &s7v };
+   expect("ggml-all", &m, &s6v, W_KNOWN, 4 * 8 * 2 * 8 / 2);
+   expect("ggml-one", &m, SPEC(7, 16), W_KNOWN, 2 * 16 * 2 * 4 / 2);
+   expect("ggml-other-id", &m, SPEC(10, 16), W_KNOWN, 32);
+   expect("ggml-past-cap", &m, SPEC(7, 1u << 20), W_KNOWN, 8ull << 20);
+   expect("ggml-0", &m, SPEC(6, 0), W_INVALID, 0);
+
+   /* 8- and 16-bit SpecIds take 1- and 2-byte entries; another size is invalid */
+   mod_begin(&m);
+   const uint32_t t8 = mod_int(&m, 8, 0);
+   mod_len(&m, mod_op(&m, T_UINT, 113, 1, mod_spec(&m, t8, 2, 3), 0, 0));
+   expect("u8-default", &m, NULL, W_KNOWN, 3);
+   expect("u8-given", &m, SPEC_SIZE(2, 200, 1), W_KNOWN, 200);
+   expect("u8-entry-4", &m, SPEC_SIZE(2, 200, 4), W_INVALID, 0);
+   mod_begin(&m);
+   t16 = mod_int(&m, 16, 1);
+   ti = mod_int(&m, 32, 1);
+   mod_len(&m, mod_op(&m, ti, 114, 1, mod_spec(&m, t16, 2, 5), 0, 0));
+   expect("i16-given", &m, SPEC_SIZE(2, 300, 2), W_KNOWN, 300);
+   expect("i16-negative", &m, SPEC_SIZE(2, 0xfffe, 2), W_INVALID, 0);
+   expect("i16-entry-8", &m, SPEC_SIZE(2, 300, 8), W_INVALID, 0);
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 128, 2, mod_spec(&m, T_UINT, 2, 5), mod_const(&m, 1), 0));
+   expect("u32-entry-2", &m, SPEC_SIZE(2, 7, 2), W_INVALID, 0);
+   expect("u32-entry-4", &m, SPEC_SIZE(2, 7, 4), W_KNOWN, 8);
+
+   /* a bool SpecId: 0 or 1 in a 4-byte entry */
+   mod_begin(&m);
+   uint32_t tb = mod_bool_type(&m);
+   uint32_t flag = mod_bool(&m, tb, 48, 3);
+   mod_len(&m, mod_op(&m, T_UINT, 169, 3, flag, mod_const(&m, 10), mod_const(&m, 20)));
+   expect("bool-default", &m, NULL, W_KNOWN, 10);
+   expect("bool-0", &m, SPEC(3, 0), W_KNOWN, 20);
+   expect("bool-2", &m, SPEC(3, 2), W_INVALID, 0);
+   expect("bool-entry-1", &m, SPEC_SIZE(3, 1, 1), W_INVALID, 0);
+
+   /* CompositeExtract of a WorkgroupSize composite (index 0, glslang's gl_WorkGroupSize.x)
+    * and of index 1; of a 2-constituent composite: unsupported */
+   mod_begin(&m);
+   const uint32_t v3 = m.next++;
+   OP(&m, 23, v3, T_UINT, 3);
+   const uint32_t wx = mod_spec(&m, T_UINT, 0, 64), wy = mod_spec(&m, T_UINT, 1, 2), wz = mod_const(&m, 1);
+   const uint32_t wg = m.next++;
+   OP(&m, 71, wg, 11, 25); /* BuiltIn WorkgroupSize */
+   OP(&m, 51, v3, wg, wx, wy, wz);
+   const uint32_t ex = mod_op(&m, T_UINT, 81, 2, wg, 0, 0), ey = mod_op(&m, T_UINT, 81, 2, wg, 1, 0);
+   mod_len(&m, mod_op(&m, T_UINT, 132, 2, ex, ey, 0));
+   expect("extract-wg", &m, NULL, W_KNOWN, 128);
+   expect("extract-wg-given", &m, SPEC(0, 256), W_KNOWN, 512);
+   mod_begin(&m);
+   const uint32_t v2 = m.next++;
+   OP(&m, 23, v2, T_UINT, 2);
+   const uint32_t c2 = m.next++;
+   OP(&m, 44, v2, c2, mod_const(&m, 3), mod_const(&m, 4));
+   mod_len(&m, mod_op(&m, T_UINT, 81, 2, c2, 1, 0));
+   expect("extract-2", &m, NULL, W_UNSUPPORTED, 0);
+   mod_begin(&m);
+   const uint32_t u3 = m.next++, c3 = m.next++;
+   OP(&m, 23, u3, T_UINT, 3);
+   OP(&m, 44, u3, c3, mod_const(&m, 3), mod_const(&m, 4), mod_const(&m, 5));
+   mod_len(&m, mod_op(&m, T_UINT, 81, 2, c3, 3, 0));
+   expect("extract-index-3", &m, NULL, W_INVALID, 0);
+
+   /* operands defined at or after the operation, itself, a cycle, a variable, OpUndef, an
+    * id past the bound (all invalid; the scan still takes the module) */
+   mod_begin(&m);
+   uint32_t later = m.next++;
+   uint32_t r = mod_op(&m, T_UINT, 128, 2, later, later, 0);
+   OP(&m, 43, T_UINT, later, 4);
+   mod_len(&m, r);
+   expect("forward", &m, NULL, W_INVALID, 0);
+   mod_begin(&m);
+   r = m.next;
+   mod_len(&m, mod_op(&m, T_UINT, 128, 2, r, r, 0));
+   expect("self", &m, NULL, W_INVALID, 0);
+   mod_begin(&m);
+   const uint32_t a2 = m.next + 1;
+   r = mod_op(&m, T_UINT, 128, 2, a2, a2, 0);
+   mod_op(&m, T_UINT, 128, 2, r, r, 0);
+   mod_len(&m, r);
+   expect("cycle", &m, NULL, W_INVALID, 0);
+   mod_begin(&m);
+   const uint32_t undef = m.next++;
+   OP(&m, 1, T_UINT, undef); /* OpUndef */
+   mod_len(&m, mod_op(&m, T_UINT, 128, 2, undef, mod_const(&m, 1), 0));
+   expect("undef", &m, NULL, W_INVALID, 0);
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 128, 2, 4000, mod_const(&m, 1), 0));
+   expect("past-bound", &m, NULL, W_INVALID, 0);
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 128, 1, mod_const(&m, 1), 0, 0));
+   expect("one-operand-iadd", &m, NULL, W_INVALID, 0);
+   /* types: an int of width 24, a float operand, IAdd of 32 and 64 bits */
+   mod_begin(&m);
+   const uint32_t t24 = mod_int(&m, 24, 0);
+   mod_len(&m, mod_op(&m, t24, 128, 2, mod_const_t(&m, t24, 1), mod_const_t(&m, t24, 2), 0));
+   expect("width-24", &m, NULL, W_INVALID, 0);
+   mod_begin(&m);
+   const uint32_t tf = m.next++;
+   OP(&m, 22, tf, 32);
+   mod_len(&m, mod_op(&m, T_UINT, 128, 2, mod_const_t(&m, tf, 0x3f800000), mod_const(&m, 1), 0));
+   expect("float-operand", &m, NULL, W_INVALID, 0);
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 128, 2, mod_const64(&m, T_ULONG, 1), mod_const(&m, 1), 0));
+   expect("mixed-width", &m, NULL, W_INVALID, 0);
+
+   /* still unknown: VectorShuffle, QuantizeToF16, a 64-bit SpecId operand */
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 79, 3, mod_const(&m, 1), mod_const(&m, 2), 0));
+   expect("vector-shuffle", &m, NULL, W_UNSUPPORTED, 0);
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 116, 1, mod_const(&m, 1), 0, 0));
+   expect("quantize", &m, NULL, W_UNSUPPORTED, 0);
+   mod_begin(&m);
+   const uint32_t s64 = m.next++;
+   OP(&m, 71, s64, 1, 5);
+   OP(&m, 50, T_ULONG, s64, 8, 0);
+   mod_len(&m, mod_op(&m, T_UINT, 113, 1, s64, 0, 0));
+   expect("spec-64-operand", &m, NULL, W_UNSUPPORTED, 0);
+   /* a 64-bit constant with one value word (malformed): invalid */
+   mod_begin(&m);
+   mod_len(&m, mod_op(&m, T_UINT, 113, 1, mod_spec(&m, T_ULONG, 5, 8), 0, 0));
+   expect("spec-64-one-word", &m, NULL, W_INVALID, 0);
+
+   /* Workgroup bytes: unsupported and invalid refused (unsupported counted once before
+    * 3.4.5; no real module has one); one that is invalid only with its defaults counts once
+    * without the stage (a module) and is refused with it */
+   mod_begin(&m);
+   shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, mod_op(&m, T_UINT, 116, 1, mod_const(&m, 1), 0, 0)), 0 },
+              false);
+   bytes_case("specop-unsupported", &m, NULL, false, 0);
+   CHECK(last_why && strstr(last_why, "does not evaluate"), "bytes specop-unsupported: reason %s",
+         last_why ? last_why : "-");
+   mod_begin(&m);
+   shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, mod_op(&m, T_UINT, 130, 2, mod_const(&m, 3), mod_const(&m, 5), 0)), 0 },
+              false);
+   bytes_case("specop-invalid", &m, NULL, false, 0);
+   CHECK(last_why && strstr(last_why, "no valid length"), "bytes specop-invalid: reason %s", last_why ? last_why : "-");
+   mod_begin(&m);
+   d0 = mod_spec(&m, T_UINT, 4, 0);
+   shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, mod_op(&m, T_UINT, 134, 2, mod_const(&m, 4096), d0, 0)), 0 },
+              false);
+   bytes_case("specop-div-default-0-module", &m, NULL, true, 4);
+   bytes_case("specop-div-default-0-pipeline", &m, SPEC(5, 1), false, 0);
+   bytes_case("specop-div-given-2", &m, SPEC(4, 2), true, 8192);
+   bytes_case("specop-div-given-1", &m, SPEC(4, 1), true, 16384);
 }
 
 /* --- units: interface locations and type cost --- */
@@ -1036,7 +1484,7 @@ io_case(const char *name, struct iomod *io, const char *prof, const struct spec 
    if (!spec && !want) {
       bool unsafe = false;
       CHECK(!vkr_spirv_validate(&t, info, w, n * 4, why, sizeof(why), &unsafe) && unsafe &&
-               strstr(why, "06272"),
+               (strstr(why, "06272") || strstr(why, "no valid length") || strstr(why, "does not evaluate")),
             "interface %s: vkr_spirv_validate refuses it before spirv-val (%s)", name, why);
    }
    vkr_spirv_free(info);
@@ -1136,9 +1584,54 @@ interface_units(void)
    OP(&io.m, 50, T_UINT, sc, 64);
    io_var(&io, IN, io_type(&io, 28, T_UINT, sc), 0, 0);
    io_case("spec-module", &io, "kk", NULL, true);
-   io_case("spec-8", &io, "kk", &(struct spec){ 3, 8, true }, true);
-   io_case("spec-33", &io, "kk", &(struct spec){ 3, 33, true }, false);
-   io_case("spec-default-64", &io, "kk", &(struct spec){ 4, 8, true }, false);
+   io_case("spec-8", &io, "kk", SPEC(3, 8), true);
+   io_case("spec-33", &io, "kk", SPEC(3, 33), false);
+   io_case("spec-default-64", &io, "kk", SPEC(4, 8), false);
+   /* a length from a spec constant operation (3.4.5): on a SpecId once for the module, its
+    * value for a pipeline; on plain constants its value for both; invalid refused, for the
+    * module only when it does not depend on a SpecId */
+   io_begin(&io, FRAGMENT);
+   sc = io.m.next++;
+   io_decorate(&io, sc, 1 /* SpecId */, 3);
+   OP(&io.m, 50, T_UINT, sc, 20);
+   uint32_t two = io_const(&io, 2), op_id = io.m.next++;
+   OP(&io.m, 52, T_UINT, op_id, 132 /* IMul */, sc, two);
+   io_var(&io, IN, io_type(&io, 28, T_UINT, op_id), 0, 0);
+   io_case("specop-module", &io, "kk", NULL, true);
+   io_case("specop-default-40", &io, "kk", SPEC(9, 1), false);
+   io_case("specop-16", &io, "kk", SPEC(3, 8), true);
+   io_case("specop-34", &io, "kk", SPEC(3, 17), false);
+   io_begin(&io, FRAGMENT);
+   uint32_t twenty = io_const(&io, 20);
+   two = io_const(&io, 2);
+   op_id = io.m.next++;
+   OP(&io.m, 52, T_UINT, op_id, 132 /* IMul */, twenty, two);
+   io_var(&io, IN, io_type(&io, 28, T_UINT, op_id), 0, 0);
+   io_case("specop-plain-40", &io, "kk", NULL, false);
+   io_begin(&io, FRAGMENT);
+   uint32_t three = io_const(&io, 3), five = io_const(&io, 5);
+   op_id = io.m.next++;
+   OP(&io.m, 52, T_UINT, op_id, 130 /* ISub */, three, five);
+   io_var(&io, IN, io_type(&io, 28, T_UINT, op_id), 0, 0);
+   io_case("specop-plain-invalid", &io, "kk", NULL, false);
+   io_begin(&io, FRAGMENT);
+   sc = io.m.next++;
+   io_decorate(&io, sc, 1 /* SpecId */, 3);
+   OP(&io.m, 50, T_UINT, sc, 0);
+   uint32_t eight = io_const(&io, 8);
+   op_id = io.m.next++;
+   OP(&io.m, 52, T_UINT, op_id, 134 /* UDiv */, eight, sc);
+   io_var(&io, IN, io_type(&io, 28, T_UINT, op_id), 0, 0);
+   io_case("specop-div-0-module", &io, "kk", NULL, true);
+   io_case("specop-div-0-pipeline", &io, "kk", SPEC(9, 1), false);
+   io_case("specop-div-given-2", &io, "kk", SPEC(3, 2), true);
+   io_begin(&io, FRAGMENT);
+   uint32_t one = io_const(&io, 1);
+   op_id = io.m.next++;
+   OP(&io.m, 52, T_UINT, op_id, 116 /* QuantizeToF16 */, one);
+   io_var(&io, IN, io_type(&io, 28, T_UINT, op_id), 0, 0);
+   io_case("specop-unsupported", &io, "kk", SPEC(9, 1), false);
+   io_case("specop-unsupported-module", &io, "kk", NULL, false);
 }
 
 /* --- units: explicit layout on Function, Private, Workgroup and UniformConstant types --- */
@@ -1324,8 +1817,8 @@ entry_case(const char *name, uint32_t version, bool entry_a, bool by_interface, 
    const struct vkr_spirv_entry *entry = entry_a ? vkr_spirv_entry(info, "a", 5) : NULL;
    CHECK(!entry_a || (entry && entry->function == e[0]), "entry %s: no entry point a", name);
    uint64_t n = 0, b = 0;
-   const bool ok = vkr_spirv_function_elements(info, entry, by_interface, NULL, NULL, &n) &&
-                   vkr_spirv_workgroup_bytes(info, entry, by_interface, NULL, NULL, &b);
+   const bool ok = vkr_spirv_function_elements(info, entry, by_interface, NULL, NULL, &n, NULL) &&
+                   vkr_spirv_workgroup_bytes(info, entry, by_interface, NULL, NULL, &b, NULL);
    CHECK(ok && n == want_elements && b == want_bytes,
          "entry %s: %llu elements and %llu bytes, want %llu and %llu", name,
          (unsigned long long)n, (unsigned long long)b, (unsigned long long)want_elements,
@@ -1421,6 +1914,7 @@ main(int argc, char **argv)
       cache_units(code, bytes);
       elements_units();
       bytes_units();
+      spec_op_units();
       interface_units();
       entry_units();
       cost_units();
