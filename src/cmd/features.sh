@@ -8,7 +8,7 @@
 #   omacvm disable FEATURE... [--vm NAME] [--yes] [--transaction] [--allow-downgrade]
 # Features (src/features.tsv): bridge wallpaper gestures scroll-momentum omanotch
 # mac-clock camera battery external-brightness chromium-video gpu-compute no-idle-lock autologin thp-kernel control-centre
-# fast-network vulkan x86-apps touch-id mac-ime (idle-lock, its name before 3.0.1, still works the other way round:
+# fast-network vulkan x86-apps touch-id mac-ime drag-drop mission-control (idle-lock, its name before 3.0.1, still works the other way round:
 # disable idle-lock = enable no-idle-lock). A feature that needs another one brings it
 # along (enable scroll-momentum also enables gestures) or goes with it (disable bridge
 # also disables wallpaper). Changes go through omacvm apply --transaction: the
@@ -117,6 +117,7 @@ fi
 features_read_env "$probe"
 DRIFT=(); FIXED=""
 rd=""; [[ $TYPE == app && -n $VM ]] && { rd=$(app_dir "$VM" 2>/dev/null) || rd=""; }
+FEATURES_VM_DIR=$rd   # feature_available: the VM's Omarchy (its omarchy record)
 if (( OFF )); then
   # An OmacVM.app VM's folder has its OmacVM version and its record (what
   # apply wrote last); the other apps' VMs keep nothing of OmacVM on the Mac:
