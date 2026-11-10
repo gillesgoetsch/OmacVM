@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.4 (unreleased)
+
+- **Move to Omarchy 4.5** keeps more detail when OmacVM does not get into the VM (#771): the
+  reason names the part of the copy that failed (SSH, clearing the last copy, unpacking, swapping
+  it in) and the log shows the VM's own tar errors, which were thrown away before. Each try's
+  `move-apply.log` is kept (the four before it as `move-apply.log.1` to `.4`), so a Resume no
+  longer writes over the one that failed. Nothing else changes in the move.
+
 ## 3.4.3
 
 - **Omanotch** on Omarchy 4.5 (#763, #764, reported by the project owner on an M4 Max; the same
