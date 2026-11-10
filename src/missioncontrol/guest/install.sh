@@ -50,14 +50,15 @@ HIDDEN_TAG=mac-mission-control-hidden
 
 # As the desktop user, in the session: Omarchy's environment, Hyprland's
 # instance, a locale (qs prints Qt's warning before every answer without
-# one) and a short limit for every answer of the shell.
+# one) and a short limit for every answer of the shell; in / (root's apply
+# runs in /root, which Omarchy's commands cannot read as the user).
 as_user() {
   local sig pre=()
   sig=$(ls -t "$RUN/hypr" 2>/dev/null | head -n 1)
   (( EUID == 0 )) && pre=(sudo -u "$U")
   ${pre[@]+"${pre[@]}"} env HOME="$H" XDG_RUNTIME_DIR="$RUN" HYPRLAND_INSTANCE_SIGNATURE="$sig" \
     LC_ALL=C.UTF-8 OMARCHY_SHELL_IPC_TIMEOUT=2s \
-    bash -c 'source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null; exec "$@"' _ "$@"
+    bash -c 'cd / && source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null; exec "$@"' _ "$@"
 }
 hypr() { as_user timeout 5 hyprctl "$@" 2>/dev/null; }
 # A Lua test in Hyprland: true when it raises no error.
@@ -229,10 +230,20 @@ on() {
     (( settle )) && sleep 3
   fi
   [[ $(session) == open ]] || return 0   # loads with the next shell; checked then (omacvm check)
+  # A new folder: the shell reads it in the background after
+  # lib/install-plugin.sh's rescan, so its enable can come too early (then
+  # the end of the apply enables it). Enabled here once the shell knows it,
+  # so that it is on, and checked, within this step.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    in_config && break
+    sleep 1
+    as_user timeout 10 omarchy plugin enable "$ID" >/dev/null 2>&1 || continue
+    if home_grep "$Q" -qxF "$ID"; then { grep -vxF "$ID" < <(home_cat "$Q") || true; } | home_put "$Q"; fi
+  done
   # The shell loads the Hyprland half 150 ms after the plugin; then its
   # gesture is in. A new config error then (a four-finger up or down swipe
   # of the user's own takes the same swipe): off again, with the reason.
-  for _ in $(seq 1 16); do live && break; sleep 0.5; done
+  for _ in $(seq 1 30); do live && break; sleep 0.5; done
   after=$(hypr configerrors)
   new=$(grep -vxF -f <(printf '%s\n' "$before") <<<"$after" | grep . | head -n 1)
   if [[ -n $new ]]; then

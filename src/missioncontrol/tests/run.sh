@@ -83,6 +83,8 @@ C=$HOME/.config/omarchy/shell.json
 [[ -e $S/hung ]] && exit 124
 [[ $(cat "$S/shell") == down ]] && exit 1
 [[ -f $C ]] || echo '{}' > "$C"
+# A shell that has not read a new plugin folder yet (its rescan runs in the background): "unknown".
+if [[ "$1 $2" == "plugin enable" && -s $S/unknown ]]; then n=$(cat "$S/unknown"); echo $((n - 1)) > "$S/unknown"; (( n > 0 )) && exit 1; fi
 case "$1 $2" in
   "plugin enable") jq --arg id "$3" '.plugins = ((.plugins // []) | map(select(.id != $id)) + [{id: $id}])' "$C" > "$C.n" && mv "$C.n" "$C" ;;
   "plugin disable") jq --arg id "$3" '.plugins = ((.plugins // []) | map(select(.id != $id)))' "$C" > "$C.n" && mv "$C.n" "$C" ;;
@@ -144,7 +146,7 @@ else
   mkdir -p "$(dirname "$P")"; rm -rf "$P"; cp -R "$2" "$P"; echo "install-plugin copied" >> "$LOG"
 fi
 if jq -e '.plugins[]? | select(.id == "mac.missioncontrol")' "$HOME/.config/omarchy/shell.json" >/dev/null 2>&1; then :
-elif [[ $sh == open ]]; then omarchy plugin enable mac.missioncontrol >/dev/null
+elif [[ $sh == open ]] && omarchy plugin enable mac.missioncontrol >/dev/null; then :
 elif ! jq -e '.plugins[]? | select(.id == "mac.missioncontrol")' "$HOME/.config/omarchy/shell.json" >/dev/null 2>&1; then
   grep -qx mac.missioncontrol "$ST/pending-plugins" 2>/dev/null || echo mac.missioncontrol >> "$ST/pending-plugins"
 fi
@@ -181,6 +183,12 @@ expect "on: the copy in place, byte for byte" yes "$(yes_no diff -rq "$M/plugin/
 expect "on: enabled, its Hyprland half live" "yes yes" "$(enabled) $(there "$S/live")"
 expect "on: the marker names the pinned commit" "$(sed -n 's/^commit //p' "$M/PIN")" "$(cat "$MARK")"
 expect "on: check ok" "ok four fingers up open it, sideways page while it is open" "$(st on)"
+# The shell reads a new folder in the background: the first enable comes too early; the step enables it itself.
+fresh; echo 2 > "$S/unknown"
+bash "$I" me on >/dev/null
+expect "early enable: on and loaded within the step, not left queued" "yes yes no" \
+  "$(enabled) $(there "$S/live") $(yes_no grep -qx mac.missioncontrol "$H/.local/state/omacvm/pending-plugins")"
+fresh; bash "$I" me on >/dev/null
 # A second apply: nothing written, nothing queued, no restart, no wait.
 : > "$LOG"; rm -f "$H/.local/state/omacvm/restart-shell"; t0=$SECONDS
 bash "$I" me on >/dev/null
