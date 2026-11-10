@@ -214,7 +214,10 @@ expect "no 4-finger workspace swipe: check warns" "warn" "$(st on | cut -d' ' -f
 printf 'hl.gesture({ fingers = 4, direction = "horizontal", action = "workspace" })\n' > "$H/.config/hypr/input.lua"
 # Windows left hidden while closed: the check fails, a repair shows them.
 echo 2 > "$S/hidden"
-expect "hidden while closed: check fails" "fail 2 windows left hidden while the overview is closed: omacvm apply --reinstall mission-control" "$(st on)"
+expect "hidden while closed: check fails" "fail Mission Control is closed, but 2 windows are hidden: omacvm apply --reinstall mission-control" "$(st on)"
+echo 0 > "$S/hidden"; : > "$S/layer"
+expect "only the overview left on the screen while closed: check fails, says so" "fail Mission Control is closed, but its overview covers the screen: omacvm apply --reinstall mission-control" "$(st on)"
+rm -f "$S/layer"; echo 2 > "$S/hidden"
 bash "$I" me --repair >/dev/null
 expect "repair: windows shown (the plugin's reset)" "0 yes" "$(cat "$S/hidden") $(logged reset)"
 
@@ -294,7 +297,10 @@ expect "own copy, off after OmacVM's on: disabled, the clone stays" "no yes yes 
 
 # A shell that hangs with the overview up.
 fresh; bash "$I" me on >/dev/null; : > "$S/hung"; : > "$S/layer"; echo 3 > "$S/hidden"
-expect "hung: check fails" "fail" "$(st on | cut -d' ' -f1)"
+expect "hung: check fails, says what is stuck" "fail the Omarchy shell does not answer and 3 windows are hidden and its overview covers the screen: omacvm apply --reinstall mission-control" "$(st on)"
+echo 0 > "$S/hidden"
+expect "hung, only the overview on the screen: says it covers the screen" "fail the Omarchy shell does not answer and its overview covers the screen: omacvm apply --reinstall mission-control" "$(st on)"
+echo 3 > "$S/hidden"
 : > "$LOG"; bash "$I" me --repair >/dev/null; rc=$?
 expect "hung: repair restarts the shell, windows shown, overview gone" "0 yes 0 no" "$rc $(logged omarchy-restart-shell) $(cat "$S/hidden") $(there "$S/layer")"
 # Locked by Hyprland: not restarted, says so.

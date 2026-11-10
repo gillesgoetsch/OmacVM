@@ -300,14 +300,18 @@ status() {   # on|off: the switch
   hypr_up || { echo "human log in (it loads with the desktop)"; return 0; }
   h=$(hidden_count); lay=0; layer_up && lay=1
   c=$(mc_state)
+  # What is stuck: hidden windows, the overview's layer over the screen, or both.
+  stuck=""
+  [[ ${h:-0} -gt 0 ]] && stuck="${h} windows are hidden"
+  (( lay )) && stuck="${stuck:+$stuck and }its overview covers the screen"
   if [[ -z $c ]]; then
-    if (( lay )) || [[ ${h:-0} -gt 0 ]]; then echo "fail the Omarchy shell does not answer and ${h:-?} windows are hidden: omacvm apply --reinstall mission-control"
+    if [[ -n $stuck ]]; then echo "fail the Omarchy shell does not answer and $stuck: omacvm apply --reinstall mission-control"
     else echo "warn the overview does not answer (the Omarchy shell restarting?)"; fi
     return 0
   fi
   ph=$(jq -r '.phase // "?"' <<<"$c" 2>/dev/null)
-  if [[ $ph == closed ]] && { [[ ${h:-0} -gt 0 ]] || (( lay )); }; then
-    echo "fail ${h:-?} windows left hidden while the overview is closed: omacvm apply --reinstall mission-control"; return 0
+  if [[ $ph == closed && -n $stuck ]]; then
+    echo "fail Mission Control is closed, but $stuck: omacvm apply --reinstall mission-control"; return 0
   fi
   live || { echo "fail its Hyprland half is not loaded: omacvm apply --reinstall mission-control"; return 0; }
   n=$(binds_count)
