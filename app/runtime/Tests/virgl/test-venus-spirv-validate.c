@@ -1160,6 +1160,20 @@ spec_op_units(void)
    ti = mod_int(&m, 32, 1);
    mod_len(&m, mod_op(&m, t16, 114, 1, mod_const_t(&m, ti, 40000), 0, 0));
    expect("sconvert-truncates", &m, NULL, W_INVALID, 0);
+   /* a conversion of the other signedness's negative value: spirv-opt folds it by the
+    * operand's type, SPIR-V by the opcode (invalid); of a positive one: its value */
+   mod_begin(&m);
+   t16 = mod_int(&m, 16, 0);
+   mod_len(&m, mod_op(&m, T_UINT, 114, 1, mod_const_t(&m, t16, 0xffff), 0, 0));
+   expect("sconvert-uint-top-bit", &m, NULL, W_INVALID, 0);
+   mod_begin(&m);
+   t16 = mod_int(&m, 16, 0);
+   mod_len(&m, mod_op(&m, T_UINT, 114, 1, mod_const_t(&m, t16, 0x7fff), 0, 0));
+   expect("sconvert-uint", &m, NULL, W_KNOWN, 0x7fff);
+   mod_begin(&m);
+   t16 = mod_int(&m, 16, 1);
+   mod_len(&m, mod_op(&m, T_UINT, 113, 1, mod_const_t(&m, t16, 0xfffe), 0, 0));
+   expect("uconvert-negative-int", &m, NULL, W_INVALID, 0);
 
    /* divide by zero: a plain 0; default 2 specialized to 0; default 0 specialized to 2 */
    static const uint32_t divs[] = { 134, 135, 137, 138, 139 };

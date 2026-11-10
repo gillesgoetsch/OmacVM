@@ -313,7 +313,7 @@ new file mode 100644
 index 0000000..426aa9a
 --- /dev/null
 +++ b/src/venus/vkr_spirv.c
-@@ -0,0 +1,1972 @@
+@@ -0,0 +1,1975 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -1764,13 +1764,16 @@ index 0000000..426aa9a
 +   int64_t sv;
 +   uint64_t uv;
 +   switch (op) {
++   /* a conversion of an operand whose type has the other signedness and whose top bit is
++    * set: SPIR-V and both Mac compilers extend by the opcode, spirv-opt's folding by the
++    * operand's type (10000 random modules) */
 +   case OP_U_CONVERT:
-+      if (x > mask)
++      if (x > mask || (a[0].sign && sx < 0))
 +         return invalid(r);
 +      r.bits = x;
 +      break;
 +   case OP_S_CONVERT:
-+      if (!fits_signed(sx, w))
++      if (!fits_signed(sx, w) || (!a[0].sign && sx < 0))
 +         return invalid(r);
 +      r.bits = (uint64_t)sx & mask;
 +      break;
