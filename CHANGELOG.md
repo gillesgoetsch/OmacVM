@@ -3,6 +3,13 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.5 (unreleased)
+
+- **Mission Control** with **Swipe out to macOS** on: a sideways swipe in the open overview on the
+  first workspace (or the empty last one) moved the Mac's Space instead of going through the
+  overview's workspaces. While the overview is open, Swipe out to macOS now waits: sideways swipes
+  stay in the VM, on every display. It comes with Update VM; nothing changes on the Mac.
+
 ## 3.4.4
 
 - **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning
