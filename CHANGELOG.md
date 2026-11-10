@@ -3,6 +3,19 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.4 (unreleased)
+
+- **Mission Control** (experimental, off by default, Omarchy 4.5): four fingers up in the full-screen
+  VM spread out the windows of each display, following the fingers, with the workspaces along the
+  top; four fingers down close it, and while it is open four fingers sideways go through the
+  workspaces. It is the [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control)
+  plugin for Omarchy's shell by @gillesgoetsch (MIT), shipped unchanged from one of its releases.
+  Switch it in the app's VM window (Input > Mission Control), the control centre or with
+  `omacvm enable mission-control`; it needs Trackpad gestures. A copy you added yourself with
+  `omarchy plugin add` is never written or removed, only switched. Off shows the windows, disables
+  the plugin and takes its gesture and keys out of Hyprland; `omacvm apply --only mission-control`
+  repairs windows left hidden ([details](docs/features.md#mission-control)).
+
 ## 3.4.3
 
 - **Omanotch** on Omarchy 4.5 (#763, #764, reported by the project owner on an M4 Max; the same
