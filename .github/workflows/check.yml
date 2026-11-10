@@ -434,6 +434,9 @@ jobs:
       - name: Move to Omarchy 4.5 backs up first, resumes, undoes byte for byte and deletes the backup only when asked
         run: src/tests/app-move-vm.sh
 
+      - name: apply's copy into the VM names the part that failed and shows the VM's tar errors
+        run: src/tests/apply-copy.sh
+
       - name: Update VM never waits forever (disk errors, a read-only VM, a hang), asks before a kernel build
         run: src/tests/update-vm-watch.sh
 
