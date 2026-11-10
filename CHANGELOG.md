@@ -3,17 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.4.4 (unreleased)
+## 3.4.4
 
 - **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning
   in front of it when it ran without a UTF-8 locale (as it does over ssh), so it reported "two bars
   on the MacBook" for a bar that was parked under the strip, and "the bar does not answer" for Full
   screen including notch. It now takes the state's JSON line alone (#769).
-- **Mission Control** (experimental, off by default, Omarchy 4.5): four fingers up in the full-screen
-  VM spread out the windows of each display, following the fingers, with the workspaces along the
-  top; four fingers down close it, and while it is open four fingers sideways go through the
-  workspaces. It is the [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control)
-  plugin for Omarchy's shell by @gillesgoetsch (MIT), shipped unchanged from one of its releases.
+- **Mission Control** (experimental, off by default, Omarchy 4.5): four fingers up in the
+  full-screen VM spread out the windows of each display, following the fingers, with the
+  workspaces along the top; four fingers down close it, and while it is open four fingers sideways
+  go through the workspaces. It is the
+  [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin for
+  Omarchy's shell by @gillesgoetsch (MIT), shipped unchanged from its release v1.0.1.
   Switch it in the app's VM window (Input > Mission Control), the control centre or with
   `omacvm enable mission-control`; it needs Trackpad gestures. A copy you added yourself with
   `omarchy plugin add` is only switched: the switch never writes or removes it. Off shows the
