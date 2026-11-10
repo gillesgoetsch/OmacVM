@@ -3,4 +3,4 @@
 # goes to the plugin's repository, then src/missioncontrol/sync.sh pins the new tag.
 repo https://github.com/gillesgoetsch/omarchy-mac-mission-control.git
 tag -
-commit 886261d6b24069d33e3091399a4923758de48b74
+commit 22a70550c153bd9bd0b38bd4521b380a93fc8d26
