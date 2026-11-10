@@ -52,6 +52,11 @@ for f in "${FILES[@]}"; do
   git -C "$W/repo" show "$COMMIT:$f" > "$W/files/$f"
 done
 ( cd "$W/files" && sha256 "${FILES[@]}" ) > "$W/SHA256SUMS"
+# A tag says the release in its manifest: v1.0.1 has version 1.0.1.
+if [[ -n $TAG ]]; then
+  v=$(jq -r .version "$W/files/manifest.json")
+  [[ $v == "${TAG#v}" ]] || { echo "sync.sh: tag $TAG has manifest version $v; not taken" >&2; exit 1; }
+fi
 
 if [[ ${1:-} == --check ]]; then
   if cmp -s "$W/SHA256SUMS" "$SUMS" && ( cd "$DEST" && sha256 -c --quiet "$SUMS" ) >/dev/null 2>&1 &&
