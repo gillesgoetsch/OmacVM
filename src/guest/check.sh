@@ -575,7 +575,7 @@ else skip "scroll momentum" "off (omacvm enable scroll-momentum turns it on: tra
 # Mission Control (mission-control, the Mac Mission Control plugin): in place,
 # enabled, its Hyprland half loaded; fails when windows stay hidden or the
 # overview stays on screen while the overview is closed or its shell does
-# not answer (the repair: omacvm apply --only mission-control).
+# not answer (the repair: omacvm apply --reinstall mission-control).
 FEATURE=mission-control
 mc=$(/usr/local/share/omacvm/missioncontrol/guest/install.sh "$U" --status "${OMACVM_FEATURE_mission_control:-off}" 2>/dev/null | tail -n 1)
 case ${mc%% *} in

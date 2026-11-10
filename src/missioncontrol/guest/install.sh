@@ -144,7 +144,7 @@ unhang() {
   layer_up || return 0
   [[ -n $(mc_state) ]] && return 0
   if hypr_locked; then
-    echo "Mission Control: the shell does not answer and the session is locked: unlock, then omacvm apply --only mission-control"
+    echo "Mission Control: the shell does not answer and the session is locked: unlock, then omacvm apply --reinstall mission-control"
     return 1
   fi
   echo "Mission Control: the Omarchy shell does not answer and its overview covers the screen: restarting the shell"
@@ -259,30 +259,30 @@ status() {   # on|off: the switch
   if ! at45 "$om"; then echo "fail needs Omarchy 4.5 (this VM has ${om:-none}): Move to Omarchy 4.5 in OmacVM.app"; return 0; fi
   if [[ ! -d $P ]]; then
     if home_run test -d "$ST/plugins-staged/$ID" < /dev/null; then echo "human in place right after the next unlock"
-    else echo "fail not installed: omacvm apply --only mission-control"; fi
+    else echo "fail not installed: omacvm apply --reinstall mission-control"; fi
     return 0
   fi
-  if [[ -z $own ]] && ! same_as_ours; then echo "fail the plugin's files are not OmacVM's pinned copy: omacvm apply --only mission-control"; return 0; fi
+  if [[ -z $own ]] && ! same_as_ours; then echo "fail the plugin's files are not OmacVM's pinned copy: omacvm apply --reinstall mission-control"; return 0; fi
   if ! in_config; then
     if home_grep "$Q" -qxF "$ID"; then echo "human enabled at the next login"
-    else echo "fail not enabled in the Omarchy shell: omacvm apply --only mission-control"; fi
+    else echo "fail not enabled in the Omarchy shell: omacvm apply --reinstall mission-control"; fi
     return 0
   fi
   hypr_up || { echo "human log in (it loads with the desktop)"; return 0; }
   h=$(hidden_count); lay=0; layer_up && lay=1
   c=$(mc_state)
   if [[ -z $c ]]; then
-    if (( lay )) || [[ ${h:-0} -gt 0 ]]; then echo "fail the Omarchy shell does not answer and ${h:-?} windows are hidden: omacvm apply --only mission-control"
+    if (( lay )) || [[ ${h:-0} -gt 0 ]]; then echo "fail the Omarchy shell does not answer and ${h:-?} windows are hidden: omacvm apply --reinstall mission-control"
     else echo "warn the overview does not answer (the Omarchy shell restarting?)"; fi
     return 0
   fi
   ph=$(jq -r '.phase // "?"' <<<"$c" 2>/dev/null)
   if [[ $ph == closed ]] && { [[ ${h:-0} -gt 0 ]] || (( lay )); }; then
-    echo "fail ${h:-?} windows left hidden while the overview is closed: omacvm apply --only mission-control"; return 0
+    echo "fail ${h:-?} windows left hidden while the overview is closed: omacvm apply --reinstall mission-control"; return 0
   fi
-  live || { echo "fail its Hyprland half is not loaded: omacvm apply --only mission-control"; return 0; }
+  live || { echo "fail its Hyprland half is not loaded: omacvm apply --reinstall mission-control"; return 0; }
   n=$(binds_count)
-  [[ ${n:-0} -ge 1 ]] || { echo "fail no Mission Control keys in Hyprland: omacvm apply --only mission-control"; return 0; }
+  [[ ${n:-0} -ge 1 ]] || { echo "fail no Mission Control keys in Hyprland: omacvm apply --reinstall mission-control"; return 0; }
   if ! paging; then
     echo "warn four fingers up open it; sideways paging is off: ~/.config/hypr/input.lua has no 4-finger workspace swipe$own"
   else

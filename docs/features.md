@@ -431,7 +431,7 @@ takes it with them.
   locked, the copy and the reload wait for the next apply after the unlock.
 - **Windows stay hidden, or the overview stays on the screen** (the Omarchy
   shell stopped answering while it was open): switch **Mission Control** off
-  in the app's VM window, or run `omacvm apply --only mission-control --vm
+  in the app's VM window, or run `omacvm apply --reinstall mission-control --vm
   NAME` on the Mac. Both show the windows again and restart a shell that does
   not answer. In the VM: `hyprctl eval 'mac_mission_control.reset()'`.
   `omacvm check` fails while windows stay hidden.

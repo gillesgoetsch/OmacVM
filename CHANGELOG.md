@@ -13,7 +13,7 @@ in more words.
   Switch it in the app's VM window (Input > Mission Control), the control centre or with
   `omacvm enable mission-control`; it needs Trackpad gestures. A copy you added yourself with
   `omarchy plugin add` is never written or removed, only switched. Off shows the windows, disables
-  the plugin and takes its gesture and keys out of Hyprland; `omacvm apply --only mission-control`
+  the plugin and takes its gesture and keys out of Hyprland; `omacvm apply --reinstall mission-control`
   repairs windows left hidden ([details](docs/features.md#mission-control)).
 
 ## 3.4.3

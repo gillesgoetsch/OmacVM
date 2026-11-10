@@ -22,7 +22,7 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   [62](#62-omarchy_path-does-not-match-this-omarchy-command-omarchy-45).
 - **Windows stay invisible, or Mission Control's overview stays on the
   screen** (Mission Control on): switch it off in the app's VM window, or
-  `omacvm apply --only mission-control --vm NAME`. See
+  `omacvm apply --reinstall mission-control --vm NAME`. See
   [63](#63-mission-control-windows-stay-hidden-or-the-overview-stays-on-the-screen).
 - **The Omarchy menu's Nightlight tints the VM, the Mac's Night Shift does
   not change** (Bridge on; up to 3.4.1): Omarchy puts its own commands first
@@ -1997,7 +1997,7 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   when the Omarchy shell goes away; a shell that hangs (does not answer, but
   still runs) keeps the overview on the screen and the windows hidden.
 - **Fix:** switch **Mission Control** off in the app's VM window (Input), or
-  on the Mac `omacvm apply --only mission-control --vm NAME`. Both show the
+  on the Mac `omacvm apply --reinstall mission-control --vm NAME`. Both show the
   windows again (the plugin's own reset) and restart a shell that does not
   answer; while Hyprland holds a session lock they say to unlock first. In
   the VM, `hyprctl eval 'mac_mission_control.reset()'` shows the windows.

@@ -198,7 +198,7 @@ expect "no 4-finger workspace swipe: check warns" "warn" "$(st on | cut -d' ' -f
 printf 'hl.gesture({ fingers = 4, direction = "horizontal", action = "workspace" })\n' > "$H/.config/hypr/input.lua"
 # Windows left hidden while closed: the check fails, a repair shows them.
 echo 2 > "$S/hidden"
-expect "hidden while closed: check fails" "fail 2 windows left hidden while the overview is closed: omacvm apply --only mission-control" "$(st on)"
+expect "hidden while closed: check fails" "fail 2 windows left hidden while the overview is closed: omacvm apply --reinstall mission-control" "$(st on)"
 bash "$I" me --repair >/dev/null
 expect "repair: windows shown (the plugin's reset)" "0 yes" "$(cat "$S/hidden") $(logged reset)"
 
