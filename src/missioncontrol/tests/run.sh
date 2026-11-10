@@ -254,6 +254,15 @@ expect "own vertical gesture: on fails" 1 "$rc"
 expect "own vertical gesture: says why" yes "$(yes_no grep -q 'four-finger up or down gesture of your own' <<<"$out")"
 expect "own vertical gesture: off again, copy and marker gone" "no no no" "$(enabled) $(there "$P") $(there "$MARK")"
 expect "own vertical gesture: config errors as before" "an old error of the user's" "$(hyprctl configerrors)"
+# The same gesture in the user's config as a plain line (Hyprland 0.56.2 gives no error for it): refused before anything.
+fresh; printf 'hl.gesture({ fingers = 4, direction = "vertical", action = "workspace" })\n' >> "$H/.config/hypr/input.lua"
+out=$(bash "$I" me on); rc=$?
+expect "own vertical line: refused, says where" "1 yes" "$rc $(yes_no grep -q '~/.config/hypr/input.lua:2' <<<"$out")"
+expect "own vertical line: nothing written, not enabled" "no no no" "$(there "$P") $(there "$MARK") $(enabled)"
+# One added after it was on: the check warns.
+sed -i.bak '$d' "$H/.config/hypr/input.lua"; bash "$I" me on >/dev/null
+printf 'hl.gesture({ fingers = 4, direction = "up", action = "fullscreen" })\n' >> "$H/.config/hypr/input.lua"
+expect "own vertical line added later: check warns with the place" "warn a four-finger up or down gesture of your own (~/.config/hypr/input.lua:2) takes the swipe; ⌃↑ still opens it" "$(st on)"
 # An error the user had before is no reason.
 fresh; echo "an old error of the user's" > "$S/errors"
 bash "$I" me on >/dev/null

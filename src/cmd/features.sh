@@ -95,6 +95,15 @@ elif [[ $MODE == features ]]; then
   resolve_vm
   [[ -n $IP ]] || OFF=1
 else
+  # A VM whose Omarchy cannot have a feature it is asked for (omarchy-45: its
+  # omarchy record says below 4.5) is refused before it starts.
+  if [[ $MODE == enable && -n $VM ]]; then
+    FEATURES_VM_DIR=$(app_dir "$VM" 2>/dev/null) || FEATURES_VM_DIR=""
+    for ((w = 0; w < ${#WANT[@]}; w++)); do
+      i=$(feature_index "${WANT[$w]}")
+      if [[ ${WANTV[$w]} == on ]] && feature_has_tag "$i" omarchy-45 && ! feature_available "$i"; then usage "${FTITLE[$i]} $REASON"; fi
+    done
+  fi
   resolve_vm start
 fi
 probe=""; [[ -z $IP ]] || probe=$(vm_probe "$IP") || true

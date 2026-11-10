@@ -136,6 +136,17 @@ paging() {
     hypr_lua 'if not (type(mac_mission_control_config) == "table" and mac_mission_control_config.sideways == true) then error("no") end'
 }
 
+# A four-finger up or down (or any-way) swipe of the user's own in
+# ~/.config/hypr, one hl.gesture line, read as the user: Hyprland keeps it
+# over the plugin's without a config error (0.56.2: the swipe switched
+# workspaces and the overview stayed shut). Prints FILE:LINE.
+own_vertical() {
+  home_run grep -rnE --include='*.lua' '^[[:space:]]*hl\.gesture[[:space:]]*\(' "$H/.config/hypr" < /dev/null 2>/dev/null |
+    grep -E 'fingers[[:space:]]*=[[:space:]]*4([^0-9]|$)' |
+    grep -E 'direction[[:space:]]*=[[:space:]]*"(vertical|vert|up|u|down|d|swipe)"' | head -n 1 | cut -d: -f1,2 |
+    sed "s|^$H/|~/|"
+}
+
 # A shell that hangs with the overview on screen: the overview covers the
 # windows until the shell goes. Restarted (Omarchy's own restart, which
 # locks again when Hyprland holds a lock without a live lock screen); if the
@@ -206,13 +217,18 @@ off() {
 }
 
 on() {
-  local om s before after new settle=0 own=0
+  local om s before after new v settle=0 own=0
   om=$(omarchy_version)
   if ! at45 "$om"; then
     echo "OmacVM: Mission Control needs Omarchy 4.5 (this VM has ${om:-no omarchy package}): Move to Omarchy 4.5 in OmacVM.app"
     return 3
   fi
   copy_ok || { echo "OmacVM: Mission Control: OmacVM's copy of the plugin is not the pinned one (SHA256SUMS)"; return 1; }
+  v=$(own_vertical)
+  if [[ -n $v ]]; then
+    echo "OmacVM: Mission Control: a four-finger up or down gesture of your own ($v) takes the same swipe: remove it, then switch Mission Control on"
+    return 1
+  fi
   own_clone && own=1
   before=$(hypr configerrors)
   # Written first: an off from here on knows that OmacVM switched it on.
@@ -256,7 +272,7 @@ on() {
 }
 
 status() {   # on|off: the switch
-  local om c n ph h own="" lay
+  local om c n ph h v own="" lay
   om=$(omarchy_version)
   own_clone && own=" (your own copy, omarchy plugin update)"
   if [[ $1 != on ]]; then
@@ -294,7 +310,10 @@ status() {   # on|off: the switch
   live || { echo "fail its Hyprland half is not loaded: omacvm apply --reinstall mission-control"; return 0; }
   n=$(binds_count)
   [[ ${n:-0} -ge 1 ]] || { echo "fail no Mission Control keys in Hyprland: omacvm apply --reinstall mission-control"; return 0; }
-  if ! paging; then
+  v=$(own_vertical)
+  if [[ -n $v ]]; then
+    echo "warn a four-finger up or down gesture of your own ($v) takes the swipe; ⌃↑ still opens it$own"
+  elif ! paging; then
     echo "warn four fingers up open it; sideways paging is off: ~/.config/hypr/input.lua has no 4-finger workspace swipe$own"
   else
     echo "ok four fingers up open it, sideways page while it is open$own"

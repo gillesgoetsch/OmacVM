@@ -416,10 +416,12 @@ takes it with them.
   mac_mission_control_config = { keys = { "SUPER + CTRL + UP" } }
   ```
 
-- A four-finger up or down gesture of your own (an `hl.gesture` with 4
-  fingers and a vertical direction) takes the same swipe. Switching Mission
-  Control on then gets a config error from Hyprland: it goes back off and
-  says why.
+- A four-finger up or down gesture of your own (an `hl.gesture` line with 4
+  fingers and a vertical direction in `~/.config/hypr`) takes the same swipe:
+  Hyprland keeps yours, without an error. Switching Mission Control on then
+  stops and names the file and line; one added later makes `omacvm check`
+  warn (⌃↑ still opens it). A config error Hyprland does report once it is on
+  switches it off again, with the reason.
 - Your own copy: if you added the plugin yourself (`omarchy plugin add`),
   OmacVM never writes or removes it; the switch only enables and disables it,
   and `omarchy plugin update` keeps it up to date. With the switch off, OmacVM
