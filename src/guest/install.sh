@@ -8,7 +8,8 @@
 #                    [--graphics opengl|vulkan] [--kernel-new build|keep]
 # Features: the list in ../features.tsv (bridge, wallpaper, gestures, scroll-momentum,
 # omanotch, mac-clock, camera, no-idle-lock, autologin, thp-kernel, battery, external-brightness,
-# control-centre, fast-network, chromium-video, gpu-compute, vulkan, x86-apps, touch-id, mac-ime, drag-drop) with its defaults; a feature
+# control-centre, fast-network, chromium-video, gpu-compute, vulkan, x86-apps, touch-id, mac-ime, drag-drop,
+# mission-control) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
 # so a later run without --feature keeps them.
 # --vm-type: app (OmacVM.app), the only one; anything else stops (exit 2):
@@ -490,6 +491,20 @@ if want drag-drop; then
     "$R/drop/guest/install.sh" "$U" on || not_set_up drag-drop "drag and drop"
   else
     "$R/drop/guest/install.sh" "$U" off || not_set_up drag-drop "drag and drop (off)"
+  fi
+fi
+# Mission Control (Omarchy 4.5): the Mac Mission Control plugin, OmacVM's
+# pinned copy (missioncontrol/PIN). Off on every apply undoes only what
+# OmacVM switched on; a copy of the owner's own is never written.
+if want mission-control; then
+  if [[ ${F[mission-control]} == on ]]; then
+    log "Mission Control (experimental; the Mac Mission Control plugin)"
+    "$R/missioncontrol/guest/install.sh" "$U" on || not_set_up mission-control "Mission Control"
+    # A repair (--only mission-control): windows it left hidden shown again,
+    # a shell that hangs with the overview on screen restarted.
+    [[ -z $ONLY ]] || "$R/missioncontrol/guest/install.sh" "$U" --repair || not_set_up mission-control "Mission Control (repair)"
+  else
+    "$R/missioncontrol/guest/install.sh" "$U" off || not_set_up mission-control "Mission Control (off)"
   fi
 fi
 if ! want battery; then
