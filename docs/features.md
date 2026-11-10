@@ -429,8 +429,11 @@ takes it with them.
   disables it, and `omarchy plugin update` keeps it up to date. Off leaves it
   as it is. One exception, on or off: on Qt 6.12
   (Omarchy 4.5) OmacVM's colour fix rewrites the `import QtQuick` line of
-  every plugin that still has a bare `Color`, so also of a copy older than
-  1.0.1; from 1.0.1 on there is nothing in it to change.
+  every plugin that still has a bare `Color`, so also of a copy from before
+  the plugin's v1.0.1 release. `omarchy plugin update` then stops with "you
+  have local changes": run
+  `git -C ~/.config/omarchy/plugins/mac.missioncontrol checkout -- .` once,
+  then the update. From v1.0.1 on there is nothing in it to change.
 - OmacVM ships the files of one release of the plugin, unchanged
   (`src/missioncontrol/PIN`); Update VM brings the next one once OmacVM pins it.
 - Off: the windows show, the plugin is disabled, OmacVM's copy goes, and one
