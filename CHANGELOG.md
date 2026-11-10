@@ -3,6 +3,24 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.5 (unreleased)
+
+- **Venus no longer refuses the shaders of ggml's Vulkan backend** (#624, cause found by @hadiskeini;
+  reported by @Fail-Safe, @dandomin and @epicoun): from 3.2.21 Venus refused every shader
+  with a local array whose size is a specialization constant expression
+  (`float a[WMITER * TM]`), so llama.cpp, whisper.cpp and Superwhisper's workers lost their
+  GPU context when they created their matrix multiply pipelines; Superwhisper's Offline cleanup
+  worker had no CPU fallback. OmacVM now works such sizes out after the app's specialization,
+  as the Mac's shader compilers do. An expression whose value drivers could read differently
+  (an overflow, a division by 0, a negative operand of a signed division, a shift past the
+  width) or whose result is no valid size is still refused, and the qemu.log line now says
+  which kind it was. Of the 1267 shaders in llama.cpp b11791's Vulkan library, 603 were
+  refused before; with their default values 8 are now (flash attention, whose defaults give an
+  empty array; ggml always sets them, and with its head sizes they pass). Workgroup arrays of
+  such a size are counted at their real size against the GPU's shared memory (before they
+  counted as one element). A pipeline that gives the same specialization constant twice is
+  refused (Vulkan forbids it; vkr and MoltenVK could read different values).
+
 ## 3.4.4
 
 - **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning
