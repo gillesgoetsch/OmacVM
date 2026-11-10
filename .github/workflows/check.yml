@@ -638,7 +638,7 @@ jobs:
       - name: omacvm features' checklist keeps one line per row (pseudo-terminal, #292)
         run: src/tests/features-checklist.sh
 
-      - name: Guest check accepts NOTCH right above the built-in display (offline)
+      - name: Guest check accepts NOTCH right above the built-in display; its NOTCH workspaces line (offline)
         run: src/tests/notch-check.sh
 
       - name: omacvm check's full screen including notch row (strip not back after a display change; offline)

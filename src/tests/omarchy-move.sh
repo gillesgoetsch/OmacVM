@@ -41,7 +41,8 @@ B=$T/bin; mkdir -p "$B"
 P=$T/pk; mkdir -p "$P"
 cat > "$GD/system-update" <<EOF
 #!/bin/bash
-echo update >> "$P/calls"; [[ -e $P/update-fails ]] && { rm -f "$P/update-fails"; exit 1; }
+echo update >> "$P/calls"; [[ -e $P/su-out ]] && cat "$P/su-out" >> "$T/su.log"
+[[ -e $P/update-fails ]] && { rm -f "$P/update-fails"; exit 1; }
 if [[ -e $P/aur-fails ]]; then
   printf '%s\n' "== 2026-11-06 01:00:00 omarchy update -y (OmacVM)" "Update system packages" "Orphan system packages" \
     "Update AUR packages" "==> ERROR: dotnet-runtime-2.1 is not available for the 'aarch64' architecture." "== omarchy update exit 1" >> "$T/su.log"
@@ -430,6 +431,53 @@ fresh; : > "$P/aur-fails"; o run >/dev/null 2>&1; rc=$?
 expect "omarchy update fails only in its AUR step: done, with a warning" "0 done 1" \
   "$rc $(cat "$J/state") $(o status --json | json 'sum("AUR packages not updated" in w for w in d["result"]["warnings"])')"
 rm -f "$P/aur-fails" "$T/su.log"
+
+# omarchy update stops on its own error (#742): Omarchy's line in the reason, the status still JSON. The
+# output as the unit logs it: OSC 3008 marks (made-up values), colours, a charset switch, a NUL, a tab.
+E=$'\033' BL=$'\a'
+reason() { o status --json | json 'd["reason"]'; }
+{ echo "== 2026-11-08 09:14:05 omarchy update -y (OmacVM)"
+  printf '%s]3008;start=00aa;user=test;type=session%s\\\000%s]3008;end=00aa%s\\\n' "$E" "$E" "$E" "$E"
+  printf 'Prune package cache\n==>%s(B finished: 3 packages removed%s(B\nCreate system snapshot\n'  "$E" "$E"
+  printf '%s]3008;end=00bb%sOMARCHY_PATH does not match\tthis Omarchy command.\xc3\xa9\n\n' "$E" "$BL"
+  printf '%s[0;31mSomething went wrong during the update!\n\nPlease review the output above carefully.%s[0m\n' "$E" "$E"
+  echo "OMARCHY_PATH does not match this Omarchy command."; echo "== omarchy update exit 1"; } > "$T/su-out"
+fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1; rc=$?
+expect "omarchy update stops on Omarchy's own error: failed, the reason is Omarchy's line (escapes out), JSON valid" \
+  "1 omarchy update stopped: OMARCHY_PATH does not match this Omarchy command (see /var/log/omacvm-system-update.log)" \
+  "$rc $(reason)"
+expect "... the journal's reason has no control bytes" 0 "$(LC_ALL=C grep -c '[^[:print:]]' "$J/reason")"
+# No "Something went wrong" (stopped another way): its last line, never OmacVM's "== ... exit" line; cut at 200.
+{ echo "== 2026-11-08 09:20:00 omarchy update -y (OmacVM)"; printf 'error: failed to synchronize all databases (%s[1mtimeout%s[0m)\n\n' "$E" "$E"
+  echo "== omarchy update exit 1"; } > "$T/su-out"
+fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "... no 'Something went wrong': the last line" \
+  "omarchy update stopped: error: failed to synchronize all databases (timeout) (see /var/log/omacvm-system-update.log)" "$(reason)"
+{ echo "== 2026-11-08 09:21:00 omarchy update -y (OmacVM)"; printf 'x%.0s' $(seq 1 300); echo; echo "== omarchy update exit 1"; } > "$T/su-out"
+fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "... a long line: 200 characters of it" 200 "$(reason | sed -e 's/^omarchy update stopped: //' -e 's/ (see .*//' | tr -d '\n' | wc -c | tr -d ' ')"
+# What comes after the exit line (keep-explicit's stderr) is not the update's.
+{ echo "== 2026-11-08 09:21:30 omarchy update -y (OmacVM)"; echo "error: target not found: foo"; echo "== omarchy update exit 1"
+  echo "error: keep-explicit could not mark omacvm-vulkan-virtio"; } > "$T/su-out"
+fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "... a line after the exit line: not read" \
+  "omarchy update stopped: error: target not found: foo (see /var/log/omacvm-system-update.log)" "$(reason)"
+# OmacVM stopped the update (10 minutes without output, or its 40 are up): no exit line, or a signal's
+# 128+N. Its last line (pacman's progress, even an Omarchy line printed while it stops) is not why.
+{ echo "== 2026-11-08 09:22:00 omarchy update -y (OmacVM)"; echo "(213/340) upgrading linux-firmware [###---] 45%"; } > "$T/su-out"
+fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "... stopped by OmacVM, no exit line: the old text" \
+  "omarchy update did not finish (see /var/log/omacvm-system-update.log)" "$(reason)"
+{ echo "== 2026-11-08 09:23:00 omarchy update -y (OmacVM)"; echo "(213/340) upgrading linux-firmware"
+  echo "Something went wrong during the update!"; echo "== omarchy update exit 130"; } > "$T/su-out"
+fresh; mv "$T/su-out" "$P/su-out"; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "... stopped by OmacVM, exit 130 (SIGINT): the old text" \
+  "omarchy update did not finish (see /var/log/omacvm-system-update.log)" "$(reason)"
+# system-update stopped before omarchy update (nothing new in its log): an older run's words are not this one's.
+fresh; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "... nothing new in the log (an older failed run there): today's text" \
+  "omarchy update did not finish (see /var/log/omacvm-system-update.log)" "$(reason)"
+rm -f "$T/su.log"
 
 # Cut off inside the switch (the VM lost power, the move was killed): the
 # guest's own word, from pacman's database as it is.

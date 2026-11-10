@@ -16,6 +16,10 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   their space at once; system files stay in the 2 update snapshots until
   newer ones replace them), or give the VM a larger disk: shut it down, then
   Disk › Change… in its window. The VM grows into it at its next start.
+- **The move to Omarchy 4.5 stops at its last step, or `omarchy update` says
+  "OMARCHY_PATH does not match this Omarchy command."**: a line in your
+  shell's startup files sets `OMARCHY_PATH`. See
+  [62](#62-omarchy_path-does-not-match-this-omarchy-command-omarchy-45).
 - **The Omarchy menu's Nightlight tints the VM, the Mac's Night Shift does
   not change** (Bridge on; up to 3.4.1): Omarchy puts its own commands first
   on the desktop's PATH, so its own night light (hyprsunset) ran instead of
@@ -51,11 +55,32 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   (Hyprland 0.57): Update VM (3.2.15) or
   `omacvm update`, then log out and in
   ([50](#50-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
+- **The hidden indicators open far from them (left part of the bar, under
+  the notch) and shut on the way to them, or open on the bell and shut again**
+  (Omarchy 4.5, Omanotch, the indicators in the bar's right part): Update VM
+  (3.4.3, bar patch v43; #763, #764). With Skip the notch opening them left
+  of the notch, the left part of the bar (the workspaces) opened them too:
+  Update VM (3.4.3, #765). With Omanotch off, Omarchy's own bar opens them
+  only left of its centre; moving the indicators there (Omarchy's own layout,
+  `centerBegin`) avoids it.
+- **The notch strip's workspaces stay on 1 while you switch workspaces**
+  (Omarchy 4.5, Omanotch; OmacVM 3.4.2 and older): Update VM (3.4.3, bar
+  patch v43; #760). Then `omarchy-shell notchbar state` says
+  `"workspaces": "copy"` and `omacvm check` has no "NOTCH workspaces" line.
+  If the state says `"omarchy"`, or `omacvm check` has that line (the copy's
+  widget can load without its fix), the line has the fix (delete
+  `~/.config/omarchy/plugins/$USER.bar`, then repair Omanotch). If you made
+  your own copy of the workspaces widget and put it in the bar's layout,
+  put Omarchy's own Workspaces back in the layout: the fix is for Omarchy's
+  widget only (`"none"`: no Workspaces of Omarchy's on the strip's bar).
 - **The tray or other bar items show right of the notch, then move left of
   it** (Omarchy 4.5, Omanotch with Skip the notch; on OmacVM 3.4.1 the shell
   log may say `Binding loop detected for property "notchWidths"`): Update VM
-  (3.4.2, bar patch v41). If tray apps start seconds apart, the tray can
-  still move once, at once (#757).
+  (3.4.2, bar patch v41). Tray apps that start about a second apart (at
+  login) moved it once, at once, on Omarchy 4.0 and 4.5: Update VM (3.4.3,
+  bar patch v43; #757). The tray then shows once its apps stop coming (1.5 s
+  after the last, 8 s at most); an app that starts later can still move it
+  once.
 - **In Full screen including notch the windows start well below the notch**
   (about 12 pt at the guest's scale 2 on OmacVM 3.4.1 and older: the bar
   reserved the whole strip, then Omarchy's 10 px window gap): Update VM
@@ -1920,3 +1945,39 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   it off again.
 - **Where:** `src/x86/guest/install.sh`, `src/guest/check.sh` ("x86 apps");
   test `src/tests/x86-apps.sh`; [ADR 0040](adr/0040-x86-apps-box64.md).
+
+## 62. "OMARCHY_PATH does not match this Omarchy command." (Omarchy 4.5)
+
+- **Symptom:** the move to Omarchy 4.5 stops at its last step, "update" (12
+  of 13), and Resume stops there again. Its log
+  (`/var/log/omacvm-system-update.log` in the VM) shows `omarchy update`
+  stopping right after "Create system snapshot" with that line, then
+  "Something went wrong during the update!". Up to 3.4.2 the move said only
+  "omarchy update did not finish" (#742). The same can happen to an
+  `omarchy update` you start in a terminal on Omarchy 4.5.
+- **Cause:** Omarchy 4.5 refuses to run its update steps when the variable
+  `OMARCHY_PATH` names another Omarchy than the command's own
+  (`/usr/share/omarchy` for Omarchy's package). `omarchy update` runs itself
+  again through `script`, which starts your login shell, so a line in its
+  startup files that sets `OMARCHY_PATH` (for example to Omarchy 4.0's
+  `~/.local/share/omarchy`) wins: zsh reads `~/.zshenv` there, fish
+  `~/.config/fish/config.fish` and `conf.d/`. In a terminal, bash's
+  `~/.bashrc` or `~/.profile` set it as well. Omarchy 4.0 had no such check.
+- **Fix (3.4.3):** OmacVM runs `omarchy update` under bash, which reads no
+  startup file there, so the move, Graphics › Vulkan and a prebuilt VM's
+  first update no longer depend on your shell. Update OmacVM.app, then
+  Resume the move: it brings the new OmacVM into the VM first. The move's
+  card now quotes Omarchy's own line when its update stops.
+- **For your own `omarchy update`:** find the line with
+  `grep -rns OMARCHY_PATH ~/.zshenv ~/.zprofile ~/.zshrc ~/.config/fish ~/.profile ~/.bash_profile ~/.bashrc`,
+  remove it, open a new terminal and run `omarchy update`. Omarchy 4.5's
+  desktop session sets `OMARCHY_PATH=/usr/share/omarchy` itself, also on a
+  kept VM whose migrations have not run; `echo $OMARCHY_PATH` in the new
+  terminal shows it. A VM kept with Keep This Disk… after such a stop (3.4.1,
+  3.4.2) needs this once: Omarchy's migrations did not run in the move, and
+  Update VM does not run `omarchy update`.
+- **Before 3.4.3:** Undo… in the VM's settings puts the Omarchy 4.0 disk back
+  as it was before the move. Or Keep This Disk… and the step above.
+- **Where:** `src/guest/system-update` (`run_unit`, `-E SHELL`),
+  `src/guest/omarchy-move.sh` (`update_why`); tests `src/tests/pkg-safe.sh`,
+  `src/tests/omarchy-move.sh`.

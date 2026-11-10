@@ -9,9 +9,14 @@ own output's. Omanotch's hidden NOTCH output is an output too, so its copy of
 the bar (what the strip on the Mac shows) showed NOTCH's empty block instead of
 the built-in display's, and at another width than the parked bar that takes
 the strip's clicks. With this the NOTCH copy shows the workspaces of the
-display the strip stands in for (the bar's notchParkedScreen); every other
-copy stays Omarchy's. A widget without 4.5's per-output workspaces (Omarchy
-4.0) has nothing to patch and stays as it is.
+display the strip stands in for (the bar's notchParkedScreen). A widget
+without 4.5's per-output workspaces (Omarchy 4.0) has nothing to patch and
+stays as it is.
+
+Omarchy 4.5 loads Omarchy's own widgets from its registry, not from the bar
+copy, so this file runs on the NOTCH bar only: the bar patch's step 11
+(apply-patch.py, workspaces_45, #760) loads it there in place of the
+registry's omarchy.workspaces. Every other bar keeps Omarchy's widget.
 """
 import sys
 
