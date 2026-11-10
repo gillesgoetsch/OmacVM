@@ -1593,7 +1593,12 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   restarts OmacVM keeps `/run/omacvm/gl-zink-off` (one line "lost TIME
   WHY"): a start of Ghostty on Zink by OmacVM has to take the CPU while it
   exists. Other apps: restart them.
-  `omacvm check`'s "GPU contexts" names the app, marked "(Vulkan)". A
+  `omacvm check`'s "GPU contexts" names the app, marked "(Vulkan)". It, the
+  app's log and `logs/qemu.log` show the first 15 letters of the app's
+  process name, all the VM's kernel passes on (`cleanup-worker-` for
+  `cleanup-worker-vulkan`); from 3.4.5 the note in the VM shows the full
+  name when exactly one running app of yours fits, and the VM's journal
+  (`journalctl -t omacvm-desktop-recover`) shows both. A
   context the guest was closing anyway (the app was ending) is not counted:
   QEMU's log says `venus context N (<app>) ended while the guest closed it`.
   With the app update but no Update VM, the VM shows no note (the app's log

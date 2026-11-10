@@ -3,6 +3,15 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.5 (unreleased)
+
+- **A Vulkan app that lost its graphics on the Mac** was named by its first 15 letters in the
+  VM's note and journal ("cleanup-worker- stopped drawing" for Superwhisper's
+  `cleanup-worker-vulkan`): the VM's kernel cuts process names there, and that is all the Mac gets.
+  The VM now looks the name up among your running apps and shows the full one when exactly one
+  fits; `logs/qemu.log`, the app's log and `omacvm check` keep the 15 letters (the journal line
+  names both). It comes with Update VM; nothing changes on the Mac. See #624, reported by @epicoun.
+
 ## 3.4.4
 
 - **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning
