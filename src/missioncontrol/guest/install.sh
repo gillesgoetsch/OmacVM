@@ -20,7 +20,9 @@
 #   install.sh USER --status on|off
 #                                one line for omacvm check: STATUS DETAIL,
 #                                STATUS one of ok warn fail skip human
-# Exit 3: the VM's Omarchy is below 4.5 (nothing done). Every call to the
+# Exit 3: the VM's Omarchy is below 4.5 (nothing done). Why a switch on did
+# not happen is the last "OmacVM: " line (apply's rollback message quotes it
+# after "Mission Control was not set up: "). Every call to the
 # shell or Hyprland has a time limit: a shell that hangs never stops an apply.
 # OmacVM never removes a bind or a gesture at run time (the plugin's rule:
 # Hyprland 0.56's Keybind:remove() takes the user's binds on that key along);
@@ -220,13 +222,13 @@ on() {
   local om s before after new v settle=0 own=0
   om=$(omarchy_version)
   if ! at45 "$om"; then
-    echo "OmacVM: Mission Control needs Omarchy 4.5 (this VM has ${om:-no omarchy package}): Move to Omarchy 4.5 in OmacVM.app"
+    echo "OmacVM: it needs Omarchy 4.5 (this VM has ${om:-no omarchy package}): Move to Omarchy 4.5 in OmacVM.app"
     return 3
   fi
-  copy_ok || { echo "OmacVM: Mission Control: OmacVM's copy of the plugin is not the pinned one (SHA256SUMS)"; return 1; }
+  copy_ok || { echo "OmacVM: OmacVM's copy of the plugin is not the pinned one (SHA256SUMS)"; return 1; }
   v=$(own_vertical)
   if [[ -n $v ]]; then
-    echo "OmacVM: Mission Control: a four-finger up or down gesture of your own ($v) takes the same swipe: remove it, then switch Mission Control on"
+    echo "OmacVM: a four-finger up or down gesture of your own ($v) takes its swipe: remove it, then switch Mission Control on"
     return 1
   fi
   own_clone && own=1
@@ -239,7 +241,7 @@ on() {
   else
     s=$(session)
     [[ $s == open && -d $P ]] && ! same_as_ours && settle=1
-    "$INSTALL_PLUGIN" "$U" "$SRC" || { echo "OmacVM: Mission Control: the plugin did not install"; return 1; }
+    "$INSTALL_PLUGIN" "$U" "$SRC" || { echo "OmacVM: the plugin did not install"; return 1; }
     # A changed copy starts a hot reload in the running shell; the apply's
     # one shell restart on top of one has crashed Quickshell (the plugin's
     # own scripts/dev-install.sh waits as long).
@@ -264,7 +266,7 @@ on() {
   new=$(grep -vxF -f <(printf '%s\n' "$before") <<<"$after" | grep . | head -n 1)
   if [[ -n $new ]]; then
     off >/dev/null
-    echo "OmacVM: Mission Control: Hyprland reported \"$(cut -c1-160 <<<"$new")\" once it was on; a four-finger up or down gesture of your own (~/.config/hypr) takes the same swipe: switched off again"
+    echo "OmacVM: Hyprland reported \"$(cut -c1-160 <<<"$new")\" once it was on: switched off again"
     return 1
   fi
   live || echo "Mission Control: on; its Hyprland half loads with the shell (omacvm check)"

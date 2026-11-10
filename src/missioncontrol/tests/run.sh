@@ -251,7 +251,7 @@ expect "no session off: not queued, folder and marker gone" "no no no" "$(yes_no
 fresh; echo "an old error of the user's" > "$S/errors"; : > "$S/planted"
 out=$(bash "$I" me on); rc=$?
 expect "own vertical gesture: on fails" 1 "$rc"
-expect "own vertical gesture: says why" yes "$(yes_no grep -q 'four-finger up or down gesture of your own' <<<"$out")"
+expect "a new config error: says which" yes "$(yes_no grep -q "Hyprland reported .gesture: 4 fingers vertical is taken. once it was on: switched off again" <<<"$out")"
 expect "own vertical gesture: off again, copy and marker gone" "no no no" "$(enabled) $(there "$P") $(there "$MARK")"
 expect "own vertical gesture: config errors as before" "an old error of the user's" "$(hyprctl configerrors)"
 # The same gesture in the user's config as a plain line (Hyprland 0.56.2 gives no error for it): refused before anything.
