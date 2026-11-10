@@ -139,6 +139,10 @@ notch_spot() {
 notch_ws_unloaded() {
   [[ $(jq -rR 'fromjson? | .workspaces // empty' <<<"$1" 2>/dev/null) == omarchy ]] && grep -qs omarchy-notch-bar "$2"
 }
+# The JSON object an `omarchy-shell` answer (stdin) holds, on one line; nothing
+# when it has none. Each line on its own: without a UTF-8 locale (omacvm check
+# over ssh) Qt's locale warning comes first, and plain jq stops at it (#769).
+shell_json() { jq -cR 'fromjson? | objects' 2>/dev/null | tail -n 1; }
 FAST_NET=${OMACVM_FEATURE_fast_network:-off}
 # Features chosen at setup (VMs set up before the choices existed: the defaults
 # they were built with).
@@ -1262,7 +1266,7 @@ elif [[ $TYPE == app ]] && grep -qs '^OMACVM_FULLPANEL=' /run/omacvm/host.env; t
   if user_active notchcast.service || pgrep -u "$U" -x notchcast >/dev/null || connected_to "$HOST" 47811; then
     bad "Omanotch" "notchcast runs on a start with full screen including notch: it would stream a second bar (omacvm apply brings the unit that stays off)"
   else ok "Omanotch" "not needed (full screen including notch): notchcast idle until the next start with the notch via Omanotch"; fi
-  st=$(as_user omarchy-shell notchbar state 2>/dev/null)
+  st=$(as_user omarchy-shell notchbar state 2>/dev/null | shell_json)
   fp=$(jq -r '.fullpanel // empty' <<<"$st" 2>/dev/null)
   bars=$(jq -r '[.bars[]? | select(.[1] == "fullpanel") | "\(.[0]) (\(.[3]) px)"] | join(", ")' <<<"$st" 2>/dev/null)
   case $fp in
@@ -1282,7 +1286,7 @@ elif systemctl --user -M "$U@" list-unit-files notchcast.service 2>/dev/null | g
   b=$(cat "$RUN/omacvm/builtin" 2>/dev/null || echo Virtual-1)
   mons=$(as_user hyprctl monitors all -j 2>/dev/null)
   at() { jq -r --arg n "$1" '.[] | select(.name == $n) | "\(.x),\(.y),\(.width)"' <<<"$mons" 2>/dev/null; }
-  st=$(as_user omarchy-shell notchbar state 2>/dev/null)
+  st=$(as_user omarchy-shell notchbar state 2>/dev/null | shell_json)
   parked=$(jq -r '.parked' <<<"$st" 2>/dev/null); pscreen=$(jq -r '.screen' <<<"$st" 2>/dev/null)
   if [[ -z $(at NOTCH) || -z $(at "$b") ]]; then skip "notch display" "no NOTCH or $b output now"
   elif ! spot=$(notch_spot "$mons" "$b" "$TYPE") || [[ -z $spot ]]; then

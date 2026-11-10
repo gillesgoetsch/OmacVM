@@ -3,6 +3,13 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.4 (unreleased)
+
+- **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning
+  in front of it when it ran without a UTF-8 locale (as it does over ssh), so it reported "two bars
+  on the MacBook" for a bar that was parked under the strip, and "the bar does not answer" for Full
+  screen including notch. It now takes the state's JSON line alone (#769).
+
 ## 3.4.3
 
 - **Omanotch** on Omarchy 4.5 (#763, #764, reported by the project owner on an M4 Max; the same

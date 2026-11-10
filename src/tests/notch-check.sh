@@ -4,7 +4,8 @@
 # app's fallback) or, under OmacVM.app, right above it (notch-place.h). Any
 # other place is still flagged. Offline: notch_spot from check.sh on fixtures.
 # Also its "NOTCH workspaces" line (#760, Omarchy 4.5): notch_ws_unloaded on
-# made-up `notchbar state` answers and bar copy widgets.
+# made-up `notchbar state` answers and bar copy widgets; and the "notch
+# display" and FullPanel rows with Qt's locale warning before the state (#769).
 set -u
 R=$(cd "$(dirname "$0")/../.." && pwd)
 command -v jq >/dev/null || { echo "SKIP: no jq"; exit 0; }
@@ -90,6 +91,69 @@ line=$(grep -F 'warn "NOTCH workspaces"' "$R/src/guest/check.sh")
   { echo "FAIL the NOTCH workspaces line: $line"; fail=1; }
 grep -qF 'console.warn("omanotch: NOTCH workspaces: ' "$R/src/omanotch/guest/bar/apply-patch.py" &&
   echo "ok   the bar writes that log line" || { echo "FAIL the bar patch no longer writes 'omanotch: NOTCH workspaces'"; fail=1; }
+
+# check.sh's reads of `notchbar state` (#769): Qt's locale warning before the
+# JSON (check over ssh, no UTF-8 locale) must not turn a parked bar into "two
+# bars" nor the FullPanel row into "does not answer". The rows are cut out of
+# check.sh and run with stand-ins for the session's answers.
+fn=$(awk '/^shell_json\(\) \{/ {print; exit}' "$R/src/guest/check.sh")
+[[ -n $fn ]] || { echo "FAIL check.sh has no shell_json"; exit 1; }
+eval "$fn"
+n_reads=$(grep -c 'omarchy-shell notchbar state' "$R/src/guest/check.sh")
+n_clean=$(grep -c 'omarchy-shell notchbar state 2>/dev/null | shell_json)' "$R/src/guest/check.sh")
+(( n_reads > 0 && n_reads == n_clean )) && echo "ok   every notchbar state read in check.sh goes through shell_json ($n_reads)" ||
+  { echo "FAIL $n_clean of $n_reads notchbar state reads in check.sh go through shell_json"; fail=1; }
+j() {  # want got name
+  if [[ $2 == "$1" ]]; then echo "ok   $3"; else echo "FAIL $3: want '$1', got '$2'"; fail=1; fi
+}
+j '{"parked":true}' "$(printf '%s\n{"parked":true}\n' "$LOCALE" | shell_json)" "shell_json: the object after Qt's locale warning"
+j '{"parked":true}' "$(printf '{"parked": true}\n' | shell_json)" "shell_json: the object alone"
+j "" "$(printf '%s\n' "$LOCALE" | shell_json)" "shell_json: the warning alone (an Omarchy without the call)"
+j "" "$(printf '' | shell_json)" "shell_json: no answer"
+j "" "$(printf 'Function not found.\n1\n' | shell_json)" "shell_json: text and a bare number are no state"
+
+rowcut() {  # FIRST LAST: check.sh's lines from the first that starts with FIRST to the next that starts with LAST
+  FIRST=$1 LAST=$2 awk 'index($0, ENVIRON["FIRST"]) == 1 { on = 1 } on { print } on && index($0, ENVIRON["LAST"]) == 1 { exit }' "$R/src/guest/check.sh"
+}
+nd=$(rowcut '  b=$(cat "$RUN/omacvm/builtin"' '  else ok "notch display"')
+fp=$(rowcut '  st=$(as_user omarchy-shell notchbar state' '  esac')
+[[ $nd == *'bad "notch display"'* && $fp == *'ok "full screen"'* ]] ||
+  { echo "FAIL check.sh's notch display / full screen rows are not where this test looks"; exit 1; }
+NOW=1800000000000
+MONS='[{"name": "Virtual-1", "x": 0, "y": 0, "width": 3456, "height": 2234, "scale": 2.0},
+ {"name": "NOTCH", "x": 0, "y": -32, "width": 3456, "height": 64, "scale": 2.0}]'
+mkdir -p "$D/home/.local/state/omanotch" "$D/run"
+run_row() {  # BLOCK STATE PARK: what the row says (kind|name|detail)
+  ( H=$D/home RUN=$D/run TYPE=app STATE=$2
+    printf '%s\n' "$3" > "$H/.local/state/omanotch/park"; echo $(( NOW - 1000 )) > "$H/.local/state/omanotch/beat"
+    as_user() {
+      case "$*" in
+        "hyprctl monitors all -j") printf '%s\n' "$MONS" ;;
+        "omarchy-shell notchbar state") [[ -n $STATE ]] && printf '%s\n' "$STATE" ;;
+        "hyprctl layers -j") echo '{}' ;;
+      esac
+    }
+    date() { echo "$NOW"; }
+    ok() { echo "ok|$1|$2"; }; bad() { echo "fail|$1|$2"; }; skip() { echo "skip|$1|$2"; }
+    eval "$1" )
+}
+r() {  # want-kind want-text name BLOCK STATE PARK
+  local got; got=$(run_row "$4" "$5" "$6")
+  if [[ ${got%%|*} == "$1" && $got == *"$2"* ]]; then echo "ok   $3"; else echo "FAIL $3: want $1 with '$2', got '$got'"; fail=1; fi
+}
+parked=$(state copy)
+loose='{"parked":false,"screen":"","fullpanel":"off","skip":false,"workspaces":"copy","bars":[["Virtual-1","bar",true,26,26,null]]}'
+other='{"parked":true,"screen":"Virtual-2","fullpanel":"off","skip":false,"bars":[]}'
+strip='{"parked":false,"screen":"","fullpanel":"strip","skip":false,"bars":[["Virtual-1","fullpanel",true,64,64,null]]}'
+for loc in "" "$LOCALE"; do
+  pre=${loc:+"$loc"$'\n'}; tag=${loc:+" (after Qt's locale warning)"}
+  r ok "its bar in the strip" "notch display: parked on Virtual-1, park 1$tag" "$nd" "$pre$parked" "1 Virtual-1"
+  r fail "own bar is not parked" "notch display: park 1 but the bar not parked is still caught$tag" "$nd" "$pre$loose" "1 Virtual-1"
+  r fail "the bar on Virtual-2 is parked" "notch display: parked on another output is still caught$tag" "$nd" "$pre$other" "1 Virtual-1"
+  r ok "Virtual-1 (64 px)" "full screen including notch: the bar in the strip$tag" "$fp" "$pre$strip" ""
+done
+r skip "the bar does not answer" "full screen including notch: no answer" "$fp" "" ""
+r skip "the bar does not answer" "full screen including notch: the warning alone" "$fp" "$LOCALE" ""
 
 echo "notch-check: $([[ $fail == 0 ]] && echo all ok || echo FAILED)"
 exit $fail
