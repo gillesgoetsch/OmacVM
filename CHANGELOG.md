@@ -20,6 +20,11 @@ in more words.
   windows, disables the plugin and takes its gesture and keys out of Hyprland;
   `omacvm apply --reinstall mission-control` repairs windows left hidden
   ([details](docs/features.md#mission-control)).
+- **Move to Omarchy 4.5** keeps more detail when OmacVM does not get into the VM (#771): the
+  reason names the part of the copy that failed (SSH, clearing the last copy, unpacking, swapping
+  it in) and the log shows the VM's own tar errors, which were thrown away before. Each try's
+  `move-apply.log` is kept (the four before it as `move-apply.log.1` to `.4`), so a Resume no
+  longer writes over the one that failed. Nothing else changes in the move.
 
 ## 3.4.3
 
