@@ -343,7 +343,8 @@ class Controller:
         rows = S.build_rows(self.local.features, on, vm_type=self.local.vm_type, avail=avail,
                             checks=checks, jobs=list(self.jobs.values()), installed=self.local.installed_parts(),
                             offer=self.offer(), mac_features=mac_features, show_updates=with_updates,
-                            fixed=fixed, next_start=next_start(self.local.vm_type, on))
+                            fixed=fixed, next_start=next_start(self.local.vm_type, on),
+                            omarchy=getattr(self.local, "omarchy", ""))
         g = S.graphics_row(self.mac_status, self.local.vm_type, list(self.jobs.values()), checks,
                            offline=self.mac_error is not None)
         # Full screen (including notch or via Omanotch): right after Omanotch,

@@ -16,6 +16,24 @@ def share() -> str:
     return os.environ.get("OMACVM_SHARE", "/usr/local/share/omacvm")
 
 
+def pacman_db() -> str:
+    return os.environ.get("OMACVM_PACMAN_DB", "/var/lib/pacman")
+
+
+def omarchy_version() -> str:
+    """The VM's omarchy package's version, as `pacman -Q omarchy` says it
+    (read from pacman's local database: no process); "" without one."""
+    import glob
+    for d in glob.glob(os.path.join(pacman_db(), "local", "omarchy-[0-9]*")):
+        fields = read(os.path.join(d, "desc")).split("\n")
+        try:
+            if fields[fields.index("%NAME%") + 1] == "omarchy":
+                return fields[fields.index("%VERSION%") + 1].strip()
+        except (ValueError, IndexError):
+            continue
+    return ""
+
+
 def env_file() -> str:
     return os.environ.get("OMACVM_ENV", "/etc/omacvm/env")
 
@@ -194,6 +212,7 @@ class Local:
         if texts is not None and "autologin" in self.on:
             self.on["autologin"] = bool(S.sddm_autologin_user(texts))
         self.vm_type = self.env.get("OMACVM_VM_TYPE", "")
+        self.omarchy = omarchy_version()
         self.installed = read_json(installed_file())
         self.cache = read_json(cache_file())
 
