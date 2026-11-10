@@ -423,9 +423,12 @@ takes it with them.
   warn (⌃↑ still opens it). A config error Hyprland does report once it is on
   switches it off again, with the reason.
 - Your own copy: if you added the plugin yourself (`omarchy plugin add`),
-  OmacVM never writes or removes it; the switch only enables and disables it,
-  and `omarchy plugin update` keeps it up to date. With the switch off, OmacVM
-  leaves it as it is.
+  the Mission Control switch never writes or removes it; it only enables and
+  disables it, and `omarchy plugin update` keeps it up to date. Off leaves it
+  as it is. One exception, on or off: on Qt 6.12
+  (Omarchy 4.5) OmacVM's colour fix rewrites the `import QtQuick` line of
+  every plugin that still has a bare `Color`, so also of a copy older than
+  1.0.1; from 1.0.1 on there is nothing in it to change.
 - OmacVM ships the files of one release of the plugin, unchanged
   (`src/missioncontrol/PIN`); Update VM brings the next one once OmacVM pins it.
 - Off: the windows show, the plugin is disabled, OmacVM's copy goes, and one
