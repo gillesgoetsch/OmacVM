@@ -960,6 +960,9 @@ jobs:
           src/drop/tests/run.sh
           src/drop/tests/build-helper.sh
 
+      - name: Mission Control, VM side (the plugin copy byte for byte as pinned; on, off, the owner's own copy, lock, a hung shell, a gesture of the user's own; made-up shell and Hyprland)
+        run: src/missioncontrol/tests/run.sh
+
       - name: Mac input methods' Fcitx5 module builds (Ubuntu's Fcitx5), its protocol test with the sanitizers
         run: |
           sudo apt-get update -q
