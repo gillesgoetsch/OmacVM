@@ -205,6 +205,18 @@ if command -v zstd >/dev/null; then
     out=$(echo 1 > "$T/free"; export OMACVM_TEST_FREE_FILE=$T/free; run); rc=$?
     expect "lib: the hook's 1 KiB stops it, with the message, nothing left" "1 yes no no" \
       "$rc $([[ $out == *"Stopped: the Mac's disk is nearly full (0.0 GB free)"* ]] && echo yes || echo "$out") $([[ -e $V/disk.img ]] && echo yes || echo no) $([[ -e $V/.unpack ]] && echo yes || echo no)"
+    # A stop partway, with zstd still writing: the reason is a line of its own
+    # (zstd -q wrote "zstd: " with no newline into it when the pipe closed).
+    python3 -c '
+import sys, tarfile
+i = tarfile.TarInfo("Omarchy/disk.img"); i.size = 1 << 30
+o = sys.stdout.buffer; o.write(i.tobuf(tarfile.USTAR_FORMAT)); z = bytes(1 << 20)
+for _ in range(1024): o.write(z)
+o.write(bytes(1024))' | zstd -q -c --long=27 > "$T/cache/app/$part"
+    out=$(echo 1 > "$T/free"; export OMACVM_TEST_FREE_FILE=$T/free; run); rc=$?
+    expect "lib: stopped with zstd mid-stream: the reason starts its own line" "1 yes no" \
+      "$rc $(grep -q "^$(printf '\033')\[1;31merror:$(printf '\033')\[0m Stopped: the Mac's disk is nearly full" <<<"$out" && echo yes || echo "$out") $([[ $out == *"zstd:"* ]] && echo yes || echo no)"
+    zstd -q -c --long=27 "$T/img.tar" > "$T/cache/app/$part"
     out=$(PB_DISK_GB=2; run); rc=$?
     expect "lib: a disk of another size is refused, with the reason" "1 yes" "$rc $([[ $out == *"manifest says"* ]] && echo yes || echo "$out")"
     # What a killed run leaves: marked, so the next run clears it.

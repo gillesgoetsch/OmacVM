@@ -190,6 +190,10 @@ prebuilt_unpack_drop() {
 # more than the image's data and 1 GiB. Its message is the one shown. cat reads
 # what follows the archive's end marker, or zstd's last write could find the
 # pipe closed and fail the unpack (SIGPIPE, with pipefail) now and then.
+# zstd's stderr goes nowhere: when unpack.py stops, zstd -q finds the pipe
+# closed and writes "zstd: " with no newline, which put itself in front of
+# die's "ERROR: ..." line, and the app did not show the reason. The parts are
+# checked before, and a zstd failure still fails the pipeline.
 prebuilt_unpack_disk() {
   local u=$1 f dir err size max msg
   [[ $PB_DISK_GB =~ ^[0-9]{1,4}$ && $PB_UNPACKED_KB =~ ^[0-9]{1,12}$ ]] || die "bad disk size in the prebuilt manifest"
@@ -198,7 +202,7 @@ prebuilt_unpack_disk() {
   f=$u/disk.img err=$u/unpack.err dir=$(dirname "$PB_MANIFEST")
   size=$(( 10#$PB_DISK_GB * 1073741824 )); max=$(( 10#$PB_UNPACKED_KB * 1024 + 1073741824 ))
   if ! python3 "$R/src/prebuilt/manifest.py" parts "$PB_MANIFEST" | while read -r name _ _; do cat "$dir/$name"; done |
-    "${ZSTD:-zstd}" -dc --long=27 -q |
+    "${ZSTD:-zstd}" -dc --long=27 -q 2>/dev/null |
     { python3 -I "$R/src/prebuilt/unpack.py" extract "$PB_BUNDLE/disk.img" "$f" "$size" \
         --max-alloc "$max" --min-free $(( PREBUILT_MAC_RESERVE_KB * 1024 )) 2> "$err" && cat > /dev/null; }; then
     msg=$(tail -n 1 "$err" 2>/dev/null | cut -c1-300)
