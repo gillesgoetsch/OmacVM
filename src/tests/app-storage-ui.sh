@@ -6,6 +6,8 @@
 #   src/tests/app-storage-ui.sh OUT_DIR
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
+# SwiftUI's macros: a toolchain that has their plugins (Xcode's, as the release build)
+source "$R/src/tests/swift-toolchain.sh"; swift_toolchain || exit 1
 OUT=${1:?usage: app-storage-ui.sh OUT_DIR}
 mkdir -p "$OUT"
 T=$(mktemp -d)
