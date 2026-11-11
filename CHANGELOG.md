@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.5 (unreleased)
+
+- **Mission Control** comes with version 1.0.2 of the
+  [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by
+  @gillesgoetsch: a Hyprland config reload while the overview is open no longer leaves most keys
+  doing nothing until the next open and close. It comes with Update VM; with Mission Control on,
+  Omarchy's shell restarts once.
+
 ## 3.4.4
 
 - **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning

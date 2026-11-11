@@ -283,8 +283,15 @@ end
 -- mean the window under the pointer there instead of the focused one behind
 -- it; what should still work is bound again in it. Keys it does not bind
 -- reach the overview (ESC).
+-- A config reload keeps Hyprland in the submap but starts this file afresh
+-- (in_submap false), so leaving also asks Hyprland where it is.
+local function in_our_submap()
+  local ok, name = pcall(hl.get_current_submap)
+  return ok and name == SUBMAP
+end
+
 local function keys(enabled)
-  if enabled == in_submap then return end
+  if enabled == in_submap and (enabled or not in_our_submap()) then return end
   in_submap = enabled
   hl.dispatch(hl.dsp.submap(enabled and SUBMAP or "reset"))
 end
@@ -632,6 +639,8 @@ elseif mac_mission_control_hooks ~= HOOKS then
   emit("stale")
 end
 
--- Windows may still carry the tag from a shell that went away mid-overview.
+-- Windows may still carry the tag from a shell that went away mid-overview,
+-- and a config reload with the overview up leaves Hyprland in the submap.
 pcall(show_windows)
+pcall(keys, false)
 pcall(emit, "reset")
