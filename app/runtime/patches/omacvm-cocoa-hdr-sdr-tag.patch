@@ -1,0 +1,759 @@
+From: OmacVM
+Subject: [PATCH] cocoa: HDR frames get EDR only while they show HDR
+
+What: with the app's HDR switch, a layer that shows a PQ surface has
+wantsExtendedDynamicRangeContent off while the guest's frames are SDR,
+and on (as before) from the first look that sees HDR, off again 10 s
+after HDR last showed (a still HDR picture keeps EDR on until it goes;
+a frame that came too soon for a look is drawn again for one when no
+other follows). QEMU's timer for this is never set at or before now
+(QEMU runs such a timer again in the same pass, for ever, with the BQL
+held). A look, at most 4 times a second while PQ
+frames are drawn, runs the peak shader (ui/omacvm-hdr-tag.h) over the
+guest's whole frame on QEMU's present context, two passes into small R32F
+targets, and reads the result back through a pixel buffer at a timer 125
+ms later. QEMU's thread puts a private SDR flag (OMACVM_HDR_SURF_SDR_KEY)
+on each PQ surface whose frame is SDR before Core Animation gets it;
+cocoa_gl_layer_follow sets each layer (the main one and every tile layer)
+from its own surface's flag (omacvm_hdr_layer). Tone map never for every
+PQ or linear surface in both states, set on its own condition. A switch
+asks for a whole frame (the partial present's signature), and tile layers
+drop EDR when they are hidden. PQ surfaces carry no headroom tag (3.3.0's
+first try tagged them 1.0, which macOS ignores). PQ frames start SDR: at
+the VM's start, when extra brightness turns off, when the output turns
+10-bit, on another display. While SDR, the guest is told the headroom it
+had with EDR on, on this display (else the display's most, capped 16),
+never the ~1 the panel falls to; after EDR turns on not less than that
+until macOS's ramp is done (3 s).
+qemu.log: "cocoa: HDR: SDR frames (peak 1.00x), EDR off" and
+"cocoa: HDR: HDR frames (peak 4.93x), EDR on".
+
+Why: a layer with EDR on makes macOS raise the panel's headroom to its
+most whenever it shows (1.2 -> 14 within 2 s on an M1 Max XDR at
+brightness 0.1), also when every pixel is SDR. The user saw "a flash of
+full brightness when opening chrome or so, for a split second" with HDR
+on and extra brightness off; the guest's frames were measured clean, so
+that headroom is the likely cause (not yet seen on screen). With EDR off
+for SDR frames the panel stayed at 1.20-1.21 (a probe built like QEMU's
+layer, macOS 27.0.1: white window opens, cover and uncover); HDR reached
+4x in 0.92 s; SDR white read 1.000 in SDR, HDR and SDR again.
+macOS keeps the panel high for about 15 s after the last EDR frame
+whatever the layer does; the 10 s hold stays (fewer ramps in videos
+with dark scenes). The first frames of new HDR content (up to about 0.4
+s, the look and its read back) show clipped at SDR white.
+
+macOS 26 and later only: macOS 15 keeps EDR on for every PQ frame as in
+3.2.22 (EDR off with tone map never was not checked there; if 15 maps PQ
+again, SDR white would be half). OMACVM_HDR_SDR_TAG=0 does the same.
+
+Threads: QEMU's thread (BQL) owns the look, its timer and the flags (set
+before a surface goes to Core Animation); the commit threads read a
+surface's flag; the main thread reads the SDR state for the guest's
+headroom and counts a new display (qatomic).
+
+OMACVM_HDR_TRACE=1 (tests): a look at every frame and one qemu.log line
+per frame (its peak), per layer it goes on (its commit's number, the
+surface's SDR flag, EDR, tone map, headroom, format, colour space and
+tag) and per tile layer hidden.
+
+Upstream: OmacVM only (IOSurface present).
+Test: app/runtime/Tests/display/test-hdr-sdr-tag.sh (rules, shader,
+wiring; --self-test: the wiring checks fail on 3.3.0's cocoa.m).
+Applies before omacvm-cocoa-no-app-nap.patch (the last cocoa patch), after
+omacvm-cocoa-drop.patch and omacvm-cocoa-hdr-sdr-tag-logic.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -60,6 +60,7 @@
+ #include "ui/omacvm-modifiers.h"
+ #include "ui/omacvm-display-settle.h"
+ #include "ui/omacvm-edr.h"
++#include "ui/omacvm-hdr-tag.h"
+ #include "ui/omacvm-bright.h"
+ #include "ui/omacvm-pointer-bright.h"
+ #include "ui/omacvm-pointer-heads.h"
+@@ -9455,9 +9456,501 @@
+     return CGColorSpaceCreateWithName(deep && cocoa_gl_present_hdr_wanted() ?
+                                       kCGColorSpaceITUR_2100_PQ :
+                                       kCGColorSpaceSRGB);
++}
++
++/*
++ * OmacVM, HDR (ADR 0049, amended; ui/omacvm-hdr-tag.h): EDR only while
++ * PQ frames show HDR. A layer with EDR on made macOS raise an XDR panel's
++ * headroom to its most (up to 16) whenever the VM showed, also for
++ * SDR-only frames; that is the likely cause of a short full-brightness
++ * flash as a white window opened. A headroom tag of 1.0 on the surface
++ * does not stop it (macOS ignores exactly 1.0; 3.3.0's first try). Now a
++ * look at most 4 times a second takes the frame's brightest value (the peak
++ * shader, two passes on present_ctx, read back through a buffer at the next
++ * timer). While it is SDR white or less each PQ surface carries a private
++ * SDR flag (OMACVM_HDR_SURF_SDR_KEY) and its layer has EDR off; from the
++ * first look that sees more the flag goes and EDR is on, as before; off
++ * again 10 s after HDR last showed (a still HDR picture keeps it; a frame
++ * no look saw is drawn again for one). The timer is never set at or
++ * before now (QEMU would run it again and again). Tone map never for
++ * every PQ or linear surface in both states, else macOS maps PQ again
++ * with EDR off and SDR white drops to half. Each layer follows its own
++ * surface's flag (the main layer and every tile layer alike), so a switch
++ * also asks for a whole frame (the partial present's signature), and
++ * hidden tile layers drop EDR.
++ *
++ * Threads: QEMU's thread (BQL) owns omacvm_hdr (the look, its timer, the
++ * flags, set before a surface goes to Core Animation); the commit threads
++ * read a surface's flag in cocoa_gl_layer_follow; the main thread reads
++ * omacvm_hdr_need_c and omacvm_hdr_open_ns for the guest's headroom
++ * (omacvm_edr_now) and counts a new display in omacvm_hdr_display_gen.
++ * macOS 26 and later only (omacvm_hdr_rule_on); macOS 15 and
++ * OMACVM_HDR_SDR_TAG=0: EDR on for every PQ frame, as in 3.2.22.
++ * OMACVM_HDR_TRACE=1 (tests): a look at every frame, and a qemu.log line
++ * per frame, per layer it goes on and per tile layer hidden, each with its
++ * commit's number.
++ */
++static int omacvm_hdr_on = -1;          /* QEMU thread: -1 not read yet, 0 off or failed */
++static int omacvm_hdr_rule_c = -1;      /* qatomic: macOS 26+ and not OMACVM_HDR_SDR_TAG=0 */
++static int omacvm_hdr_trace;            /* qatomic: OMACVM_HDR_TRACE=1 */
++static int omacvm_hdr_need_c = 100;     /* qatomic: 100 = PQ frames SDR (no EDR), 0 = HDR */
++static int64_t omacvm_hdr_open_ns = -1; /* qatomic: when PQ frames last turned HDR */
++static unsigned omacvm_hdr_commit_seq;  /* qatomic: commits counted for the trace */
++static __thread unsigned omacvm_hdr_commit_now; /* this thread's commit (trace) */
++static int omacvm_hdr_display_gen;      /* qatomic: the main thread saw another display */
++static struct {
++    OmacvmHdrNeed n;
++    bool active;                        /* the last frame drawn was PQ */
++    bool flagged_any;                   /* a surface ever had the SDR flag */
++    int display_gen;
++    int made;                           /* the peak program: 1 made, -1 failed */
++    GLuint prog, vao, vbo, fbo, tex[2], pbo;
++    GLint u_size;
++    int w, h, rw, rh;                   /* the frame size the targets are for; the last pass's */
++    bool pending;                       /* a read back waits for the timer */
++    bool skipped;                       /* a frame came that no look saw */
++    int64_t look_ns;
++    QEMUTimer *timer;
++} omacvm_hdr;
++
++static void omacvm_hdr_read(int64_t now, bool in_present);
++
++static void omacvm_hdr_timer_cb(void *opaque)
++{
++    omacvm_hdr_read(qemu_clock_get_ns(QEMU_CLOCK_REALTIME), false);
++}
++
++/* Any thread: does the rule run here (macOS 26+, not OMACVM_HDR_SDR_TAG=0)? Read once. */
++static bool omacvm_hdr_rule(void)
++{
++    int r = qatomic_read(&omacvm_hdr_rule_c);
++
++    if (r < 0) {
++        NSOperatingSystemVersion v = [[NSProcessInfo processInfo] operatingSystemVersion];
++        r = omacvm_hdr_rule_on((int)v.majorVersion, getenv("OMACVM_HDR_SDR_TAG"));
++        qatomic_set(&omacvm_hdr_rule_c, r);
++    }
++    return r;
++}
++
++/* QEMU thread: the switches, read once. */
++static bool omacvm_hdr_wanted(void)
++{
++    if (omacvm_hdr_on < 0) {
++        const char *t = getenv("OMACVM_HDR_TRACE");
++        omacvm_hdr_on = omacvm_hdr_rule();
++        qatomic_set(&omacvm_hdr_trace, t && !strcmp(t, "1"));
++        if (!omacvm_hdr_on) {
++            qatomic_set(&omacvm_hdr_need_c, 0);
++            info_report("cocoa: HDR: EDR on for every PQ frame, as in 3.2.22 (%s)",
++                        omacvm_hdr_rule_on(99, getenv("OMACVM_HDR_SDR_TAG")) ?
++                        "macOS before 26: not checked there" : "OMACVM_HDR_SDR_TAG=0");
++        }
++        omacvm_hdr.timer = timer_new_ns(QEMU_CLOCK_REALTIME, omacvm_hdr_timer_cb, NULL);
++    }
++    return omacvm_hdr_on == 1;
++}
++
++/* QEMU thread: the look cannot run: EDR on from now on, as before. */
++static void omacvm_hdr_fail(const char *why)
++{
++    omacvm_hdr_on = 0;
++    omacvm_hdr.made = -1;
++    omacvm_hdr.pending = false;
++    qatomic_set(&omacvm_hdr_need_c, 0);
++    timer_del(omacvm_hdr.timer);
++    warn_report("cocoa: HDR: no peak look (%s), EDR on for PQ frames as before", why);
++}
++
++static GLuint omacvm_hdr_shader(GLenum type, const char *src)
++{
++    GLuint s = glCreateShader(type);
++    GLint ok = 0;
++
++    glShaderSource(s, 1, &src, NULL);
++    glCompileShader(s);
++    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
++    if (!ok) {
++        char why[512] = "";
++        glGetShaderInfoLog(s, sizeof(why), NULL, why);
++        warn_report("cocoa: HDR: the peak %s shader does not compile: %s",
++                    type == GL_VERTEX_SHADER ? "vertex" : "fragment", why);
++        glDeleteShader(s);
++        return 0;
++    }
++    return s;
++}
++
++/* QEMU thread, present_ctx current: the peak program, made once. */
++static bool omacvm_hdr_program(void)
++{
++    static const GLfloat quad[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
++
++    if (omacvm_hdr.made) {
++        return omacvm_hdr.made > 0;
++    }
++    GLuint vs = omacvm_hdr_shader(GL_VERTEX_SHADER, OMACVM_HDR_PEAK_VERT);
++    GLuint fs = omacvm_hdr_shader(GL_FRAGMENT_SHADER, OMACVM_HDR_PEAK_FRAG);
++    GLint ok = 0;
++    if (vs && fs) {
++        omacvm_hdr.prog = glCreateProgram();
++        glAttachShader(omacvm_hdr.prog, vs);
++        glAttachShader(omacvm_hdr.prog, fs);
++        glBindAttribLocation(omacvm_hdr.prog, 0, "in_position");
++        glLinkProgram(omacvm_hdr.prog);
++        glGetProgramiv(omacvm_hdr.prog, GL_LINK_STATUS, &ok);
++    }
++    glDeleteShader(vs);
++    glDeleteShader(fs);
++    if (!ok) {
++        if (omacvm_hdr.prog) {
++            glDeleteProgram(omacvm_hdr.prog);
++            omacvm_hdr.prog = 0;
++        }
++        omacvm_hdr.made = -1;
++        return false;
++    }
++    glUseProgram(omacvm_hdr.prog);
++    glUniform1i(glGetUniformLocation(omacvm_hdr.prog, "image"), 0);
++    omacvm_hdr.u_size = glGetUniformLocation(omacvm_hdr.prog, "size");
++    glUseProgram(0);
++    glGenVertexArrays(1, &omacvm_hdr.vao);
++    glBindVertexArray(omacvm_hdr.vao);
++    glGenBuffers(1, &omacvm_hdr.vbo);
++    glBindBuffer(GL_ARRAY_BUFFER, omacvm_hdr.vbo);
++    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
++    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
++    glEnableVertexAttribArray(0);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++    glBindVertexArray(0);
++    glGenFramebuffers(1, &omacvm_hdr.fbo);
++    glGenBuffers(1, &omacvm_hdr.pbo);
++    glGenTextures(2, omacvm_hdr.tex);
++    omacvm_hdr.made = 1;
++    return true;
+ }
+ 
++/* QEMU thread, present_ctx current: the passes' R32F targets for a w x h frame. */
++static bool omacvm_hdr_targets(int w, int h)
++{
++    if (w == omacvm_hdr.w && h == omacvm_hdr.h) {
++        return true;
++    }
++    int w1 = omacvm_hdr_blocks(w), h1 = omacvm_hdr_blocks(h);
++    int w2 = omacvm_hdr_blocks(w1), h2 = omacvm_hdr_blocks(h1);
++    bool ok = true;
++    glBindFramebuffer(GL_FRAMEBUFFER, omacvm_hdr.fbo);
++    for (int k = 0; k < 2; k++) {
++        glBindTexture(GL_TEXTURE_2D, omacvm_hdr.tex[k]);
++        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, k ? w2 : w1, k ? h2 : h1, 0,
++                     GL_RED, GL_FLOAT, NULL);
++        /* no mipmaps: complete (readable) only without a mipmap filter */
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
++                               omacvm_hdr.tex[k], 0);
++        ok = ok && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
++    }
++    glBindTexture(GL_TEXTURE_2D, 0);
++    glBindFramebuffer(GL_FRAMEBUFFER, 0);
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, omacvm_hdr.pbo);
++    glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)w2 * h2 * sizeof(float), NULL, GL_STREAM_READ);
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++    if (!ok) {
++        return false;
++    }
++    omacvm_hdr.w = w;
++    omacvm_hdr.h = h;
++    omacvm_hdr.rw = w2;
++    omacvm_hdr.rh = h2;
++    return true;
++}
++
+ /*
++ * QEMU thread (BQL): the timer, for the hold's end or a look at a frame
++ * no look saw. Never at or before now (omacvm_hdr_timer_at): QEMU runs a
++ * timer set in the past again in the same pass, for ever, with the BQL
++ * held, and the VM hangs (a still HDR picture did that before).
++ */
++static void omacvm_hdr_arm(int64_t now)
++{
++    int64_t due = omacvm_hdr_need_due(&omacvm_hdr.n);
++
++    if (omacvm_hdr.skipped) {
++        int64_t re = omacvm_hdr.look_ns + OMACVM_HDR_RELOOK_NS;
++        due = due < 0 ? re : MIN(due, re);
++    }
++    due = omacvm_hdr_timer_at(due, now);
++    if (due >= 0) {
++        timer_mod(omacvm_hdr.timer, due);
++    }
++}
++
++/*
++ * QEMU thread, present_ctx current: the two passes over the guest's frame
++ * (every pixel, whatever part of it the present draws) and a read back
++ * into the buffer, read by the timer 125 ms later (no wait for the GPU).
++ */
++static void omacvm_hdr_look(GLuint src, uint32_t w, uint32_t h)
++{
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    bool trace = qatomic_read(&omacvm_hdr_trace);
++
++    if (omacvm_hdr.pending || (!trace && now - omacvm_hdr.look_ns < OMACVM_HDR_LOOK_NS)) {
++        /* No look at this frame: if no other comes, the timer has it drawn again for one. */
++        if (!omacvm_hdr.skipped) {
++            omacvm_hdr.skipped = true;
++            if (!omacvm_hdr.pending) {
++                omacvm_hdr_arm(now);
++            }
++        }
++        return;
++    }
++    if (!omacvm_hdr_program()) {
++        omacvm_hdr_fail("no shader");
++        return;
++    }
++    if (!omacvm_hdr_targets(w, h)) {
++        omacvm_hdr_fail("no float target");
++        return;
++    }
++    int w1 = omacvm_hdr_blocks(w), h1 = omacvm_hdr_blocks(h);
++    glBindFramebuffer(GL_FRAMEBUFFER, omacvm_hdr.fbo);
++    glDisable(GL_BLEND);
++    glDisable(GL_SCISSOR_TEST);
++    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
++    glUseProgram(omacvm_hdr.prog);
++    glBindVertexArray(omacvm_hdr.vao);
++    glActiveTexture(GL_TEXTURE0);
++    for (int k = 0; k < 2; k++) {
++        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
++                               omacvm_hdr.tex[k], 0);
++        glBindTexture(GL_TEXTURE_2D, k ? omacvm_hdr.tex[0] : src);
++        if (!k) {
++            /* texelFetch needs a complete texture; the present sets its own filter after */
++            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++        }
++        glViewport(0, 0, k ? omacvm_hdr.rw : w1, k ? omacvm_hdr.rh : h1);
++        glUniform2i(omacvm_hdr.u_size, k ? w1 : (GLint)w, k ? h1 : (GLint)h);
++        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++    }
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, omacvm_hdr.pbo);
++    glReadPixels(0, 0, omacvm_hdr.rw, omacvm_hdr.rh, GL_RED, GL_FLOAT, 0);
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++    glBindVertexArray(0);
++    glUseProgram(0);
++    glBindTexture(GL_TEXTURE_2D, 0);
++    glBindFramebuffer(GL_FRAMEBUFFER, 0);
++    omacvm_hdr.pending = true;
++    omacvm_hdr.skipped = false;
++    omacvm_hdr.look_ns = now;
++    if (trace) {
++        omacvm_hdr_read(now, true);
++    } else {
++        timer_mod(omacvm_hdr.timer, now + OMACVM_HDR_LOOK_NS / 2);
++    }
++}
++
++/* QEMU thread: SDR <-> HDR: a log line, and the newest frame again (a whole one). */
++static void omacvm_hdr_changed(int64_t now, bool redraw)
++{
++    bool one = omacvm_hdr.n.need > 0;
++
++    qatomic_set(&omacvm_hdr_need_c, one ? 100 : 0);
++    if (!one) {
++        qatomic_set(&omacvm_hdr_open_ns, now);
++    }
++    info_report(one ? "cocoa: HDR: SDR frames (peak %.2fx), EDR off" :
++                      "cocoa: HDR: HDR frames (peak %.2fx), EDR on",
++                omacvm_hdr.n.peak);
++    if (redraw) {
++        gl_dirty = true;
++        cocoa_gl_present_request();
++    }
++}
++
++/* QEMU thread (BQL): the look's result, then the rule; the timer for the hold. */
++static void omacvm_hdr_read(int64_t now, bool in_present)
++{
++    bool changed = false;
++
++    if (omacvm_hdr_on != 1) {
++        return;
++    }
++    if (omacvm_hdr.pending) {
++        size_t n = (size_t)omacvm_hdr.rw * omacvm_hdr.rh;
++        CGLContextObj prev = CGLGetCurrentContext();
++        CGLSetCurrentContext(present_ctx);
++        glBindBuffer(GL_PIXEL_PACK_BUFFER, omacvm_hdr.pbo);
++        const float *v = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, n * sizeof(float),
++                                          GL_MAP_READ_BIT);
++        double m = v ? omacvm_hdr_max(v, n) : NAN;
++        if (v) {
++            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
++        }
++        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++        CGLSetCurrentContext(prev);
++        omacvm_hdr.pending = false;
++        if (!v) {
++            omacvm_hdr_fail("the read back failed");
++            if (!in_present) {
++                gl_dirty = true;
++                cocoa_gl_present_request();
++            }
++            return;
++        }
++        double peak = omacvm_hdr_pq_units(m);
++        if (qatomic_read(&omacvm_hdr_trace)) {
++            info_report("cocoa: hdr-trace: frame peak code %ld (%.3fx)", lround(m * 1023), peak);
++        }
++        changed = omacvm_hdr_need_peak(&omacvm_hdr.n, peak, now);
++    }
++    changed |= omacvm_hdr_need_tick(&omacvm_hdr.n, now);
++    if (changed) {
++        omacvm_hdr_changed(now, !in_present);
++    }
++    if (omacvm_hdr.skipped && !omacvm_hdr.pending && !in_present &&
++        now - omacvm_hdr.look_ns >= OMACVM_HDR_RELOOK_NS) {
++        /* Frames came that no look saw, and none since: the newest again, for a look. */
++        omacvm_hdr.skipped = false;
++        gl_dirty = true;
++        cocoa_gl_present_request();
++    }
++    omacvm_hdr_arm(now);
++}
++
++/*
++ * QEMU thread, present_ctx current, before a frame is drawn: pq = it goes
++ * into PQ surfaces. PQ frames start SDR, no EDR (the VM's start, extra
++ * brightness off, the output turning 10-bit, another display); then a look.
++ */
++static void omacvm_hdr_frame(GLuint src, uint32_t w, uint32_t h, bool pq)
++{
++    if (!omacvm_hdr_wanted()) {
++        return;
++    }
++    int gen = qatomic_read(&omacvm_hdr_display_gen);
++    if (pq && (!omacvm_hdr.active || gen != omacvm_hdr.display_gen)) {
++        bool was_one = qatomic_read(&omacvm_hdr_need_c) > 0;
++        omacvm_hdr_need_reset(&omacvm_hdr.n);
++        omacvm_hdr.pending = false;
++        omacvm_hdr.skipped = false;
++        omacvm_hdr.display_gen = gen;
++        timer_del(omacvm_hdr.timer);
++        qatomic_set(&omacvm_hdr_need_c, 100);
++        if (!omacvm_hdr.flagged_any || !was_one) {
++            info_report("cocoa: HDR: PQ frames without EDR until one shows HDR "
++                        "(a look at the brightest pixel 4 times a second)");
++        }
++    }
++    omacvm_hdr.active = pq;
++    if (pq && src) {
++        omacvm_hdr_look(src, w, h);
++    }
++}
++
++/*
++ * QEMU thread: a surface's SDR flag, before it goes to Core Animation: on
++ * a PQ surface whose frame is SDR, else none (EDR on, as before). Also
++ * taken off a surface that turned linear (extra brightness).
++ */
++static void omacvm_hdr_tag(IOSurfaceRef s)
++{
++    bool sdr = omacvm_hdr_on == 1 && present_deep && !present_linear && present_color == 1 &&
++               cocoa_gl_present_hdr_wanted() && qatomic_read(&omacvm_hdr_need_c) > 0;
++    if (!sdr && !omacvm_hdr.flagged_any) {
++        return;
++    }
++    CFTypeRef v = IOSurfaceCopyValue(s, CFSTR(OMACVM_HDR_SURF_SDR_KEY));
++    bool has = v != NULL;
++    if (v) {
++        CFRelease(v);
++    }
++    if (sdr && !has) {
++        IOSurfaceSetValue(s, CFSTR(OMACVM_HDR_SURF_SDR_KEY), kCFBooleanTrue);
++        omacvm_hdr.flagged_any = true;
++    } else if (!sdr && has) {
++        IOSurfaceRemoveValue(s, CFSTR(OMACVM_HDR_SURF_SDR_KEY));
++    }
++}
++
++/* Any thread: does the surface's frame show SDR only (its SDR flag)? */
++static bool omacvm_hdr_surf_sdr(IOSurfaceRef surf)
++{
++    CFTypeRef v = IOSurfaceCopyValue(surf, CFSTR(OMACVM_HDR_SURF_SDR_KEY));
++
++    if (v) {
++        CFRelease(v);
++    }
++    return v != NULL;
++}
++
++/* Any thread: a surface's headroom tag (extra brightness's 2.0), 0 without one. */
++static double omacvm_hdr_surf_tag(IOSurfaceRef surf)
++{
++    CFTypeRef v = IOSurfaceCopyValue(surf, kIOSurfaceContentHeadroom);
++    double d = 0;
++
++    if (v) {
++        if (CFGetTypeID(v) == CFNumberGetTypeID()) {
++            CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &d);
++        }
++        CFRelease(v);
++    }
++    return d;
++}
++
++/* Commit thread, in a transaction that shows a frame: its number for the trace. */
++static void omacvm_hdr_commit_begin(void)
++{
++    if (qatomic_read(&omacvm_hdr_trace)) {
++        omacvm_hdr_commit_now = qatomic_fetch_inc(&omacvm_hdr_commit_seq) + 1;
++    }
++}
++
++/* Commit thread, OMACVM_HDR_TRACE=1: what macOS is given for one layer. */
++static void omacvm_hdr_trace_layer(CALayer *layer, IOSurfaceRef surf)
++{
++    OSType f = IOSurfaceGetPixelFormat(surf);
++    char fs[5] = { (char)(f >> 24), (char)(f >> 16), (char)(f >> 8), (char)f, 0 };
++    CFTypeRef cs = IOSurfaceCopyValue(surf, kIOSurfaceColorSpace);
++    char csn[64] = "none";
++    double headroom = 0;
++
++    if (cs) {
++        CFStringRef name = NULL;
++        if (CFGetTypeID(cs) == CFStringGetTypeID()) {
++            name = CFRetain(cs);
++        } else {
++            /* a property list (IOSurfaceSetValue of a CGColorSpace's) */
++            CGColorSpaceRef c = CGColorSpaceCreateWithPropertyList(cs);
++            if (c) {
++                name = CGColorSpaceCopyName(c);
++                CGColorSpaceRelease(c);
++            }
++        }
++        if (!name || !CFStringGetCString(name, csn, sizeof(csn), kCFStringEncodingUTF8)) {
++            snprintf(csn, sizeof(csn), "other");
++        }
++        if (name) {
++            CFRelease(name);
++        }
++        CFRelease(cs);
++    }
++    if (@available(macOS 26.0, *)) {
++        headroom = [layer contentsHeadroom];
++    }
++    info_report("cocoa: hdr-trace: commit %u %s layer %p surface %u %s sdr %d edr %d "
++                "tonemap %s headroom %.2f colour %s tag %.2f",
++                omacvm_hdr_commit_now, layer == [cocoaView layer] ? "main" : "tile", layer,
++                IOSurfaceGetID(surf), fs, omacvm_hdr_surf_sdr(surf),
++                [layer wantsExtendedDynamicRangeContent],
++                [[layer toneMapMode] isEqualToString:CAToneMapModeNever] ? "never" : "auto",
++                headroom, csn, omacvm_hdr_surf_tag(surf));
++}
++
++/*
+  * The thread that commits a frame: EDR only while showing HDR, or a frame
+  * of extra brightness (linear: drawn in linear light, at most the headroom
+  * now, so never is right for it too).
+@@ -9465,18 +9958,25 @@
+ static void cocoa_gl_layer_follow(CALayer *layer, IOSurfaceRef surf, bool linear)
+ {
+     OSType fmt = IOSurfaceGetPixelFormat(surf);
+-    BOOL hdr = (fmt == 'RGhA' || fmt == '&RhA') &&
+-               present_color == 1 && (cocoa_gl_present_hdr_wanted() || linear);
++    bool colour = (fmt == 'RGhA' || fmt == '&RhA') &&
++                  present_color == 1 && (cocoa_gl_present_hdr_wanted() || linear);
++    /* PQ: EDR only while the surface's frame shows HDR (omacvm_hdr_tag) */
++    OmacvmHdrLayer want = omacvm_hdr_layer(colour, linear, colour && omacvm_hdr_surf_sdr(surf));
++    BOOL hdr = want.edr;
+     if ([layer wantsExtendedDynamicRangeContent] != hdr) {
+         [layer setWantsExtendedDynamicRangeContent:hdr];
+-        /*
+-         * The guest tone-maps into the headroom QEMU gives it (omacvm-edr.h);
+-         * macOS's own tone mapping would map everything again whenever the
+-         * panel's headroom is below what the content could reach, and SDR
+-         * white would drop to half (measured at headroom 1: PQ 203 nits read
+-         * 0.50; never: 1.00, the BT.2408 SDR white).
+-         */
+-        [layer setToneMapMode:hdr ? CAToneMapModeNever : CAToneMapModeAutomatic];
++    }
++    /*
++     * The guest tone-maps into the headroom QEMU gives it (omacvm-edr.h);
++     * macOS's own tone mapping would map everything again whenever the
++     * panel's headroom is below what the content could reach, and SDR
++     * white would drop to half (measured at headroom 1: PQ 203 nits read
++     * 0.50; never: 1.00, the BT.2408 SDR white). On its own condition, not
++     * with EDR: a PQ surface with EDR off (SDR frames) needs never too.
++     */
++    CAToneMapMode tm = want.never ? CAToneMapModeNever : CAToneMapModeAutomatic;
++    if (![[layer toneMapMode] isEqualToString:tm]) {
++        [layer setToneMapMode:tm];
+     }
+     if (@available(macOS 26.0, *)) {
+         /*
+@@ -9489,6 +9989,9 @@
+         if ([layer contentsHeadroom] != need) {
+             [layer setContentsHeadroom:need];
+         }
++    }
++    if (qatomic_read(&omacvm_hdr_trace)) {
++        omacvm_hdr_trace_layer(layer, surf);
+     }
+ }
+ 
+@@ -9902,6 +10405,7 @@
+     pt->grid = present_tg;
+     for (int k = 0; k < nt; k++) {
+         IOSurfaceRef s = present_tsurf[tl[k]][bi[k]];
++        omacvm_hdr_tag(s);
+         CFRetain(s);
+         /* Core Animation must not see the surface before the GPU wrote it. */
+         IOSurfaceIncrementUseCount(s);
+@@ -10051,6 +10555,9 @@
+      */
+     bool boost = present_linear;
+     int gain = qatomic_read(&omacvm_bright_gain_c);
++    /* HDR: PQ frames get EDR only while they show HDR (omacvm_hdr_frame). */
++    omacvm_hdr_frame(src, w, h, !splash && pq && present_deep && !present_linear &&
++                                present_color == 1);
+ 
+     /* The next surface Core Animation is not showing or reading. */
+     unsigned i;
+@@ -10094,6 +10601,7 @@
+                       (uint64_t)linear << 3 | (uint64_t)flip << 4 |
+                       (uint64_t)splash << 5 | (uint64_t)!gl_scanout_borrow << 6 |
+                       (uint64_t)(w != present_w || h != present_h) << 7 |
++                      (uint64_t)(qatomic_read(&omacvm_hdr_need_c) > 0) << 8 |
+                       (uint64_t)(uint32_t)(boost ? gain : 0) << 32;
+     uint64_t pd_sig_was = present_pd_sig;
+     omacvm_pd_frame(&present_pd, w, h);
+@@ -10206,6 +10714,7 @@
+     gl_dirty = false;
+ 
+     IOSurfaceRef surf = present_surf[n];
++    omacvm_hdr_tag(surf);
+     double flushed = CACurrentMediaTime();
+     /* OmacVM, tiles: this whole frame is what the tiles lie over now. */
+     present_base_gen = present_alloc_gen;
+@@ -10247,6 +10756,7 @@
+             CALayer *layer = [cocoaView layer];
+             [CATransaction begin];
+             [CATransaction setDisableActions:YES];
++            omacvm_hdr_commit_begin();
+             NSString *f = filter == GL_LINEAR ? kCAFilterLinear : kCAFilterNearest;
+             [layer setMagnificationFilter:f];
+             [layer setMinificationFilter:f];
+@@ -10434,6 +10944,12 @@
+         if (l && ![l isHidden]) {
+             [l setHidden:YES];
+             [l setContents:nil];
++            /* HDR: no EDR on a layer that shows nothing (follow sets it again) */
++            [l setWantsExtendedDynamicRangeContent:NO];
++            if (qatomic_read(&omacvm_hdr_trace)) {
++                info_report("cocoa: hdr-trace: commit %u tile layer %p hidden edr 0",
++                            omacvm_hdr_commit_now, l);
++            }
+         }
+     }
+     present_tiles_shown = 0;
+@@ -10449,6 +10965,7 @@
+     qatomic_set(&present_tiles_fit, 0);
+     [CATransaction begin];
+     [CATransaction setDisableActions:YES];
++    omacvm_hdr_commit_begin();
+     os_unfair_lock_lock(&present_tile_lock);
+     bool shown = present_tiles_shown != 0;
+     present_tiles_hide_locked();
+@@ -10491,6 +11008,7 @@
+ 
+     [CATransaction begin];
+     [CATransaction setDisableActions:YES];
++    omacvm_hdr_commit_begin();
+     os_unfair_lock_lock(&present_tile_lock);
+     if (pt->base) {
+         NSString *fl = f->filter == GL_LINEAR ? kCAFilterLinear : kCAFilterNearest;
+@@ -10565,6 +11083,7 @@
+ 
+     [CATransaction begin];
+     [CATransaction setDisableActions:YES];
++    omacvm_hdr_commit_begin();
+     [layer setMagnificationFilter:f];
+     [layer setMinificationFilter:f];
+     cocoa_gl_layer_follow(layer, surf, linear);
+@@ -13231,6 +13750,35 @@
+     return hook;
+ }
+ 
++/*
++ * Main thread: the headroom the guest is told (omacvm_edr_guest): while
++ * PQ frames are SDR (no EDR) what it had with EDR on this display (or the
++ * display's most), never the ~1 the panel falls to; 3.2.22's rule where
++ * the rule does not run (macOS 15, OMACVM_HDR_SDR_TAG=0). A new display
++ * starts PQ frames SDR again.
++ */
++static OmacvmEdrHold omacvm_edr_hold = { .held = -1 };
++
++static double omacvm_hdr_guest_edr(uint32_t display, double current, double potential,
++                                   bool use_potential)
++{
++    bool new_display = false;
++
++    if (!omacvm_hdr_rule()) {
++        return omacvm_edr_value(current, potential, use_potential);
++    }
++    double v = omacvm_edr_guest(&omacvm_edr_hold, &new_display, display, current, potential,
++                                use_potential, qatomic_read(&omacvm_hdr_need_c) > 0,
++                                qatomic_read(&omacvm_hdr_open_ns),
++                                qemu_clock_get_ns(QEMU_CLOCK_REALTIME));
++    if (new_display) {
++        qatomic_inc(&omacvm_hdr_display_gen);
++        info_report("cocoa: HDR: another display (EDR potential %.2f): PQ frames without EDR "
++                    "until they show HDR", potential);
++    }
++    return v;
++}
++
+ static double omacvm_edr_now(void)
+ {
+     double hook_n, hook_p;
+@@ -13250,16 +13798,17 @@
+         return 1;
+     }
+     if (omacvm_bright_test_edr(&hook_p, &hook_n)) {
+-        return omacvm_edr_value(hook_n, hook_p, false);
++        return omacvm_hdr_guest_edr(0, hook_n, hook_p, false);
+     }
+     NSScreen *s = [[cocoaView window] screen];
+     if (!s) {
+         return omacvm_edr_sent > 0 ? omacvm_edr_sent : 1;
+     }
+     const char *e = getenv("OMACVM_GL_EDR_HEADROOM");
+-    return omacvm_edr_value([s maximumExtendedDynamicRangeColorComponentValue],
+-                            [s maximumPotentialExtendedDynamicRangeColorComponentValue],
+-                            e && !strcmp(e, "potential"));
++    return omacvm_hdr_guest_edr(omacvm_screen_id(s),
++                                [s maximumExtendedDynamicRangeColorComponentValue],
++                                [s maximumPotentialExtendedDynamicRangeColorComponentValue],
++                                e && !strcmp(e, "potential"));
+ }
+ 
+ /* What the layout carries from now on; true when it is new. */

@@ -6,7 +6,8 @@ Status: accepted, built (`hdr`), behind the app's experimental switch
 [0050](0050-extra-brightness.md) (2026-10-21): while Extra brightness is
 on, the guest is told headroom 1 and its PQ frames end at SDR white.
 Amended 2026-10-27 (#579, below): screenshots and screen sharing of HDR
-windows.
+windows. Amended 2026-11-05 (hdr-flash, below): PQ frames get EDR only
+while they show HDR (macOS 26 and later).
 Notes and numbers: work/tracks/hdr.md.
 
 ## Context
@@ -192,3 +193,50 @@ BT.2100 PQ, and the layer asks for EDR. It stayed hidden because:
   display-sync sets Virtual-1's mode. Hyprland sends no new metadata when
   only the headroom moves: the blob keeps the start's peak,
   gpu-screen-recorder takes the peak from the Wayland output instead.
+- Amended 2026-11-05 (hdr-flash, a user's report: "a flash of full
+  brightness when opening chrome or so, for a split second" with HDR on
+  and Extra brightness off). With EDR on, the layer made macOS raise the
+  panel's headroom to its most whenever the VM showed (1.2 -> 14 within
+  2 s on the M1 Max XDR at brightness 0.1), also when every pixel was SDR.
+  The guest's frames were clean (no pixel above SDR white in 57 app
+  opens), so that headroom is the likely cause; the flash itself was not
+  seen on a test Mac, and SDR white stayed at the same nits at headroom 16.
+  A first try tagged SDR frames `kIOSurfaceContentHeadroom` 1.0: macOS
+  ignores exactly 1.0 and the panel stayed at 16 (1.05 and 1.1 were
+  honoured). Now (`omacvm-cocoa-hdr-sdr-tag*.patch`, `ui/omacvm-hdr-tag.h`)
+  a look at most 4 times a second takes the frame's brightest pixel on the
+  GPU (the max of 16x16 blocks, twice, read back without a wait). While it
+  is SDR white or less (PQ code 599 or less) each PQ surface carries a
+  private SDR flag and its layer, main and tiles alike, has
+  `wantsExtendedDynamicRangeContent` off; from the first look that sees
+  more the flag goes and EDR is on, as before; off again 10 s after HDR
+  last showed (fewer ramps for dark scenes in an HDR video; a still HDR
+  picture keeps EDR until it goes; QEMU's timer for this is never set in
+  the past, which hung QEMU in a first build). PQ
+  surfaces carry no headroom tag. `toneMapMode` is never for every PQ or
+  linear surface in both states: with EDR off and `automatic`, macOS maps
+  PQ again and SDR white drops to half (above). A switch is a whole frame
+  (no tile over a base in the other state); hidden tile layers drop EDR.
+  PQ frames start SDR (the VM's start, Extra brightness off, the 10-bit
+  switch, another display). While SDR, the guest is told the headroom it
+  had with EDR on, on this display (else the display's most, at most 16),
+  not the ~1 the panel falls to: told 1 it would fit HDR into SDR and
+  never show HDR again. After EDR turns on it keeps that value until
+  macOS's ramp is done (3 s). Measured with a probe built like QEMU's
+  layer (macOS 27.0.1, `work/hdr-flash-2/`): EDR off kept the panel at
+  1.20-1.21 through white windows opening and cover and uncover; HDR
+  reached 4x in 0.92 s; SDR white read 1.000 in SDR, HDR and SDR again.
+  Costs: when HDR content appears, its first frames (up to about 0.4 s:
+  the look and its read back) show clipped at SDR white, then macOS's ramp
+  (about 2 s); one small GPU pass over the frame 4 times a second while PQ
+  frames are drawn. macOS keeps the panel high for about 15 s after the
+  last EDR frame whatever the layer does (then a 2 s fall, no step); that
+  hold is macOS's and stays. HDR off does not change (no EDR at all).
+  Extra brightness (linear surfaces, 2.0) and the pointer layer do not
+  change. macOS 26 and later only: measured on 27.0.1; 26 (the MacBook
+  Air) is owed; macOS 15 keeps 3.2.22's EDR on for every PQ frame (EDR off
+  with tone map never was not checked there; if 15 mapped PQ again, the
+  whole desktop would be at half white). `OMACVM_HDR_SDR_TAG=0` gives
+  3.2.22's behaviour too, `OMACVM_HDR_TRACE=1` one qemu.log line per
+  frame, per layer and per hidden tile layer, with the commit's number
+  (tests).
