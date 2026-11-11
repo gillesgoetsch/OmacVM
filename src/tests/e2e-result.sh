@@ -4,7 +4,8 @@
 # writer stopped on it, so the e2e gate had no result.json):
 #  - clip N TEXT gives N characters in any locale, never half of one;
 #  - a summary.tsv with a byte that is not UTF-8 still gives result.json (U+FFFD for it);
-#  - cc-switches.sh cuts row texts only with clip (no ${s:0:N}, no cut -c on text).
+#  - cc-switches.sh and display-unplug.sh (its rows go into cc-switches' summary.tsv) cut row
+#    texts only with clip (no ${s:0:N}, no cut -c on text); display-unplug's own clip, too.
 #   src/tests/e2e-result.sh
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -48,10 +49,19 @@ printf 'app\tok\t3.4.5\n' > "$T/summary.tsv"; w 1 0 0 0 60
 expect "every row ok: passed" "True abc123 all" \
   "$("$PY" -I -c 'import json, sys; o = json.load(open(sys.argv[1])); print(o["pass"], o["commit"], o["only"])' "$T/result.json")"
 
-# cc-switches.sh: no byte cuts of row texts left (cut -c only on hashes and the commit).
-expect "cc-switches.sh: no \${x:0:N}" "" "$(grep -n '\${[A-Za-z_]*:0:[0-9]' "$H/cc-switches.sh")"
-expect "cc-switches.sh: cut -c only on shasum and the commit" "" \
-  "$(grep -n 'cut -c' "$H/cc-switches.sh" | grep -v '^[0-9]*: *#' | grep -v 'shasum\|OmacVMCommit')"
+# display-unplug.sh's clip on a FullPanel line with a character of more than one byte at the cut.
+line="omacvm: full panel: strip covered ─ $(printf '─%.0s' $(seq 1 120))"
+c=$(LC_ALL=C HERE=$H /bin/bash -c "$(grep -m1 '^clip()' "$H/display-unplug.sh")"'; clip 100 "$1"' _ "$line")
+expect "display-unplug.sh's clip 100 in C: UTF-8, 100 characters" "utf-8 100" \
+  "$(printf '%s' "$c" | utf8) $("$PY" -I -c 'import sys; print(len(sys.argv[1]))' "$c")"
+
+# No byte cuts of row texts left (cut -c only on hashes and the commit).
+for f in cc-switches display-unplug; do
+  expect "$f.sh: no \${x:0:N}" "" "$(grep -n '\${[A-Za-z_]*:0:[0-9]' "$H/$f.sh")"
+  expect "$f.sh: cut -c only on shasum and the commit" "" \
+    "$(grep -n 'cut -c' "$H/$f.sh" | grep -v '^[0-9]*: *#' | grep -v 'shasum\|OmacVMCommit')"
+done
+expect "display-unplug.sh: row texts cut with clip" 5 "$(grep -c 'res .*\$(clip [0-9]' "$H/display-unplug.sh")"
 
 (( fail == 0 )) && echo "e2e-result: all passed"
 exit $fail

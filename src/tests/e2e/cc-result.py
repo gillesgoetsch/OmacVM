@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""cc-switches.sh's text and result helpers.
+"""cc-switches.sh's text and result helpers (clip also for display-unplug.sh, whose rows
+cc-switches.sh copies into its summary.tsv).
 
   cc-result.py clip N TEXT
       TEXT's first N characters. bash's ${s:0:N} and cut -c count bytes in the C
