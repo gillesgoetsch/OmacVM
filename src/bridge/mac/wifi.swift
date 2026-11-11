@@ -211,11 +211,11 @@ final class WiFi: NSObject, CWEventDelegate {
     // Name, BSSID, security, country code: from CoreWLAN only when they may
     // have changed (WiFiIdentity: each read costs locationd a grant check).
     let key = WiFiIdentity.Key(interface: i.interfaceName ?? "", connected: connected, locationOK: locationOK)
-    lock.lock(); let kept = identity.cached(key), since = identity.generation; lock.unlock()
+    lock.lock(); let kept = identity.cached(key, now: Date()), since = identity.generation; lock.unlock()
     let id = kept ?? {
       var v: [String: Any] = ["country_code": nn(i.countryCode())]
       if connected { v["ssid"] = nn(i.ssid()); v["bssid"] = nn(i.bssid()); v["security"] = i.security().rawValue }
-      lock.lock(); identity.store(v, for: key, since: since); lock.unlock()
+      lock.lock(); identity.store(v, for: key, since: since, now: Date()); lock.unlock()
       return v
     }()
     s["country_code"] = id["country_code"] ?? NSNull()
@@ -246,7 +246,7 @@ final class WiFi: NSObject, CWEventDelegate {
     guard let i = client.interface() else { throw APIError(503, "no Wi-Fi interface") }
     guard i.powerOn() else { throw APIError(503, "Wi-Fi is off") }
     let found: Set<CWNetwork> = cached ? (i.cachedScanResults() ?? []) : try i.scanForNetworks(withName: nil)
-    lock.lock(); let kept = identity.keptSSID(i.interfaceName ?? ""); lock.unlock()
+    lock.lock(); let kept = identity.keptSSID(i.interfaceName ?? "", now: Date()); lock.unlock()
     let known = knownSSIDs(), current = kept ?? i.ssid()
     var best: [String: CWNetwork] = [:], bands: [String: Set<String>] = [:]
     for n in found {

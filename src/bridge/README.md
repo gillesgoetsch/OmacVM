@@ -215,7 +215,7 @@ panel's "Pair a new device…" opens the Mac's Bluetooth settings.
 
 | event | when |
 |---|---|
-| `wifi` | power, SSID, BSSID, link, mode changes (CoreWLAN events, ~0.3 s); RSSI re-read every 5 s while a client is connected, sent at once when the bar's signal level changes, else at most every 30 s |
+| `wifi` | power, SSID, BSSID, link, mode changes (CoreWLAN events, ~0.3 s); RSSI re-read every 5 s while a client is connected (the name, BSSID, security and country code only after such an event, a wake or at least every 5 min: each of those reads costs `locationd` a permission check), sent at once when the bar's signal level changes, else at most every 30 s |
 | `audio` | default device, volume, mute, devices added/removed (CoreAudio listeners) |
 | `display` | Night Shift (its own notification), True Tone, brightness |
 | `bluetooth` | power, devices connecting and disconnecting (IOBluetooth notifications), anything else within 5 s; battery re-read every minute while something is connected |
