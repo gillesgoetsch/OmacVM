@@ -8,6 +8,8 @@
 #    is missing; PNG and JPEG go as they are; a failed send records nothing;
 #  - no files left behind, and up to 3.4.1's frame files in the temp folder
 #    go once.
+#  - mktemp's stand-in ends with SIGPIPE ignored; if it does not, the test
+#    stops there (rc 1) instead of hanging in the rows after it.
 #   src/tests/wallpaper-video.sh
 #   OMACVM_SRC=DIR src/tests/wallpaper-video.sh  against another checkout's src/
 set -uo pipefail
@@ -95,6 +97,10 @@ i=0; while kill -0 "$p" 2>/dev/null && (( i < 100 )); do sleep 0.1; i=$((i + 1))
 if kill -0 "$p" 2>/dev/null; then kill_tree "$p"; wait "$p" 2>/dev/null; st="still running after 10 s"; else wait "$p"; st=$?; fi
 expect "mktemp's stand-in ends with SIGPIPE ignored, a name of 10 characters" "0 yes" \
   "$st $(grep -Eq '/tmp\.[0-9a-f]{10}\.png$' "$T/pipe.out" && echo yes || echo no)"
+if [[ $st == "still running after 10 s" ]]; then
+  echo "wallpaper-video: stopped here: every row below runs this stand-in and would hang the same way"
+  exit 1
+fi
 left() { ls -A "$TMP" | tr '\n' ' '; }
 rec() { [[ -f $ST ]] && echo recorded || echo "not recorded"; }
 
