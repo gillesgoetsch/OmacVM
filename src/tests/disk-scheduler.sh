@@ -60,6 +60,34 @@ echo "== Update VM runs it"
 expect "guest/install.sh: the disk step beside memory (no feature's)" 1 \
   "$(sed -n '/^if system; then$/,/^fi$/p' "$R/src/guest/install.sh" | grep -c '"$R/disk/guest/install.sh"')"
 
+echo "== omacvm check's \"disk scheduler\" line (check.sh's disk_sched_line, as it is; a fake root)"
+awk '/^disk_sched_line\(\) \{/ {on=1} on {print} on && /^}$/ {exit}' "$R/src/guest/check.sh" > "$T/fn.sh"
+if grep -q '^disk_sched_line()' "$T/fn.sh" && bash -n "$T/fn.sh"; then
+  source "$T/fn.sh"
+  V=$T/vm; mkdir -p "$V/sys/block/nvme0n1/queue" "$V/etc/udev/rules.d"
+  sched() { echo "$1" > "$V/sys/block/nvme0n1/queue/scheduler"; }
+  sched '[none] mq-deadline kyber bfq'
+  expect "none: ok" "ok	none on nvme0n1: the Mac schedules the VM's disk I/O" "$(disk_sched_line "$V" nvme0n1)"
+  sched 'none mq-deadline [kyber] bfq'
+  cp "$F" "$T/ours"
+  expect "kyber, OmacVM's rule missing: Update VM" "warn	kyber on nvme0n1: OmacVM's rule is missing (Update VM / omacvm apply puts it back)" \
+    "$(disk_sched_line "$V" nvme0n1)"
+  echo 'ATTR{queue/scheduler}="kyber"' > "$V/etc/udev/rules.d/60-omarchy-io-scheduler.rules"
+  cp "$T/ours" "$V/etc/udev/rules.d/61-omacvm-io-scheduler.rules"
+  expect "kyber with OmacVM's rule and nothing after it: restart or apply" "warn	kyber on nvme0n1, not none: restart the VM, or run omacvm apply" \
+    "$(disk_sched_line "$V" nvme0n1)"
+  echo 'ACTION=="add", ATTR{queue/scheduler}="bfq"' > "$V/etc/udev/rules.d/99-local.rules"
+  echo '# no scheduler here' > "$V/etc/udev/rules.d/70-other.rules"
+  expect "a later rule of the user's sets it: named" "warn	kyber on nvme0n1, set by a rule read after OmacVM's: /etc/udev/rules.d/99-local.rules (yours: your choice)" \
+    "$(disk_sched_line "$V" nvme0n1)"
+  expect "no disk: skip" "skip	the VM's disk was not found" "$(disk_sched_line "$V" "")"
+  expect "a disk without a queue: skip" "skip	the VM's disk was not found" "$(disk_sched_line "$V" vda)"
+else
+  echo "FAIL check.sh has no disk_sched_line, or it does not parse"; fail=1
+fi
+expect "check.sh shows it as \"disk scheduler\" for the root file system's disk" 1 \
+  "$(grep -c '^r=$(disk_sched_line / "$dk")$' "$R/src/guest/check.sh")"
+
 if udevadm verify --help >/dev/null 2>&1; then
   echo "== udevadm verify ($(udevadm --version))"
   udevadm verify --resolve-names=never "$F" > "$T/verify" 2>&1

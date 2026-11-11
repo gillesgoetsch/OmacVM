@@ -719,6 +719,25 @@ zram_decider() {
   fi
   echo "$last"
 }
+# disk_sched_line ROOT DISK: the "disk scheduler" line, "status<TAB>detail". The VM's disk (DISK,
+# e.g. nvme0n1) should have none: the Mac schedules the real I/O (#778). Omarchy 4.5's
+# 60-omarchy-io-scheduler.rules sets kyber on every disk; OmacVM's 61-omacvm-io-scheduler.rules
+# (src/disk/guest) sets none again on QEMU's disks. Another scheduler: OmacVM's rule is missing
+# (Update VM), or a rule read after it sets one (its path; the user's choice when it is theirs).
+disk_sched_line() {
+  local root=${1%/} d=$2 s f later=""
+  [[ -n $d && -r $root/sys/block/$d/queue/scheduler ]] || { printf 'skip\t%s\n' "the VM's disk was not found"; return 0; }
+  s=$(sed -n 's/.*\[\(.*\)\].*/\1/p' "$root/sys/block/$d/queue/scheduler")
+  if [[ $s == none ]]; then printf 'ok\t%s\n' "none on $d: the Mac schedules the VM's disk I/O"; return 0; fi
+  if [[ ! -s $root/etc/udev/rules.d/61-omacvm-io-scheduler.rules ]]; then
+    printf 'warn\t%s\n' "$s on $d: OmacVM's rule is missing (Update VM / omacvm apply puts it back)"; return 0
+  fi
+  for f in "$root"/etc/udev/rules.d/*.rules "$root"/run/udev/rules.d/*.rules; do
+    [[ -f $f && ${f##*/} > 61-omacvm-io-scheduler.rules ]] && grep -qs 'queue/scheduler' "$f" && later+=" ${f#"$root"}"
+  done
+  if [[ -n $later ]]; then printf 'warn\t%s\n' "$s on $d, set by a rule read after OmacVM's:$later (yours: your choice)"
+  else printf 'warn\t%s\n' "$s on $d, not none: restart the VM, or run omacvm apply"; fi
+}
 # zram_line SIZE_BYTES MEMTOTAL_KB DECIDER OURS: the "zram swap" line, "status<TAB>detail".
 # OmacVM's cap is memory/guest/90-omacvm-zram.conf's min(ram / 4, 8192) MiB; up to 10 % over is
 # fine (MemTotal moves a little with the kernel). Over it, the line says who decides (DECIDER,
@@ -1180,6 +1199,14 @@ case ${r%%$'\t'*} in
   ok) ok "zram swap" "${r#*$'\t'}" ;;
   warn) warn "zram swap" "${r#*$'\t'}" ;;
   *) bad "zram swap" "${r#*$'\t'}" ;;
+esac
+# The VM's disk without an I/O scheduler (#778: Omarchy 4.5's rule sets kyber on every disk).
+dk=$(lsblk -ndo PKNAME "$(findmnt -no SOURCE / 2>/dev/null | sed 's/\[.*//')" 2>/dev/null | head -1)
+r=$(disk_sched_line / "$dk")
+case ${r%%$'\t'*} in
+  ok) ok "disk scheduler" "${r#*$'\t'}" ;;
+  warn) warn "disk scheduler" "${r#*$'\t'}" ;;
+  *) skip "disk scheduler" "${r#*$'\t'}" ;;
 esac
 if command -v grub-mkconfig >/dev/null; then
   if ! command -v snapper >/dev/null; then bad "bootable snapshots" "snapper is not installed (pacman -S snapper)"
