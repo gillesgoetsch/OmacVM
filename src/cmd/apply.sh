@@ -424,11 +424,30 @@ log "OmacVM -> $IP:/usr/local/share/omacvm"
 # old one stays as omacvm.old until the VM side is done (--transaction goes
 # back to it).
 S=/usr/local/share/omacvm
+# Each part in the VM ends with its own code, so a failed copy says which part
+# it was; the VM's tar errors are shown then, quiet as before when it works (#771).
+cps=(0 0)
 COPYFILE_DISABLE=1 tar --no-xattrs -C "$R/src" --exclude build --exclude __pycache__ -czf - . |
-  gssh "$IP" "set -e; rm -rf $S.new $S.old; mkdir -p $S.new
-              tar --no-same-owner -C $S.new -xzf - 2>/dev/null
-              if [ -d $S ]; then mv $S $S.old; fi; mv $S.new $S" ||
-  die "OmacVM did not get into the VM (see above): nothing changed there"
+  gssh "$IP" "rm -rf $S.new $S.old && mkdir -p $S.new || exit 11
+              e=\$(mktemp) || exit 11
+              if ! tar --no-same-owner -C $S.new -xzf - 2> \"\$e\"; then
+                sed 's/^/in the VM: /' \"\$e\" >&2; rm -f \"\$e\"; exit 12
+              fi
+              rm -f \"\$e\"
+              if [ -d $S ]; then mv $S $S.old || exit 13; fi; mv $S.new $S || exit 13" ||
+  cps=("${PIPESTATUS[@]}")
+if [[ ${cps[0]} != 0 || ${cps[1]} != 0 ]]; then
+  # 141: the Mac's tar lost its reader (the VM side ended first).
+  case ${cps[1]} in
+    255) part="SSH to the VM" ;;
+    11) part="clearing the last copy in the VM" ;;
+    12) [[ ${cps[0]} == 0 || ${cps[0]} == 141 ]] && part="unpacking it in the VM" || part="packing it on the Mac (tar exit ${cps[0]})" ;;
+    13) die "OmacVM did not get into the VM (swapping the new copy in failed, see above): the one before is in $S or $S.old" ;;
+    0) part="packing it on the Mac (tar exit ${cps[0]})" ;;
+    *) part="the VM's copy step (exit ${cps[1]})" ;;
+  esac
+  die "OmacVM did not get into the VM ($part failed, see above): nothing changed there"
+fi
 # A disk the person kept in OmacVM.app after its move stopped (Keep This
 # Disk): the VM learns it, so its move is over there too (check, status).
 if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM" 2>/dev/null) && move_kept "$d"; then

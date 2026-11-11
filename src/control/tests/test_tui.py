@@ -1289,7 +1289,9 @@ def test_mouse_swipe_row_with_a_magic_mouse(world):
         async with a.run_test(size=(110, 30)) as pilot:
             assert await settle(pilot, lambda: "mouse-swipe" in rows(a))
             names = [r.feature.name for r in a.rows]
-            assert names.index("mouse-swipe") == names.index("scroll-momentum") + 1
+            # After Trackpad gestures and the features that need it (the last: Mission Control).
+            assert names.index("mouse-swipe") == names.index("mission-control") + 1
+            assert names.index("mission-control") == names.index("scroll-momentum") + 1
             r = rows(a)["mouse-swipe"]
             # Gestures is off in this VM: the setting shows, the note says why nothing swipes.
             assert r.feature.title == "Magic Mouse swipe" and r.note == "4 fingers (Trackpad gestures is off)"

@@ -223,6 +223,7 @@ struct SettingsSections: View {
                 KeyboardRow(state: state, preview: preview?.keyNote)
                 MacIMERow(state: state)
                 SwipeOutRow(tick: state.tick, gesturesOff: VMRecord.isOff("gestures", folder: state.config.folder))
+                MissionControlRow(state: state, gesturesOff: VMRecord.isOff("gestures", folder: state.config.folder))
                 ShareKeyboardRow(tick: state.tick)
             }
         }

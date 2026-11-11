@@ -3,6 +3,30 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.4
+
+- **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning
+  in front of it when it ran without a UTF-8 locale (as it does over ssh), so it reported "two bars
+  on the MacBook" for a bar that was parked under the strip, and "the bar does not answer" for Full
+  screen including notch. It now takes the state's JSON line alone (#769).
+- **Mission Control** (experimental, off by default, Omarchy 4.5): four fingers up in the
+  full-screen VM spread out the windows of each display, following the fingers, with the
+  workspaces along the top; four fingers down close it, and while it is open four fingers sideways
+  go through the workspaces. It is the
+  [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin for
+  Omarchy's shell by @gillesgoetsch (MIT), shipped unchanged from its release v1.0.1.
+  Switch it in the app's VM window (Input > Mission Control), the control centre or with
+  `omacvm enable mission-control`; it needs Trackpad gestures. A copy you added yourself with
+  `omarchy plugin add` is only switched: the switch never writes or removes it. Off shows the
+  windows, disables the plugin and takes its gesture and keys out of Hyprland;
+  `omacvm apply --reinstall mission-control` repairs windows left hidden
+  ([details](docs/features.md#mission-control)).
+- **Move to Omarchy 4.5** keeps more detail when OmacVM does not get into the VM (#771): the
+  reason names the part of the copy that failed (SSH, clearing the last copy, unpacking, swapping
+  it in) and the log shows the VM's own tar errors, which were thrown away before. Each try's
+  `move-apply.log` is kept (the four before it as `move-apply.log.1` to `.4`), so a Resume no
+  longer writes over the one that failed. Nothing else changes in the move.
+
 ## 3.4.3
 
 - **Omanotch** on Omarchy 4.5 (#763, #764, reported by the project owner on an M4 Max; the same

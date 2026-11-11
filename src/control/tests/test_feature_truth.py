@@ -190,3 +190,15 @@ def test_webgpu_details_by_macos(features):
 
 def test_other_features_have_no_extra_details(features):
     assert S.feature_about(by(features, "bridge"), "26.0") == ""
+
+
+# ---- the VM's Omarchy version (Mission Control's omarchy-45) ----
+
+def test_local_reads_omarchy_version_from_pacman(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMACVM_PACMAN_DB", str(tmp_path))
+    assert L.omarchy_version() == ""
+    for name, ver in (("omarchy-keyring", "20250101-1"), ("omarchy", "4.5.0-3")):
+        d = tmp_path / "local" / f"{name}-{ver}"
+        d.mkdir(parents=True)
+        (d / "desc").write_text(f"%NAME%\n{name}\n\n%VERSION%\n{ver}\n\n%BASE%\n{name}\n")
+    assert L.omarchy_version() == "4.5.0-3"

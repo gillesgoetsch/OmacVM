@@ -494,3 +494,41 @@ def test_fast_network_from_the_next_start():
     assert off.startswith("From the VM's next start") and "password" not in off
     assert S.next_start_note("fast-network", True, "other") == ""
     assert S.next_start_note("touch-id", True, "app") == ""
+
+
+# ---- omarchy-45 (Mission Control) ----
+
+@pytest.mark.parametrize("version,below", [
+    ("4.5.0-3", False), ("4.5.0 aarch64 stable", False), ("5.0", False), ("4.10.1", False),
+    ("4.0.3-1", True), ("4.0.3 omarchy-mac stable", True), ("4", True), ("x", True),
+    ("", False), ("none", False), ("4.5;rm", False),
+])
+def test_omarchy_below_45_same_rule_as_the_mac(version, below):
+    assert S.omarchy_below_45(version) is below
+
+
+def test_mission_control_tags(features):
+    f = by(features, "mission-control")
+    assert f.default == "off" and f.needs == "gestures" and f.sides == ("vm",)
+    assert "experimental" in f.tags and "omarchy-45" in f.tags
+
+
+def test_mission_control_on_omarchy_40_unavailable_whatever_the_mac_says(features):
+    on = S.desired(features, {})
+    rows = S.build_rows(features, on, vm_type="app", avail={"mission-control": S.Avail(True)},
+                        checks=[], omarchy="4.0.3-1")
+    r = {x.feature.name: x for x in rows}
+    assert r["mission-control"].status is S.Status.UNAVAILABLE
+    assert r["mission-control"].note == S.OMARCHY_45_REASON
+    rows = S.build_rows(features, on, vm_type="app", checks=[], omarchy="4.5.0-3")
+    r = {x.feature.name: x for x in rows}
+    assert r["mission-control"].status is S.Status.OFF
+    rows = S.build_rows(features, on, vm_type="app", checks=[])   # not known: the switch decides
+    assert {x.feature.name: x for x in rows}["mission-control"].status is S.Status.OFF
+
+
+def test_mission_control_brings_gestures_and_goes_with_them(features):
+    on = S.desired(features, {"OMACVM_FEATURE_gestures": "off"})
+    assert S.toggle_plan(features, on, "mission-control") == {"mission-control": True, "gestures": True}
+    on = S.desired(features, {"OMACVM_FEATURE_mission_control": "on"})
+    assert S.toggle_plan(features, on, "gestures").get("mission-control") is False

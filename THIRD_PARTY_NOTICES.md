@@ -24,6 +24,12 @@ each file taken from them:
   AppKit's full-screen menu bar reservation decides whether a window covers
   the strip beside the notch; OmacVM.app's FullPanel answers that question
   (no code from the pull request).
+- **Mac Mission Control for Omarchy**
+  (github.com/gillesgoetsch/omarchy-mac-mission-control), MIT, (c) Gilles
+  Goetsch (@gillesgoetsch): `src/missioncontrol/plugin/mac.missioncontrol`,
+  the plugin's files as its repository has them at the commit in
+  `src/missioncontrol/PIN`, unchanged, with its `LICENSE` (feature
+  `mission-control`).
 - **UTM** (github.com/utmapp/UTM), Copyright © 2026 Turing Software, LLC,
   Apache License, Version 2.0: FullPanel in OmacVM 3.0.16-3.1.26 contained
   code adapted from UTM (Apache-2.0), from its
