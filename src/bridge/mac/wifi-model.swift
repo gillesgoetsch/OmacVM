@@ -111,11 +111,13 @@ struct WiFiIdentity {
   /// The kept values for this read, or nil: read them from CoreWLAN.
   func cached(_ k: Key) -> [String: Any]? { stale || key != k ? nil : values }
 
-  /// The kept network name of this interface: nil when it must be read;
-  /// .some(nil) when kept while not connected.
-  func keptSSID(_ interface: String) -> String?? {
-    guard !stale, let key, key.interface == interface else { return nil }
-    return .some(key.connected ? values["ssid"] as? String : nil)
+  /// The kept network name of this interface, only from a connected read
+  /// that had one; else nil, and the scan reads the name itself. A kept "not
+  /// connected" can be a read taken while the radio scanned off its channel,
+  /// so it never says there is no current network.
+  func keptSSID(_ interface: String) -> String? {
+    guard !stale, let key, key.interface == interface, key.connected else { return nil }
+    return values["ssid"] as? String
   }
 
   /// What was just read, from a read that began at `generation` `since`. A
