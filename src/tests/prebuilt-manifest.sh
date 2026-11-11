@@ -152,7 +152,7 @@ archive() {
   local part=omacvm-prebuilt-$VERSION-app.tar.zst.part-aa
   mkdir -p "$PREBUILT_CACHE/app"
   COPYFILE_DISABLE=1 tar -cf - -C "$T/a" . | zstd -q -c > "$PREBUILT_CACHE/app/$part"
-  PB_MANIFEST=$PREBUILT_CACHE/app/m.json PB_BUNDLE=Omarchy
+  PB_MANIFEST=$PREBUILT_CACHE/app/m.json PB_BUNDLE=Omarchy PB_DISK_GB=1 PB_UNPACKED_KB=1024
   printf '{"kind": "prebuilt-manifest", "devid_teams": ["722686Y34B"], "parts": [{"name": "%s", "size": %s, "sha256": "%s"}]}' "$part" \
     "$(stat -f %z "$PREBUILT_CACHE/app/$part")" "$SUM" > "$PB_MANIFEST"
   sign_doc "$PB_MANIFEST"
@@ -160,9 +160,11 @@ archive() {
 take() { rm -f "$T/disk.img"; (prebuilt_unpack_disk "$T/u" "$T/disk.img") >/dev/null 2>&1 && echo taken || echo refused; }
 if command -v zstd >/dev/null; then
   echo secret > "$T/victim"
-  rm -rf "$T/a"; mkdir -p "$T/a/Omarchy"; printf 'disk' > "$T/a/Omarchy/disk.img"; archive
+  # The disk is the manifest's size (PB_DISK_GB: 1 GiB here), sparse.
+  rm -rf "$T/a"; mkdir -p "$T/a/Omarchy"; printf 'disk' > "$T/a/Omarchy/disk.img"
+  dd if=/dev/null of="$T/a/Omarchy/disk.img" bs=1 seek=1073741824 2>/dev/null; archive
   expect "app image: a plain disk.img is taken" taken "$(take)"
-  expect "app image: its content" disk "$(cat "$T/disk.img" 2>/dev/null)"
+  expect "app image: its content" "disk 1073741824" "$(head -c 4 "$T/disk.img" 2>/dev/null) $(stat -f %z "$T/disk.img" 2>/dev/null)"
   expect "app image: the work folder is gone" no "$([[ -e $T/u ]] && echo yes || echo no)"
   rm -rf "$T/a"; mkdir -p "$T/a/Omarchy"; ln -s "$T/victim" "$T/a/Omarchy/disk.img"; archive
   expect "app image: disk.img as a symlink is refused" refused "$(take)"
@@ -203,7 +205,7 @@ expect "seed: hdiutil fails: no work folder left" "" "$(ls "$T/tmp")"
 # Free space: an image bigger than the disk is refused with a message.
 out=$( (PB_SIZE=1000 PB_UNPACKED_KB=999999999999; prebuilt_space_ok "$T") 2>&1); rc=$?
 expect "free space: too little: refused" 1 "$rc"
-expect "free space: too little: says so" yes "$([[ $out == "not enough free space"* ]] && echo yes || echo "$out")"
+expect "free space: too little: says so" yes "$([[ $out == "Not enough free space"* ]] && echo yes || echo "$out")"
 expect "free space: enough" 0 "$( (PB_SIZE=1000 PB_UNPACKED_KB=1000; prebuilt_space_ok "$T") >/dev/null 2>&1; echo $?)"
 
 # make-image.sh's manifest carries OMACVM_REVOKED_KEYS like the app's feed (docs/release-keys.md).

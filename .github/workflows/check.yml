@@ -316,6 +316,9 @@ jobs:
       - name: Prebuilt image disk is packed sparse (holes for zeros, owner root)
         run: src/tests/prebuilt-sparse.sh
 
+      - name: Prebuilt disk unpacks sparse and bounded (never past the end, free-space floor, odd archives refused)
+        run: src/tests/prebuilt-unpack.sh
+
 
       - name: Ctrl-C in omacvm build stops the running step (a terminal, no VM)
         run: src/tests/build-ctrlc.sh

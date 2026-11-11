@@ -9,6 +9,11 @@ PREBUILT_DISK_GB=64                 # the image's disk; grown on install
 PREBUILT_FEATURES="bridge=on wallpaper=on gestures=on scroll-momentum=off omanotch=off mac-clock=on camera=on battery=off external-brightness=on no-idle-lock=off autologin=off thp-kernel=off"
 
 PREBUILT_CACHE=$HOME/Library/Caches/omacvm/prebuilt
+# Kept free on the Mac while a prebuilt VM is set up: the app's own reserve for
+# a disk that grows, shrinks or moves (DiskSize.macReserve, 10 GiB).
+PREBUILT_MAC_RESERVE_KB=10485760
+# The file that marks an unpack folder as OmacVM's (prebuilt_unpack_drop).
+PREBUILT_UNPACK_MARK=omacvm-prebuilt-unpack
 
 # prebuilt_lookup TYPE: the newest image for this app with OmacVM's major
 # version and a version up to this one (the first omacvm apply brings its
@@ -83,26 +88,31 @@ pb_disk_bigger() {
 pb_gb() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1e9 }'; }
 
 # prebuilt_space_ok DEST: room for the parts (in the cache) and the unpacked
-# VM (in DEST), plus 2 GB. Says how much is missing and returns 1 if not.
+# VM (in DEST), and still PREBUILT_MAC_RESERVE_KB free on each volume after
+# them. Says what is missing and returns 1 if not.
 prebuilt_space_ok() {
-  local dest=$1 cache_kb dest_kb need_cache need_dest
+  local dest=$1 cache_kb dest_kb need_cache need_dest dl=0 res=$PREBUILT_MAC_RESERVE_KB parts
   mkdir -p "$PREBUILT_CACHE"
   need_cache=$(( 10#$PB_SIZE / 1024 + 1 )); need_dest=$(( 10#$PB_UNPACKED_KB ))
   cache_kb=$(df -Pk "$PREBUILT_CACHE" | awk 'NR == 2 { print $4 }')
   dest_kb=$(df -Pk "$dest" | awk 'NR == 2 { print $4 }')
   [[ $cache_kb =~ ^[0-9]+$ && $dest_kb =~ ^[0-9]+$ ]] || return 0   # df said nothing useful: let it try
   if [[ $(stat -f %d "$PREBUILT_CACHE") == "$(stat -f %d "$dest")" ]]; then
-    need_dest=$(( need_dest + need_cache )); need_cache=0
+    dl=$need_cache; need_cache=0
   fi
-  if (( dest_kb < need_dest + 2097152 )); then
-    echo "not enough free space on $(df -P "$dest" | awk 'NR == 2 { sub(/^([^ ]+ +){5}/, ""); print }'): $(pb_gb $(( (need_dest + 2097152) * 1024 ))) GB needed, $(pb_gb $(( dest_kb * 1024 ))) GB free" >&2
+  parts="VM disk $(pb_gb $(( need_dest * 1024 ))) GB"
+  (( dl )) && parts="$parts, download $(pb_gb $(( dl * 1024 ))) GB"
+  if (( dest_kb < need_dest + dl + res )); then
+    echo "Not enough free space on $(pb_volume "$dest"): $(pb_gb $(( (need_dest + dl + res) * 1024 ))) GB needed ($parts, $(pb_gb $(( res * 1024 ))) GB kept free for macOS), $(pb_gb $(( dest_kb * 1024 ))) GB free. Free some space and try again." >&2
     return 1
   fi
-  if (( need_cache && cache_kb < need_cache + 2097152 )); then
-    echo "not enough free space for the download in $PREBUILT_CACHE: $(pb_gb $(( (need_cache + 2097152) * 1024 ))) GB needed, $(pb_gb $(( cache_kb * 1024 ))) GB free" >&2
+  if (( need_cache && cache_kb < need_cache + res )); then
+    echo "Not enough free space on $(pb_volume "$PREBUILT_CACHE") for the download: $(pb_gb $(( (need_cache + res) * 1024 ))) GB needed (download $(pb_gb $(( need_cache * 1024 ))) GB, $(pb_gb $(( res * 1024 ))) GB kept free for macOS), $(pb_gb $(( cache_kb * 1024 ))) GB free. Free some space and try again." >&2
     return 1
   fi
 }
+
+pb_volume() { df -P "$1" | awk 'NR == 2 { sub(/^([^ ]+ +){5}/, ""); print }'; }
 
 # prebuilt_download: every part into the cache, resumed, checked against the
 # manifest's SHA-256. A part that fails its check is fetched again once.
@@ -131,20 +141,6 @@ prebuilt_download() {
   done < <(python3 "$R/src/prebuilt/manifest.py" parts "$PB_MANIFEST")
 }
 
-# prebuilt_unpack DIR [MEMBER...]: the bundle into DIR (sparse files stay
-# sparse); with MEMBERs only those paths. $ZSTD: OmacVM.app's own zstd (its
-# users need no Homebrew). tar stops at the archive's end marker, before the
-# zero padding after it: cat reads that, or zstd's last write could find the
-# pipe closed and fail the unpack (SIGPIPE, with pipefail) now and then.
-prebuilt_unpack() {
-  local dir to=$1; dir=$(dirname "$PB_MANIFEST"); shift
-  mkdir -p "$to"
-  python3 "$R/src/prebuilt/manifest.py" parts "$PB_MANIFEST" | while read -r name _ _; do cat "$dir/$name"; done |
-    "${ZSTD:-zstd}" -dc --long=27 -q | { tar -xSf - -C "$to" "$@" && cat > /dev/null; } ||
-    die "could not unpack the image (free disk space?)"
-  [[ -d $to/$PB_BUNDLE ]] || die "the image did not unpack ($to/$PB_BUNDLE missing)"
-}
-
 # Text from the VM on its way to a terminal: colour codes out, then only
 # printable ASCII and tabs (no other escape sequences: a guest could set the
 # window title or the Mac's clipboard), lines cut at 240 characters. Line by
@@ -154,40 +150,72 @@ printable() {
   LC_ALL=C sed -l -e $'s/\x1b\\[[0-9;]*m//g' -e 's/[^[:print:][:blank:]]//g' -e 's/^\(.\{240\}\).*/\1/'
 }
 
-# prebuilt_unpack_disk WORK DEST: OmacVM.app's image is <bundle>/disk.img and
-# nothing else. Only that path comes out of the archive (into WORK, emptied
-# first), and only as a plain file with one link: a symbolic or hard link would
-# have the grow and QEMU write to some other file on the Mac. Then it moves to
-# DEST and WORK goes.
-prebuilt_unpack_disk() {
-  local u=$1 f
+# prebuilt_unpack_drop WORK: WORK goes if it is OmacVM's unpack folder (the
+# marker inside). A run that crashed or was killed leaves one behind (53-56 GB
+# after the MacBook Air's panic, 2026-11-11), and the next run clears it before
+# it checks the free space. Status 1, WORK kept, when it is there without the
+# marker: not OmacVM's to delete.
+prebuilt_unpack_drop() {
+  local u=$1
+  [[ -e $u || -L $u ]] || return 0
+  [[ -d $u && ! -L $u && -f $u/$PREBUILT_UNPACK_MARK && ! -L $u/$PREBUILT_UNPACK_MARK ]] || return 1
   rm -rf "$u"
-  prebuilt_unpack "$u" "$PB_BUNDLE/disk.img"
-  f=$u/$PB_BUNDLE/disk.img
-  [[ $(cd "$u" && find . -mindepth 1 | LC_ALL=C sort | tr '\n' '|') == "./$PB_BUNDLE|./$PB_BUNDLE/disk.img|" ]] ||
-    { rm -rf "$u"; die "the image holds something other than $PB_BUNDLE/disk.img: not used"; }
-  [[ -d $u/$PB_BUNDLE && ! -L $u/$PB_BUNDLE && -f $f && ! -L $f && $(stat -f %l "$f") == 1 ]] ||
-    { rm -rf "$u"; die "the image's disk.img is not a plain file: not used"; }
-  mv "$f" "$2"
-  rm -rf "$u"
-  prebuilt_compact "$2"
 }
 
-# prebuilt_compact FILE: a raw disk that takes more than half its size on the
+# prebuilt_unpack_disk WORK DEST: OmacVM.app's image is <bundle>/disk.img and
+# nothing else (unpack.py refuses any other entry, a link, a disk of another
+# size than the signed manifest's). It goes into WORK (made new, with its
+# marker), sparse and bounded, then moves to DEST and WORK goes.
+# $ZSTD: OmacVM.app's own zstd (its users need no Homebrew).
+#
+# Not tar -xS: bsdtar writes the disk's last region (its backup GPT) with one
+# write that starts 56 GB past the end of the file, and APFS sometimes fills
+# that gap with real zeros: 61 GB on the Mac, which filled a MacBook Air to a
+# kernel panic (2026-11-11; 60 of 163 setups since 3.0 took the zeros, #305).
+# unpack.py sets the file's size first and writes only inside it; it stops
+# when the volume gets below PREBUILT_MAC_RESERVE_KB free, or the file takes
+# more than the image's data and 1 GiB. Its message is the one shown. cat reads
+# what follows the archive's end marker, or zstd's last write could find the
+# pipe closed and fail the unpack (SIGPIPE, with pipefail) now and then.
+prebuilt_unpack_disk() {
+  local u=$1 f dir err size max msg
+  [[ $PB_DISK_GB =~ ^[0-9]{1,4}$ && $PB_UNPACKED_KB =~ ^[0-9]{1,12}$ ]] || die "bad disk size in the prebuilt manifest"
+  prebuilt_unpack_drop "$u" || die "$u is in the way and was not made by OmacVM: move it away and try again"
+  mkdir "$u" && : > "$u/$PREBUILT_UNPACK_MARK" || die "could not make $u"
+  f=$u/disk.img err=$u/unpack.err dir=$(dirname "$PB_MANIFEST")
+  size=$(( 10#$PB_DISK_GB * 1073741824 )); max=$(( 10#$PB_UNPACKED_KB * 1024 + 1073741824 ))
+  if ! python3 "$R/src/prebuilt/manifest.py" parts "$PB_MANIFEST" | while read -r name _ _; do cat "$dir/$name"; done |
+    "${ZSTD:-zstd}" -dc --long=27 -q |
+    { python3 -I "$R/src/prebuilt/unpack.py" extract "$PB_BUNDLE/disk.img" "$f" "$size" \
+        --max-alloc "$max" --min-free $(( PREBUILT_MAC_RESERVE_KB * 1024 )) 2> "$err" && cat > /dev/null; }; then
+    msg=$(tail -n 1 "$err" 2>/dev/null | cut -c1-300)
+    prebuilt_unpack_drop "$u" || true
+    die "${msg:-could not unpack the image}"
+  fi
+  [[ -f $f && ! -L $f && $(stat -f %l "$f") == 1 ]] ||
+    { prebuilt_unpack_drop "$u" || true; die "the image's disk.img is not a plain file: not used"; }
+  mv "$f" "$2"
+  prebuilt_unpack_drop "$u" || true
+  prebuilt_compact "$2" unpack
+}
+
+# prebuilt_compact FILE [unpack]: a raw disk that takes more than half its size on the
 # Mac gets every zeroed MiB back as a hole (sparsify.py, bytes unchanged).
-# The images unpack sparse (prebuilt-3.0.8: 7 GB of 64, on macOS 15.7 and 26),
-# but a fresh 3.0.9 setup on macOS 15.8.1 ended with 61 GB in use, 7.9 after
-# sparsify.py (#305). Only for a disk no VM has open: sparsify reads it all
-# (about 10 s for 60 GB) and punches holes where it read zeros.
+# After a setup (#305: a fresh 3.0.9 setup on macOS 15.8.1 ended with 61 GB
+# in use, 7.9 after sparsify.py). Right after the unpack it should never find
+# any (unpack.py): then it says so as a warning. Only for a disk no VM has
+# open: sparsify reads it all (about 10 s for 60 GB) and punches holes where
+# it read zeros.
 prebuilt_compact() {
-  local f=$1 size kb out
+  local f=$1 size kb out msg
   size=$(stat -f %z "$f" 2>/dev/null) && kb=$(( $(stat -f %b "$f") / 2 )) || return 0
   (( kb * 1024 > size / 2 )) || return 0
   if out=$(python3 "$R/src/prebuilt/sparsify.py" "$f" 2>/dev/null) && [[ $out =~ ^[0-9]+\ ([0-9]+)$ ]]; then
-    info "disk.img took $((kb / 1048576)) GB of its $((size >> 30)) GB on the Mac: zeros made holes, now $((BASH_REMATCH[1] / 1048576)) GB"
+    msg="disk.img took $((kb / 1048576)) GB of its $((size >> 30)) GB on the Mac: zeros made holes, now $((BASH_REMATCH[1] / 1048576)) GB"
   else
-    info "disk.img takes $((kb / 1048576)) GB of its $((size >> 30)) GB on the Mac; could not make it sparse"
+    msg="disk.img takes $((kb / 1048576)) GB of its $((size >> 30)) GB on the Mac; could not make it sparse"
   fi
+  if [[ ${2:-} == unpack ]]; then echo "WARN: right after the unpack, $msg"; else info "$msg"; fi
 }
 
 prebuilt_cleanup() {   # the downloaded parts (kept with OMACVM_PREBUILT_KEEP=1)
