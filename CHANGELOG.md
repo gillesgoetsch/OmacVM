@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.5 (unreleased)
+
+- **Disk speed on Omarchy 4.5**: Omarchy 4.5 sets the kyber I/O scheduler on every disk
+  (`/etc/udev/rules.d/60-omarchy-io-scheduler.rules`), also on the VM's own virtual disk, and sets
+  it again on every change event of the disk. In a VM the Mac does the real I/O scheduling, so
+  kyber only adds work: 4k random reads and writes at queue depth 32 ran at about half the speed
+  of no scheduler, as on Omarchy 4.0 (#778). OmacVM now keeps the VM's own disks (QEMU's NVMe
+  and virtio disks) on no scheduler with its own rule, read after Omarchy's
+  (`/etc/udev/rules.d/61-omacvm-io-scheduler.rules`). A USB disk passed in keeps Omarchy's
+  choice. Update VM puts it in place and switches the running VM at once; `omacvm check` has a
+  "disk scheduler" line.
+
 ## 3.4.4
 
 - **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning

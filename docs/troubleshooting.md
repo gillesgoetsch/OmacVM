@@ -2003,3 +2003,34 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   the VM, `hyprctl eval 'mac_mission_control.reset()'` shows the windows.
 - **Where:** `src/missioncontrol/guest/install.sh` (`--repair`, `off`,
   `--status`); tests `src/missioncontrol/tests/run.sh`.
+
+## 64. The VM's disk is slower on Omarchy 4.5 (I/O scheduler)
+
+- **Symptom:** on Omarchy 4.5 (a new VM, or one moved from 4.0), 4k random
+  reads and writes on the VM's disk run at about half the speed of a 4.0 VM
+  (`fio` at queue depth 32: about 90k writes per second against 177k on a
+  Mac mini M4); at queue depth 1 about 0.87x. `cat
+  /sys/block/nvme0n1/queue/scheduler` shows `[kyber]`. Up to 3.4.4.
+- **Cause:** Omarchy 4.5 ships `/etc/udev/rules.d/60-omarchy-io-scheduler.rules`,
+  which sets the kyber scheduler on every disk when it appears and on every
+  change event. A scheduler in the VM only adds work: the Mac schedules the
+  real I/O of the VM's disk file. 4.0 has no such rule and boots with none.
+  Setting `none` by hand does not hold for a test on the whole disk:
+  udev sends a change event each time a program closes the disk after
+  opening it for writing (fio does at the start of each write job), and
+  Omarchy's rule sets kyber again (#778).
+- **Fix (3.4.5):** Update VM (`omacvm apply`); no restart. OmacVM's own
+  rule, `/etc/udev/rules.d/61-omacvm-io-scheduler.rules`, is read after
+  Omarchy's and sets none on the VM's own disks (QEMU's NVMe and virtio
+  disks) on the same events. A USB disk passed in keeps Omarchy's choice.
+  The rule acts only while `/etc/omacvm/env` (OmacVM's record in the VM) is
+  there.
+- **Your own choice:** a rule of your own that sorts after OmacVM's, for
+  example `/etc/udev/rules.d/99-local-scheduler.rules`; `omacvm check` then
+  warns and names it.
+- **`omacvm check`:** "disk scheduler" says ok with none on the VM's disk,
+  and warns when OmacVM's rule is missing (Update VM) or a later rule sets
+  another scheduler.
+- **Where:** `src/disk/guest/install.sh`,
+  `src/disk/guest/61-omacvm-io-scheduler.rules`, `src/guest/check.sh` ("disk
+  scheduler"); test `src/tests/disk-scheduler.sh`.
