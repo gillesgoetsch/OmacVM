@@ -589,7 +589,7 @@ case ${mc%% *} in
   human) skip "Mission Control" "${mc#* }" human ;;
   skip) skip "Mission Control" "${mc#* }" ;;
   *) [[ ${OMACVM_FEATURE_mission_control:-off} == on ]] && bad "Mission Control" "its check did not answer: omacvm apply" ||
-       skip "Mission Control" "off (experimental: omacvm enable mission-control)" ;;
+       skip "Mission Control" "off (omacvm enable mission-control)" ;;
 esac
 FEATURE=""
 if [[ $GESTURES == on ]]; then

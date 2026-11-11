@@ -50,7 +50,7 @@ confirm):
    Switched on after the build (`omacvm enable NAME`, the app's VM window or
    the control centre): the fast network, the Mac's input methods, drag and
    drop, OmacVM's own Mesa and Mission Control (four fingers up spread out
-   the windows; Omarchy 4.5, experimental).
+   the windows; Omarchy 4.5).
 
 4. **Your user name, full name and password.** Omarchy's own first-boot setup
    is not used.

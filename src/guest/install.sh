@@ -498,7 +498,7 @@ fi
 # OmacVM switched on; a copy of the owner's own is never written.
 if want mission-control; then
   if [[ ${F[mission-control]} == on ]]; then
-    log "Mission Control (experimental; the Mac Mission Control plugin)"
+    log "Mission Control (the Mac Mission Control plugin)"
     "$R/missioncontrol/guest/install.sh" "$U" on || not_set_up mission-control "Mission Control"
     # A repair (omacvm apply --reinstall mission-control, --only here): windows it left hidden shown again,
     # a shell that hangs with the overview on screen restarted.

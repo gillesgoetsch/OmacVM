@@ -1,7 +1,7 @@
 import Foundation
 
-/// Mission Control in the VM (feature mission-control: experimental, off by
-/// default, Omarchy 4.5, needs Trackpad gestures; docs/features.md): the Mac
+/// Mission Control in the VM (feature mission-control: off by default,
+/// Omarchy 4.5, needs Trackpad gestures; docs/features.md): the Mac
 /// Mission Control plugin by Gilles Goetsch in Omarchy's shell, four fingers
 /// up and down in the full-screen VM. Nothing of it runs on the Mac: the app
 /// only switches it, as drag and drop (PendingSwitch while the VM is stopped,
@@ -48,6 +48,9 @@ public enum MissionControl {
         return MacIME.Row(on: on, enabled: cli, note: p != nil ? "Being set up in the VM for this start." : (on ? onNote : nil))
     }
 
+    /// The row's text when no note applies (beside its picture).
+    public static let subtitle = "Four fingers up spread out the windows, with the workspaces along the top."
+
     /// The (i) text of the window's row.
-    public static let info = "Experimental. Swipe up with four fingers in the full-screen VM and its windows spread out, with your workspaces along the top; four fingers down close it. While it is open, four fingers sideways (two on a Magic Mouse) go through your workspaces; click a window to go to it, or drag it onto a workspace to move it there. ⌃↑ stays macOS's Mission Control unless every key combination goes to the VM (a hidden setting, see the docs). In a window, macOS's own Mission Control answers. Needs Trackpad gestures and Omarchy 4.5. The Mac Mission Control plugin by Gilles Goetsch (MIT)."
+    public static let info = "Swipe up with four fingers in the full-screen VM and its windows spread out, with your workspaces along the top; four fingers down close it. While it is open, four fingers sideways (two on a Magic Mouse) go through your workspaces; click a window to go to it, or drag it onto a workspace to move it there. ⌃↑ stays macOS's Mission Control unless every key combination goes to the VM (a hidden setting, see the docs). In a window, macOS's own Mission Control answers. Needs Trackpad gestures and Omarchy 4.5. The Mac Mission Control plugin by Gilles Goetsch (MIT)."
 }

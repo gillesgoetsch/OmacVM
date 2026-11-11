@@ -2,14 +2,15 @@ import Foundation
 import OmacVMFeatures
 import SwiftUI
 
-/// Mission Control in the VM (feature mission-control: experimental, off by
-/// default; docs/features.md) in the VM window's Input: one switch, the same
+/// Mission Control in the VM (feature mission-control: off by default;
+/// docs/features.md) in the VM window's Input: one switch, the same
 /// feature as in the control centre and `omacvm enable/disable
 /// mission-control`. The same paths as DragDropRow: while the VM runs it runs
 /// this app's omacvm for the VM, which switches it at once; while it is
 /// stopped it writes the record and a pending file, and the app sets it up
 /// at the next start (FeatureStart). Off and greyed out with the reason on
-/// an Omarchy below 4.5 and with Trackpad gestures off.
+/// an Omarchy below 4.5 and with Trackpad gestures off. Its picture
+/// (MissionControlPicture) shows what it does, as Swipe out to macOS's row.
 struct MissionControlRow: View {
     @ObservedObject var state: AppState
     /// This VM has trackpad gestures off: nothing to swipe with there.
@@ -25,8 +26,9 @@ struct MissionControlRow: View {
         let row = MissionControl.row(record: record, pending: pending, omarchy: omarchy, gesturesOff: gesturesOff,
                                      running: running, busy: busy, cli: TerminalCommand.available)
         let n = note ?? row.note
-        SettingRow(title: "Mission Control", subtitle: n,
+        SettingRow(title: "Mission Control", subtitle: n ?? MissionControl.subtitle,
                    subtitleIsError: n?.hasPrefix("Could not") == true, info: MissionControl.info, probe: "mission-control") {
+            MissionControlPicture()
             if busy { ProgressView().controlSize(.small) }
             RowSwitch(title: "Mission Control", isOn: Binding(get: { row.on }, set: { v in if v != row.on { flip(v, running: running) } }),
                       enabled: row.enabled)

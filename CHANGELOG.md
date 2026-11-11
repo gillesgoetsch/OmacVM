@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.5 (unreleased)
+
+- **Mission Control** is no longer experimental. It stays off until you switch it on (Omarchy 4.5,
+  Trackpad gestures). Its row in the app's VM window (Input) now shows a small picture of what it
+  does: the windows spread out, with the workspaces along the top. The
+  [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by
+  @gillesgoetsch.
+
 ## 3.4.4
 
 - **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning
