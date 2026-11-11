@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.5 (unreleased)
+
+- **Bridge** no longer keeps macOS's `locationd` busy while a VM runs. For the Wi-Fi name it read
+  the network's name, BSSID, security type and country code every 5 seconds, and macOS checks the
+  Location Services permission with `locationd` on each of those reads: about 2 % of a core on a
+  MacBook Air M2 the whole time a VM was open (8 % was seen on an M1 Max). The Bridge now reads
+  these four only when macOS says the Wi-Fi changed, after a wake, or when the connection or the
+  permission changes; the signal is still read every 5 seconds. On the Air `locationd` is back at
+  its idle level. The bar shows the same as before.
+
 ## 3.4.4
 
 - **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning

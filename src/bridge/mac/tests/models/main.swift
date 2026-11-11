@@ -523,10 +523,10 @@ check(OutputMute.after(before: nil, target: 0.4, unmute: false) == nil, "volume 
 check(OutputMute.after(before: nil, target: 0, unmute: false) == true, "volume 0: ... but 0 still mutes")
 check(OutputMute.after(before: nil, target: 0.4, unmute: true) == false, "volume 0: ... and a key still unmutes")
 
-// ---- WiFiIdentity: name, BSSID and country code only when they may have changed ----
+// ---- WiFiIdentity: name, BSSID, security, country code only when they may have changed ----
 var wi = WiFiIdentity()
 let on = WiFiIdentity.Key(interface: "en0", connected: true, locationOK: true)
-let office: [String: Any] = ["ssid": "Office", "bssid": "aa:bb", "country_code": "CH"]
+let office: [String: Any] = ["ssid": "Office", "bssid": "aa:bb", "security": 4, "country_code": "CH"]
 check(wi.cached(on) == nil, "wifi identity: read at the start")
 wi.store(office, for: on, since: wi.generation)
 check(wi.cached(on)?["ssid"] as? String == "Office", "wifi identity: the next ticks keep it (no locationd check)")
