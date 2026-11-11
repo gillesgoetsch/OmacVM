@@ -92,7 +92,11 @@ the file gets its full size first and every write lands inside it, so it
 stays sparse (bsdtar's write of the last region, 56 GB past the end of the
 file, sometimes made APFS write 61 GB of zeros). It stops, and the
 unfinished VM goes, when the drive gets below 10 GiB free or the disk takes
-more than the image's data and 1 GiB. A folder an earlier run left
+more than the image's data and 1 GiB. Tests prove these checks with
+`OMACVM_TEST_FREE_FILE` (a file holding a number of KiB, read at every
+check: it counts as the free space when it is less than the drive has, never
+more), never with a real full drive: a full APFS volume, even inside a disk
+image, panicked macOS 27 twice on 2026-11-11. A folder an earlier run left
 (`.unpack`, marked as OmacVM's) is removed before the space check. Only
 `Omarchy/disk.img` is taken from the archive, as a plain file (not a link)
 of the manifest's disk size; anything else in it is refused. The manifest's values are checked before use,

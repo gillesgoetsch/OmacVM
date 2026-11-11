@@ -82,6 +82,53 @@ expect "  says the disk is nearly full" yes "$([[ $LAST == "Stopped: the Mac's d
 refused "the allocation bound" "$T/img.tar" $GIB --max-alloc 4096
 expect "  says what it took" yes "$([[ $LAST == "Stopped: disk.img took"* ]] && echo yes || echo "$LAST")"
 
+# The test hook: OMACVM_TEST_FREE_FILE's number (KiB) counts as the free space
+# when it is smaller than the volume's, never when bigger, and it is read at
+# every check, so guard rows need no full volume (PANIC-1111).
+export OMACVM_TEST_FREE_FILE=$T/free
+echo 1 > "$T/free"
+refused "hook: 1 KiB free, floor 1 GiB (before the first byte)" "$T/img.tar" $GIB --min-free $GIB
+expect "  says the disk is nearly full" yes "$([[ $LAST == "Stopped: the Mac's disk is nearly full (0.0 GB free). The unfinished VM was removed." ]] && echo yes || echo "$LAST")"
+echo 999999999999999 > "$T/free"
+refused "hook: a number bigger than the volume's free space does not count" "$T/img.tar" $GIB --min-free 999999999999999999
+for v in abc "" 2097152; do
+  echo "$v" > "$T/free"; rm -f "$T/h.img"
+  x extract Omarchy/disk.img "$T/h.img" $GIB --min-free $GIB < "$T/img.tar" 2>/dev/null
+  expect "hook: '$v' (bad, empty, 2 GiB over a 1 GiB floor): runs" "0 $GIB" "$? $(stat -f %z "$T/h.img" 2>/dev/null)"
+done
+# Free space that drops while it runs: a plain 1 GiB member of zeros (takes no
+# blocks); the feeder lowers the number after 300 MiB, so the check at 256 MiB
+# passes and the one at 512 MiB stops it.
+feed() {
+  python3 -c '
+import sys, tarfile
+i = tarfile.TarInfo("Omarchy/disk.img"); i.size = 1 << 30
+out, sent, z = sys.stdout.buffer, 0, bytes(1 << 20)
+try:
+    out.write(i.tobuf(tarfile.USTAR_FORMAT))
+    while sent < i.size:
+        if sent == 300 << 20:
+            out.flush()
+            with open(sys.argv[1], "w") as f:
+                f.write("1\n")
+        out.write(z)
+        sent += len(z)
+    out.write(bytes(1024))
+    out.flush()
+except BrokenPipeError:
+    pass
+with open(sys.argv[2], "w") as f:
+    f.write("%d\n" % (sent >> 20))
+' "$T/free" "$T/fed" 2>/dev/null
+}
+echo 999999999999999 > "$T/free"; rm -f "$T/h.img"
+feed | x extract Omarchy/disk.img "$T/h.img" $GIB --min-free $GIB 2> "$T/h.err"
+rc=${PIPESTATUS[1]}; fed=$(cat "$T/fed")
+expect "hook: free space dropping mid-run stops it, file gone" "1 no" "$rc $([[ -e $T/h.img ]] && echo yes || echo no)"
+expect "  between the checks (300 < MiB sent < 1024)" 1 "$(( fed > 300 && fed < 1024 ))"
+expect "  with the message" yes "$([[ $(tail -n 1 "$T/h.err") == "Stopped: the Mac's disk is nearly full (0.0 GB free). The unfinished VM was removed." ]] && echo yes || cat "$T/h.err")"
+unset OMACVM_TEST_FREE_FILE
+
 # Archives made by hand (tarfile writes them; unpack.py does not use it).
 mk() {   # mk NAME KIND: an odd archive into $T/NAME.tar
   python3 - "$T/$1.tar" "$2" "$T/victim" <<'PY'
@@ -155,6 +202,9 @@ if command -v zstd >/dev/null; then
     expect "lib: the floor stops it" 1 "$rc"
     expect "lib: its message is the one shown" yes "$([[ $out == *"Stopped: the Mac's disk is nearly full"* ]] && echo yes || echo "$out")"
     expect "lib: nothing left" "no no" "$([[ -e $V/disk.img ]] && echo yes || echo no) $([[ -e $V/.unpack ]] && echo yes || echo no)"
+    out=$(echo 1 > "$T/free"; export OMACVM_TEST_FREE_FILE=$T/free; run); rc=$?
+    expect "lib: the hook's 1 KiB stops it, with the message, nothing left" "1 yes no no" \
+      "$rc $([[ $out == *"Stopped: the Mac's disk is nearly full (0.0 GB free)"* ]] && echo yes || echo "$out") $([[ -e $V/disk.img ]] && echo yes || echo no) $([[ -e $V/.unpack ]] && echo yes || echo no)"
     out=$(PB_DISK_GB=2; run); rc=$?
     expect "lib: a disk of another size is refused, with the reason" "1 yes" "$rc $([[ $out == *"manifest says"* ]] && echo yes || echo "$out")"
     # What a killed run leaves: marked, so the next run clears it.
@@ -187,6 +237,19 @@ fi
   expect "space: says what for" yes "$([[ $out == "Not enough free space on "*"GB needed (VM disk "*" GB, download 3.0 GB, 10.7 GB kept free for macOS), "*" GB free. Free some space and try again." ]] && echo yes || echo "$out")"
   PB_UNPACKED_KB=$(( PB_UNPACKED_KB - 2621440 ))
   expect "space: 2 GiB to spare: fine" 0 "$(prebuilt_space_ok "$T" >/dev/null 2>&1; echo $?)"
+  # The hook: 1 GiB disk + 1 GB download + 10 GiB reserve = 11.9 GiB needed.
+  PB_SIZE=1000000000 PB_UNPACKED_KB=1048576
+  (( free > 13 * 1048576 )) || { echo "skip space hook rows: too little free here"; exit $fail; }
+  export OMACVM_TEST_FREE_FILE=$T/free
+  echo $(( 11 * 1048576 )) > "$T/free"
+  out=$(prebuilt_space_ok "$T" 2>&1); rc=$?
+  expect "space: the hook's 11 GiB: refused up front, with its number" "1 yes" \
+    "$rc $([[ $out == "Not enough free space on "*"12.8 GB needed (VM disk 1.1 GB, download 1.0 GB, 10.7 GB kept free for macOS), 11.8 GB free. Free some space and try again." ]] && echo yes || echo "$out")"
+  echo $(( 13 * 1048576 )) > "$T/free"
+  expect "space: the hook's 13 GiB: fine" 0 "$(prebuilt_space_ok "$T" >/dev/null 2>&1; echo $?)"
+  echo 999999999999999 > "$T/free"; PB_UNPACKED_KB=$(( free - PREBUILT_MAC_RESERVE_KB ))
+  expect "space: a hook number bigger than df's does not count" 1 "$(prebuilt_space_ok "$T" >/dev/null 2>&1; echo $?)"
+  unset OMACVM_TEST_FREE_FILE
   (( fail )) && exit 1; exit 0
 ) || fail=1
 expect "reserve: the same 10 GiB as DiskSize.macReserve" "1 1" \

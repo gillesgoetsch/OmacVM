@@ -94,8 +94,7 @@ prebuilt_space_ok() {
   local dest=$1 cache_kb dest_kb need_cache need_dest dl=0 res=$PREBUILT_MAC_RESERVE_KB parts
   mkdir -p "$PREBUILT_CACHE"
   need_cache=$(( 10#$PB_SIZE / 1024 + 1 )); need_dest=$(( 10#$PB_UNPACKED_KB ))
-  cache_kb=$(df -Pk "$PREBUILT_CACHE" | awk 'NR == 2 { print $4 }')
-  dest_kb=$(df -Pk "$dest" | awk 'NR == 2 { print $4 }')
+  cache_kb=$(pb_free_kb "$PREBUILT_CACHE"); dest_kb=$(pb_free_kb "$dest")
   [[ $cache_kb =~ ^[0-9]+$ && $dest_kb =~ ^[0-9]+$ ]] || return 0   # df said nothing useful: let it try
   if [[ $(stat -f %d "$PREBUILT_CACHE") == "$(stat -f %d "$dest")" ]]; then
     dl=$need_cache; need_cache=0
@@ -113,6 +112,20 @@ prebuilt_space_ok() {
 }
 
 pb_volume() { df -P "$1" | awk 'NR == 2 { sub(/^([^ ]+ +){5}/, ""); print }'; }
+
+# pb_free_kb PATH: free KiB on PATH's volume (df). Tests: OMACVM_TEST_FREE_FILE
+# names a file holding a number of KiB; it counts when it is smaller than df's
+# (never when bigger), as in unpack.py, so the checks are proven without
+# filling a volume (PANIC-1111).
+pb_free_kb() {
+  local kb v
+  kb=$(df -Pk "$1" | awk 'NR == 2 { print $4 }')
+  if [[ -n ${OMACVM_TEST_FREE_FILE:-} && $kb =~ ^[0-9]+$ ]]; then
+    v=$(head -c 32 "$OMACVM_TEST_FREE_FILE" 2>/dev/null | tr -d ' \n')
+    [[ $v =~ ^[0-9]{1,15}$ ]] && (( 10#$v < kb )) && kb=$(( 10#$v ))
+  fi
+  echo "$kb"
+}
 
 # prebuilt_download: every part into the cache, resumed, checked against the
 # manifest's SHA-256. A part that fails its check is fetched again once.

@@ -23,7 +23,11 @@ Every 256 MiB it checks the volume's free space (statvfs, not the "important"
 figure that counts purgeable space) against --min-free and what OUT takes on
 the Mac against --max-alloc, and stops with a message before the Mac fills.
 On any failure OUT (which it made) is removed and the exit status is 1; the
-message is the last line on stderr.
+message is the last line on stderr. Tests: OMACVM_TEST_FREE_FILE names a file
+holding a number of KiB, read at every check; free space counts as that
+number when it is smaller than the volume's (never when it is bigger), so the
+guard can be proven without filling a volume (PANIC-1111: a full APFS volume,
+even inside a disk image, panicked macOS 27).
 
 The format is the one make-image.sh writes with macOS's tar: ustar headers,
 pax extended headers, GNU sparse 1.0 (the map at the start of the data). Its
@@ -143,6 +147,22 @@ def clean(name):
     return name.rstrip("/")
 
 
+def free_bytes(path):
+    """Free bytes on PATH's volume; the test file's smaller number if one is set."""
+    st = os.statvfs(path)
+    free = st.f_bavail * st.f_frsize
+    test = os.environ.get("OMACVM_TEST_FREE_FILE")
+    if test:
+        try:
+            with open(test, "rb") as f:
+                v = f.read(32).strip()
+        except OSError:
+            v = b""
+        if v.isdigit() and len(v) <= 15:
+            free = min(free, int(v) * 1024)
+    return free
+
+
 class Writer:
     """OUT made at SIZE while empty, then only written inside SIZE."""
 
@@ -161,8 +181,7 @@ class Writer:
 
     def check(self):
         if self.min_free:
-            st = os.statvfs(self.dir)
-            free = st.f_bavail * st.f_frsize
+            free = free_bytes(self.dir)
             if free < self.min_free:
                 raise Refused("Stopped: the Mac's disk is nearly full (%s GB free). The unfinished VM was removed." % gb(free))
         if self.max_alloc:
