@@ -79,23 +79,24 @@ struct WiFiSteady {
   }
 }
 
-/// The network's name, BSSID and country code, kept between reads.
+/// The network's name, BSSID, security and the country code, kept between
+/// reads.
 ///
 /// macOS checks the reader's Location Services grant with locationd on every
-/// CoreWLAN read of these three (about 6-9 ms of locationd's CPU per read on
-/// an M4 mini, for a granted reader; the signal, channel, security and power
-/// reads do not go there). The Bridge re-read them on every 5 s signal tick
-/// while a VM listened, so locationd stayed busy for nothing: they only change
-/// with a CoreWLAN event (SSID, BSSID, link, power, country code), which
-/// marks them stale. A change of interface, connection or grant reads them
-/// again too, and so does a connected read that came without a name.
+/// CoreWLAN read of these four: 25-33 ms of locationd's CPU per read on a
+/// MacBook Air M2 on Wi-Fi, for a granted reader (signal, noise, channel,
+/// rate, PHY mode and power do not go there). The Bridge re-read them on
+/// every 5 s signal tick while a VM listened, so locationd stayed at about
+/// 2 % of a core for nothing. They only change with a CoreWLAN event (SSID,
+/// BSSID, link, power, country code), which marks them stale. A change of
+/// interface, connection or grant reads them again too, and so does a
+/// connected read that came without a name.
 struct WiFiIdentity {
   struct Key: Equatable {
     var interface: String
     var connected: Bool
     var locationOK: Bool
   }
-  static let fields = ["ssid", "bssid", "country_code"]
 
   private var key: Key?
   private var values: [String: Any] = [:]

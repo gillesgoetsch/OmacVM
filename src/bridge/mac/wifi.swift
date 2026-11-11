@@ -208,19 +208,19 @@ final class WiFi: NSObject, CWEventDelegate {
     s["interface"] = nn(i.interfaceName)
     s["power"] = power
     s["connected"] = connected
-    // Name, BSSID, country code: from CoreWLAN only when they may have
-    // changed (WiFiIdentity: each read costs locationd a grant check).
+    // Name, BSSID, security, country code: from CoreWLAN only when they may
+    // have changed (WiFiIdentity: each read costs locationd a grant check).
     let key = WiFiIdentity.Key(interface: i.interfaceName ?? "", connected: connected, locationOK: locationOK)
     lock.lock(); let kept = identity.cached(key), since = identity.generation; lock.unlock()
     let id = kept ?? {
       var v: [String: Any] = ["country_code": nn(i.countryCode())]
-      if connected { v["ssid"] = nn(i.ssid()); v["bssid"] = nn(i.bssid()) }
+      if connected { v["ssid"] = nn(i.ssid()); v["bssid"] = nn(i.bssid()); v["security"] = i.security().rawValue }
       lock.lock(); identity.store(v, for: key, since: since); lock.unlock()
       return v
     }()
     s["country_code"] = id["country_code"] ?? NSNull()
     if connected {
-      let noise = i.noiseMeasurement(), sec = i.security()
+      let noise = i.noiseMeasurement(), sec = CWSecurity(rawValue: id["security"] as? Int ?? -1) ?? .unknown
       s["ssid"] = id["ssid"] ?? NSNull(); s["bssid"] = id["bssid"] ?? NSNull()
       // Without Location Services a read may have no signal: shown as unknown.
       if rssi < 0 {
