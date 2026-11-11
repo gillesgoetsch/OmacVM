@@ -80,6 +80,19 @@ if grep -q '^disk_sched_line()' "$T/fn.sh" && bash -n "$T/fn.sh"; then
   echo '# no scheduler here' > "$V/etc/udev/rules.d/70-other.rules"
   expect "a later rule of the user's sets it: named" "warn	kyber on nvme0n1, set by a rule read after OmacVM's: /etc/udev/rules.d/99-local.rules (yours: your choice)" \
     "$(disk_sched_line "$V" nvme0n1)"
+  # A package's rule read later (in /usr/lib, owned by it as pacman -Qqo says): named with the package, not
+  # blamed on the user; the same name in /etc hides it (udev reads only the /etc one).
+  rm "$V/etc/udev/rules.d/99-local.rules"
+  mkdir -p "$V/usr/lib/udev/rules.d"
+  echo 'ACTION=="add|change", ATTR{queue/scheduler}="kyber"' > "$V/usr/lib/udev/rules.d/65-pkg-io.rules"
+  printf '#!/bin/bash\n[[ $1 == -Qqo && $2 == /usr/lib/udev/rules.d/65-pkg-io.rules ]] && { echo omarchy; exit 0; }\nexit 1\n' > "$B/pacman"
+  chmod 755 "$B/pacman"
+  expect "a package's rule read later: named with the package" "warn	kyber on nvme0n1, set by a rule read after OmacVM's: /usr/lib/udev/rules.d/65-pkg-io.rules (package omarchy: OmacVM's rule has to come after it, Update VM once OmacVM has that)" \
+    "$(PATH="$B:$PATH" disk_sched_line "$V" nvme0n1)"
+  echo '# emptied by the user' > "$V/etc/udev/rules.d/65-pkg-io.rules"
+  expect "the same name in /etc hides the package's rule" "warn	kyber on nvme0n1, not none: restart the VM, or run omacvm apply" \
+    "$(PATH="$B:$PATH" disk_sched_line "$V" nvme0n1)"
+  rm "$V/etc/udev/rules.d/65-pkg-io.rules" "$V/usr/lib/udev/rules.d/65-pkg-io.rules"
   expect "no disk: skip" "skip	the VM's disk was not found" "$(disk_sched_line "$V" "")"
   expect "a disk without a queue: skip" "skip	the VM's disk was not found" "$(disk_sched_line "$V" vda)"
 else
@@ -87,6 +100,27 @@ else
 fi
 expect "check.sh shows it as \"disk scheduler\" for the root file system's disk" 1 \
   "$(grep -c '^r=$(disk_sched_line / "$dk")$' "$R/src/guest/check.sh")"
+# The root's disk: lsblk's inverse list from the root's device up to the entry of type disk (a partition,
+# or a partition under device-mapper). A stand-in lsblk with the lists util-linux prints (-nrso NAME,TYPE).
+dkline=$(grep '^dk=\$(lsblk ' "$R/src/guest/check.sh")
+expect "check.sh finds the root's disk with one lsblk line" 1 "$(grep -c '^dk=\$(lsblk ' "$R/src/guest/check.sh")"
+cat > "$B/lsblk" <<'EOF'
+#!/bin/bash
+case ${!#} in
+  /dev/nvme0n1p2) printf 'nvme0n1p2 part\nnvme0n1 disk\n' ;;
+  /dev/mapper/root) printf 'root crypt\nnvme0n1p2 part\nnvme0n1 disk\n' ;;
+  /dev/vda) printf 'vda disk\n' ;;
+esac
+EOF
+cat > "$B/findmnt" <<'EOF'
+#!/bin/bash
+echo "$FAKE_ROOT_SRC"
+EOF
+chmod 755 "$B/lsblk" "$B/findmnt"
+printf '%s\n' "$dkline" 'echo "$dk"' > "$T/dk.sh"
+for c in "/dev/nvme0n1p2[/@] nvme0n1" "/dev/mapper/root nvme0n1" "/dev/vda vda"; do
+  expect "root on ${c%% *}: its disk" "${c##* }" "$(PATH="$B:$PATH" FAKE_ROOT_SRC=${c% *} bash "$T/dk.sh")"
+done
 
 if udevadm verify --help >/dev/null 2>&1; then
   echo "== udevadm verify ($(udevadm --version))"
