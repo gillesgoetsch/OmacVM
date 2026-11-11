@@ -78,3 +78,50 @@ struct WiFiSteady {
     return (keep, true)
   }
 }
+
+/// The network's name, BSSID and country code, kept between reads.
+///
+/// macOS checks the reader's Location Services grant with locationd on every
+/// CoreWLAN read of these three (about 6-9 ms of locationd's CPU per read on
+/// an M4 mini, for a granted reader; the signal, channel, security and power
+/// reads do not go there). The Bridge re-read them on every 5 s signal tick
+/// while a VM listened, so locationd stayed busy for nothing: they only change
+/// with a CoreWLAN event (SSID, BSSID, link, power, country code), which
+/// marks them stale. A change of interface, connection or grant reads them
+/// again too, and so does a connected read that came without a name.
+struct WiFiIdentity {
+  struct Key: Equatable {
+    var interface: String
+    var connected: Bool
+    var locationOK: Bool
+  }
+  static let fields = ["ssid", "bssid", "country_code"]
+
+  private var key: Key?
+  private var values: [String: Any] = [:]
+  private var stale = true
+  /// Counts invalidations, so an event that comes while a read is under way
+  /// is not lost when that read is stored.
+  private(set) var generation = 0
+
+  /// A CoreWLAN event (or a wake, a new subscription): read them again.
+  mutating func invalidate() { stale = true; generation += 1 }
+
+  /// The kept values for this read, or nil: read them from CoreWLAN.
+  func cached(_ k: Key) -> [String: Any]? { stale || key != k ? nil : values }
+
+  /// The kept network name of this interface: nil when it must be read;
+  /// .some(nil) when kept while not connected.
+  func keptSSID(_ interface: String) -> String?? {
+    guard !stale, let key, key.interface == interface else { return nil }
+    return .some(key.connected ? values["ssid"] as? String : nil)
+  }
+
+  /// What was just read, from a read that began at `generation` `since`. A
+  /// connected read with a grant but no name (taken mid-scan) is not kept,
+  /// so the next read asks again; nor is one an event overtook.
+  mutating func store(_ v: [String: Any], for k: Key, since: Int) {
+    key = k; values = v
+    stale = since != generation || (k.connected && k.locationOK && (v["ssid"] == nil || v["ssid"] is NSNull))
+  }
+}

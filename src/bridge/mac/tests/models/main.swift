@@ -523,5 +523,34 @@ check(OutputMute.after(before: nil, target: 0.4, unmute: false) == nil, "volume 
 check(OutputMute.after(before: nil, target: 0, unmute: false) == true, "volume 0: ... but 0 still mutes")
 check(OutputMute.after(before: nil, target: 0.4, unmute: true) == false, "volume 0: ... and a key still unmutes")
 
+// ---- WiFiIdentity: name, BSSID and country code only when they may have changed ----
+var wi = WiFiIdentity()
+let on = WiFiIdentity.Key(interface: "en0", connected: true, locationOK: true)
+let office: [String: Any] = ["ssid": "Office", "bssid": "aa:bb", "country_code": "CH"]
+check(wi.cached(on) == nil, "wifi identity: read at the start")
+wi.store(office, for: on, since: wi.generation)
+check(wi.cached(on)?["ssid"] as? String == "Office", "wifi identity: the next ticks keep it (no locationd check)")
+check(wi.keptSSID("en0") == .some("Office"), "wifi identity: a scan takes the kept name")
+check(wi.keptSSID("en1") == nil, "wifi identity: ... of the same interface only")
+wi.invalidate()
+check(wi.cached(on) == nil && wi.keptSSID("en0") == nil, "wifi identity: a CoreWLAN event (SSID, BSSID, link, power, country): read again")
+wi.store(office, for: on, since: wi.generation)
+check(wi.cached(WiFiIdentity.Key(interface: "en0", connected: false, locationOK: true)) == nil, "wifi identity: disconnected: read again")
+check(wi.cached(WiFiIdentity.Key(interface: "en0", connected: true, locationOK: false)) == nil, "wifi identity: Location Services changed: read again")
+check(wi.cached(WiFiIdentity.Key(interface: "en1", connected: true, locationOK: true)) == nil, "wifi identity: another interface: read again")
+let off = WiFiIdentity.Key(interface: "en0", connected: false, locationOK: true)
+wi.store(["country_code": "CH"], for: off, since: wi.generation)
+check(wi.cached(off) != nil && wi.keptSSID("en0") == .some(nil), "wifi identity: kept while not connected (country code only)")
+check(wi.cached(on) == nil, "wifi identity: connected again without an event: read again")
+wi.store(["ssid": NSNull(), "bssid": NSNull(), "country_code": "CH"], for: on, since: wi.generation)
+check(wi.cached(on) == nil, "wifi identity: a connected read without a name (mid-scan) is not kept")
+let noLoc = WiFiIdentity.Key(interface: "en0", connected: true, locationOK: false)
+wi.store(["ssid": NSNull(), "bssid": NSNull(), "country_code": "CH"], for: noLoc, since: wi.generation)
+check(wi.cached(noLoc) != nil, "wifi identity: without Location Services no name is expected: kept")
+let before = wi.generation
+wi.invalidate()   // an event while a read is under way
+wi.store(office, for: on, since: before)
+check(wi.cached(on) == nil, "wifi identity: an event during a read is not lost")
+
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("models: all ok")
