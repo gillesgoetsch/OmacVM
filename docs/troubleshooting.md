@@ -2007,10 +2007,11 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 ## 64. The VM's disk is slower on Omarchy 4.5 (I/O scheduler)
 
 - **Symptom:** on Omarchy 4.5 (a new VM, or one moved from 4.0), 4k random
-  reads and writes on the VM's disk run at about half the speed of a 4.0 VM
-  (`fio` at queue depth 32: about 90k writes per second against 177k on a
-  Mac mini M4); at queue depth 1 about 0.87x. `cat
-  /sys/block/nvme0n1/queue/scheduler` shows `[kyber]`. Up to 3.4.4.
+  writes on the VM's disk run at about half the speed of a 4.0 VM (`fio` at
+  queue depth 32: about 90k per second against 174k to 182k on a Mac mini
+  M4), 4k random reads at 0.53 to 0.73x at queue depth 32 and about 0.88x
+  at queue depth 1. `cat /sys/block/nvme0n1/queue/scheduler` shows
+  `[kyber]`. Up to 3.4.4.
 - **Cause:** Omarchy 4.5 ships `/etc/udev/rules.d/60-omarchy-io-scheduler.rules`,
   which sets the kyber scheduler on every disk when it appears and on every
   change event. A scheduler in the VM only adds work: the Mac schedules the
@@ -2027,7 +2028,10 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   there.
 - **Your own choice:** a rule of your own that sorts after OmacVM's, for
   example `/etc/udev/rules.d/99-local-scheduler.rules`; `omacvm check` then
-  warns and names it.
+  warns and names it. What kyber gives: while a program floods the disk
+  with 4k random writes, a reader's slowest 1 % of reads take about 0.11 ms
+  instead of 0.18 ms, at half the writer's speed (MacBook Air M2); without
+  such a flood, reads are as fast or faster with none.
 - **`omacvm check`:** "disk scheduler" says ok with none on the VM's disk,
   and warns when OmacVM's rule is missing (Update VM) or a later rule sets
   another scheduler.
