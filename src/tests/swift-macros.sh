@@ -7,7 +7,8 @@
 #  - DEVELOPER_DIR at the Command Line Tools, and their usr/bin first on PATH: Xcode's instead;
 #  - after it, swiftc builds a SwiftUI view with @State;
 #  - the three tests source it before they build.
-# Needs Xcode on the Mac for the second row (skipped, and said, without one).
+# Needs Xcode on the Mac for the second row (skipped, and said, without one). Command Line Tools
+# that expand @State themselves (a later release): no cause row, no switch, they only typecheck.
 #   src/tests/swift-macros.sh
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -36,8 +37,16 @@ if [[ ! -x $CLT/usr/bin/swiftc ]]; then
   echo "skip the Command Line Tools rows: none on this Mac"
 elif [[ -z $xc ]]; then
   echo "skip the Command Line Tools rows: no Xcode on this Mac to fall back to"
+elif out=$(env -u SDKROOT DEVELOPER_DIR="$CLT" PATH="$PATH" /bin/bash -c 'swiftc -typecheck -module-cache-path "$1/mc0" "$1/v.swift" > "$1/clt.log" 2>&1 && echo expands ||
+    grep -m1 -o "plugin for module .SwiftUIMacros. not found" "$1/clt.log"' _ "$T"); [[ $out == expands ]]; then
+  # A later Command Line Tools with SwiftUI's macro plugin: nothing to switch, the helper keeps them.
+  echo "skip the cause row and the switch to Xcode: this Command Line Tools swiftc expands @State"
+  for p in "$PATH" "$CLT/usr/bin:$PATH"; do
+    out=$(probe -u SDKROOT DEVELOPER_DIR="$CLT" PATH="$p")
+    expect "DEVELOPER_DIR at the Command Line Tools$([[ $p == "$CLT"* ]] && echo ', their usr/bin first'): @State typechecks" \
+      "typecheck ok" "$(tail -1 <<<"$out")"
+  done
 else
-  out=$(env -u SDKROOT DEVELOPER_DIR="$CLT" PATH="$PATH" /bin/bash -c 'swiftc -typecheck -module-cache-path "$1/mc0" "$1/v.swift" 2>&1 | grep -m1 -o "plugin for module .SwiftUIMacros. not found"' _ "$T")
   expect "the cause: a Command Line Tools swiftc cannot expand @State" "plugin for module 'SwiftUIMacros' not found" "$out"
   out=$(probe -u SDKROOT DEVELOPER_DIR="$CLT" PATH="$PATH")
   expect "DEVELOPER_DIR at the Command Line Tools: Xcode's, @State typechecks" "swift toolchain: Xcode's, $xc|typecheck ok" \
