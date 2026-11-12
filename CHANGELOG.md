@@ -3,45 +3,43 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.4.6 (unreleased)
+## 3.4.6
 
-- **USB's question gets the keys (OmacVM.app, experimental USB devices).** When a device was plugged
-  in, the app's question came up without the keys: Return and Escape went to the VM. macOS 14 and
-  later let a background app in front only if the app there yields, and a plug-in is no click. The
-  same for the other questions that come with no click in the app: the lost desktop, Features… in
-  the app menu, an update's shutdown timeout, a VM that did not wake with the Mac, a start from a
-  terminal, and the list from USB Devices…. Now they take the keys from the VM, on every Space and
-  over a full-screen VM, never from another app you work in (there they float and a click answers
-  them); only a start you just asked for takes them in any case, not the start after an update or
-  Update VM. The lost desktop's, the Mac setup and the fast network's questions wait half a second,
-  as USB's does, so a Return typed a moment earlier does not answer them. Checked on a Mac mini:
-  Escape on the question in a window and in full screen; what macOS allows on macOS 15.8, 26.6 and
-  27.0. See [ADR 0068](docs/adr/0068-ask-keys.md). Needs the app update, from the VM's next start.
-- **Correction to 3.2.18's USB Devices… entry (#660).** It says the mini's check is still to run and
-  the list on screen is not checked. Both were done for 3.2.18 on a Mac mini M4: with the screens
-  locked or nobody at it, each press built the list; in a window, opened by a real click on the
-  menu, the list came up and its Connect, Disconnect and Return worked. Over a full-screen VM it is
+The app's questions get the keys, ISO keyboards type the right keys, and the move to 4.5 rides out SSH drops.
+
+- **Questions get the keys (OmacVM.app).** A question that came up with no click in the app, such
+  as USB's when a device was plugged in (experimental), did not get the keys: Return and Escape
+  went to the VM. macOS 14 and later bring a background app to the front only if the app there
+  lets it. Now these questions take the keys from the VM, on every Space and over a full-screen
+  VM, but never from another Mac app you work in: there they float and a click answers them. The
+  same holds for the lost desktop, Features… in the app menu, an update's shutdown timeout, a VM
+  that did not wake with the Mac, a start from a terminal and the USB Devices… list. The lost
+  desktop's, the Mac setup's and the fast network's questions wait half a second, as USB's does,
+  so a Return typed a moment earlier does not answer them. See
+  [ADR 0068](docs/adr/0068-ask-keys.md). Needs the app update, from the VM's next start.
+- **Correction to 3.2.18's USB Devices… entry (#660).** It says the mini's check was still to run
+  and the list on screen was not checked. Both were done for 3.2.18 on a Mac mini M4: with the
+  screen locked or nobody at it, each press built the list; in a window, opened by a real click on
+  the menu, the list came up and Connect, Disconnect and Return worked. Over a full-screen VM it is
   still not checked.
-- **Move to Omarchy 4.5**: a Resume could stop at step 4 with "OmacVM did not update in the VM"
-  and no reason, and the next Resume went on (#771). Right after the VM starts, its SSH can let the
-  Mac in and then close the connection for a moment, and ssh says nothing then. The update's steps
-  in the VM before the copy of OmacVM, and the copy, now try again for up to 2 minutes when SSH
-  drops, as the move's own steps already did; the copy first puts back a copy that was cut between
-  its two moves. An apply that stops without a message of its own says so, with the exit code and
-  its last step. The move keeps the last 9 apply logs (was 4), each failed one with apply's exit code.
+- **Move to Omarchy 4.5** (#771): a Resume could stop at step 4 with "OmacVM did not update in
+  the VM" and no reason. Right after the VM starts, its SSH can let the Mac in and then drop the
+  connection for a moment, without a message. The update's steps in the VM and the copy of OmacVM
+  now try again for up to 2 minutes when SSH drops, as the move's own steps already did, and a
+  copy cut between its two moves is put back first. An apply that stops without its own message
+  now says so, with the exit code and its last step. The move keeps the last 9 apply logs (was 4).
 - **Apple ISO keyboards** (#784, reported by @epicoun): the key left of 1 and the key left of Z
-  (Y on German keyboards) reached the VM swapped, so on a German ISO keyboard `^` typed `<` and `<`
-  typed `^`. OmacVM's QEMU has carried a fix for this, but it only acts when it is told the keyboard
-  is ISO, and the app never told it. The app now does at each VM start, from macOS's own keyboard
-  type, as OmacVM Gestures already did. Needs the app update, from the VM's next start; an XKB swap
-  set up in the VM as a workaround must be taken out again.
+  reached the VM swapped, so on a German ISO keyboard `^` typed `<` and `<` typed `^`. OmacVM's
+  QEMU has a fix for this, but it acts only when told the keyboard is ISO, and the app never told
+  it. The app now does at each VM start, from macOS's own keyboard type, as OmacVM Gestures
+  already did. Needs the app update, from the VM's next start; an XKB swap set up in the VM as a
+  workaround must be taken out again.
 - **The Mac's pointer in full screen** (#788, reported and cause found by @hadiskeini): with the
-  hidden `macPointer` setting and "Keep the Dock and hot corners away" on, the cursor pushed
-  against a display edge while moving along it stopped about 200 points before a corner, while
-  the VM's pointer went on to the corner. Near a corner OmacVM moves the Mac's cursor itself; its
-  first move (off the edge) came before the cursor was detached from the mouse, so the push could
-  move it on in between and OmacVM lost track of it for the rest of that visit. The cursor is now
-  detached first, and OmacVM takes the cursor's real place when the two differ. Needs the app
+  hidden `macPointer` setting and "Keep the Dock and hot corners away" on, the cursor pushed along
+  a display edge stopped about 200 points before a corner, while the VM's pointer went on. Near a
+  corner OmacVM moves the Mac's cursor itself, and its first move came before the cursor was
+  detached from the mouse, so the push could move it on and OmacVM lost track of it. The cursor is
+  now detached first, and OmacVM takes the cursor's real place when the two differ. Needs the app
   update. Without `macPointer` the Mac's cursor is hidden over the VM, so this was not seen there.
 
 ## 3.4.5
