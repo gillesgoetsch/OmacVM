@@ -1922,6 +1922,14 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-refusal-text
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-cache-data.patch"
 grep -q 'info.pInitialData = NULL;' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_pipeline.c: the guest's pipeline cache data reaches the driver (cache-data patch)"
+# A device the Mac's driver lost holds new Venus devices back for a while, so a VM app that is
+# started again and again after a lost device does not go straight back to the driver. Its
+# rules on their own first; made against the fully patched tree, so it comes last.
+"$native_dir/Tests/virgl/test-venus-restart-guard.sh"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-device-lost-backoff.patch"
+grep -q 'if (!vkr_device_restart_ok(ctx)) {' "$virgl_source/src/venus/vkr_device.c" && \
+  [[ $(grep -c 'vkr_device_note_lost(' "$virgl_source/src/venus/vkr_queue.c") == 8 ]] || \
+  die "vkr_device.c, vkr_queue.c: lost devices do not hold new ones back (device-lost-backoff patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
