@@ -17,7 +17,9 @@
  *     Function and Private variables, the bytes of its Workgroup ones, its interface's
  *     locations) without a fault;
  *  4. a module at the id bound with 2^17 functions in a call chain and 2^17 decorations,
- *     constants and uses scans and walks in linear time.
+ *     constants and uses scans and walks in linear time; array lengths from a chain of
+ *     100000 spec constant operations and from a doubling one 60 deep are evaluated in
+ *     linear time (the first known, the second past 32 bits: invalid).
  *   fuzz-venus-spirv [ITERATIONS [SEED]]   (default 200000, 1)
  *
  * On macOS the memory cap is inside the process (STANDARDS 14c): a thread reads
@@ -53,8 +55,29 @@
  *     was NULL + 0 under UBSan before a31187f7).
  *   naga16: wgpu 30's examples/features/src/cube/shader.wgsl, vs_main, as naga writes it for a
  *     Vulkan 1.3+ device (SPIR-V 1.6, wgpu-hal's options; spirv-corpus/pass/naga-wgpu-1.6-
- *     cube_shader-vs_main.spv): Offset on the struct of a Function variable (#710). */
+ *     cube_shader-vs_main.spv): Offset on the struct of a Function variable (#710).
+ *   specop: glslc -fshader-stage=comp --target-env=vulkan1.0 -O0 (shaderc v2026.4, spirv-val
+ *     clean for vulkan1.0) of ggml's array patterns (#624; OmacVM, MIT)
+ *     #version 450
+ *     layout(local_size_x_id = 0) in;
+ *     layout(constant_id = 1) const uint WMITER = 2;
+ *     layout(constant_id = 2) const uint TM = 4;
+ *     layout(constant_id = 3) const uint BS = 2;
+ *     layout(set = 0, binding = 0) buffer A { float a[]; };
+ *     shared float sh[gl_WorkGroupSize.x * 2];
+ *     void main() {
+ *       float cache_a[WMITER * TM];
+ *       float reg[8 / BS];
+ *       uint i = gl_LocalInvocationID.x;
+ *       cache_a[i % (WMITER * TM)] = a[i];
+ *       reg[i % (8 / BS)] = cache_a[0];
+ *       sh[i] = reg[0];
+ *       barrier();
+ *       a[i] = sh[(i + 1) % (gl_WorkGroupSize.x * 2)];
+ *     }
+ *   (IMul, UDiv and CompositeExtract of the WorkgroupSize composite, index 0, as lengths) */
 
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -313,6 +336,69 @@ static const uint32_t seed_naga16[] = {
    0x0000002a, 0x00000001, 0x0003003e, 0x00000014, 0x0000002c, 0x000100fd, 0x00010038,
 };
 
+static const uint32_t seed_specop[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x0000004a, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0006000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000b, 0x00060010, 0x00000004,
+   0x00000011, 0x00000001, 0x00000001, 0x00000001, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004,
+   0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365,
+   0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572,
+   0x00657669, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00030005, 0x00000008, 0x00000069,
+   0x00080005, 0x0000000b, 0x4c5f6c67, 0x6c61636f, 0x6f766e49, 0x69746163, 0x44496e6f, 0x00000000,
+   0x00040005, 0x00000011, 0x54494d57, 0x00005245, 0x00030005, 0x00000012, 0x00004d54, 0x00040005,
+   0x00000016, 0x68636163, 0x00615f65, 0x00030005, 0x0000001b, 0x00000041, 0x00040006, 0x0000001b,
+   0x00000000, 0x00000061, 0x00030005, 0x0000001d, 0x00000000, 0x00030005, 0x00000027, 0x00005342,
+   0x00030005, 0x0000002b, 0x00676572, 0x00030005, 0x0000003a, 0x00006873, 0x00040047, 0x0000000b,
+   0x0000000b, 0x0000001b, 0x00040047, 0x00000011, 0x00000001, 0x00000001, 0x00040047, 0x00000012,
+   0x00000001, 0x00000002, 0x00040047, 0x0000001a, 0x00000006, 0x00000004, 0x00030047, 0x0000001b,
+   0x00000003, 0x00050048, 0x0000001b, 0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x0000001d,
+   0x00000021, 0x00000000, 0x00040047, 0x0000001d, 0x00000022, 0x00000000, 0x00040047, 0x00000027,
+   0x00000001, 0x00000003, 0x00040047, 0x00000032, 0x00000001, 0x00000000, 0x00040047, 0x00000034,
+   0x0000000b, 0x00000019, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00040015,
+   0x00000006, 0x00000020, 0x00000000, 0x00040020, 0x00000007, 0x00000007, 0x00000006, 0x00040017,
+   0x00000009, 0x00000006, 0x00000003, 0x00040020, 0x0000000a, 0x00000001, 0x00000009, 0x0004003b,
+   0x0000000a, 0x0000000b, 0x00000001, 0x0004002b, 0x00000006, 0x0000000c, 0x00000000, 0x00040020,
+   0x0000000d, 0x00000001, 0x00000006, 0x00030016, 0x00000010, 0x00000020, 0x00040032, 0x00000006,
+   0x00000011, 0x00000002, 0x00040032, 0x00000006, 0x00000012, 0x00000004, 0x00060034, 0x00000006,
+   0x00000013, 0x00000084, 0x00000011, 0x00000012, 0x0004001c, 0x00000014, 0x00000010, 0x00000013,
+   0x00040020, 0x00000015, 0x00000007, 0x00000014, 0x00060034, 0x00000006, 0x00000018, 0x00000084,
+   0x00000011, 0x00000012, 0x0003001d, 0x0000001a, 0x00000010, 0x0003001e, 0x0000001b, 0x0000001a,
+   0x00040020, 0x0000001c, 0x00000002, 0x0000001b, 0x0004003b, 0x0000001c, 0x0000001d, 0x00000002,
+   0x00040015, 0x0000001e, 0x00000020, 0x00000001, 0x0004002b, 0x0000001e, 0x0000001f, 0x00000000,
+   0x00040020, 0x00000021, 0x00000002, 0x00000010, 0x00040020, 0x00000024, 0x00000007, 0x00000010,
+   0x0004002b, 0x00000006, 0x00000026, 0x00000008, 0x00040032, 0x00000006, 0x00000027, 0x00000002,
+   0x00060034, 0x00000006, 0x00000028, 0x00000086, 0x00000026, 0x00000027, 0x0004001c, 0x00000029,
+   0x00000010, 0x00000028, 0x00040020, 0x0000002a, 0x00000007, 0x00000029, 0x00060034, 0x00000006,
+   0x0000002d, 0x00000086, 0x00000026, 0x00000027, 0x00040032, 0x00000006, 0x00000032, 0x00000001,
+   0x0004002b, 0x00000006, 0x00000033, 0x00000001, 0x00060033, 0x00000009, 0x00000034, 0x00000032,
+   0x00000033, 0x00000033, 0x00060034, 0x00000006, 0x00000035, 0x00000051, 0x00000034, 0x00000000,
+   0x0004002b, 0x00000006, 0x00000036, 0x00000002, 0x00060034, 0x00000006, 0x00000037, 0x00000084,
+   0x00000035, 0x00000036, 0x0004001c, 0x00000038, 0x00000010, 0x00000037, 0x00040020, 0x00000039,
+   0x00000004, 0x00000038, 0x0004003b, 0x00000039, 0x0000003a, 0x00000004, 0x00040020, 0x0000003e,
+   0x00000004, 0x00000010, 0x0004002b, 0x00000006, 0x00000040, 0x00000108, 0x00060034, 0x00000006,
+   0x00000044, 0x00000051, 0x00000034, 0x00000000, 0x00060034, 0x00000006, 0x00000045, 0x00000084,
+   0x00000044, 0x00000036, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8,
+   0x00000005, 0x0004003b, 0x00000007, 0x00000008, 0x00000007, 0x0004003b, 0x00000015, 0x00000016,
+   0x00000007, 0x0004003b, 0x0000002a, 0x0000002b, 0x00000007, 0x00050041, 0x0000000d, 0x0000000e,
+   0x0000000b, 0x0000000c, 0x0004003d, 0x00000006, 0x0000000f, 0x0000000e, 0x0003003e, 0x00000008,
+   0x0000000f, 0x0004003d, 0x00000006, 0x00000017, 0x00000008, 0x00050089, 0x00000006, 0x00000019,
+   0x00000017, 0x00000018, 0x0004003d, 0x00000006, 0x00000020, 0x00000008, 0x00060041, 0x00000021,
+   0x00000022, 0x0000001d, 0x0000001f, 0x00000020, 0x0004003d, 0x00000010, 0x00000023, 0x00000022,
+   0x00050041, 0x00000024, 0x00000025, 0x00000016, 0x00000019, 0x0003003e, 0x00000025, 0x00000023,
+   0x0004003d, 0x00000006, 0x0000002c, 0x00000008, 0x00050089, 0x00000006, 0x0000002e, 0x0000002c,
+   0x0000002d, 0x00050041, 0x00000024, 0x0000002f, 0x00000016, 0x0000001f, 0x0004003d, 0x00000010,
+   0x00000030, 0x0000002f, 0x00050041, 0x00000024, 0x00000031, 0x0000002b, 0x0000002e, 0x0003003e,
+   0x00000031, 0x00000030, 0x0004003d, 0x00000006, 0x0000003b, 0x00000008, 0x00050041, 0x00000024,
+   0x0000003c, 0x0000002b, 0x0000001f, 0x0004003d, 0x00000010, 0x0000003d, 0x0000003c, 0x00050041,
+   0x0000003e, 0x0000003f, 0x0000003a, 0x0000003b, 0x0003003e, 0x0000003f, 0x0000003d, 0x000400e0,
+   0x00000036, 0x00000036, 0x00000040, 0x0004003d, 0x00000006, 0x00000041, 0x00000008, 0x0004003d,
+   0x00000006, 0x00000042, 0x00000008, 0x00050080, 0x00000006, 0x00000043, 0x00000042, 0x00000033,
+   0x00050089, 0x00000006, 0x00000046, 0x00000043, 0x00000045, 0x00050041, 0x0000003e, 0x00000047,
+   0x0000003a, 0x00000046, 0x0004003d, 0x00000010, 0x00000048, 0x00000047, 0x00060041, 0x00000021,
+   0x00000049, 0x0000001d, 0x0000001f, 0x00000041, 0x0003003e, 0x00000049, 0x00000048, 0x000100fd,
+   0x00010038,
+};
+
 #define LEN(a) (sizeof(a) / sizeof((a)[0]))
 
 static const struct {
@@ -325,6 +411,7 @@ static const struct {
    { "gfx_frag", seed_gfx_frag, LEN(seed_gfx_frag) }, { "two", seed_two, LEN(seed_two) },
    { "empty_struct", seed_empty_struct, LEN(seed_empty_struct) },
    { "naga16", seed_naga16, LEN(seed_naga16) },
+   { "specop", seed_specop, LEN(seed_specop) },
 };
 
 static int failures;
@@ -334,6 +421,20 @@ check(bool ok, const char *what)
 {
    if (!ok) {
       printf("FAIL %s\n", what);
+      failures++;
+   }
+}
+
+static void
+checkf(bool ok, const char *fmt, ...)
+{
+   if (!ok) {
+      va_list ap;
+      va_start(ap, fmt);
+      printf("FAIL ");
+      vprintf(fmt, ap);
+      printf("\n");
+      va_end(ap);
       failures++;
    }
 }
@@ -424,14 +525,20 @@ cap_start(void)
 }
 #endif
 
-/* specialization: SpecId 0 -> spec[0], SpecId 1 -> spec[1] */
+/* specialization: SpecId i (i < SPECS) -> value[i] in an entry of size[i] bytes (0: none) */
+enum { SPECS = 10 };
+struct spec {
+   uint32_t value[SPECS], size[SPECS];
+};
+
 static bool
-lookup(const void *data, uint32_t spec_id, uint32_t *value)
+lookup(const void *data, uint32_t spec_id, uint32_t *value, uint32_t *size)
 {
-   const uint32_t *spec = data;
-   if (!spec || spec_id > 1)
+   const struct spec *spec = data;
+   if (!spec || spec_id >= SPECS || !spec->size[spec_id])
       return false;
-   *value = spec[spec_id];
+   *value = spec->value[spec_id];
+   *size = spec->size[spec_id];
    return true;
 }
 
@@ -479,7 +586,7 @@ bindings_are(const struct vkr_spirv_info *info, const struct vkr_spirv_entry *e,
 }
 
 static bool
-size_is(const struct vkr_spirv_info *info, const struct vkr_spirv_entry *e, const uint32_t *spec,
+size_is(const struct vkr_spirv_info *info, const struct vkr_spirv_entry *e, const struct spec *spec,
         uint32_t x, uint32_t y, uint32_t z)
 {
    uint32_t size[3];
@@ -491,7 +598,9 @@ static void
 part_seeds(void)
 {
    char why[192];
-   static const uint32_t spec[2] = { 64, 4 };
+   static const struct spec spec = { { 64, 4 }, { 4, 4 } };
+   /* specop: workgroup x 64, WMITER 4, TM 8, BS 1 */
+   static const struct spec ggml = { { 64, 4, 8, 1 }, { 4, 4, 4, 4 } };
    for (size_t i = 0; i < LEN(seeds); i++) {
       struct vkr_spirv_info *info = scan_copy(seeds[i].words, seeds[i].count * 4, why, sizeof(why));
       if (!info) {
@@ -504,20 +613,41 @@ part_seeds(void)
          const struct vkr_spirv_entry *e = vkr_spirv_entry(info, "main", 5);
          static const uint32_t want[][2] = { { 0, 0 }, { 2, 3 }, { 1, 0 } };
          check(e && size_is(info, e, NULL, 1, 2, 1), "spec: default workgroup 1 x 2 x 1");
-         check(e && size_is(info, e, spec, 64, 2, 4), "spec: specialized workgroup 64 x 2 x 4");
+         check(e && size_is(info, e, &spec, 64, 2, 4), "spec: specialized workgroup 64 x 2 x 4");
          check(e && bindings_are(info, e, 3, want), "spec: sets 0, 2, 1 used, unused set 5 not");
          check(!vkr_spirv_entry(info, "main", 0) && !vkr_spirv_entry(info, "mai", 5),
                "spec: no vertex main, no \"mai\"");
       } else if (!strcmp(n, "helper")) {
          const struct vkr_spirv_entry *e = vkr_spirv_entry(info, "main", 5);
          static const uint32_t want[][2] = { { 3, 7 } };
-         check(e && size_is(info, e, spec, 8, 4, 1), "helper: workgroup 8 x 4 x 1");
+         check(e && size_is(info, e, &spec, 8, 4, 1), "helper: workgroup 8 x 4 x 1");
          check(e && bindings_are(info, e, 1, want), "helper: set 3 binding 7 through a call");
       } else if (!strcmp(n, "gfx_vert") || !strcmp(n, "gfx_frag")) {
          const bool vert = !strcmp(n, "gfx_vert");
          const struct vkr_spirv_entry *e = vkr_spirv_entry(info, "main", vert ? 0 : 4);
          static const uint32_t want_v[][2] = { { 0, 0 } }, want_f[][2] = { { 1, 2 } };
          check(e && bindings_are(info, e, 1, vert ? want_v : want_f), "gfx: its one binding");
+      } else if (!strcmp(n, "specop")) {
+         const struct vkr_spirv_entry *e = vkr_spirv_entry(info, "main", 5);
+         uint64_t elements = 0, bytes = 0;
+         const char *no = NULL;
+         checkf(e && size_is(info, e, NULL, 1, 1, 1) && size_is(info, e, &ggml, 64, 1, 1),
+               "specop: workgroup 1, specialized 64");
+         checkf(e && vkr_spirv_function_elements(info, e, false, lookup, NULL, &elements, &no) &&
+                  elements == 8 + 4 + 1,
+               "specop: cache_a[2 * 4] + reg[8 / 2] + i by default (%llu, %s)",
+               (unsigned long long)elements, no ? no : "-");
+         checkf(e && vkr_spirv_function_elements(info, e, false, lookup, &ggml, &elements, &no) &&
+                  elements == 32 + 8 + 1,
+               "specop: cache_a[4 * 8] + reg[8 / 1] + i specialized (%llu)", (unsigned long long)elements);
+         checkf(e && vkr_spirv_workgroup_bytes(info, e, false, lookup, NULL, &bytes, &no) && bytes == 8,
+               "specop: sh[1 * 2] floats by default (%llu)", (unsigned long long)bytes);
+         checkf(e && vkr_spirv_workgroup_bytes(info, e, false, lookup, &ggml, &bytes, &no) && bytes == 512,
+               "specop: sh[64 * 2] floats specialized (%llu)", (unsigned long long)bytes);
+         static const struct spec zero = { { 64, 4, 8, 0 }, { 4, 4, 4, 4 } };
+         checkf(e && !vkr_spirv_function_elements(info, e, false, lookup, &zero, &elements, &no) && no &&
+                  strstr(no, "no valid length"),
+               "specop: BS 0 divides by 0: refused (%s)", no ? no : "-");
       } else if (!strcmp(n, "naga16")) {
          const struct vkr_spirv_entry *e = vkr_spirv_entry(info, "vs_main", 0);
          static const uint32_t want[][2] = { { 0, 0 } };
@@ -649,8 +779,11 @@ pick(uint32_t n)
    return n ? next() % n : 0;
 }
 
-static const uint32_t ops[] = { 0, 15, 16, 43, 44, 50, 51, 54, 56, 57, 59, 60, 61, 62, 63, 64, 65,
-                                66, 67, 68, 71, 83, 169, 228, 234, 245, 319, 331, 401, 4457, 6035 };
+static const uint32_t ops[] = { 0, 15, 16, 20, 21, 41, 42, 43, 44, 48, 49, 50, 51, 52, 54, 56, 57, 59,
+                                60, 61, 62, 63, 64, 65, 66, 67, 68, 71, 79, 81, 82, 83, 113, 114, 116,
+                                126, 128, 130, 132, 134, 135, 137, 138, 139, 164, 165, 166, 167, 168,
+                                169, 170, 173, 176, 179, 194, 195, 196, 197, 198, 199, 200, 228, 234,
+                                245, 319, 331, 401, 4457, 6035 };
 
 static uint32_t
 interesting(uint32_t bound)
@@ -672,7 +805,15 @@ interesting(uint32_t bound)
 static void
 use_summary(const struct vkr_spirv_info *info)
 {
-   const uint32_t spec[2] = { next(), next() };
+   /* values from the edges (0, 1, 2, INT_MIN, UINT_MAX ...) or random, mostly 4-byte entries */
+   static const uint32_t edge[] = { 0, 1, 2, 3, 64, 0x7fffffff, 0x80000000, 0xfffffffe, 0xffffffff };
+   static const uint32_t sizes[] = { 0, 1, 2, 4, 4, 4, 4, 8 };
+   struct spec specs;
+   const struct spec *spec = &specs;
+   for (uint32_t i = 0; i < SPECS; i++) {
+      specs.value[i] = pick(2) ? edge[pick(LEN(edge))] : next();
+      specs.size[i] = sizes[pick(LEN(sizes))];
+   }
    for (uint32_t i = 0; i < info->entry_count; i++) {
       const struct vkr_spirv_entry *e = &info->entries[i];
       const char *name = info->names + e->name;
@@ -692,14 +833,18 @@ use_summary(const struct vkr_spirv_info *info)
    /* for the module or one entry point, with or without its interface's globals only */
    const struct vkr_spirv_entry *entry =
       info->entry_count && pick(4) ? &info->entries[pick(info->entry_count)] : NULL;
-   vkr_spirv_function_elements(info, entry, pick(2), lookup, pick(2) ? spec : NULL, &elements);
-   vkr_spirv_workgroup_bytes(info, entry, pick(2), lookup, pick(2) ? spec : NULL, &bytes);
+   const char *no;
+   vkr_spirv_function_elements(info, entry, pick(2), pick(4) ? lookup : NULL, pick(2) ? spec : NULL,
+                               &elements, &no);
+   vkr_spirv_workgroup_bytes(info, entry, pick(2), pick(4) ? lookup : NULL, pick(2) ? spec : NULL,
+                             &bytes, &no);
    struct vkr_spirv_io_limits limits;
    uint32_t *l = &limits.vertex_in;
    for (size_t i = 0; i < sizeof(limits) / sizeof(*l); i++)
       l[i] = pick(4) ? 32 : interesting(64);
    char why[192];
-   vkr_spirv_interface_ok(info, &limits, lookup, pick(2) ? spec : NULL, why, sizeof(why));
+   vkr_spirv_interface_ok(info, &limits, pick(4) ? lookup : NULL, pick(2) ? spec : NULL, why,
+                          sizeof(why));
 }
 
 static void
@@ -832,6 +977,68 @@ build_big(uint32_t *w, uint32_t functions, uint32_t extra)
    return n;
 }
 
+/* a compute module whose one Function variable is uint[x]: x the last of `ops` spec constant
+ * IAdds, each of the one before and 1 (a chain) or of the one before twice (doubling), from a
+ * constant 1; returns the word count */
+static size_t
+build_chain(uint32_t *w, uint32_t ops, bool doubling)
+{
+   enum { VOID = 1, FN, UINT, MAIN, ONE, FIRST };
+   const uint32_t last = FIRST + ops - 1, arr = last + 1, ptr = arr + 1, var = ptr + 1, lbl = var + 1;
+   size_t n = 0;
+   const uint32_t head[] = { 0x07230203, 0x00010000, 0, lbl + 1, 0,
+                             (2u << 16) | 17, 1,                        /* OpCapability Shader */
+                             (3u << 16) | 14, 0, 1,                     /* OpMemoryModel */
+                             (5u << 16) | 15, 5, MAIN, 0x6e69616d, 0,   /* OpEntryPoint "main" */
+                             (6u << 16) | 16, MAIN, 17, 1, 1, 1,        /* LocalSize 1 1 1 */
+                             (2u << 16) | 19, VOID, (3u << 16) | 33, FN, VOID,
+                             (4u << 16) | 21, UINT, 32, 0, (4u << 16) | 43, UINT, ONE, 1 };
+   memcpy(w, head, sizeof(head));
+   n = LEN(head);
+   for (uint32_t i = 0; i < ops; i++) {
+      const uint32_t prev = i ? FIRST + i - 1 : ONE;
+      const uint32_t op[] = { (6u << 16) | 52, UINT, FIRST + i, 128, prev, doubling ? prev : ONE };
+      memcpy(&w[n], op, sizeof(op));
+      n += LEN(op);
+   }
+   const uint32_t tail[] = { (4u << 16) | 28, arr, UINT, last, (4u << 16) | 32, ptr, 7, arr,
+                             (5u << 16) | 54, VOID, MAIN, 0, FN, (2u << 16) | 248, lbl,
+                             (4u << 16) | 59, ptr, var, 7, (1u << 16) | 253, (1u << 16) | 56 };
+   memcpy(&w[n], tail, sizeof(tail));
+   return n + LEN(tail);
+}
+
+/* 100000 operations in a chain: known (100001), linear; doubling 60 deep: past 32 bits */
+static void
+part_scale_spec_ops(void)
+{
+   const uint32_t ops = 100000;
+   uint32_t *w = malloc(((size_t)ops * 6 + 64) * 4);
+   for (int doubling = 0; doubling < 2; doubling++) {
+      const size_t n = build_chain(w, doubling ? 60 : ops, doubling);
+      char why[192];
+      const clock_t t0 = clock();
+      struct vkr_spirv_info *info = scan_copy(w, n * 4, why, sizeof(why));
+      uint64_t elements = 0;
+      const char *no = NULL;
+      const bool counted =
+         info && vkr_spirv_function_elements(info, NULL, false, lookup, NULL, &elements, &no);
+      const double s = (double)(clock() - t0) / CLOCKS_PER_SEC;
+      printf("scale: %s of %u spec constant operations: %s %llu in %.3f s\n",
+             doubling ? "doubling" : "chain", doubling ? 60 : ops, counted ? "elements" : "refused",
+             (unsigned long long)elements, s);
+      if (doubling)
+         checkf(info && !counted && no && strstr(no, "no valid length"),
+                "scale: a length past 32 bits is refused as invalid (%s)", info ? (no ? no : "-") : why);
+      else
+         checkf(info && counted && elements == ops + 1, "scale: the chain's length is %u (%llu, %s)",
+                ops + 1, (unsigned long long)elements, info ? (no ? no : "-") : why);
+      checkf(s < 10, "scale: spec constant operations under 10 s (%.3f)", s);
+      vkr_spirv_free(info);
+   }
+   free(w);
+}
+
 static void
 part_scale(void)
 {
@@ -870,6 +1077,7 @@ main(int argc, char **argv)
    part_refusals();
    part_mutations(iterations);
    part_scale();
+   part_scale_spec_ops();
    printf("%s (%d failures)\n", failures ? "FAIL" : "ok", failures);
    return failures ? 1 : 0;
 }

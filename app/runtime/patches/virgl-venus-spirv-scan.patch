@@ -18,18 +18,42 @@ each other), the Input and Output variables with their Location, BuiltIn,
 Patch and per-vertex decorations and each entry point's interface (their
 locations against the device's limits), and what the types would cost
 spirv-val's walks over them (each instruction the weights of the types it
-names and reads).
+names and reads). An array length that is an OpSpecConstantOp (glslang's
+float a[WMITER * TM] or shared x[gl_WorkGroupSize.x * 2], as in ggml's Vulkan
+shaders) is evaluated from the int and bool constants, constant composites
+and the earlier operations, after the stage's specialization (3.4.5, #624).
+The value is the bits masked to the type's width, the S operations
+sign-extend and the U ones zero-extend their operands. Where drivers may
+disagree or SPIR-V gives no value, the length is invalid: a wrap or
+truncation, a divisor of 0, SDiv, SRem or SMod on a negative operand, a
+shift past the width, a bool spec value other than 0 or 1, a map entry
+whose size is not the constant's, an operand defined at or after the
+operation, mixed types, or a length of 0 or less. VectorShuffle,
+CompositeInsert, QuantizeToF16, vectors, floats and a 64-bit SpecId are not
+evaluated: such a length is refused (Workgroup and interface ones counted
+once before; none of the 1267 modules of llama.cpp b11791's ggml-vulkan or
+the CPU test's corpus has one). Operations are kept without refusing the
+module and evaluated in the order of their words, so there is no recursion
+and no loop.
 Why: KosmicKrisp's spirv_to_nir ended QEMU on a bad magic (NULL in its own
 error path) and on an id bound of 0x3fffffff (SIGBUS in
 linear_zalloc_child_array); MoltenVK's SPIRV-Cross on garbage, truncated code
 and that bound (SIGSEGV) and with an uncaught exception on a missing entry
 point or a stage of another model (SIGABRT); Metal ended MoltenVK on a
 workgroup of 65536 threads; KosmicKrisp dereferenced a descriptor set the
-layout lacks (kk_nir_lower_descriptors).
+layout lacks (kk_nir_lower_descriptors). From 3.2.21 every Function array
+whose length was a spec constant operation was refused, so ggml's Vulkan
+backend (llama.cpp, whisper.cpp, Superwhisper's workers) lost its context
+when it created such a pipeline (#624: hadiskeini, Fail-Safe, dandomin,
+epicoun); a Workgroup one counted once, so an array past the device's limit
+could pass.
 Upstream: OmacVM policy (spec VUIDs), draft only.
 Tests: Tests/virgl/fuzz-venus-spirv.sh (the scan alone on the CPU, under
 AddressSanitizer and UndefinedBehaviorSanitizer, with the element and byte
-counts); Tests/virgl/
+counts, a glslc seed with ggml's spec constant operations, and chains of
+100000 and doubling ones 60 deep); Tests/virgl/test-venus-spirv-validate.c
+(each operation, the wraps, divisors of 0, signedness by opcode, map entry
+sizes, bools, forward references and cycles); Tests/virgl/
 test-venus-commands.c (p-spirv-, p-entry-missing, p-stage-mismatch,
 p-shader-layout-, p-unused-set-, p-workgroup- cases).
 
@@ -135,14 +159,14 @@ index bb1f333..15986eb 100644
  }
  
  static void
-@@ -324,6 +346,98 @@ vkr_stage_ok(const VkPipelineShaderStageCreateInfo *st,
+@@ -324,6 +346,99 @@ vkr_stage_ok(const VkPipelineShaderStageCreateInfo *st,
     return true;
  }
  
 +/* OmacVM (virgl-venus-spirv-scan.patch): a specialization constant's value in the stage's
-+ * data, as the driver reads it (the entry's size, at most 4 bytes of it) */
++ * data, as the driver reads it (the entry's size, at most 4 bytes of it), and that size */
 +static bool
-+vkr_spec_lookup(const void *data, uint32_t spec_id, uint32_t *value)
++vkr_spec_lookup(const void *data, uint32_t spec_id, uint32_t *value, uint32_t *size)
 +{
 +   const VkSpecializationInfo *spec = data;
 +   for (uint32_t i = 0; spec && i < spec->mapEntryCount; i++) {
@@ -153,6 +177,7 @@ index bb1f333..15986eb 100644
 +      if (e->size && spec->pData)
 +         memcpy(&v, (const uint8_t *)spec->pData + e->offset, MIN2(e->size, sizeof(v)));
 +      *value = v;
++      *size = (uint32_t)MIN2(e->size, (size_t)UINT32_MAX);
 +      return true;
 +   }
 +   return false;
@@ -234,7 +259,7 @@ index bb1f333..15986eb 100644
  static bool
  vkr_dynamic(const VkPipelineDynamicStateCreateInfo *d, VkDynamicState state)
  {
-@@ -358,8 +472,10 @@ vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
+@@ -358,8 +473,10 @@ vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
        }
     }
     VkShaderStageFlags seen = 0;
@@ -246,7 +271,7 @@ index bb1f333..15986eb 100644
           return false;
        seen |= info->pStages[i].stage;
     }
-@@ -543,6 +659,8 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+@@ -543,6 +660,8 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
        const VkPipelineCreationFeedbackCreateInfo *feedback =
           vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
        if (!vkr_stage_ok(&info->stage, VK_SHADER_STAGE_COMPUTE_BIT, why, sizeof(why)) ||
@@ -288,7 +313,7 @@ new file mode 100644
 index 0000000..426aa9a
 --- /dev/null
 +++ b/src/venus/vkr_spirv.c
-@@ -0,0 +1,1342 @@
+@@ -0,0 +1,1975 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -389,6 +414,46 @@ index 0000000..426aa9a
 +   OP_ATOMIC_FMIN = 5614,
 +   OP_ATOMIC_FMAX = 5615,
 +   OP_ATOMIC_FADD = 6035,
++   /* what a spec constant operation is evaluated from (OmacVM 3.4.5, #624) */
++   OP_TYPE_BOOL = 20,
++   OP_CONSTANT_FALSE = 42,
++   OP_SPEC_CONSTANT_TRUE = 48,
++   OP_SPEC_CONSTANT_FALSE = 49,
++   OP_SPEC_CONSTANT_OP = 52,
++   OP_COMPOSITE_EXTRACT = 81,
++   OP_U_CONVERT = 113,
++   OP_S_CONVERT = 114,
++   OP_S_NEGATE = 126,
++   OP_I_ADD = 128,
++   OP_I_SUB = 130,
++   OP_I_MUL = 132,
++   OP_U_DIV = 134,
++   OP_S_DIV = 135,
++   OP_U_MOD = 137,
++   OP_S_REM = 138,
++   OP_S_MOD = 139,
++   OP_LOGICAL_EQUAL = 164,
++   OP_LOGICAL_NOT_EQUAL = 165,
++   OP_LOGICAL_OR = 166,
++   OP_LOGICAL_AND = 167,
++   OP_LOGICAL_NOT = 168,
++   OP_I_EQUAL = 170,
++   OP_I_NOT_EQUAL = 171,
++   OP_U_GREATER_THAN = 172,
++   OP_S_GREATER_THAN = 173,
++   OP_U_GREATER_THAN_EQUAL = 174,
++   OP_S_GREATER_THAN_EQUAL = 175,
++   OP_U_LESS_THAN = 176,
++   OP_S_LESS_THAN = 177,
++   OP_U_LESS_THAN_EQUAL = 178,
++   OP_S_LESS_THAN_EQUAL = 179,
++   OP_SHIFT_RIGHT_LOGICAL = 194,
++   OP_SHIFT_RIGHT_ARITHMETIC = 195,
++   OP_SHIFT_LEFT_LOGICAL = 196,
++   OP_BITWISE_OR = 197,
++   OP_BITWISE_XOR = 198,
++   OP_BITWISE_AND = 199,
++   OP_NOT = 200,
 +};
 +
 +enum {
@@ -421,11 +486,6 @@ index 0000000..426aa9a
 + * BuiltIn (a member's too, under its struct's id), Patch, PerVertexKHR, PerTaskNV or Block */
 +struct deco {
 +   uint32_t id, kind, value;
-+};
-+
-+/* a constant composite (a WorkgroupSize built-in is one of three ids) */
-+struct composite {
-+   uint32_t id, count, v[3];
 +};
 +
 +/* a LocalSize or LocalSizeId execution mode */
@@ -465,6 +525,7 @@ index 0000000..426aa9a
 +   size_t why_size;
 +   struct vkr_spirv_info *info;
 +   struct vec entries, names, decos, modes, consts, composites, functions, calls, uses;
++   struct vec scalars, bools, spec_ops;
 +   struct vec types, members, pointers, locals, shared, ios, interface;
 +   /* per id (bound entries): a type's weight (0: not a type), a value's type, struct types */
 +   uint32_t *weight, *type_of;
@@ -555,6 +616,46 @@ index 0000000..426aa9a
 +   return u != NULL;
 +}
 +
++/* the id operands of a spec constant operation this scan evaluates (CompositeExtract: its
++ * composite, then index literals); 0 for any other operation (VectorShuffle, CompositeInsert,
++ * QuantizeToF16, FConvert, the Kernel ones) */
++static uint32_t
++spec_op_ids(uint32_t opcode)
++{
++   switch (opcode) {
++   case OP_U_CONVERT:
++   case OP_S_CONVERT:
++   case OP_S_NEGATE:
++   case OP_NOT:
++   case OP_LOGICAL_NOT:
++   case OP_COMPOSITE_EXTRACT:
++      return 1;
++   case OP_I_ADD:
++   case OP_I_SUB:
++   case OP_I_MUL:
++   case OP_U_DIV:
++   case OP_S_DIV:
++   case OP_U_MOD:
++   case OP_S_REM:
++   case OP_S_MOD:
++   case OP_LOGICAL_EQUAL:
++   case OP_LOGICAL_NOT_EQUAL:
++   case OP_LOGICAL_OR:
++   case OP_LOGICAL_AND:
++   case OP_SHIFT_RIGHT_LOGICAL:
++   case OP_SHIFT_RIGHT_ARITHMETIC:
++   case OP_SHIFT_LEFT_LOGICAL:
++   case OP_BITWISE_OR:
++   case OP_BITWISE_XOR:
++   case OP_BITWISE_AND:
++      return 2;
++   case OP_SELECT:
++      return 3;
++   default:
++      return opcode >= OP_I_EQUAL && opcode <= OP_S_LESS_THAN_EQUAL ? 2 : 0;
++   }
++}
++
 +static bool
 +record(struct scan *s, size_t at, uint32_t op, uint32_t len)
 +{
@@ -642,7 +743,52 @@ index 0000000..426aa9a
 +         return fail(s, "out of host memory", at);
 +      /* spec_id 0 marks a spec constant until the SpecId decorations are joined */
 +      *c = (struct vkr_spirv_constant){ .id = w[2], .spec_id = op == OP_CONSTANT ? UINT32_MAX : 0,
-+                                        .value = w[3], .high = len >= 5 ? w[4] : 0, .wide = len >= 5 };
++                                        .value = w[3], .high = len >= 5 ? w[4] : 0, .type = w[1],
++                                        .at = (uint32_t)at, .wide = len >= 5 };
++      return true;
++   }
++   /* what a spec constant operation is evaluated from (OmacVM 3.4.5, #624): bool types and
++    * constants and the operations, kept without refusing anything (spirv-val checks them) */
++   case OP_TYPE_BOOL:
++      if (len >= 2 && id_ok(s, w[1])) {
++         struct vkr_spirv_scalar *t = vec_add(&s->scalars, 1, sizeof(*t));
++         if (!t)
++            return fail(s, "out of host memory", at);
++         *t = (struct vkr_spirv_scalar){ .id = w[1], .width = 1, .boolean = true };
++      }
++      return true;
++   case OP_CONSTANT_TRUE:
++   case OP_CONSTANT_FALSE:
++   case OP_SPEC_CONSTANT_TRUE:
++   case OP_SPEC_CONSTANT_FALSE:
++      if (len >= 3 && id_ok(s, w[2])) {
++         struct vkr_spirv_constant *c = vec_add(&s->bools, 1, sizeof(*c));
++         if (!c)
++            return fail(s, "out of host memory", at);
++         const bool spec = op == OP_SPEC_CONSTANT_TRUE || op == OP_SPEC_CONSTANT_FALSE;
++         *c = (struct vkr_spirv_constant){ .id = w[2], .spec_id = spec ? 0 : UINT32_MAX,
++                                           .value = op == OP_CONSTANT_TRUE || op == OP_SPEC_CONSTANT_TRUE,
++                                           .type = w[1], .at = (uint32_t)at };
++      }
++      return true;
++   case OP_SPEC_CONSTANT_OP: {
++      if (len < 4 || !id_ok(s, w[2]))
++         return true;
++      struct vkr_spirv_spec_op *o = vec_add(&s->spec_ops, 1, sizeof(*o));
++      if (!o)
++         return fail(s, "out of host memory", at);
++      const uint32_t words = len - 4, ids = spec_op_ids(w[3]);
++      *o = (struct vkr_spirv_spec_op){ .id = w[2], .type = w[1], .opcode = w[3],
++                                       .n = words < 3 ? words : 3, .at = (uint32_t)at };
++      memcpy(o->operand, &w[4], o->n * sizeof(uint32_t));
++      /* malformed: n 0. Only the id operands are ids (CompositeExtract's indices are
++       * literals: glslang's gl_WorkGroupSize.x is index 0) */
++      if (ids && (w[3] == OP_COMPOSITE_EXTRACT ? words < 2 : words != ids))
++         o->n = 0;
++      for (uint32_t i = 0; i < ids && i < o->n; i++) {
++         if (!id_ok(s, o->operand[i]))
++            o->n = 0;
++      }
 +      return true;
 +   }
 +   /* what variables' elements and locations are counted through */
@@ -653,6 +799,12 @@ index 0000000..426aa9a
 +   case OP_TYPE_RUNTIME_ARRAY: {
 +      if (len < 3 || !id_ok(s, w[1]))
 +         return fail(s, "a type without an id", at);
++      if (op == OP_TYPE_INT && len >= 4) {
++         struct vkr_spirv_scalar *i = vec_add(&s->scalars, 1, sizeof(*i));
++         if (!i)
++            return fail(s, "out of host memory", at);
++         *i = (struct vkr_spirv_scalar){ .id = w[1], .width = w[2], .sign = w[3] != 0 };
++      }
 +      struct vkr_spirv_type *t = vec_add(&s->types, 1, sizeof(*t));
 +      if (!t)
 +         return fail(s, "out of host memory", at);
@@ -743,10 +895,10 @@ index 0000000..426aa9a
 +      }
 +      /* kept whatever the order of the decoration: the join finds the WorkgroupSize one */
 +      {
-+         struct composite *c = vec_add(&s->composites, 1, sizeof(*c));
++         struct vkr_spirv_composite *c = vec_add(&s->composites, 1, sizeof(*c));
 +         if (!c)
 +            return fail(s, "out of host memory", at);
-+         *c = (struct composite){ .id = w[2], .count = len - 3 };
++         *c = (struct vkr_spirv_composite){ .id = w[2], .count = len - 3, .at = (uint32_t)at };
 +         if (len == 6)
 +            memcpy(c->v, &w[3], sizeof(c->v));
 +      }
@@ -897,7 +1049,10 @@ index 0000000..426aa9a
 +   qsort(s->modes.p, s->modes.n, sizeof(struct mode), cmp_u32);
 +   qsort(s->decos.p, s->decos.n, sizeof(struct deco), cmp_u32);
 +   qsort(s->consts.p, s->consts.n, sizeof(struct vkr_spirv_constant), cmp_u32);
-+   qsort(s->composites.p, s->composites.n, sizeof(struct composite), cmp_u32);
++   qsort(s->composites.p, s->composites.n, sizeof(struct vkr_spirv_composite), cmp_u32);
++   qsort(s->scalars.p, s->scalars.n, sizeof(struct vkr_spirv_scalar), cmp_u32);
++   qsort(s->bools.p, s->bools.n, sizeof(struct vkr_spirv_constant), cmp_u32);
++   qsort(s->spec_ops.p, s->spec_ops.n, sizeof(struct vkr_spirv_spec_op), cmp_u32);
 +   qsort(s->functions.p, s->functions.n, sizeof(uint32_t), cmp_u32);
 +   qsort(s->calls.p, s->calls.n, sizeof(struct vkr_spirv_pair), cmp_u32);
 +   qsort(s->uses.p, s->uses.n, sizeof(struct vkr_spirv_pair), cmp_u32);
@@ -912,17 +1067,21 @@ index 0000000..426aa9a
 +      entries[i].local_size_kind = (uint8_t)m->kind;
 +      memcpy(m->kind == 1 ? entries[i].local_size : entries[i].local_size_id, m->v, sizeof(m->v));
 +   }
-+   /* a spec constant's SpecId: the decorations of its id (sorted by id, any kind) */
-+   struct vkr_spirv_constant *consts = s->consts.p;
++   /* a spec constant's SpecId: the decorations of its id (sorted by id, any kind); a bool
++    * one's too */
 +   const struct deco *decos = s->decos.p;
-+   for (uint32_t i = 0; i < s->consts.n; i++) {
-+      if (consts[i].spec_id == UINT32_MAX)
-+         continue;
-+      consts[i].spec_id = UINT32_MAX - 1; /* no SpecId: its default value only */
-+      for (const struct deco *d = find(&s->decos, sizeof(*d), consts[i].id);
-+           d && d < decos + s->decos.n && d->id == consts[i].id; d++) {
-+         if (d->kind == DEC_SPEC_ID)
-+            consts[i].spec_id = d->value;
++   for (int list = 0; list < 2; list++) {
++      struct vkr_spirv_constant *consts = list ? s->bools.p : s->consts.p;
++      const uint32_t count = list ? s->bools.n : s->consts.n;
++      for (uint32_t i = 0; i < count; i++) {
++         if (consts[i].spec_id == UINT32_MAX)
++            continue;
++         consts[i].spec_id = UINT32_MAX - 1; /* no SpecId: its default value only */
++         for (const struct deco *d = find(&s->decos, sizeof(*d), consts[i].id);
++              d && d < decos + s->decos.n && d->id == consts[i].id; d++) {
++            if (d->kind == DEC_SPEC_ID)
++               consts[i].spec_id = d->value;
++         }
 +      }
 +   }
 +   /* descriptor variables: ids with a DescriptorSet decoration (sorted by id) */
@@ -950,6 +1109,15 @@ index 0000000..426aa9a
 +   info->names = s->names.p;
 +   info->constants = s->consts.p;
 +   info->constant_count = s->consts.n;
++   info->scalars = s->scalars.p;
++   info->scalar_count = s->scalars.n;
++   info->bools = s->bools.p;
++   info->bool_count = s->bools.n;
++   info->composites = s->composites.p;
++   info->composite_count = s->composites.n;
++   info->spec_ops = s->spec_ops.p;
++   info->spec_op_count = s->spec_ops.n;
++   s->scalars.p = s->bools.p = s->composites.p = s->spec_ops.p = NULL;
 +   info->vars = vars.p;
 +   info->var_count = vars.n;
 +   info->functions = s->functions.p;
@@ -1049,8 +1217,9 @@ index 0000000..426aa9a
 +   info->interface_count = s->interface.n;
 +   s->interface.p = NULL;
 +   info->type_cost = s->cost;
-+   const struct composite *wg =
-+      s->workgroup_composite ? find(&s->composites, sizeof(*wg), s->workgroup_composite) : NULL;
++   const struct vec composites = { .p = info->composites, .n = info->composite_count };
++   const struct vkr_spirv_composite *wg =
++      s->workgroup_composite ? find(&composites, sizeof(*wg), s->workgroup_composite) : NULL;
 +   if (wg && wg->count != 3)
 +      return fail(s, "a WorkgroupSize that is not three values", 0);
 +   if (wg)
@@ -1107,6 +1276,9 @@ index 0000000..426aa9a
 +   free(s.modes.p);
 +   free(s.consts.p);
 +   free(s.composites.p);
++   free(s.scalars.p);
++   free(s.bools.p);
++   free(s.spec_ops.p);
 +   free(s.functions.p);
 +   free(s.calls.p);
 +   free(s.uses.p);
@@ -1134,6 +1306,10 @@ index 0000000..426aa9a
 +   free(info->entries);
 +   free(info->names);
 +   free(info->constants);
++   free(info->scalars);
++   free(info->bools);
++   free(info->composites);
++   free(info->spec_ops);
 +   free(info->vars);
 +   free(info->functions);
 +   free(info->calls);
@@ -1162,7 +1338,7 @@ index 0000000..426aa9a
 +static bool
 +constant_value(const struct vkr_spirv_info *info,
 +               uint32_t id,
-+               bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++               vkr_spirv_lookup lookup,
 +               const void *data,
 +               uint32_t *value)
 +{
@@ -1171,15 +1347,16 @@ index 0000000..426aa9a
 +   if (!c)
 +      return false;
 +   *value = c->value;
++   uint32_t size;
 +   if (c->spec_id < UINT32_MAX - 1 && lookup)
-+      lookup(data, c->spec_id, value);
++      lookup(data, c->spec_id, value, &size);
 +   return true;
 +}
 +
 +bool
 +vkr_spirv_workgroup_size(const struct vkr_spirv_info *info,
 +                         const struct vkr_spirv_entry *entry,
-+                         bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                         vkr_spirv_lookup lookup,
 +                         const void *data,
 +                         uint32_t size[3])
 +{
@@ -1335,15 +1512,454 @@ index 0000000..426aa9a
 +/* one type's elements (memo: 0 not yet, 1 counting, 2 counted into elems), or with bytes
 + * set its size in bytes at least: no padding or offsets, a scalar its width, a vector or
 + * matrix its parts', a runtime array 0, a type the scan does not keep (bool, pointer) 1,
-+ * and an array whose length is no known constant (a spec constant operation) its element's */
++ * and an array whose length the scan does not keep as a constant (a 64-bit SpecId) its
++ * element's; with locations the locations of type_locations. vals: the spec constant operations' values (by their index
++ * in info->spec_ops), made when a length first needs one; why: the reason for a false */
 +struct elements {
 +   const struct vkr_spirv_info *info;
-+   bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value);
++   vkr_spirv_lookup lookup;
 +   const void *data;
 +   uint8_t *state;
 +   uint64_t *elems;
 +   bool bytes;
++   bool locations;
++   struct spec_value *vals;
++   const char *why;
 +};
++
++static const char *const why_nested = "types nested past 64 levels or in a loop";
++static const char *const why_unsupported =
++   "an array length the scan does not evaluate (a 64-bit spec constant, or a spec constant "
++   "operation on vectors, floats or composites)";
++static const char *const why_invalid =
++   "an array length from a spec constant operation that is no valid length after "
++   "specialization (a wrap, a divisor of 0 or a negative operand of SDiv, SRem or SMod, a "
++   "shift past the width, mixed types, an entry size not the constant's, a bool not 0 or 1, "
++   "a length of 0 or less)";
++static const char *const why_memory = "out of host memory";
++
++/* --- spec constant operations (OmacVM 3.4.5, #624) ---
++ * An array length may be an OpSpecConstantOp (glslang's float a[WMITER * TM] or shared
++ * x[gl_WorkGroupSize.x * 2], as ggml's Vulkan shaders have them). Its value is the driver's
++ * only where SPIR-V gives every driver the same one, so it has three states:
++ *  - known: exact, with SPIR-V's semantics (a value is its bits masked to its type's width;
++ *    the S operations sign-extend their operands, the U ones zero-extend them; IAdd, ISub,
++ *    IMul, ShiftLeftLogical and SNegate fit their result type's signedness, the others their
++ *    opcode's);
++ *  - unsupported: what this does not evaluate (VectorShuffle, CompositeInsert,
++ *    QuantizeToF16, vectors, floats, a composite of other than three, a 64-bit SpecId);
++ *  - invalid: where drivers may disagree or SPIR-V has no value (any wrap or truncation, a
++ *    divisor of 0, SDiv, SRem or SMod on a negative operand, a shift count at or past the
++ *    width, a bool spec value other than 0 or 1, a specialization entry whose size is not
++ *    the constant's, an operand defined at or after the operation (SPIR-V forbids forward
++ *    references among constants), a type mismatch, a width other than 8, 16, 32 or 64).
++ * Operations are evaluated in the order of their words, each from earlier ones, so no
++ * recursion, no depth limit and no loop. */
++enum { SV_KNOWN, SV_UNSUPPORTED, SV_INVALID };
++
++struct spec_value {
++   uint64_t bits;
++   uint32_t width; /* 1 for a bool, 0 for no int or bool */
++   uint8_t state;
++   bool sign;
++   bool boolean;
++   bool spec; /* depends on a constant with a SpecId */
++};
++
++static uint64_t
++width_mask(uint32_t width)
++{
++   return width >= 64 ? UINT64_MAX : (1ull << width) - 1;
++}
++
++/* bits of `width` sign-extended */
++static int64_t
++sign_extend(uint64_t bits, uint32_t width)
++{
++   if (width >= 64)
++      return (int64_t)bits;
++   const uint64_t m = 1ull << (width - 1);
++   return (int64_t)((bits & width_mask(width)) ^ m) - (int64_t)m;
++}
++
++static bool
++fits_signed(int64_t v, uint32_t width)
++{
++   if (width >= 64)
++      return true;
++   const int64_t h = (int64_t)1 << (width - 1);
++   return v >= -h && v < h;
++}
++
++static const struct vkr_spirv_scalar *
++scalar_type(const struct vkr_spirv_info *info, uint32_t id)
++{
++   const struct vec v = { .p = info->scalars, .n = info->scalar_count };
++   return find(&v, sizeof(struct vkr_spirv_scalar), id);
++}
++
++/* a bool, or an int of a width Vulkan has */
++static bool
++scalar_ok(const struct vkr_spirv_scalar *t)
++{
++   return t && (t->boolean || t->width == 8 || t->width == 16 || t->width == 32 || t->width == 64);
++}
++
++static struct spec_value
++invalid(struct spec_value v)
++{
++   v.state = SV_INVALID;
++   return v;
++}
++
++/* an operand defined before word `before`: a constant, a bool constant or an earlier
++ * operation (already in e->vals) */
++static struct spec_value
++spec_operand(struct elements *e, uint32_t id, uint32_t before)
++{
++   const struct vkr_spirv_info *info = e->info;
++   struct spec_value v = { .state = SV_INVALID };
++   const struct vec consts = { .p = info->constants, .n = info->constant_count };
++   const struct vec bools = { .p = info->bools, .n = info->bool_count };
++   const struct vec ops = { .p = info->spec_ops, .n = info->spec_op_count };
++   const struct vkr_spirv_constant *c = find(&consts, sizeof(*c), id);
++   const struct vkr_spirv_constant *b = c ? NULL : find(&bools, sizeof(*b), id);
++   if (c || b) {
++      const struct vkr_spirv_constant *k = c ? c : b;
++      const struct vkr_spirv_scalar *t = scalar_type(info, k->type);
++      if (k->at >= before || !scalar_ok(t) || t->boolean != (b != NULL) ||
++          (c && (t->width == 64) != c->wide))
++         return v;
++      v.width = t->width;
++      v.sign = t->sign;
++      v.boolean = t->boolean;
++      v.bits = (c ? (uint64_t)c->high << 32 | c->value : b->value) & width_mask(v.width);
++      v.spec = k->spec_id < UINT32_MAX - 1;
++      uint32_t value, size;
++      if (v.spec && v.width == 64) {
++         v.state = SV_UNSUPPORTED; /* vkr_spec_lookup gives 4 bytes */
++         return v;
++      }
++      if (v.spec && e->lookup && e->lookup(e->data, k->spec_id, &value, &size)) {
++         /* VUID-VkSpecializationMapEntry-constantID-00776: the constant's size (a bool's
++          * VkBool32); Mesa reads a bool as != 0, Metal's may read a byte */
++         if (size != (b ? 4 : v.width / 8) || (b && value > 1))
++            return invalid(v);
++         v.bits = value & width_mask(v.width);
++      }
++      v.state = SV_KNOWN;
++      return v;
++   }
++   const struct vkr_spirv_spec_op *o = find(&ops, sizeof(*o), id);
++   if (!o || o->at >= before || !e->vals)
++      return v;
++   return e->vals[o - info->spec_ops];
++}
++
++/* CompositeExtract of one index from a constant composite of three (WorkgroupSize) */
++static struct spec_value
++spec_extract(struct elements *e, const struct vkr_spirv_spec_op *o, struct spec_value r)
++{
++   const struct vec composites = { .p = e->info->composites, .n = e->info->composite_count };
++   const struct vkr_spirv_composite *c = find(&composites, sizeof(*c), o->operand[0]);
++   if (!c) {
++      /* an operation's vector (VectorShuffle, CompositeInsert) or no composite at all */
++      const struct spec_value v = spec_operand(e, o->operand[0], o->at);
++      r.state = v.state == SV_UNSUPPORTED ? SV_UNSUPPORTED : SV_INVALID;
++      r.spec = v.spec;
++      return r;
++   }
++   if (c->at >= o->at)
++      return invalid(r);
++   if (o->n != 2 || c->count != 3)
++      return r; /* unsupported: several indices, or not the three of a WorkgroupSize */
++   if (o->operand[1] >= 3)
++      return invalid(r);
++   const struct spec_value v = spec_operand(e, c->v[o->operand[1]], c->at);
++   if (v.state != SV_KNOWN)
++      return v;
++   if (v.boolean != r.boolean || v.width != r.width)
++      return invalid(r);
++   r.bits = v.bits;
++   r.spec = v.spec;
++   r.state = SV_KNOWN;
++   return r;
++}
++
++/* the value of one operation, from constants and earlier operations */
++static struct spec_value
++spec_op_value(struct elements *e, const struct vkr_spirv_spec_op *o)
++{
++   struct spec_value r = { .state = SV_UNSUPPORTED };
++   const uint32_t ids = spec_op_ids(o->opcode);
++   const struct vkr_spirv_scalar *t = scalar_type(e->info, o->type);
++   if (!ids || !t)
++      return r; /* an operation this does not evaluate, or a vector or float result */
++   if (!scalar_ok(t))
++      return invalid(r);
++   r.width = t->width;
++   r.sign = t->sign;
++   r.boolean = t->boolean;
++   if (!o->n)
++      return invalid(r);
++   if (o->opcode == OP_COMPOSITE_EXTRACT)
++      return spec_extract(e, o, r);
++   struct spec_value a[3];
++   uint8_t worst = SV_KNOWN;
++   for (uint32_t i = 0; i < ids; i++) {
++      a[i] = spec_operand(e, o->operand[i], o->at);
++      r.spec |= a[i].spec;
++      worst = a[i].state > worst ? a[i].state : worst;
++   }
++   if (worst != SV_KNOWN) {
++      r.state = worst;
++      return r;
++   }
++   const uint32_t w = r.width, op = o->opcode;
++   const uint64_t mask = width_mask(w);
++   /* the operand types SPIR-V asks for: ints of the result's width (a shift count any int,
++    * a conversion's operand any int), comparisons' ints of one width, logical ones bools */
++   const bool int_result = !r.boolean;
++   const bool a0_int = !a[0].boolean, a1_int = ids > 1 && !a[1].boolean;
++   bool types_ok;
++   switch (op) {
++   case OP_U_CONVERT:
++   case OP_S_CONVERT:
++      types_ok = int_result && a0_int;
++      break;
++   case OP_S_NEGATE:
++   case OP_NOT:
++      types_ok = int_result && a0_int && a[0].width == w;
++      break;
++   case OP_SHIFT_RIGHT_LOGICAL:
++   case OP_SHIFT_RIGHT_ARITHMETIC:
++   case OP_SHIFT_LEFT_LOGICAL:
++      types_ok = int_result && a0_int && a1_int && a[0].width == w;
++      break;
++   case OP_LOGICAL_EQUAL:
++   case OP_LOGICAL_NOT_EQUAL:
++   case OP_LOGICAL_OR:
++   case OP_LOGICAL_AND:
++      types_ok = r.boolean && a[0].boolean && a[1].boolean;
++      break;
++   case OP_LOGICAL_NOT:
++      types_ok = r.boolean && a[0].boolean;
++      break;
++   case OP_SELECT:
++      types_ok = a[0].boolean && a[1].boolean == r.boolean && a[2].boolean == r.boolean &&
++                 a[1].width == w && a[2].width == w;
++      break;
++   default:
++      if (op >= OP_I_EQUAL && op <= OP_S_LESS_THAN_EQUAL)
++         types_ok = r.boolean && a0_int && a1_int && a[0].width == a[1].width;
++      else /* IAdd .. SMod, BitwiseOr/Xor/And */
++         types_ok = int_result && a0_int && a1_int && a[0].width == w && a[1].width == w;
++      break;
++   }
++   if (!types_ok)
++      return invalid(r);
++
++   const uint64_t x = a[0].bits, y = ids > 1 ? a[1].bits : 0;
++   const int64_t sx = sign_extend(x, a[0].width), sy = ids > 1 ? sign_extend(y, a[1].width) : 0;
++   int64_t sv;
++   uint64_t uv;
++   switch (op) {
++   /* a conversion of an operand whose type has the other signedness and whose top bit is
++    * set: SPIR-V and both Mac compilers extend by the opcode, spirv-opt's folding by the
++    * operand's type (10000 random modules) */
++   case OP_U_CONVERT:
++      if (x > mask || (a[0].sign && sx < 0))
++         return invalid(r);
++      r.bits = x;
++      break;
++   case OP_S_CONVERT:
++      if (!fits_signed(sx, w) || (!a[0].sign && sx < 0))
++         return invalid(r);
++      r.bits = (uint64_t)sx & mask;
++      break;
++   case OP_S_NEGATE:
++      if (sx == INT64_MIN || (r.sign ? !fits_signed(-sx, w) : (-sx < 0 || (uint64_t)-sx > mask)))
++         return invalid(r);
++      r.bits = (uint64_t)-sx & mask;
++      break;
++   case OP_NOT:
++      r.bits = ~x & mask;
++      break;
++   case OP_I_ADD:
++   case OP_I_SUB:
++   case OP_I_MUL:
++      if (r.sign) {
++         const bool over = op == OP_I_ADD   ? __builtin_add_overflow(sx, sy, &sv)
++                           : op == OP_I_SUB ? __builtin_sub_overflow(sx, sy, &sv)
++                                            : __builtin_mul_overflow(sx, sy, &sv);
++         if (over || !fits_signed(sv, w))
++            return invalid(r);
++         r.bits = (uint64_t)sv & mask;
++      } else {
++         const bool over = op == OP_I_ADD   ? __builtin_add_overflow(x, y, &uv)
++                           : op == OP_I_SUB ? __builtin_sub_overflow(x, y, &uv)
++                                            : __builtin_mul_overflow(x, y, &uv);
++         if (over || uv > mask)
++            return invalid(r);
++         r.bits = uv;
++      }
++      break;
++   case OP_U_DIV:
++   case OP_U_MOD:
++      if (!y)
++         return invalid(r);
++      r.bits = op == OP_U_DIV ? x / y : x % y;
++      break;
++   case OP_S_DIV:
++   case OP_S_REM:
++   case OP_S_MOD:
++      /* drivers differ on negative operands (C's % for SMod); no length needs them */
++      if (!sy || sx < 0 || sy < 0)
++         return invalid(r);
++      r.bits = (uint64_t)(op == OP_S_DIV ? sx / sy : sx % sy) & mask;
++      break;
++   case OP_SHIFT_RIGHT_LOGICAL:
++   case OP_SHIFT_RIGHT_ARITHMETIC:
++   case OP_SHIFT_LEFT_LOGICAL:
++      if (y >= w)
++         return invalid(r);
++      if (op == OP_SHIFT_RIGHT_LOGICAL) {
++         r.bits = x >> y;
++      } else if (op == OP_SHIFT_RIGHT_ARITHMETIC) {
++         sv = sx >= 0 ? sx >> y : ~(~sx >> y);
++         r.bits = (uint64_t)sv & mask;
++      } else if (r.sign) {
++         /* x * 2^y fits: x within +-2^(w-1-y) */
++         if (y && (sx < -((int64_t)1 << (w - 1 - y)) || sx >= (int64_t)1 << (w - 1 - y)))
++            return invalid(r);
++         r.bits = ((uint64_t)sx << y) & mask;
++      } else {
++         if (x > mask >> y)
++            return invalid(r);
++         r.bits = x << y;
++      }
++      break;
++   case OP_BITWISE_OR:
++      r.bits = x | y;
++      break;
++   case OP_BITWISE_XOR:
++      r.bits = x ^ y;
++      break;
++   case OP_BITWISE_AND:
++      r.bits = x & y;
++      break;
++   case OP_LOGICAL_EQUAL:
++      r.bits = x == y;
++      break;
++   case OP_LOGICAL_NOT_EQUAL:
++      r.bits = x != y;
++      break;
++   case OP_LOGICAL_OR:
++      r.bits = x | y;
++      break;
++   case OP_LOGICAL_AND:
++      r.bits = x & y;
++      break;
++   case OP_LOGICAL_NOT:
++      r.bits = !x;
++      break;
++   case OP_SELECT:
++      r.bits = x ? a[1].bits : a[2].bits;
++      break;
++   case OP_I_EQUAL:
++      r.bits = x == y;
++      break;
++   case OP_I_NOT_EQUAL:
++      r.bits = x != y;
++      break;
++   case OP_U_GREATER_THAN:
++      r.bits = x > y;
++      break;
++   case OP_S_GREATER_THAN:
++      r.bits = sx > sy;
++      break;
++   case OP_U_GREATER_THAN_EQUAL:
++      r.bits = x >= y;
++      break;
++   case OP_S_GREATER_THAN_EQUAL:
++      r.bits = sx >= sy;
++      break;
++   case OP_U_LESS_THAN:
++      r.bits = x < y;
++      break;
++   case OP_S_LESS_THAN:
++      r.bits = sx < sy;
++      break;
++   case OP_U_LESS_THAN_EQUAL:
++      r.bits = x <= y;
++      break;
++   case OP_S_LESS_THAN_EQUAL:
++      r.bits = sx <= sy;
++      break;
++   default:
++      return invalid(r);
++   }
++   r.state = SV_KNOWN;
++   return r;
++}
++
++/* every operation's value, in the order of their words; false out of host memory */
++static bool
++spec_evaluate(struct elements *e)
++{
++   const struct vkr_spirv_info *info = e->info;
++   const uint32_t n = info->spec_op_count;
++   struct vkr_spirv_pair *order = malloc(sizeof(*order) * ((size_t)n + 1));
++   e->vals = calloc((size_t)n + 1, sizeof(*e->vals));
++   if (!order || !e->vals) {
++      free(order);
++      free(e->vals);
++      e->vals = NULL;
++      return false;
++   }
++   /* (word, index): sorted by the word */
++   for (uint32_t i = 0; i < n; i++)
++      order[i] = (struct vkr_spirv_pair){ info->spec_ops[i].at, i };
++   qsort(order, n, sizeof(*order), cmp_u32);
++   for (uint32_t i = 0; i < n; i++)
++      e->vals[order[i].id] = spec_op_value(e, &info->spec_ops[order[i].id]);
++   free(order);
++   return true;
++}
++
++/* an array length that is no constant the scan keeps: a spec constant operation's value.
++ * Known: its value. Counted once: without the stage's specialization (a module), one an app
++ * may still specialize, where a SpecId length counts once (locations) or the result is no
++ * valid length with the defaults (bytes). Refused (with e->why): invalid, unsupported (none
++ * of the 1267 modules of llama.cpp b11791's ggml-vulkan or the CPU test's corpus has one in
++ * a Workgroup or interface variable; before 3.4.5 those counted once), out of host memory. */
++enum { LEN_KNOWN, LEN_ONCE, LEN_REFUSED };
++
++static int
++spec_length(struct elements *e, uint32_t id, uint64_t *length)
++{
++   const struct vec ops = { .p = e->info->spec_ops, .n = e->info->spec_op_count };
++   const struct vkr_spirv_spec_op *o = find(&ops, sizeof(*o), id);
++   struct spec_value v = { .state = SV_INVALID }; /* no int constant at all */
++   if (o) {
++      if (!e->vals && !spec_evaluate(e)) {
++         e->why = why_memory;
++         return LEN_REFUSED;
++      }
++      v = e->vals[o - e->info->spec_ops];
++      /* a length is an int's unsigned value, at least 1 (Mesa's vtn_constant_uint) */
++      if (v.state == SV_KNOWN && (v.boolean || !v.bits || (v.sign && sign_extend(v.bits, v.width) < 0)))
++         v.state = SV_INVALID;
++   }
++   if (!e->lookup && v.spec && (e->bytes || e->locations) && (e->locations || v.state != SV_KNOWN))
++      return LEN_ONCE;
++   if (v.state == SV_KNOWN) {
++      *length = v.bits;
++      return LEN_KNOWN;
++   }
++   e->why = v.state == SV_UNSUPPORTED ? why_unsupported : why_invalid;
++   return LEN_REFUSED;
++}
 +
 +static bool
 +type_elements(struct elements *e, uint32_t id, unsigned depth, uint64_t *out)
@@ -1359,25 +1975,37 @@ index 0000000..426aa9a
 +      *out = e->elems[at];
 +      return true;
 +   }
-+   if (e->state[at] == 1 || depth > 64)
++   if (e->state[at] == 1 || depth > 64) {
++      e->why = why_nested;
 +      return false;
++   }
 +   e->state[at] = 1;
 +   uint64_t n = 0;
 +   if (t->kind == VKR_SPIRV_TYPE_ARRAY) {
 +      uint32_t lo;
-+      uint64_t inner;
++      uint64_t inner, length = 1;
 +      const struct vec v = { .p = e->info->constants, .n = e->info->constant_count };
 +      const struct vkr_spirv_constant *c = find(&v, sizeof(*c), t->b);
 +      if (!type_elements(e, t->a, depth + 1, &inner))
 +         return false;
-+      /* vkr_spec_lookup gives a specialized length's lower 32 bits: a 64-bit one with a
-+       * SpecId is not known */
-+      const bool known = c && constant_value(e->info, t->b, e->lookup, e->data, &lo) &&
-+                         !(c->spec_id < UINT32_MAX - 1 && c->wide);
-+      if (!known && !e->bytes)
-+         return false;
-+      const uint64_t length =
-+         !known ? 1 : c->spec_id < UINT32_MAX - 1 ? lo : ((uint64_t)c->high << 32 | lo);
++      if (c) {
++         /* vkr_spec_lookup gives a specialized length's lower 32 bits: a 64-bit one with a
++          * SpecId is not known */
++         const bool known = constant_value(e->info, t->b, e->lookup, e->data, &lo) &&
++                            !(c->spec_id < UINT32_MAX - 1 && c->wide);
++         if (!known && !e->bytes) {
++            e->why = why_unsupported;
++            return false;
++         }
++         if (known)
++            length = c->spec_id < UINT32_MAX - 1 ? lo : ((uint64_t)c->high << 32 | lo);
++      } else {
++         const int k = spec_length(e, t->b, &length);
++         if (k == LEN_REFUSED)
++            return false;
++         if (k == LEN_ONCE)
++            length = 1;
++      }
 +      if (__builtin_mul_overflow(length, inner, &n))
 +         n = UINT64_MAX;
 +   } else if (e->bytes && t->kind == VKR_SPIRV_TYPE_SCALAR) {
@@ -1395,8 +2023,11 @@ index 0000000..426aa9a
 +   } else {
 +      for (uint32_t i = 0; i < t->b; i++) {
 +         uint64_t m;
-+         if (t->a + (uint64_t)i >= e->info->member_count ||
-+             !type_elements(e, e->info->members[t->a + i], depth + 1, &m))
++         if (t->a + (uint64_t)i >= e->info->member_count) {
++            e->why = why_nested;
++            return false;
++         }
++         if (!type_elements(e, e->info->members[t->a + i], depth + 1, &m))
 +            return false;
 +         if (__builtin_add_overflow(n, m, &n))
 +            n = UINT64_MAX;
@@ -1408,19 +2039,33 @@ index 0000000..426aa9a
 +   return true;
 +}
 +
++static void
++elements_fini(struct elements *e, const char **why)
++{
++   free(e->state);
++   free(e->elems);
++   free(e->vals);
++   if (why)
++      *why = e->why;
++}
++
 +bool
 +vkr_spirv_function_elements(const struct vkr_spirv_info *info,
 +                            const struct vkr_spirv_entry *entry,
 +                            bool interface_globals,
-+                            bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                            vkr_spirv_lookup lookup,
 +                            const void *data,
-+                            uint64_t *count)
++                            uint64_t *count,
++                            const char **why)
 +{
 +   *count = 0;
++   if (why)
++      *why = NULL;
 +   if (!info->local_count)
 +      return true;
 +   struct elements e = { info, lookup, data, calloc(info->type_count + 1, 1),
-+                         calloc(info->type_count + 1, sizeof(uint64_t)), false };
++                         calloc(info->type_count + 1, sizeof(uint64_t)), false, false, NULL,
++                         why_memory };
 +   struct reach r;
 +   bool ok = reach_init(&r, info, entry, interface_globals) && e.state && e.elems;
 +   for (uint32_t i = 0; ok && i < info->local_count; i++) {
@@ -1433,8 +2078,7 @@ index 0000000..426aa9a
 +         *count = UINT64_MAX;
 +   }
 +   reach_fini(&r);
-+   free(e.state);
-+   free(e.elems);
++   elements_fini(&e, ok ? NULL : why);
 +   return ok;
 +}
 +
@@ -1442,15 +2086,19 @@ index 0000000..426aa9a
 +vkr_spirv_workgroup_bytes(const struct vkr_spirv_info *info,
 +                          const struct vkr_spirv_entry *entry,
 +                          bool interface_globals,
-+                          bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                          vkr_spirv_lookup lookup,
 +                          const void *data,
-+                          uint64_t *bytes)
++                          uint64_t *bytes,
++                          const char **why)
 +{
 +   *bytes = 0;
++   if (why)
++      *why = NULL;
 +   if (!info->shared_count)
 +      return true;
 +   struct elements e = { info, lookup, data, calloc(info->type_count + 1, 1),
-+                         calloc(info->type_count + 1, sizeof(uint64_t)), true };
++                         calloc(info->type_count + 1, sizeof(uint64_t)), true, false, NULL,
++                         why_memory };
 +   struct reach r;
 +   bool ok = reach_init(&r, info, entry, interface_globals) && e.state && e.elems;
 +   uint64_t sum = 0, block = 0;
@@ -1465,8 +2113,7 @@ index 0000000..426aa9a
 +         sum = UINT64_MAX;
 +   }
 +   reach_fini(&r);
-+   free(e.state);
-+   free(e.elems);
++   elements_fini(&e, ok ? NULL : why);
 +   /* Block ones alias each other (SPV_KHR_workgroup_memory_explicit_layout): the largest */
 +   *bytes = sum > block ? sum : block;
 +   return ok;
@@ -1490,8 +2137,10 @@ index 0000000..426aa9a
 +      *out = e->elems[at];
 +      return true;
 +   }
-+   if (e->state[at] == 1 || depth > 64)
++   if (e->state[at] == 1 || depth > 64) {
++      e->why = why_nested;
 +      return false;
++   }
 +   e->state[at] = 1;
 +   uint64_t n = 1, inner = 1;
 +   switch (t->kind) {
@@ -1510,8 +2159,7 @@ index 0000000..426aa9a
 +   case VKR_SPIRV_TYPE_RUNTIME_ARRAY: {
 +      if (!type_locations(e, t->a, depth + 1, &inner))
 +         return false;
-+      /* a length the scan cannot know (a spec constant operation) counts once, as
-+       * spirv-val counts it; a 64-bit one with its high word */
++      /* a 64-bit length with its high word; a spec constant operation's value (spec_length) */
 +      uint32_t lo = 1;
 +      uint64_t length = 1;
 +      const struct vec v = { .p = e->info->constants, .n = e->info->constant_count };
@@ -1523,6 +2171,13 @@ index 0000000..426aa9a
 +       * specialize also counts once */
 +      if (c && c->spec_id < UINT32_MAX - 1 && !e->lookup)
 +         length = 1;
++      if (!c && t->kind == VKR_SPIRV_TYPE_ARRAY) {
++         const int k = spec_length(e, t->b, &length);
++         if (k == LEN_REFUSED)
++            return false;
++         if (k == LEN_ONCE)
++            length = 1;
++      }
 +      if (__builtin_mul_overflow(length, inner, &n))
 +         n = UINT64_MAX;
 +      break;
@@ -1531,8 +2186,11 @@ index 0000000..426aa9a
 +      n = 0;
 +      for (uint32_t i = 0; i < t->b; i++) {
 +         uint64_t m;
-+         if (t->a + (uint64_t)i >= e->info->member_count ||
-+             !type_locations(e, e->info->members[t->a + i], depth + 1, &m))
++         if (t->a + (uint64_t)i >= e->info->member_count) {
++            e->why = why_nested;
++            return false;
++         }
++         if (!type_locations(e, e->info->members[t->a + i], depth + 1, &m))
 +            return false;
 +         if (__builtin_add_overflow(n, m, &n))
 +            n = UINT64_MAX;
@@ -1577,7 +2235,7 @@ index 0000000..426aa9a
 +bool
 +vkr_spirv_interface_ok(const struct vkr_spirv_info *info,
 +                       const struct vkr_spirv_io_limits *limits,
-+                       bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                       vkr_spirv_lookup lookup,
 +                       const void *data,
 +                       char *why,
 +                       size_t why_size)
@@ -1585,7 +2243,8 @@ index 0000000..426aa9a
 +   if (!info->io_count)
 +      return true;
 +   struct elements e = { info, lookup, data, calloc(info->type_count + 1, 1),
-+                         calloc(info->type_count + 1, sizeof(uint64_t)), false };
++                         calloc(info->type_count + 1, sizeof(uint64_t)), false, true, NULL,
++                         why_memory };
 +   bool ok = e.state && e.elems;
 +   if (!ok)
 +      snprintf(why, why_size, "SPIR-V: out of host memory");
@@ -1616,8 +2275,8 @@ index 0000000..426aa9a
 +      const uint32_t limit = io_limit(limits, model, out, patch);
 +      const uint64_t base = v->location == UINT32_MAX ? 0 : v->location;
 +      if (!type_locations(&e, type, 0, &n)) {
-+         snprintf(why, why_size, "SPIR-V: %s variable %u of types nested past 64 levels or in a loop",
-+                  out ? "an Output" : "an Input", v->id);
++         snprintf(why, why_size, "SPIR-V: %s variable %u: %s", out ? "an Output" : "an Input",
++                  v->id, e.why);
 +         ok = false;
 +      } else if (n > limit || base + n > limit) {
 +         snprintf(why, why_size,
@@ -1627,8 +2286,7 @@ index 0000000..426aa9a
 +         ok = false;
 +      }
 +   }
-+   free(e.state);
-+   free(e.elems);
++   elements_fini(&e, NULL);
 +   return ok;
 +}
 diff --git a/src/venus/vkr_spirv.h b/src/venus/vkr_spirv.h
@@ -1636,7 +2294,7 @@ new file mode 100644
 index 0000000..1b79868
 --- /dev/null
 +++ b/src/venus/vkr_spirv.h
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,308 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -1691,14 +2349,48 @@ index 0000000..1b79868
 +   uint8_t local_size_kind; /* 0 none, 1 LocalSize, 2 LocalSizeId */
 +};
 +
-+/* a constant whose value a workgroup size may name; spec_id UINT32_MAX for a plain one */
++/* a constant whose value a workgroup size or an array length may name; spec_id UINT32_MAX for
++ * a plain one, UINT32_MAX - 1 for a spec constant without a SpecId (a bool one: value 0 or 1) */
 +struct vkr_spirv_constant {
 +   uint32_t id;
 +   uint32_t spec_id;
 +   uint32_t value;
 +   uint32_t high; /* the upper word of a 64-bit one */
++   uint32_t type; /* its result type */
++   uint32_t at;   /* the word it starts at */
 +   bool wide;     /* 64 bits */
 +};
++
++/* an OpTypeInt (width 8, 16, 32 or 64 for one a spec constant operation may use) or an
++ * OpTypeBool (width 1) */
++struct vkr_spirv_scalar {
++   uint32_t id;
++   uint32_t width;
++   bool sign;
++   bool boolean;
++};
++
++/* an OpConstantComposite or OpSpecConstantComposite: its constituents when it has three (the
++ * WorkgroupSize built-in's) */
++struct vkr_spirv_composite {
++   uint32_t id, count, v[3];
++   uint32_t at;
++};
++
++/* an OpSpecConstantOp: its operands (n of them, at most 3; CompositeExtract's composite and
++ * index literals); n 0 for one that is malformed */
++struct vkr_spirv_spec_op {
++   uint32_t id;
++   uint32_t type;
++   uint32_t opcode;
++   uint32_t n;
++   uint32_t operand[3];
++   uint32_t at;
++};
++
++/* a specialization constant's value in a pipeline stage's data (*value at most its low 4
++ * bytes) and its map entry's size in bytes; false when the stage does not specialize it */
++typedef bool (*vkr_spirv_lookup)(const void *data, uint32_t spec_id, uint32_t *value, uint32_t *size);
 +
 +/* a type variables' elements and locations are counted through (anything else is one
 + * element and one location) */
@@ -1782,6 +2474,16 @@ index 0000000..1b79868
 +   char *names;
 +   uint32_t constant_count;
 +   struct vkr_spirv_constant *constants; /* sorted by id */
++   /* what an array length from a spec constant operation is evaluated from (sorted by id):
++    * int and bool types, bool constants, constant composites, the operations */
++   uint32_t scalar_count;
++   struct vkr_spirv_scalar *scalars;
++   uint32_t bool_count;
++   struct vkr_spirv_constant *bools;
++   uint32_t composite_count;
++   struct vkr_spirv_composite *composites;
++   uint32_t spec_op_count;
++   struct vkr_spirv_spec_op *spec_ops;
 +   /* the WorkgroupSize built-in: its composite's three components, or 0 */
 +   uint32_t workgroup_size[3];
 +   /* sorted: an entry point's descriptor variables are the ones the functions it reaches
@@ -1824,12 +2526,12 @@ index 0000000..1b79868
 +const struct vkr_spirv_entry *
 +vkr_spirv_entry(const struct vkr_spirv_info *info, const char *name, uint32_t model);
 +
-+/* a stage's workgroup size after specialization (lookup: SpecId -> value, false when the
-+ * pipeline does not specialize it); false when an id it names is not a known constant */
++/* a stage's workgroup size after specialization (lookup: vkr_spirv_lookup); false when an id
++ * it names is not a known constant */
 +bool
 +vkr_spirv_workgroup_size(const struct vkr_spirv_info *info,
 +                         const struct vkr_spirv_entry *entry,
-+                         bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                         vkr_spirv_lookup lookup,
 +                         const void *data,
 +                         uint32_t size[3]);
 +
@@ -1845,9 +2547,12 @@ index 0000000..1b79868
 +                      uint32_t *binding);
 +
 +/* the elements of the Function and Private variables the code of `entry` gets, after
-+ * specialization (lookup as for the workgroup size), at most UINT64_MAX; false when an array
-+ * length is no known constant (a spec constant operation), the types nest past 64 levels or
-+ * in a loop, or out of host memory. entry NULL: every one of the module's. Else the Function
++ * specialization (lookup as for the workgroup size), at most UINT64_MAX; false with the
++ * reason in *why (a static string; why may be NULL) when an array length is one the scan does
++ * not evaluate (a 64-bit spec constant, a spec constant operation on vectors, floats or
++ * composites) or a spec constant operation that is no valid length after specialization
++ * (it wraps, divides by 0, ...: see vkr_spirv.c, spec_op_value), the types nest past 64
++ * levels or in a loop, or out of host memory. entry NULL: every one of the module's. Else the Function
 + * variables of the functions it reaches through calls (both Mac compilers translate only
 + * those) and the Private ones: every one of the module's (MoltenVK's SPIRV-Cross declares
 + * each in every entry point it compiles; Mesa's spirv_to_nir before SPIR-V 1.4 makes them all
@@ -1857,35 +2562,42 @@ index 0000000..1b79868
 +vkr_spirv_function_elements(const struct vkr_spirv_info *info,
 +                            const struct vkr_spirv_entry *entry,
 +                            bool interface_globals,
-+                            bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                            vkr_spirv_lookup lookup,
 +                            const void *data,
-+                            uint64_t *count);
++                            uint64_t *count,
++                            const char **why);
 +
 +/* the bytes the Workgroup variables the code of `entry` gets take at least, after
 + * specialization (lookup as for the workgroup size): their sum, or the largest Block one
-+ * when that is more; no padding, an array length from a spec constant operation counts
-+ * once. Which variables: as the Private ones of vkr_spirv_function_elements. Against
++ * when that is more; no padding, a 64-bit SpecId length counts once (without lookup also
++ * one from a spec constant operation an app may still specialize that is no valid length
++ * with the defaults).
++ * Which variables: as the Private ones of vkr_spirv_function_elements. Against
 + * maxComputeSharedMemorySize (VUID-RuntimeSpirv-Workgroup-06530): a Workgroup uint[2^32-1]
-+ * passed the scan and spirv-val. False when the types nest past 64 levels or in a loop or
-+ * out of host memory. */
++ * passed the scan and spirv-val. False with the reason in *why (as for the elements) when a
++ * spec constant operation is no valid length after specialization or one the scan does not
++ * evaluate, the types nest past 64 levels or in a loop, or out of host memory. */
 +bool
 +vkr_spirv_workgroup_bytes(const struct vkr_spirv_info *info,
 +                          const struct vkr_spirv_entry *entry,
 +                          bool interface_globals,
-+                          bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                          vkr_spirv_lookup lookup,
 +                          const void *data,
-+                          uint64_t *bytes);
++                          uint64_t *bytes,
++                          const char **why);
 +
 +/* every Input and Output variable of an entry point's interface, but built-ins, takes at
 + * most the locations `limits` gives its model and storage class (after the outer array of
 + * per-vertex ones; VUID-RuntimeSpirv-Location-06272), from its Location on; lookup as for
-+ * the workgroup size, NULL for a module (a length from a SpecId counts once, as spirv-val
-+ * counts it, whose walk over locations grows with them: an Input of a struct of uint[2^32-1]
-+ * took it past 512 MB). False with why set. */
++ * the workgroup size, NULL for a module (a length from a SpecId, or from a spec constant
++ * operation on one, counts once, as spirv-val counts it, whose walk over locations grows with
++ * them: an Input of a struct of uint[2^32-1] took it past 512 MB). False with why set, also
++ * for a spec constant operation that is no valid length or that the scan does not evaluate
++ * (as for the elements). */
 +bool
 +vkr_spirv_interface_ok(const struct vkr_spirv_info *info,
 +                       const struct vkr_spirv_io_limits *limits,
-+                       bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                       vkr_spirv_lookup lookup,
 +                       const void *data,
 +                       char *why,
 +                       size_t why_size);

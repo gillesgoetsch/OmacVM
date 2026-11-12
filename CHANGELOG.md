@@ -25,6 +25,32 @@ in more words.
   The VM now looks the name up among your running apps and shows the full one when exactly one
   fits; `logs/qemu.log`, the app's log and `omacvm check` keep the 15 letters (the journal line
   names both). It comes with Update VM; nothing changes on the Mac. See #624, reported by @epicoun.
+- **Venus no longer refuses the shaders of ggml's Vulkan backend** (#624, cause found by @hadiskeini;
+  reported by @Fail-Safe, @dandomin and @epicoun): from 3.2.21 Venus refused every shader
+  with a local array whose size is a specialization constant expression
+  (`float a[WMITER * TM]`), so llama.cpp, whisper.cpp and Superwhisper's workers lost their
+  GPU context when they created their matrix multiply pipelines; Superwhisper's Offline cleanup
+  worker had no CPU fallback. OmacVM now works such sizes out after the app's specialization,
+  as the Mac's shader compilers do. An expression whose value drivers could read differently
+  (an overflow, a division by 0, a negative operand of a signed division, a shift past the
+  width) or whose result is no valid size is still refused, and the qemu.log line now says
+  which kind it was. Of the 1267 shaders in llama.cpp b11791's Vulkan library, 603 were
+  refused before; with their default values 8 are now (flash attention, whose defaults give an
+  empty array; ggml always sets them, and with its head sizes they pass). Workgroup arrays of
+  such a size are counted at their real size against the GPU's shared memory (before they
+  counted as one element). Workgroup arrays and shader input and output arrays of such a size
+  that OmacVM does not work out (VectorShuffle, CompositeInsert, QuantizeToF16, a 64-bit
+  specialization constant, a part taken from a composite of other than 3 parts) or that is no
+  valid size are now refused, input and output ones already at `vkCreateShaderModule` when
+  the size does not depend on the app's specialization; before they passed as one element.
+  None of the 1267 ggml shaders has one. A pipeline that gives the same specialization constant twice is
+  refused (Vulkan forbids it; vkr and MoltenVK could read different values).
+- **llama.cpp on KosmicKrisp still needs `--no-host`** (#786): with KosmicKrisp (macOS 26 and
+  newer), llama.cpp b11791 still stops while it loads a model with its default flags ("not enough
+  space in the buffer"). Venus maps large buffers at a smaller alignment than it reports, and
+  llama.cpp's pinned host buffer needs that alignment. Start its tools with `--no-host`
+  (`llama-bench --no-host 1`); then they run on the GPU. On MoltenVK llama.cpp runs with its
+  default flags. whisper.cpp is not affected.
 
 ## 3.4.4
 
