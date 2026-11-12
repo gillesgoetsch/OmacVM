@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.6 (unreleased)
+
+- **Move to Omarchy 4.5**: a Resume could stop at step 4 with "OmacVM did not update in the VM"
+  and no reason, and the next Resume went on (#771). Right after the VM starts, its SSH can let the
+  Mac in and then close the connection for a moment, and ssh says nothing then. The update's steps
+  in the VM before the copy of OmacVM, and the copy, now try again for up to 2 minutes when SSH
+  drops, as the move's own steps already did; the copy first puts back a copy that was cut between
+  its two moves. An apply that stops without a message of its own says so, with the exit code and
+  its last step. The move keeps the last 9 apply logs (was 4), each failed one with apply's exit code.
+
 ## 3.4.5
 
 Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need about
