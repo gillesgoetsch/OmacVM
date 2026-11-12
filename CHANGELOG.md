@@ -3,80 +3,58 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.4.5 (unreleased)
+## 3.4.5
 
-- **Mission Control** comes with version 1.0.2 of the
-  [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by
+Mission Control is a normal option now, with a picture of what it does; Omarchy 4.5 VMs get their
+disk speed back; a new VM no longer needs about 70 GB free; the Bridge no longer asks macOS for the
+Wi-Fi details every 5 seconds.
+
+- **Mission Control** is no longer experimental. It stays off until you switch it on (Omarchy 4.5,
+  Trackpad gestures), and its row in the VM window (Input) now shows a small picture of what it
+  does: the windows spread out, with the workspaces along the top. It comes with version 1.0.2 of
+  the [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by
   @gillesgoetsch: a Hyprland config reload while the overview is open no longer leaves most keys
   doing nothing until the next open and close. It comes with Update VM; with Mission Control on,
   Omarchy's shell restarts once.
-- **Mission Control** is no longer experimental. It stays off until you switch it on (Omarchy 4.5,
-  Trackpad gestures). Its row in the app's VM window (Input) now shows a small picture of what it
-  does: the windows spread out, with the workspaces along the top. The
-  [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by
-  @gillesgoetsch.
-- **Mission Control** with **Swipe out to macOS** on: a sideways swipe in the open overview on the
-  first workspace (or the empty last one) moved the Mac's Space instead of going through the
-  overview's workspaces. While the overview is open, Swipe out to macOS now waits: sideways swipes
-  stay in the VM, on every display. It comes with Update VM; nothing changes on the Mac.
-- **A Vulkan app that lost its graphics on the Mac** was named by its first 15 letters in the
-  VM's note and journal ("cleanup-worker- stopped drawing" for Superwhisper's
-  `cleanup-worker-vulkan`): the VM's kernel cuts process names there, and that is all the Mac gets.
-  The VM now looks the name up among your running apps and shows the full one when exactly one
-  fits; `logs/qemu.log`, the app's log and `omacvm check` keep the 15 letters (the journal line
-  names both). It comes with Update VM; nothing changes on the Mac. See #624, reported by @epicoun.
-- **Venus no longer refuses the shaders of ggml's Vulkan backend** (#624, cause found by @hadiskeini;
-  reported by @Fail-Safe, @dandomin and @epicoun): from 3.2.21 Venus refused every shader
-  with a local array whose size is a specialization constant expression
-  (`float a[WMITER * TM]`), so llama.cpp, whisper.cpp and Superwhisper's workers lost their
-  GPU context when they created their matrix multiply pipelines; Superwhisper's Offline cleanup
-  worker had no CPU fallback. OmacVM now works such sizes out after the app's specialization,
-  as the Mac's shader compilers do. An expression whose value drivers could read differently
-  (an overflow, a division by 0, a negative operand of a signed division, a shift past the
-  width) or whose result is no valid size is still refused, and the qemu.log line now says
-  which kind it was. Of the 1267 shaders in llama.cpp b11791's Vulkan library, 603 were
-  refused before; with their default values 8 are now (flash attention, whose defaults give an
-  empty array; ggml always sets them, and with its head sizes they pass). Workgroup arrays of
-  such a size are counted at their real size against the GPU's shared memory (before they
-  counted as one element). Workgroup arrays and shader input and output arrays of such a size
-  that OmacVM does not work out (VectorShuffle, CompositeInsert, QuantizeToF16, a 64-bit
-  specialization constant, a part taken from a composite of other than 3 parts) or that is no
-  valid size are now refused, input and output ones already at `vkCreateShaderModule` when
-  the size does not depend on the app's specialization; before they passed as one element.
-  None of the 1267 ggml shaders has one. A pipeline that gives the same specialization constant twice is
-  refused (Vulkan forbids it; vkr and MoltenVK could read different values).
+- **Mission Control with Swipe out to macOS**: a sideways swipe in the open overview on the first
+  workspace (or the empty last one) moved the Mac's Space instead of going through the overview's
+  workspaces. While the overview is open, sideways swipes now stay in the VM, on every display. It
+  comes with Update VM.
+- **Disk speed on Omarchy 4.5** (#778): Omarchy 4.5 sets the kyber I/O scheduler on every disk,
+  also on the VM's virtual disk, where the Mac does the real scheduling. 4k random writes ran at
+  about half the speed of Omarchy 4.0. OmacVM's own rule
+  (`/etc/udev/rules.d/61-omacvm-io-scheduler.rules`) now keeps the VM's own disks (QEMU's NVMe and
+  virtio disks) on no scheduler; a USB disk passed in keeps Omarchy's choice. Update VM puts it in
+  place and switches the running VM at once; `omacvm check` has a "disk scheduler" line.
+- **New VM from a prebuilt image** no longer needs about 70 GB free (#305, reported by
+  @brianmerchant). The image's 64 GB disk holds about 7 GB; its unpack (`tar -xS`) sometimes made
+  macOS write the other 57 GB as real zeros, and on a Mac with less space the disk filled. OmacVM
+  now unpacks the disk itself, so it stays at about 7 GB. Before the download it checks for room
+  (the VM's disk, the download and 10 GB kept free for macOS) and says what is needed; during the
+  unpack it stops, and removes the unfinished VM, if the drive gets below 10 GB free.
+- **Bridge** no longer keeps macOS's `locationd` busy while a VM runs. It read the Wi-Fi name,
+  BSSID, security and country code every 5 seconds, and each read made macOS check the Location
+  permission: about 2 % of a core on a MacBook Air M2. It now reads them when the Wi-Fi changes,
+  after a wake and at least every 5 minutes; the signal is still read every 5 seconds. The bar
+  shows the same as before.
+- **Venus no longer refuses the shaders of ggml's Vulkan backend** (#624, cause found by
+  @hadiskeini, reported by @Fail-Safe, @dandomin and @epicoun). From 3.2.21 Venus refused every
+  shader with a local array whose size is a specialization constant expression
+  (`float a[WMITER * TM]`), so llama.cpp, whisper.cpp and Superwhisper's workers lost their GPU
+  context when they created their matrix multiply pipelines. OmacVM now works such sizes out after the app's specialization, as
+  the Mac's shader compilers do, and counts workgroup arrays of such a size at their real size.
+  Expressions that drivers could read differently (an overflow, a division by 0, a shift past the
+  width) are still refused, and `logs/qemu.log` says which kind it was. Of the 1267 shaders in
+  llama.cpp b11791's Vulkan library, 603 were refused before; none are with the values ggml sets.
 - **llama.cpp on KosmicKrisp still needs `--no-host`** (#786): with KosmicKrisp (macOS 26 and
-  newer), llama.cpp b11791 still stops while it loads a model with its default flags ("not enough
-  space in the buffer"). Venus maps large buffers at a smaller alignment than it reports, and
-  llama.cpp's pinned host buffer needs that alignment. Start its tools with `--no-host`
-  (`llama-bench --no-host 1`); then they run on the GPU. On MoltenVK llama.cpp runs with its
-  default flags. whisper.cpp is not affected.
-- **New VM from a prebuilt image** no longer fills the Mac's disk. The image's 64 GB disk holds
-  about 7 GB of data; its unpack (`tar -xS`) sometimes made macOS write the other 57 GB as real
-  zeros for a while, so a setup needed about 70 GB free, and on a Mac with less the disk filled
-  (a MacBook Air hung and restarted). It happened in about one setup in three (#305, reported by @brianmerchant, was the
-  same). OmacVM now unpacks the disk itself (`src/prebuilt/unpack.py`): the file gets its full
-  size first and every write lands inside it, so it stays at its 7 GB. Before the download it
-  checks for the VM's disk, the download and 10 GB kept free for macOS, and says what is needed;
-  during the unpack it stops, and removes the unfinished VM, if the drive gets below 10 GB free.
-  What a run that was killed or cut short by a restart left behind is removed before the next
-  one checks its space.
-- **Bridge** no longer keeps macOS's `locationd` busy while a VM runs. For the Wi-Fi name it read
-  the network's name, BSSID, security type and country code every 5 seconds, and macOS checks the
-  Location Services permission with `locationd` on each of those reads: about 2 % of a core on a
-  MacBook Air M2 the whole time a VM was open (8 % was seen on an M1 Max). The Bridge now reads
-  these four only when macOS says the Wi-Fi changed, after a wake, when the connection or the
-  permission changes, and at least every 5 minutes; the signal is still read every 5 seconds. On the Air `locationd` is back at
-  its idle level. The bar shows the same as before.
-- **Disk speed on Omarchy 4.5**: Omarchy 4.5 sets the kyber I/O scheduler on every disk
-  (`/etc/udev/rules.d/60-omarchy-io-scheduler.rules`), also on the VM's own virtual disk, and sets
-  it again on every change event of the disk. In a VM the Mac does the real I/O scheduling, so
-  kyber mostly adds work: 4k random writes at queue depth 32 ran at about half the speed of no
-  scheduler, as on Omarchy 4.0, and 4k random reads at 0.53 to 0.73x (#778). OmacVM now keeps the VM's own disks (QEMU's NVMe
-  and virtio disks) on no scheduler with its own rule, read after Omarchy's
-  (`/etc/udev/rules.d/61-omacvm-io-scheduler.rules`). A USB disk passed in keeps Omarchy's
-  choice. Update VM puts it in place and switches the running VM at once; `omacvm check` has a
-  "disk scheduler" line.
+  newer) llama.cpp b11791 stops while it loads a model with its default flags ("not enough space
+  in the buffer"). Start its tools with `--no-host` (`llama-bench --no-host 1`); then they run on
+  the GPU. MoltenVK and whisper.cpp are not affected.
+- **A Vulkan app that lost its graphics** is named in full in the VM's note (#624, reported by
+  @epicoun). The VM's kernel cuts process names at 15 letters ("cleanup-worker-" for Superwhisper's
+  `cleanup-worker-vulkan`); the VM now looks the full name up among the running apps when exactly
+  one fits. `logs/qemu.log`, the app's log and `omacvm check` keep the 15 letters. It comes with
+  Update VM.
 
 ## 3.4.4
 
