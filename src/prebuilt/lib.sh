@@ -163,16 +163,38 @@ printable() {
   LC_ALL=C sed -l -e $'s/\x1b\\[[0-9;]*m//g' -e 's/[^[:print:][:blank:]]//g' -e 's/^\(.\{240\}\).*/\1/'
 }
 
-# prebuilt_unpack_drop WORK: WORK goes if it is OmacVM's unpack folder (the
-# marker inside). A run that crashed or was killed leaves one behind (53-56 GB
-# after the MacBook Air's panic, 2026-11-11), and the next run clears it before
-# it checks the free space. Status 1, WORK kept, when it is there without the
-# marker: not OmacVM's to delete.
+# prebuilt_unpack_drop WORK: WORK goes if it is OmacVM's unpack folder. A run
+# that crashed or was killed leaves one behind (53-56 GB after the MacBook
+# Air's panic, 2026-11-11), and the next run clears it before it checks the
+# free space. OmacVM's is: a folder with the marker; an empty folder (killed
+# before the marker was written); or what 3.4.4 and earlier left, with no
+# marker: a folder that holds only $PREBUILT_NAME/, which holds only a plain
+# disk.img or nothing. Status 1, WORK kept, for anything else.
 prebuilt_unpack_drop() {
-  local u=$1
+  local u=$1 o=$1/$PREBUILT_NAME
   [[ -e $u || -L $u ]] || return 0
-  [[ -d $u && ! -L $u && -f $u/$PREBUILT_UNPACK_MARK && ! -L $u/$PREBUILT_UNPACK_MARK ]] || return 1
-  rm -rf "$u"
+  [[ -d $u && ! -L $u ]] || return 1
+  if [[ -f $u/$PREBUILT_UNPACK_MARK && ! -L $u/$PREBUILT_UNPACK_MARK ]]; then rm -rf "$u"; return; fi
+  # find, not globs: a name with a newline counts twice, so it is kept.
+  case $(find "$u" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ') in
+    0) rmdir "$u"; return ;;
+    1) [[ -d $o && ! -L $o ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  case $(find "$o" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ') in
+    0) ;;
+    1) [[ -f $o/disk.img && ! -L $o/disk.img && $(stat -f %l "$o/disk.img") == 1 ]] || return 1
+       rm -f "$o/disk.img" ;;
+    *) return 1 ;;
+  esac
+  rmdir "$o" && rmdir "$u"
+}
+
+# prebuilt_unpack_clear WORK: prebuilt_unpack_drop, or stop with a message
+# that names the folder (hidden in Finder: its name starts with a dot).
+prebuilt_unpack_clear() {
+  prebuilt_unpack_drop "$1" ||
+    die "$1 holds files OmacVM did not expect there, so it was left alone: move that folder away (it is hidden in Finder) and try again"
 }
 
 # prebuilt_unpack_disk WORK DEST: OmacVM.app's image is <bundle>/disk.img and
@@ -197,7 +219,7 @@ prebuilt_unpack_drop() {
 prebuilt_unpack_disk() {
   local u=$1 f dir err size max msg
   [[ $PB_DISK_GB =~ ^[0-9]{1,4}$ && $PB_UNPACKED_KB =~ ^[0-9]{1,12}$ ]] || die "bad disk size in the prebuilt manifest"
-  prebuilt_unpack_drop "$u" || die "$u is in the way and was not made by OmacVM: move it away and try again"
+  prebuilt_unpack_clear "$u"
   mkdir "$u" && : > "$u/$PREBUILT_UNPACK_MARK" || die "could not make $u"
   f=$u/disk.img err=$u/unpack.err dir=$(dirname "$PB_MANIFEST")
   size=$(( 10#$PB_DISK_GB * 1073741824 )); max=$(( 10#$PB_UNPACKED_KB * 1024 + 1073741824 ))

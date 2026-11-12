@@ -5,9 +5,10 @@
 # bsdtar's last write, 56 GB past the end, took 61 GB and filled a Mac). Here:
 # the same bytes as bsdtar gives, sparse; every odd archive refused with the
 # file gone; the free-space floor and the allocation bound stop it; the unpack
-# folder is cleared only when it carries OmacVM's marker; the message reaches
-# the app. Under every python3 found (the app's own 3.13 when built, or
-# OMACVM_TEST_PYTHON). macOS only (APFS holes).
+# folder is cleared only when it is OmacVM's (its marker, empty, or 3.4.4's
+# Omarchy/disk.img); the message reaches the app. Under every python3 found
+# (the app's own 3.13 when built, or OMACVM_TEST_PYTHON). macOS only (APFS
+# holes).
 #   src/tests/prebuilt-unpack.sh
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -223,11 +224,40 @@ o.write(bytes(1024))' | zstd -q -c --long=27 > "$T/cache/app/$part"
     mkdir -p "$V/.unpack"; : > "$V/.unpack/$PREBUILT_UNPACK_MARK"; mkfile -n 1m "$V/.unpack/disk.img"
     out=$(run); rc=$?
     expect "lib: a marked leftover is cleared and the unpack runs" "0 yes" "$rc $([[ -f $V/disk.img ]] && echo yes || echo no)"
+    # What 3.4.4 and earlier left (no marker; a panic or force quit mid-unpack,
+    # #305), and a run killed before the marker: cleared too.
+    rm -f "$V/disk.img"; mkdir -p "$V/.unpack/Omarchy"; mkfile -n 1m "$V/.unpack/Omarchy/disk.img"
+    out=$(run); rc=$?
+    expect "lib: 3.4.4's leftover (Omarchy/disk.img) is cleared and the unpack runs" "0 yes no" \
+      "$rc $([[ -f $V/disk.img ]] && echo yes || echo no) $([[ -e $V/.unpack ]] && echo yes || echo no)"
+    rm -f "$V/disk.img"; mkdir -p "$V/.unpack/Omarchy"
+    expect "lib: 3.4.4's leftover with no disk.img yet: cleared" "0 no" "$(prebuilt_unpack_drop "$V/.unpack"; echo "$? $([[ -e $V/.unpack ]] && echo yes || echo no)")"
+    mkdir "$V/.unpack"
+    out=$(run); rc=$?
+    expect "lib: an empty folder is cleared and the unpack runs" "0 yes" "$rc $([[ -f $V/disk.img ]] && echo yes || echo no)"
+    # Anything else is kept, with a message that names the folder.
+    kept() {   # WHAT WANT-FILE: drop refuses, the file is still there
+      expect "lib: kept: $1" "1 yes" "$(prebuilt_unpack_drop "$V/.unpack"; echo "$? $([[ -e $2 || -L $2 ]] && echo yes || echo no)")"
+      rm -rf "$V/.unpack"
+    }
+    mkdir -p "$V/.unpack"; echo mine > "$V/.unpack/keep"; kept "a file of someone else's" "$V/.unpack/keep"
+    mkdir -p "$V/.unpack/Omarchy"; echo mine > "$V/.unpack/Omarchy/notes"; kept "Omarchy/ with another file" "$V/.unpack/Omarchy/notes"
+    mkdir -p "$V/.unpack/Omarchy"; mkfile -n 1m "$V/.unpack/Omarchy/disk.img"; echo mine > "$V/.unpack/notes"
+    kept "Omarchy/disk.img and another file beside Omarchy/" "$V/.unpack/notes"
+    mkdir -p "$V/.unpack/Omarchy"; mkfile -n 1m "$V/.unpack/Omarchy/disk.img"; mkdir "$V/.unpack/Omarchy/sub"
+    kept "Omarchy/disk.img and a folder beside it" "$V/.unpack/Omarchy/disk.img"
+    mkdir -p "$V/.unpack"; ln -s "$T/w/Omarchy" "$V/.unpack/Omarchy"; kept "Omarchy/ as a symlink" "$T/w/Omarchy/disk.img"
+    mkdir -p "$V/.unpack/Omarchy"; ln -s "$T/victim" "$V/.unpack/Omarchy/disk.img"; kept "disk.img as a symlink" "$T/victim"
+    mkdir -p "$V/.unpack/Omarchy"; echo two > "$T/two"; ln "$T/two" "$V/.unpack/Omarchy/disk.img"; kept "disk.img with a second link" "$T/two"
+    mkdir -p "$V/.unpack/Omarchy/disk.img"; kept "disk.img as a folder" "$V/.unpack/Omarchy/disk.img"
+    mkdir -p "$V/.unpack/Other"; mkfile -n 1m "$V/.unpack/Other/disk.img"; kept "another folder name" "$V/.unpack/Other/disk.img"
+    expect "lib: their targets untouched" "secret two" "$(cat "$T/victim") $(cat "$T/two")"
     rm -f "$V/disk.img"; mkdir -p "$V/.unpack"; echo mine > "$V/.unpack/keep"
     out=$(run); rc=$?
-    expect "lib: an unmarked folder is not OmacVM's: refused" "1 yes" "$rc $([[ $out == *"not made by OmacVM"* ]] && echo yes || echo "$out")"
+    expect "lib: a folder that is not OmacVM's: refused, the path named, no claim who made it" "1 yes no" \
+      "$rc $([[ $out == *"$V/.unpack holds files OmacVM did not expect there"*"hidden in Finder"* ]] && echo yes || echo "$out") $([[ $out == *"not made by"* ]] && echo yes || echo no)"
     expect "lib: and left as it was" mine "$(cat "$V/.unpack/keep")"
-    expect "lib: drop leaves it too" "1 mine" "$(prebuilt_unpack_drop "$V/.unpack"; echo "$? $(cat "$V/.unpack/keep")")"
+    rm -rf "$V/.unpack"
     rm -rf "$V/.unpack"; ln -s "$T/w" "$V/.unpack"
     expect "lib: a symlink as the folder is not cleared" "1 yes" "$(prebuilt_unpack_drop "$V/.unpack"; echo "$? $([[ -d $T/w/Omarchy ]] && echo yes || echo no)")"
     rm -f "$V/.unpack"
@@ -270,7 +300,7 @@ expect "reserve: the same 10 GiB as DiskSize.macReserve" "1 1" \
 # prebuilt-vm.sh: a leftover goes before the space check; the trap removes only a marked folder.
 P=$R/app/scripts/prebuilt-vm.sh
 expect "setup: leftover cleared before the space check" 1 \
-  "$(grep -A1 'prebuilt_unpack_drop "$VM_DIR/.unpack" || die' "$P" | grep -c 'prebuilt_space_ok')"
+  "$(grep -A1 '^prebuilt_unpack_clear "$VM_DIR/.unpack"$' "$P" | grep -c 'prebuilt_space_ok')"
 expect "setup: no unmarked rm -rf of the unpack folder" 0 "$(grep -c 'rm -rf "$VM_DIR/.unpack"' "$P")"
 expect "no tar -xS left for the disk (code, not comments)" 0 "$(cat "$R/src/prebuilt/lib.sh" "$R/src/prebuilt/make-image.sh" | grep -c '^[^#]*tar -xS')"
 expect "no dd conv=sparse left in make-image.sh" 0 "$(grep -c '^[^#]*conv=sparse' "$R/src/prebuilt/make-image.sh")"
