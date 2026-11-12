@@ -29,6 +29,12 @@ in more words.
   drops, as the move's own steps already did; the copy first puts back a copy that was cut between
   its two moves. An apply that stops without a message of its own says so, with the exit code and
   its last step. The move keeps the last 9 apply logs (was 4), each failed one with apply's exit code.
+- **Apple ISO keyboards** (#784, reported by @epicoun): the key left of 1 and the key left of Z
+  (Y on German keyboards) reached the VM swapped, so on a German ISO keyboard `^` typed `<` and `<`
+  typed `^`. OmacVM's QEMU has carried a fix for this, but it only acts when it is told the keyboard
+  is ISO, and the app never told it. The app now does at each VM start, from macOS's own keyboard
+  type, as OmacVM Gestures already did. Needs the app update, from the VM's next start; an XKB swap
+  set up in the VM as a workaround must be taken out again.
 
 ## 3.4.5
 
