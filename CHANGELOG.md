@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.6 (unreleased)
+
+- **The Mac's pointer in full screen** (#788, reported and cause found by @hadiskeini): with the
+  hidden `macPointer` setting and "Keep the Dock and hot corners away" on, the cursor pushed
+  against a display edge while moving along it stopped about 200 points before a corner, while
+  the VM's pointer went on to the corner. Near a corner OmacVM moves the Mac's cursor itself; its
+  first move (off the edge) came before the cursor was detached from the mouse, so the push could
+  move it on in between and OmacVM lost track of it for the rest of that visit. The cursor is now
+  detached first, and OmacVM takes the cursor's real place when the two differ. Needs the app
+  update. Without `macPointer` the Mac's cursor is hidden over the VM, so this was not seen there.
+
 ## 3.4.5
 
 Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need about
