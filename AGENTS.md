@@ -624,7 +624,7 @@ a copy of the checkout, not from one you edit (bash reads scripts as it goes).
   changed" checked, the test app's window on a virtual display made for the run (only while the
   session is locked; `app/scripts/dev/virtual-display.m --while-locked` goes when it unlocks, the test
   app killed first). It and the other e2e
-  harnesses ask again before every step (`src/tests/e2e/person.sh`: a remote session, input not theirs) and wait
+  harnesses ask again before every step (`src/tests/e2e/person.sh`: input not theirs; an idle remote session is the owner from elsewhere and does not count) and wait
   while someone is there; `--pause-ci` stops the test Mac's CI runners for the run (`ci-runners.sh`).
 - **Logs**: `~/Library/Logs/omacvm-{bridge,gestures}.log`; guest
   `journalctl --user -u omacvm-bridge-osd` (and `-u omacvm-bridge-events`, the shared event stream), `journalctl -u omacvm-gestures`,
