@@ -16,7 +16,7 @@ Test: app/runtime/Tests/display/test-pointer-guard.c.
 
 diff --git a/ui/omacvm-pointer-guard.h b/ui/omacvm-pointer-guard.h
 new file mode 100644
-index 0000000..7d12414
+index 0000000..ff0313c
 --- /dev/null
 +++ b/ui/omacvm-pointer-guard.h
 @@ -0,0 +1,445 @@
@@ -105,7 +105,7 @@ index 0000000..7d12414
 +} OmacVMGuard;
 +
 +/*
-+ * What the caller does after one event, in this order: warp, then (de)tach.
++ * What the caller does after one event, in this order: detach, warp, attach.
 + * place: the guest gets (x, y) of the guard for this event, not the event's
 + * location (held, or just let go). let_go_out (for the caller's debug log):
 + * the warp in flight taken out of this motion had the let-go's in it;
