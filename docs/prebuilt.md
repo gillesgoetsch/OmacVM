@@ -85,9 +85,21 @@ after a build, the VM shuts down and the seed is deleted (also when anything
 fails). A run that fails before the VM is ready also deletes the disk and
 firmware variables it made, so building again starts over.
 
-Before the download it checks for free space (the parts plus the unpacked
-disk plus 2 GB). Only `Omarchy/disk.img` is taken from the archive, and only
-as a plain file (not a link). The manifest's values are checked before use,
+Before the download it checks for free space: the parts plus the unpacked
+disk, and 10 GiB left for macOS (as the app keeps when a disk grows or
+moves). The disk is unpacked by `src/prebuilt/unpack.py`, not `tar -xS`:
+the file gets its full size first and every write lands inside it, so it
+stays sparse (bsdtar's write of the last region, 56 GB past the end of the
+file, sometimes made APFS write 61 GB of zeros). It stops, and the
+unfinished VM goes, when the drive gets below 10 GiB free or the disk takes
+more than the image's data and 1 GiB. Tests prove these checks with
+`OMACVM_TEST_FREE_FILE` (a file holding a number of KiB, read at every
+check: it counts as the free space when it is less than the drive has, never
+more), never with a real full drive: a full APFS volume, even inside a disk
+image, panicked macOS 27 twice on 2026-11-11. A folder an earlier run left
+(`.unpack`, marked as OmacVM's) is removed before the space check. Only
+`Omarchy/disk.img` is taken from the archive, as a plain file (not a link)
+of the manifest's disk size; anything else in it is refused. The manifest's values are checked before use,
 and the first boot's log is cut to printable text before the app or the
 terminal shows it. The password is hashed on the Mac (`src/prebuilt/sha512crypt.py`,
 the same `$6$` hash as `openssl passwd -6`; macOS's own openssl has no
@@ -105,11 +117,14 @@ prebuilt-manifest omacvm-prebuilt-VERSION-app.json`.
 
 ```bash
 shasum -a 256 -c omacvm-prebuilt-3.0.8-app.sha256
-cat omacvm-prebuilt-3.0.8-app.tar.zst.part-* | zstd -dc --long=27 | tar -xSf -
+mkdir Omarchy
+cat omacvm-prebuilt-3.0.8-app.tar.zst.part-* | zstd -dc --long=27 |
+  python3 src/prebuilt/unpack.py extract Omarchy/disk.img Omarchy/disk.img 68719476736
 ```
 
-That gives `Omarchy/disk.img`: use it through the app or
-`omacvm build --prebuilt`.
+That gives `Omarchy/disk.img` (64 GiB, about 7 GB on the Mac): use it
+through the app or `omacvm build --prebuilt`. `tar -xSf -` gives the same
+bytes, but on APFS it sometimes takes the full 64 GB (above).
 
 ## How images are made
 

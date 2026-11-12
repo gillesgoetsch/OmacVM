@@ -51,6 +51,16 @@ in more words.
   llama.cpp's pinned host buffer needs that alignment. Start its tools with `--no-host`
   (`llama-bench --no-host 1`); then they run on the GPU. On MoltenVK llama.cpp runs with its
   default flags. whisper.cpp is not affected.
+- **New VM from a prebuilt image** no longer fills the Mac's disk. The image's 64 GB disk holds
+  about 7 GB of data; its unpack (`tar -xS`) sometimes made macOS write the other 57 GB as real
+  zeros for a while, so a setup needed about 70 GB free, and on a Mac with less the disk filled
+  (a MacBook Air hung and restarted). It happened in about one setup in three (#305, reported by @brianmerchant, was the
+  same). OmacVM now unpacks the disk itself (`src/prebuilt/unpack.py`): the file gets its full
+  size first and every write lands inside it, so it stays at its 7 GB. Before the download it
+  checks for the VM's disk, the download and 10 GB kept free for macOS, and says what is needed;
+  during the unpack it stops, and removes the unfinished VM, if the drive gets below 10 GB free.
+  What a run that was killed or cut short by a restart left behind is removed before the next
+  one checks its space.
 
 ## 3.4.4
 

@@ -69,7 +69,7 @@ watch=
 cleanup() {
   if [[ -n $watch ]]; then kill "$watch" 2>/dev/null || true; fi
   if qemu_running; then qemu_quit; fi
-  rm -f "$SEED"; rm -rf "$VM_DIR/.unpack"
+  rm -f "$SEED"; prebuilt_unpack_drop "$VM_DIR/.unpack" || true
   [[ -e $VM_DIR/ready ]] && return 0
   if (( MADE_VARS )); then rm -f "$VM_DIR/efi-vars.fd"; fi
   if (( MADE_DISK )) && [[ -e $VM_DIR/disk.img ]]; then
@@ -88,7 +88,10 @@ if ! prebuilt_lookup app 2>/dev/null; then
   exit 0
 fi
 log "release $PB_TAG: Omarchy $PB_OMARCHY, OmacVM $PB_VERSION"
-# Room for the parts and the unpacked disk: a full disk would fail half way.
+# Room for the parts and the unpacked disk, and 10 GiB left for macOS. What an
+# earlier run left (killed, or the Mac went down) goes first: it is not free
+# space, but it would count against this one.
+prebuilt_unpack_drop "$VM_DIR/.unpack" || die "$VM_DIR/.unpack is in the way and was not made by OmacVM: move it away and try again"
 msg=$(prebuilt_space_ok "$VM_DIR" 2>&1) || die "$msg"
 HASH=$(printf '%s' "$PASSWORD" | python3 "$OMACVM_SRC/prebuilt/sha512crypt.py") || die "could not hash the password"
 [[ $HASH == '$6$'* ]] || die "could not hash the password"
@@ -111,7 +114,8 @@ log "downloaded and checked in $(( $(date +%s) - t0 )) s"
 # ---------- 3. unpack ----------
 step 3 "Unpacking the VM"
 t0=$(date +%s)
-# Only <bundle>/disk.img, as a plain file (lib.sh).
+# Only <bundle>/disk.img, as a plain file, sparse, and stopped before the Mac
+# fills up (lib.sh, unpack.py).
 MADE_DISK=1
 prebuilt_unpack_disk "$VM_DIR/.unpack" "$VM_DIR/disk.img"
 prebuilt_cleanup

@@ -147,17 +147,21 @@ stage_package() {
   # The raw disk without its zeroed free space (holes; tar keeps them).
   # No firmware variables: the install makes fresh ones and GRUB boots
   # from the disk's fallback path (\EFI\BOOT\BOOTAA64.EFI).
+  # unpack.py copy, not dd conv=sparse: dd skips zero blocks and then writes
+  # past the end of the file, which APFS sometimes fills with real zeros
+  # (lib.sh prebuilt_unpack_disk).
   log "copying the disk without its free space"
   stage="$WORK/$name"; mkdir -p "$stage"
-  dd if="$b/disk.img" of="$stage/disk.img" bs=4m conv=sparse status=none
+  python3 -I "$R/src/prebuilt/unpack.py" copy "$b/disk.img" "$stage/disk.img" --min-free $(( PREBUILT_MAC_RESERVE_KB * 1024 )) ||
+    die "could not copy the disk"
   sparse_disk "$stage/disk.img"
   compress_stage "$stage"
 }
 
 # sparse_disk FILE: every zeroed MiB of a raw disk becomes a hole, then a
-# check. dd conv=sparse alone once (2026-10-08) left the app's 64 GB disk
-# 62 GB allocated: tar packs allocated zeros as data, and every VM made from
-# that image took 60 GB on the Mac instead of 7.
+# check. The copy once (2026-10-08, dd conv=sparse then) left the app's 64 GB
+# disk 62 GB allocated: tar packs allocated zeros as data, and every VM made
+# from that image would take 60 GB on the Mac instead of 7.
 sparse_disk() {
   local f=$1 kb
   kb=$(python3 "$R/src/prebuilt/sparsify.py" "$f" | awk '{ print $2 }') || die "could not make $f sparse"
@@ -232,9 +236,11 @@ compress_stage() {
 stage_repack() {
   local base=omacvm-prebuilt-$VERSION-$ROUTE stage
   ls "$OUT/$base".tar.zst.part-* >/dev/null || die "nothing to repack in $OUT"
-  rm -rf "$WORK"; mkdir -p "$WORK"
-  cat "$OUT/$base".tar.zst.part-* | zstd -dc --long=27 -q | { tar -xSf - -C "$WORK" && cat > /dev/null; }   # as prebuilt_unpack
-  stage=$(ls -d "$WORK"/"$PREBUILT_NAME"*)
+  rm -rf "$WORK"; stage=$WORK/$PREBUILT_NAME; mkdir -p "$stage"
+  # As prebuilt_unpack_disk (lib.sh): unpack.py, not tar -xS.
+  cat "$OUT/$base".tar.zst.part-* | zstd -dc --long=27 -q |
+    { python3 -I "$R/src/prebuilt/unpack.py" extract "$PREBUILT_NAME/disk.img" "$stage/disk.img" $(( PREBUILT_DISK_GB * 1073741824 )) \
+        --min-free $(( PREBUILT_MAC_RESERVE_KB * 1024 )) && cat > /dev/null; } || die "could not unpack $base"
   sparse_disk "$stage/disk.img"
   compress_stage "$stage"
 }
