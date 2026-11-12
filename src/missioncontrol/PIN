@@ -2,5 +2,5 @@
 # this commit of its repository, byte for byte (SHA256SUMS). Never edited here: a change
 # goes to the plugin's repository, then src/missioncontrol/sync.sh pins the new tag.
 repo https://github.com/gillesgoetsch/omarchy-mac-mission-control.git
-tag v1.0.1
-commit 3ea3858cc52e34dd805df931ee903f5368ef6f89
+tag v1.0.2
+commit 38d7d75f5383ffd629c0683eeab8cf17411cde15

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "mac.missioncontrol",
   "name": "Mac Mission Control",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "Gilles Goetsch",
   "description": "macOS-style Mission Control: a trackpad swipe spreads the windows out, following the fingers, with live previews of every workspace along the top",
   "kinds": [
