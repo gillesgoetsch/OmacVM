@@ -3,6 +3,15 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.6 (unreleased)
+
+- **Apple ISO keyboards** (#784, reported by @epicoun): the key left of 1 and the key left of Z
+  (Y on German keyboards) reached the VM swapped, so on a German ISO keyboard `^` typed `<` and `<`
+  typed `^`. OmacVM's QEMU has carried a fix for this, but it only acts when it is told the keyboard
+  is ISO, and the app never told it. The app now does at each VM start, from macOS's own keyboard
+  type, as OmacVM Gestures already did. Needs the app update, from the VM's next start; an XKB swap
+  set up in the VM as a workaround must be taken out again.
+
 ## 3.4.5
 
 Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need about
