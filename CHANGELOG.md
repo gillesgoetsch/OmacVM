@@ -25,6 +25,12 @@ in more words.
   the size does not depend on the app's specialization; before they passed as one element.
   None of the 1267 ggml shaders has one. A pipeline that gives the same specialization constant twice is
   refused (Vulkan forbids it; vkr and MoltenVK could read different values).
+- **llama.cpp on KosmicKrisp still needs `--no-host`** (#786): with KosmicKrisp (macOS 26 and
+  newer), llama.cpp b11791 still stops while it loads a model with its default flags ("not enough
+  space in the buffer"). Venus maps large buffers at a smaller alignment than it reports, and
+  llama.cpp's pinned host buffer needs that alignment. Start its tools with `--no-host`
+  (`llama-bench --no-host 1`); then they run on the GPU. On MoltenVK llama.cpp runs with its
+  default flags. whisper.cpp is not affected.
 
 ## 3.4.4
 
