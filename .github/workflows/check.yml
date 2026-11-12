@@ -372,8 +372,14 @@ jobs:
       - name: Magic Mouse swipe setting (3 or 4 fingers) and its row, only with a Magic Mouse
         run: src/tests/app-mouse-swipe.sh
 
+      - name: Tests that build the app's SwiftUI sources take a toolchain with SwiftUI's macro plugins (Xcode's when a CLT swiftc comes first)
+        run: src/tests/swift-macros.sh
+
       - name: The VM window's settings stay across launches (defaults, two VMs, 3.0's files, the CLI; Extra brightness as the user left it)
         run: src/tests/app-settings.sh
+
+      - name: The e2e gate's row texts stay UTF-8 (cut by characters) and its result.json is always written
+        run: src/tests/e2e-result.sh
 
       - name: The note when macOS refuses the VM's keyboard tap
         run: src/tests/app-key-access.sh

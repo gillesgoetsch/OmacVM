@@ -987,6 +987,14 @@ The less obvious ones, with causes and where the fix lives, are in
   that reads its output with `2>&1`. Use a here-string (`cmd <<<x`), but
   not for secrets: bash 3.2 writes a here-string to a temp file (the
   password hash in `src/cmd/build.sh` keeps its pipe).
+- Do not read `/dev/urandom` through a pipe that only its reader ends
+  (`tr -dc A-Za-z0-9 </dev/urandom | head -c 10`) in Mac-side scripts or
+  tests. A run started from Python (a detached kit, `os.exec*`, `subprocess`
+  with `restore_signals=False`) keeps SIGPIPE ignored, bash cannot reset it
+  (`trap - PIPE` does nothing), and macOS's tr then never ends:
+  `src/tests/wallpaper-video.sh` ran 14 221 s in the 3.4.4 suites. Read a
+  fixed count (`od -An -N5 -tx1 /dev/urandom`), and start test runners with
+  SIGPIPE at its default.
 - Do not compare a screenshot of an HDR output with `misc:background_color`
   to find the bare background. With an SDR modifier on the output (OmacVM's
   HDR rule sets `sdr_max_luminance = 203`, Hyprland's default is 80) every

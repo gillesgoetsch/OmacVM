@@ -110,6 +110,9 @@ res() {   # STEP ok|FAIL|BLOCKED|skip DETAIL
   case $2 in ok) n_ok=$((n_ok + 1)) ;; FAIL) n_fail=$((n_fail + 1)) ;; BLOCKED) n_blocked=$((n_blocked + 1)) ;; *) n_skip=$((n_skip + 1)) ;; esac
   return 0
 }
+# N TEXT: TEXT's first N characters. Not ${s:0:N} or cut -c: in the C locale (no LANG) they
+# count bytes and cut a character in half, and result.json was not written (3.4.3, 3.4.4).
+clip() { /usr/bin/python3 -I "$HERE/cc-result.py" clip "$1" "$2"; }
 log() { echo "== $(date +%H:%M:%S) $*"; }
 CLONES=()   # VMs this run cloned: deleted at the end unless --keep-vm
 remove_clones() {   # and the SSH host key each clone was given (use_vm)
@@ -210,18 +213,9 @@ cleanup() {
 }
 write_result() {
   # The build these steps ran on (the app here at the end may be the one from before --app).
-  /usr/bin/python3 - "$OUT" "${TESTED_COMMIT:-}" "${TESTED_VERSION:-}" \
-    "$n_ok" "$n_fail" "$n_blocked" "$n_skip" "$(( $(date +%s) - T0 ))" "$ONLY_ARG" <<'PY'
-import json, sys, time
-out, commit, version, ok, fail, blocked, skip, secs, only = sys.argv[1:]
-rows = [l.rstrip("\n").split("\t", 2) for l in open(out + "/summary.tsv") if l.strip()]
-json.dump({"kind": "omacvm-e2e-cc-switches", "commit": commit, "version": version, "only": only,
-           "pass": int(fail) == 0 and int(blocked) == 0 and int(ok) > 0 and only == "all",
-           "counts": {"ok": int(ok), "FAIL": int(fail), "BLOCKED": int(blocked), "skip": int(skip)},
-           "not_ok": [r for r in rows if len(r) == 3 and r[1] in ("FAIL", "BLOCKED")],
-           "seconds": int(secs), "finished": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
-          open(out + "/result.json", "w"), indent=1)
-PY
+  /usr/bin/python3 -I "$HERE/cc-result.py" write "$OUT" "${TESTED_COMMIT:-}" "${TESTED_VERSION:-}" \
+    "$n_ok" "$n_fail" "$n_blocked" "$n_skip" "$(( $(date +%s) - T0 ))" "$ONLY_ARG" ||
+    echo "cc-switches: result.json not written ($OUT)" >&2
 }
 trap 'cleanup' EXIT
 trap 'exit 130' INT
@@ -343,7 +337,7 @@ for k in ("got_in", "password_prompt", "linked"):
 print("; ".join(bits))
 PY
 )
-  [[ -s $CCJ.err ]] && CCS+=" (stderr: $(tail -2 "$CCJ.err" | tr '\n' ' ' | cut -c1-200))"
+  [[ -s $CCJ.err ]] && CCS+=" (stderr: $(clip 200 "$(tail -2 "$CCJ.err" | tr '\n' ' ')"))"
   return $rc
 }
 ccok() { /usr/bin/python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("ok") else 1)' "$CCJ" 2>/dev/null; }
@@ -503,7 +497,7 @@ update_vm_window() {   # Update VM in the app's window (VM stopped): 0 when the 
     mkdir -p "$VMD/logs"
     OMACVM_PROGRESS=1 tmo 1500 /bin/bash "$APP/Contents/Resources/scripts/update-vm.sh" "$VMD" > "$VMD/logs/update.log" 2>&1
     v=$(cat "$VMD/omacvm-version" 2>/dev/null)
-    echo "update-vm.sh (hidden run, no window): $(tail -1 "$VMD/logs/update.log" | cut -c1-100); omacvm-version $v; $(( $(date +%s) - t0 )) s"
+    echo "update-vm.sh (hidden run, no window): $(clip 100 "$(tail -1 "$VMD/logs/update.log")"); omacvm-version $v; $(( $(date +%s) - t0 )) s"
     [[ $v == "$want" ]]; return
   fi
   p=$(window) || { echo "no window on $VM"; return 1; }
@@ -528,7 +522,7 @@ update_vm_window() {   # Update VM in the app's window (VM stopped): 0 when the 
   done
   close_window
   v=$(cat "$VMD/omacvm-version" 2>/dev/null)
-  echo "Update VM: $(tail -1 "$VMD/logs/update.log" 2>/dev/null || tail -1 "$VMD/update.log" 2>/dev/null | cut -c1-100); omacvm-version $v; $(( $(date +%s) - t0 )) s"
+  echo "Update VM: $(clip 100 "$(tail -1 "$VMD/logs/update.log" 2>/dev/null || tail -1 "$VMD/update.log" 2>/dev/null)"); omacvm-version $v; $(( $(date +%s) - t0 )) s"
   [[ $v == "$want" ]]
 }
 
@@ -565,7 +559,7 @@ mirrors_current() {
 prepare_system() {   # a kept VM older than the mirrors: OmacVM cannot install its packages (pkg-add refuses a partial update)
   local why
   why=$(mirrors_current) && return 0
-  log "the VM's packages are older than the mirrors ($(tail -1 <<<"$why" | cut -c1-120)): omarchy update -y, then omacvm apply (limit 45 min)"
+  log "the VM's packages are older than the mirrors ($(clip 120 "$(tail -1 <<<"$why")")): omarchy update -y, then omacvm apply (limit 45 min)"
   local t0 rc
   t0=$(date +%s)
   # As the desktop user, as the control centre's "o" runs it; sudo without a password only meanwhile
@@ -579,14 +573,14 @@ prepare_system() {   # a kept VM older than the mirrors: OmacVM cannot install i
     # Textual comes with the control centre: a kept VM may have it off until features_as_new.
     SYSUPD="omarchy update -y + omacvm apply in $(( $(date +%s) - t0 )) s (a kept VM older than the mirrors)"
   else
-    res system-update FAIL "omarchy update exit $rc; omacvm apply: $(tail -1 "$OUT/${PFX}apply.log" 2>/dev/null | cut -c1-120) ($OUT/${PFX}omarchy-update.txt, ${PFX}apply.log)"
+    res system-update FAIL "omarchy update exit $rc; omacvm apply: $(clip 120 "$(tail -1 "$OUT/${PFX}apply.log" 2>/dev/null)") ($OUT/${PFX}omarchy-update.txt, ${PFX}apply.log)"
   fi
 }
 system_update_done() {   # after features_as_new: the control centre's Textual is there now
   [[ -n ${SYSUPD:-} ]] || return 0
   # OmacVM's own Textual (src/control/vendor), as check.sh checks it.
   if tx=$(gssh "python3 -I /usr/local/share/omacvm/control/omacvm_cc/vendor.py --check" 2>&1); then res system-update ok "$SYSUPD; Textual there"
-  else res system-update FAIL "$SYSUPD, but no Textual with the control centre on: $(tail -1 <<<"$tx" | cut -c1-120)"; fi
+  else res system-update FAIL "$SYSUPD, but no Textual with the control centre on: $(clip 120 "$(tail -1 <<<"$tx")")"; fi
   SYSUPD=""
 }
 features_as_new() {   # what a new VM has on that this one has off (a clone of a kept VM): on, as a person would
@@ -710,7 +704,7 @@ step_switches() {
       # The last job's toast can cover the row's line below the table for a few seconds: once more.
       [[ $s == *"row: "* ]] || { sleep 5; cc row "$title"; s=$CCS; }
       [[ $s == *"row: off, unavailable"* || $s == *"row: off, off"* || $s == *"no row"* ]] \
-        && res "switch-$n" skip "not on this Mac ($(feat reason "$n")); ${s:0:120}" \
+        && res "switch-$n" skip "not on this Mac ($(feat reason "$n")); $(clip 120 "$s")" \
         || res "switch-$n" FAIL "unavailable here ($(feat reason "$n")) but the row says: $s"
       continue
     fi
@@ -727,7 +721,7 @@ step_switches() {
   bmark
   cc toggle "OmacVM control centre" off 600; s=$CCS
   g=$(guest_feature control-centre)
-  if [[ $g == off ]] && ! gssh "test -x /usr/local/bin/omacvm"; then res switch-control-centre-off ok "${s:0:160}"
+  if [[ $g == off ]] && ! gssh "test -x /usr/local/bin/omacvm"; then res switch-control-centre-off ok "$(clip 160 "$s")"
   else res switch-control-centre-off FAIL "env ${g:-?}; $s"; fi
   tmo 900 "$CLI" enable control-centre --vm "$VM" --yes > "$OUT/${PFX}enable-cc.log" 2>&1; rc=$?
   gpush /var/lib/omacvm-e2e/guest-cc.py < "$HERE/guest-cc.py"
@@ -755,7 +749,7 @@ step_fastnet() {   # the fast network: while the VM runs, and after a restart
     reachable 60 || why+="not reachable: $(vminfo); "
     [[ $(netcheck) == 200 ]] || why+="no internet in the VM; "
     b=$(bproblems); [[ -n $b ]] && why+="Bridge: $b; "
-    if [[ -z $why ]]; then res "fastnet-running-$to" ok "${s:0:160}; network now: $(head -1 "$VMD/logs/network" 2>/dev/null)"
+    if [[ -z $why ]]; then res "fastnet-running-$to" ok "$(clip 160 "$s"); network now: $(head -1 "$VMD/logs/network" 2>/dev/null)"
     else res "fastnet-running-$to" FAIL "${why}netd: $st"; fi
     bmark
     if restart_vm; then
@@ -781,20 +775,20 @@ step_touchid() {   # Touch ID: the test Bridge's stand-in answers (README)
   job_room
   bmark
   cc toggle "Touch ID" on 600; s=$CCS
-  ccok && res touchid-on ok "${s:0:200}" || res touchid-on FAIL "after the switch, before a restart: $s"
+  ccok && res touchid-on ok "$(clip 200 "$s")" || res touchid-on FAIL "after the switch, before a restart: $s"
   if restart_vm; then
     bmark; cc sudo yes 60; s=$CCS
-    ccok && [[ $(bsince) == *"sudo yes (test stand-in"* ]] && res touchid-yes ok "${s:0:120}" \
+    ccok && [[ $(bsince) == *"sudo yes (test stand-in"* ]] && res touchid-yes ok "$(clip 120 "$s")" \
       || res touchid-yes FAIL "$s; Bridge: $(bsince | grep -E 'touchid|unknown-vm' | tail -2 | tr '\n' '|')"
     echo no > "$BDIR/touchid-test"
     bmark; cc sudo no 60; s=$CCS
-    ccok && res touchid-no ok "the password prompt: ${s:0:120}" || res touchid-no FAIL "$s; Bridge: $(bsince | grep touchid | tail -2 | tr '\n' '|')"
+    ccok && res touchid-no ok "the password prompt: $(clip 120 "$s")" || res touchid-no FAIL "$s; Bridge: $(bsince | grep touchid | tail -2 | tr '\n' '|')"
     echo yes > "$BDIR/touchid-test"
     # The first request right after a Bridge restart (enable touch-id restarts the installed Bridge).
     bmark; bridge_start; cc sudo yes 60; s=$CCS
     # Its Touch ID answers (other requests may get a 409 while the new Bridge lists the VMs: not this check).
     b=$(bsince | grep -E 'touchid' | tail -3 | tr '\n' '|')
-    ccok && [[ $b == *"sudo yes"* && $b != *unknown-vm* && $b != *" 409"* ]] && res touchid-after-bridge-restart ok "${s:0:120}" \
+    ccok && [[ $b == *"sudo yes"* && $b != *unknown-vm* && $b != *" 409"* ]] && res touchid-after-bridge-restart ok "$(clip 120 "$s")" \
       || res touchid-after-bridge-restart FAIL "$s; Bridge: $b"
   else
     res touchid-restart FAIL "the VM or its control centre did not come back after Touch ID on: $(vminfo)"
@@ -802,7 +796,7 @@ step_touchid() {   # Touch ID: the test Bridge's stand-in answers (README)
   job_room
   bmark
   cc toggle "Touch ID" off 600; s=$CCS
-  ccok && res touchid-off ok "${s:0:160}" || res touchid-off FAIL "$s"
+  ccok && res touchid-off ok "$(clip 160 "$s")" || res touchid-off FAIL "$s"
   if restart_vm; then
     cc sudo no 60; s=$CCS
     ccok && res touchid-off-password ok "off: the password as before" || res touchid-off-password FAIL "$s"
@@ -821,7 +815,7 @@ step_graphics() {   # each choice from the control centre; the Mac agrees; Vulka
     cc graphics "$to" 1500; s=$CCS
     m=$(graphics_mac); b=$(bproblems)
     if ccok && [[ $m == "$to "* && -z $b ]] && reachable 30; then res "graphics-$to" ok "Mac: $m"
-    else res "graphics-$to" FAIL "cc: ${s:0:200}; Mac: $m; Bridge: $b"; fi
+    else res "graphics-$to" FAIL "cc: $(clip 200 "$s"); Mac: $m; Bridge: $b"; fi
     if [[ $to == vulkan ]]; then
       if restart_vm; then
         m=$(graphics_mac)
@@ -840,7 +834,7 @@ step_updates() {   # the control centre's update check, and the Bridge's log
   cc updates 180; s=$CCS
   b=$(bsince | grep -E 'update check' | tail -1 | sed 's/^.*control: //')
   if ccok && [[ $b == *"update check: "*parts* ]]; then res updates-cc ok "Bridge: $b"
-  else res updates-cc FAIL "cc: ${s:0:300}; Bridge: ${b:-no update check}"; fi
+  else res updates-cc FAIL "cc: $(clip 300 "$s"); Bridge: ${b:-no update check}"; fi
 }
 
 step_window() {   # the app's window (the VM stopped): update checks, the fast network button

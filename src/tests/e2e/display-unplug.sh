@@ -92,6 +92,8 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 source "$HERE/person.sh"
 R=$(cd "$HERE/../../.." && pwd)
+# Row texts cut by characters, never half of one (cut -c counts bytes with no LANG; cc-result.py).
+clip() { /usr/bin/python3 -I "$HERE/cc-result.py" clip "$1" "$2"; }
 
 VM=""; ROUNDS=3; FLAPS=10; ONLY=""; OUT=""; SLEEP=0; BOFF=0
 while (( $# )); do
@@ -300,7 +302,7 @@ case_run() {   # NAME MODE ROUNDS
       res "$name" skip "the VM did not start in Full screen including notch (Omanotch on and Update VM give it): ${area:-no notch area line}"
       unplug; stop; return
     fi
-    res "$name-start" ok "$(cut -c1-100 <<<"$area")"
+    res "$name-start" ok "$(clip 100 "$area")"
   fi
   for ((r = 1; r <= rounds; r++)); do
     c0=$(crashes); l0=$(wc -l < "$VMD/logs/qemu.log")
@@ -461,13 +463,13 @@ fp_check() {
   a=$(census); echo "$a" > "$OUT/$name.census"
   size=$(builtin_size "$a"); full=$(fullspaces "$a")
   if fp_bad "$since"; then
-    res "$name" FAIL "$(grep -h 'strip lost\|strip not back' "$OUT/$name.qemu.log" | tail -1 | cut -c1-140)"
+    res "$name" FAIL "$(clip 140 "$(grep -h 'strip lost\|strip not back' "$OUT/$name.qemu.log" | tail -1)")"
   elif [[ $last != *"strip covered"* ]]; then res "$name" FAIL "the last line check reads: ${last:-none}"
   elif ! grep -q "^window .* ${BUILTIN_ORIGIN} ${size} display $BUILTIN_ID\$" <<<"$a"; then
     res "$name" FAIL "no VM window over the whole built-in display ($BUILTIN_ORIGIN $size)"
   elif (( full != want_f )); then res "$name" FAIL "full-screen Spaces $full, want $want_f (at the start $F0)"
   elif [[ $(builtin_space "$a") != "$S0" ]]; then res "$name" FAIL "the built-in's current Space $(builtin_space "$a"), at the start $S0"
-  else res "$name" ok "$(cut -c1-90 <<<"${last#omacvm: full panel: }"); Spaces $full, current as at the start"; return 0; fi
+  else res "$name" ok "$(clip 90 "${last#omacvm: full panel: }"); Spaces $full, current as at the start"; return 0; fi
   return 1
 }
 case_fullpanel_builtin() {
@@ -495,7 +497,7 @@ case_fullpanel_builtin() {
   if [[ $(fp_line) != *"strip covered"* ]]; then
     res fullpanel-builtin-start FAIL "no strip covered at the start: $(fp_line)"; unplug; stop; return
   fi
-  res fullpanel-builtin-start ok "$(cut -c1-100 <<<"$(fp_line)"); full-screen Spaces $F0"
+  res fullpanel-builtin-start ok "$(clip 100 "$(fp_line)"); full-screen Spaces $F0"
   for ((r = 1; r <= ROUNDS; r++)); do
     l0=$(wc -l < "$VMD/logs/qemu.log"); st=$(vd_signal USR1); sleep 8
     fp_check "fullpanel-builtin-unplug-$r" "$l0" $((F0 - 1)) || break
@@ -581,7 +583,7 @@ case_fullpanel_clamshell() {
   fi
   [[ -n $late ]] || { res fullpanel-clamshell FAIL "QEMU did not arm the full screen late: $(fp_line)"; unplug; stop; return; }
   [[ $late == *"another display"* ]] && res fullpanel-clamshell-late skip "armed late after the built-in was back (not with it off): ${late#omacvm: full panel: }"
-  res fullpanel-clamshell-start ok "$(cut -c1-110 <<<"$area")"
+  res fullpanel-clamshell-start ok "$(clip 110 "$area")"
   for ((r = 0; r < 90; r++)); do gssh "test -d /run/user/\$(id -u \$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env))/hypr" 2>/dev/null && break; sleep 2; done
   sleep 20
   HPID=$(qemu_pid); C0=$(crashes)
