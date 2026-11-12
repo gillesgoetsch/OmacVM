@@ -35,6 +35,14 @@ in more words.
   is ISO, and the app never told it. The app now does at each VM start, from macOS's own keyboard
   type, as OmacVM Gestures already did. Needs the app update, from the VM's next start; an XKB swap
   set up in the VM as a workaround must be taken out again.
+- **The Mac's pointer in full screen** (#788, reported and cause found by @hadiskeini): with the
+  hidden `macPointer` setting and "Keep the Dock and hot corners away" on, the cursor pushed
+  against a display edge while moving along it stopped about 200 points before a corner, while
+  the VM's pointer went on to the corner. Near a corner OmacVM moves the Mac's cursor itself; its
+  first move (off the edge) came before the cursor was detached from the mouse, so the push could
+  move it on in between and OmacVM lost track of it for the rest of that visit. The cursor is now
+  detached first, and OmacVM takes the cursor's real place when the two differ. Needs the app
+  update. Without `macPointer` the Mac's cursor is hidden over the VM, so this was not seen there.
 
 ## 3.4.5
 
