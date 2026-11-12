@@ -94,8 +94,8 @@ want() { [[ -z $ONLY || $ONLY == *" $1 "* ]]; }
 
 # --- the Mac and its user
 hid_idle() { person_hid_idle; }
-# Remote sessions (Screen Sharing, port 5900, Jump Desktop; also one left alone) and input that was
-# not ours (the watcher's view too): person.sh.
+# Input that was not ours (the watcher's view too) and remote sessions (Screen Sharing, port 5900,
+# Jump Desktop; named, but one with no input does not hold the rows): person.sh.
 remote() { local r; r=$(person_remote); echo "${r:-none}"; }
 locked() { person_locked && echo Yes || echo No; }
 away() { [[ $(locked) != Yes && -z $(person_check) ]]; }
