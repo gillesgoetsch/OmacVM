@@ -5,9 +5,8 @@ in more words.
 
 ## 3.4.5
 
-Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need 70 GB
-free. Mission Control's row shows a picture of what it does, and the Bridge no longer asks macOS for
-the Wi-Fi details every 5 seconds.
+Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need about
+70 GB free.
 
 - **Mission Control** is no longer experimental. It stays off until you switch it on (Omarchy 4.5,
   Trackpad gestures), and its row in the VM window (Input) now shows a small picture of what it
