@@ -1,6 +1,6 @@
 # 0068: Questions take the keys with the old "ignoring other apps" flag
 
-Status: accepted, built (`app-ask-keys`, 3.2.19). Raw rows:
+Status: accepted, built (`app-ask-keys`, 3.4.6). Raw rows:
 work/after-3218/ask-keys.
 
 ## Context

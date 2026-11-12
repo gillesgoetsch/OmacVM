@@ -24,10 +24,11 @@ The app's questions get the keys, ISO keyboards type the right keys, and the mov
   still not checked.
 - **Move to Omarchy 4.5** (#771): a Resume could stop at step 4 with "OmacVM did not update in
   the VM" and no reason. Right after the VM starts, its SSH can let the Mac in and then drop the
-  connection for a moment, without a message. The update's steps in the VM and the copy of OmacVM
-  now try again for up to 2 minutes when SSH drops, as the move's own steps already did, and a
-  copy cut between its two moves is put back first. An apply that stops without its own message
-  now says so, with the exit code and its last step. The move keeps the last 9 apply logs (was 4).
+  connection for a moment, without a message. The update's SSH key, Bridge token, control centre
+  and Touch ID keys and the copy of OmacVM now try again for up to 2 minutes when SSH drops, as
+  the move's own steps already did, and a copy cut between its two moves is put back first. An
+  apply that stops without its own message now says so, with the exit code and its last step. The
+  move keeps the last 9 apply logs (was 4).
 - **Apple ISO keyboards** (#784, reported by @epicoun): the key left of 1 and the key left of Z
   reached the VM swapped, so on a German ISO keyboard `^` typed `<` and `<` typed `^`. OmacVM's
   QEMU has a fix for this, but it acts only when told the keyboard is ISO, and the app never told
