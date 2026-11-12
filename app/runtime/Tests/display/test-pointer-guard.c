@@ -658,6 +658,53 @@ int main(void)
     run_steps(&m, &g, 100, 5, 0, 0, "follow: after the queued event");
 
     /*
+     * #788: pushed against the top edge and moving along it into the
+     * top-right zone. The hold's first warp (off the edge) lands while the
+     * cursor is still attached, and the mouse moves it on before ui/cocoa.m
+     * detaches it: along and up, 1 point along (the report's case), or
+     * straight back onto the edge (at the hold's own place). The guest's
+     * pointer still moves by each motion and the shown cursor follows it to
+     * the corner (3.4.4: no event came at the warp's target any more, the
+     * warp stayed in flight and the cursor stopped at the zone's border).
+     */
+    {
+        static const double late[3][2] = { { 5, -1 }, { 1, 0 }, { 0, -3 } };
+
+        for (int run = 0; run < 6; run++) {
+            int follow = run & 1, k = run >> 1;
+            OmacVMGuardStep st;
+            Ev e;
+
+            memset(&g, 0, sizeof(g));
+            g.follow = follow;
+            m = mac_at(&macbook, 1, &macbook, 1, 1400, 0);
+            run_steps(&m, &g, 25, 5, -1, 0, "#788: along the top edge");
+            CHECK(!g.held, "#788 (follow %d, late %d): held before the zone", follow, k);
+            e = mac_motion(&m, 5, -1);
+            omacvm_guard_event(&g, &m.s, e.time, e.lx, e.ly, e.dx, e.dy, m.x, m.y, &st);
+            CHECK(st.detach && st.warp && st.wx == 1530 && st.wy == OMACVM_GUARD_GAP,
+                  "#788 (follow %d, late %d): first warp %d to %.1f,%.1f", follow, k,
+                  st.warp, st.wx, st.wy);
+            mac_warp(&m, st.wx, st.wy);
+            e = mac_motion(&m, late[k][0], late[k][1]);  /* still attached */
+            m.attached = false;
+            handle(&m, &g, &e, &gx, &gy);
+            CHECK(gx == 1530 + late[k][0] && gy == 0,
+                  "#788 (follow %d, late %d): pointer %.1f,%.1f, expected %.1f,0",
+                  follow, k, gx, gy, 1530 + late[k][0]);
+            run_steps(&m, &g, 60, 5, -1, 0, "#788: on along the top edge into the corner");
+            CHECK(g.held && g.x == 1727 && g.y == 0,
+                  "#788 (follow %d, late %d): pointer %.1f,%.1f, not the corner",
+                  follow, k, g.x, g.y);
+            CHECK(!follow || (m.x == 1727 - OMACVM_GUARD_GAP && m.y == OMACVM_GUARD_GAP),
+                  "#788 (follow %d, late %d): shown cursor at %.1f,%.1f, not the gap off "
+                  "the corner", follow, k, m.x, m.y);
+            run_steps(&m, &g, 80, -5, -1, 0, "#788: back out of the zone");
+            CHECK(!g.held, "#788 (follow %d, late %d): still held out of the zone", follow, k);
+        }
+    }
+
+    /*
      * The guard's place in our windows (ui/cocoa.m sends it to the guest from
      * there): the top row counts (the guard stops the pointer on it; RC5 sent
      * the held cursor's place instead), AppKit's frames convert to the
