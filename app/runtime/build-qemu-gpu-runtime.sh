@@ -1717,7 +1717,8 @@ grep -q 'vkr_metal_max_vertex_amplification());' "$virgl_source/src/venus/vkr_ph
   grep -q 'vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass",' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_physical_device.c, vkr_command_buffer.c: render passes and view counts are not checked (render-pass-limits patch)"
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-limits.patch"
-grep -q 'if (!vkr_graphics_pipeline_ok(dev->physical_device, &args->pCreateInfos\[i\], why,' "$virgl_source/src/venus/vkr_pipeline.c" || \
+grep -q 'if (!vkr_graphics_pipeline_ok(dev->physical_device, &args->pCreateInfos\[i\], why,' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'stage 0x%x: specialization constant %u in two entries' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_pipeline.c: pipeline create infos are not checked (pipeline-limits patch)"
 # Commands come where Vulkan allows them: a draw in a pass with a pipeline, a pass begun once and
 # ended where it began, a recording command buffer (#624).
@@ -1730,8 +1731,10 @@ grep -q 'if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDraw"))' "$vi
 "$native_dir/Tests/virgl/fuzz-venus-spirv.sh"
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-spirv-scan.patch"
 grep -q 'vkr_spirv_scan(args->pCreateInfo->pCode, args->pCreateInfo->codeSize, why, sizeof(why));' "$virgl_source/src/venus/vkr_pipeline.c" && \
-  grep -q 'vkr_spirv_bindings_ok(spirv, entry, vkr_layout_has, layout, &set, &binding);' "$virgl_source/src/venus/vkr_pipeline.c" || \
-  die "vkr_pipeline.c: guest SPIR-V is not scanned (spirv-scan patch)"
+  grep -q 'vkr_spirv_bindings_ok(spirv, entry, vkr_layout_has, layout, &set, &binding);' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'vkr_spec_lookup(const void \*data, uint32_t spec_id, uint32_t \*value, uint32_t \*size)' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'e->vals\[order\[i\].id\] = spec_op_value(e, &info->spec_ops\[order\[i\].id\]);' "$virgl_source/src/venus/vkr_spirv.c" || \
+  die "vkr_pipeline.c, vkr_spirv.c: guest SPIR-V is not scanned or spec constant operations not evaluated (spirv-scan patch)"
 # Copies, blits and resolves name texels inside their images and bytes inside their buffers (#624).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-copy-regions.patch"
 grep -q 'vkr_cmd_buffer_image_ok(args->srcBuffer, args->dstImage, &r2),' "$virgl_source/src/venus/vkr_command_buffer.c" && \

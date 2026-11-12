@@ -8,6 +8,8 @@
 #    is missing; PNG and JPEG go as they are; a failed send records nothing;
 #  - no files left behind, and up to 3.4.1's frame files in the temp folder
 #    go once.
+#  - mktemp's stand-in ends with SIGPIPE ignored; if it does not, the test
+#    stops there (rc 1) instead of hanging in the rows after it.
 #   src/tests/wallpaper-video.sh
 #   OMACVM_SRC=DIR src/tests/wallpaper-video.sh  against another checkout's src/
 set -uo pipefail
@@ -33,11 +35,13 @@ case ${@: -1} in
   *.png) echo image/png ;; *.jpg) echo image/jpeg ;; *) echo application/octet-stream ;;
 esac
 EOF
-# mktemp [--suffix S]: $TMPDIR/tmp.XXXXXXXXXX[S], as coreutils' (macOS's has no --suffix)
+# mktemp [--suffix S]: $TMPDIR/tmp.XXXXXXXXXX[S], as coreutils' (macOS's has no --suffix).
+# The name from a bounded read: `tr -dc ... < /dev/urandom | head` never ended on macOS when
+# SIGPIPE was ignored (a run started from Python): BSD tr kept reading after head left (3.4.4).
 cat > "$B/mktemp" <<'EOF'
 #!/bin/bash
 s=""; [[ ${1:-} == --suffix ]] && s=$2
-n=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 10)
+n=$(od -An -N5 -tx1 /dev/urandom | tr -d ' \n')
 f=${TMPDIR:-/tmp}/tmp.$n$s; : > "$f"; echo "$f"
 EOF
 printf '#!/bin/bash\necho 1700000000\n' > "$B/stat"
@@ -83,6 +87,20 @@ run() {   # [nofff]: run as the session's service would, the PATH only ours
   echo "rc $?"
 }
 sent() { grep '^sent' "$CALLS" | tr '\n' ';'; }
+
+# The stand-ins end with SIGPIPE ignored, as under Python or a CI runner (bash cannot reset an
+# ignored SIGPIPE, `trap - PIPE` included): stopped after 10 s, with what it started.
+kill_tree() { local c; for c in $(pgrep -P "$1"); do kill_tree "$c"; done; kill -9 "$1" 2>/dev/null; }
+mkdir -p "$T/pipe"
+(trap '' PIPE; exec env TMPDIR="$T/pipe" PATH="$B:$M" "$BASH" "$B/mktemp" --suffix .png) > "$T/pipe.out" 2>&1 & p=$!
+i=0; while kill -0 "$p" 2>/dev/null && (( i < 100 )); do sleep 0.1; i=$((i + 1)); done
+if kill -0 "$p" 2>/dev/null; then kill_tree "$p"; wait "$p" 2>/dev/null; st="still running after 10 s"; else wait "$p"; st=$?; fi
+expect "mktemp's stand-in ends with SIGPIPE ignored, a name of 10 characters" "0 yes" \
+  "$st $(grep -Eq '/tmp\.[0-9a-f]{10}\.png$' "$T/pipe.out" && echo yes || echo no)"
+if [[ $st == "still running after 10 s" ]]; then
+  echo "wallpaper-video: stopped here: every row below runs this stand-in and would hang the same way"
+  exit 1
+fi
 left() { ls -A "$TMP" | tr '\n' ' '; }
 rec() { [[ -f $ST ]] && echo recorded || echo "not recorded"; }
 

@@ -1485,3 +1485,88 @@ The pass corpus is now kept per shader compiler, at each SPIR-V version it
 writes (`spirv-corpus/README.md`): Zed's and wgpu's naga modules at 1.6 and
 1.4 beside the app-collected ones, which had no naga module, so a new
 spirv-val rule broke a real compiler unseen.
+
+## Spec constant operations in array lengths (amendment, 3.4.5)
+
+From 3.2.21 the element cap refused every Function or Private array whose
+length was an `OpSpecConstantOp` ("a size the scan cannot know") and counted
+a Workgroup one as one element. glslang writes such lengths for
+`float a[WMITER * TM]` and `shared x[gl_WorkGroupSize.x * 2]`, and ggml's
+Vulkan shaders are full of them, so llama.cpp, whisper.cpp and
+Superwhisper's workers lost their Venus context (#624; cause found by
+hadiskeini, reports by Fail-Safe, dandomin and epicoun). Of the 1267 modules
+in llama.cpp b11791's published `libggml-vulkan.so`, 603 were refused with
+their default values (matmul, matmul_id, conv, ssm_scan, fwht, topk_moe,
+gated_delta_net, flash_attn).
+
+The scan now keeps int and bool types and constants, constant composites and
+every `OpSpecConstantOp`, without refusing a module for one (spirv-val checks
+them; CompositeExtract's index is a literal, not an id). The counts evaluate
+a length after the stage's specialization, the operations in the order of
+their words. SPIR-V forbids forward references between constants, so an
+operand defined at or after its operation is invalid, and there is no
+recursion, depth limit or loop to guard (a chain of 100000 takes 20 ms).
+
+A length has one of three states:
+
+- **known**: SPIR-V's value. A value is its bits masked to its type's width;
+  the S operations (SDiv, SRem, SMod, SNegate, ShiftRightArithmetic,
+  SConvert, the S comparisons) sign-extend their operands, the U ones
+  zero-extend them, whatever the operand types' signedness; IAdd, ISub,
+  IMul, ShiftLeftLogical and SNegate must fit their result type's
+  signedness. A length is the unsigned value of its bits, at least 1, as
+  Mesa's `vtn_constant_uint` reads it. Mesa folds spec constant operations
+  per opcode with NIR's constant evaluation (conversions too: SConvert is
+  `i2i`, UConvert `u2u`); MoltenVK's SPIRV-Cross casts the operands to the
+  opcode's signedness (`constant_op_expression`).
+- **unsupported**: VectorShuffle, CompositeInsert, QuantizeToF16, vectors,
+  floats, a composite other than three constituents, a 64-bit SpecId
+  (`vkr_spec_lookup` gives 4 bytes). Refused in all three counts. Before,
+  Workgroup and interface lengths of this kind counted once; none of the
+  1267 ggml modules or the 168 corpus modules has one, so counting once would
+  only have kept a way past the Workgroup limit open.
+- **invalid**: where drivers may read it differently or SPIR-V gives no
+  value: a wrap or truncation, a divisor of 0, SDiv, SRem or SMod with a
+  negative operand (C's `%` in MSL, NIR's `imod` in Mesa), a shift count at or
+  past the width, a conversion of a negative value of the other signedness
+  (spirv-opt's folding extends by the operand's type, SPIR-V by the opcode),
+  a bool spec value other than 0 or 1, a map entry whose size is not the
+  constant's (VUID-VkSpecializationMapEntry-constantID-00776), mixed types,
+  a width other than 8, 16, 32 or 64, a length of 0 or less. Refused in all
+  three counts at pipeline time. Without a specialization (a shader module's
+  interface check) one that depends on a SpecId counts as a SpecId length
+  does (once), so a divisor that is 0 by default and set by the app still
+  creates.
+
+The refusal names the class. A specialization constant given twice in one
+stage is refused (VUID-VkSpecializationInfo-constantID-04911): vkr reads an
+id's first map entry, MoltenVK sorts the entries by id and value before it
+defines its macros.
+
+MoltenVK: SPIRV-Cross turns every spec constant that feeds an array length,
+also through operations (`mark_used_as_array_length`), into a
+`SPIRV_CROSS_CONSTANT_ID_n` macro instead of a function constant, and
+MoltenVK compiles a library variant with the app's values as preprocessor
+macros (`MVKShaderLibrary::getMTLFunction`, MoltenVK 1.4.2), so it sizes
+arrays with the specialized values, as KosmicKrisp does.
+
+Checks (CPU only): unit cases for each operation, the wraps, divisors of 0 by
+default and after specialization, signedness by opcode, 8- and 16-bit
+SpecIds with 1- and 2-byte entries, bools, forward references and cycles,
+Workgroup and interface lengths at module and pipeline time; a glslc fuzz
+seed with ggml's patterns, 200000 mutations on three seeds; the corpus keeps
+every verdict on kk, mvk and mvk11, with 8 ggml modules added; against
+spirv-opt's folding (`--freeze-spec-const --fold-spec-const-op-composite`) on
+random modules of every operation, width and signedness (9980 spirv-val clean
+ones; 1423 where both give a value): 0 mismatches. The first round's 8 were
+all SConvert of a uint with its top bit set, which spirv-opt extends by the
+operand's type; such conversions are now invalid. With their default values 8 ggml
+modules are still refused (flash attention: its default head sizes give a
+length of 0); ggml always sets its 16 constants, and with head sizes 64 to
+256 they pass. 19 ggml modules (all `_cm1`, cooperative matrix) take more
+than 32 KB of Workgroup memory with their defaults, counted once before;
+ggml sizes its tiles from the device's limit, which needs its real
+specialization to check (recorded in the live rows).
+
+Still out: workgroup sizes built with spec constant operations (refused, as
+before), 64-bit SpecIds in lengths.

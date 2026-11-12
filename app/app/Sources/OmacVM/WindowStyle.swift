@@ -23,7 +23,7 @@ enum Look {
     static let chip = color(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.06, darkAlpha: 0.12)
     static let track = color(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.10, darkAlpha: 0.15)
     static let pill = color(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.05, darkAlpha: 0.10)
-    /// Behind the pictures (Start in, the escape combo, Swipe out).
+    /// Behind the pictures (Start in, the escape combo, Swipe out, Mission Control).
     static let panel = color(light: 0xFAFAF9, dark: 0x333336)
     static let key = color(light: 0xFFFFFF, dark: 0x48484B)
     static let pictureLine = color(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.10, darkAlpha: 0.08)

@@ -150,6 +150,7 @@ enum RenderVMWindow {
         try? VMDisk.setJobs([], config)
         try? config.writeResources()
         state.config = config
+        missionControlPictures(state, usual)
         memoryPictures(state, config, usual)
 
         // Disk › Change… open: a 128 GB disk with 9 GB used, a smaller size
@@ -427,6 +428,40 @@ enum RenderVMWindow {
     }
 
     // MARK: Pictures
+
+    /// Mission Control's row in Input with its picture: off (its text beside
+    /// the picture), on, and on an Omarchy below 4.5 (greyed out, the longer
+    /// note). Its picture starts where Swipe out's does, the row above it;
+    /// and the picture on its own, light and dark.
+    private static func missionControlPictures(_ state: AppState, _ usual: Preview) {
+        let folder = state.config.folder
+        let features = folder.appendingPathComponent("features"), omarchy = folder.appendingPathComponent("omarchy")
+        let savedFeatures = try? Data(contentsOf: features), savedOmarchy = try? Data(contentsOf: omarchy)
+        func put(_ data: Data?, _ url: URL) {
+            if let data { try? data.write(to: url) } else { try? FileManager.default.removeItem(at: url) }
+        }
+        var p = usual
+        p.section = "input"
+        func lineUp(_ name: String) -> (Bool) -> Void {
+            { dark in
+                guard let swipe = LayoutProbe.frames["trailing-swipe-out"], let mc = LayoutProbe.frames["trailing-mission-control"] else {
+                    note("\(name): Swipe out's or Mission Control's row is missing\(dark ? " (dark)" : "")", fail: true)
+                    return
+                }
+                if abs(swipe.minX - mc.minX) > WindowLayout.tolerance {
+                    note("\(name): Swipe out's and Mission Control's pictures do not line up (\(Int(swipe.minX)) and \(Int(mc.minX)))", fail: true)
+                }
+            }
+        }
+        window("window-30-mission-control", state, p, each: lineUp("window-30-mission-control"))
+        try? Data("\(MissionControl.feature)=on\n".utf8).write(to: features)
+        window("window-31-mission-control-on", state, p, each: lineUp("window-31-mission-control-on"))
+        put(savedFeatures, features)
+        try? Data("4.0.3 omarchy-mac stable\n".utf8).write(to: omarchy)
+        window("window-32-mission-control-40", state, p, each: lineUp("window-32-mission-control-40"))
+        put(savedOmarchy, omarchy)
+        sheet("picture-1-mission-control") { MissionControlPicture().padding(12) }
+    }
 
     /// The window as the app makes it (main.swift), never on screen, at the
     /// 13-inch MacBook Air's height; checks that every part is inside it and

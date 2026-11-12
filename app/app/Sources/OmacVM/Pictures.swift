@@ -2,8 +2,9 @@ import SwiftUI
 
 /// The pictures of the VM window (docs/design/settings-3.1/final.html):
 /// how a VM starts, what the escape combo takes back to macOS, the swipe out
-/// to macOS. Drawn in the design's coordinates and scaled; Omarchy is drawn
-/// in Rosé Pine Dawn's colours, macOS's desktop in its own, in light and dark.
+/// to macOS, the Mission Control overview. Drawn in the design's coordinates
+/// and scaled; Omarchy is drawn in Rosé Pine Dawn's colours, macOS's desktop
+/// in its own, in light and dark.
 private struct Sketch {
     var ctx: GraphicsContext
     let k: CGFloat
@@ -231,6 +232,92 @@ struct SwipeOutPicture: View {
         }
         .frame(width: 240, height: 64)
         .accessibilityHidden(true)
+    }
+}
+
+/// Mission Control: four fingers up spread the display's windows out as
+/// tiles, with the workspaces in a row along the top (the Mac Mission
+/// Control plugin's overview). Left the tiled screen, right the overview.
+struct MissionControlPicture: View {
+    var body: some View {
+        Canvas { ctx, size in
+            let s = Sketch(ctx: ctx, k: size.width / 240)
+            s.rect(0, 0, 240, 64, radius: 8, fill: Look.panel)
+            omarchy(s, x: 20, y: 7)
+            s.rect(20.5, 7.5, 69, 43, radius: 3, stroke: Look.pictureLine)
+            overview(s, x: 152, y: 7)
+            s.rect(152.5, 7.5, 69, 43, radius: 3, stroke: Look.pictureLine)
+            s.text("Omarchy", 55, 59, size: 6, .secondary)
+            s.text("Mission Control", 187, 59, size: 6, .secondary)
+            // Four fingers, up.
+            for (x, y) in [(115.0, 42.0), (119, 40.8), (123, 40.8), (127, 42)] { s.circle(x, y, 1.5, Ink.accent) }
+            s.line([(121, 36), (121, 21)], Ink.accent, width: 1.6)
+            s.line([(117.2, 25.2), (121, 21), (124.8, 25.2)], Ink.accent, width: 1.6)
+            s.rect(0.5, 0.5, 239, 63, radius: 8, stroke: Look.pictureLine)
+        }
+        .frame(width: 240, height: 64)
+        .accessibilityHidden(true)
+    }
+
+    /// The tiled Omarchy screen before the gesture (EscapePicture's drawing).
+    private func omarchy(_ s: Sketch, x: CGFloat, y: CGFloat) {
+        s.clipped(x, y, 70, 44, radius: 3) { s in
+            s.rect(x, y, 70, 44, fill: Ink.base)
+            s.rect(x, y, 70, 5, fill: Ink.bar)
+            s.rect(x + 3, y + 1.2, 2.6, 2.6, radius: 0.8, fill: Ink.rose)
+            s.rect(x + 7, y + 1.2, 2.6, 2.6, radius: 0.8, fill: Ink.dot)
+            s.rect(x + 32, y + 1.6, 8, 1.8, radius: 0.9, fill: Ink.text)
+            s.rect(x + 4, y + 9, 34, 31, radius: 2, fill: Ink.surface, stroke: Ink.rose)
+            s.rect(x + 41, y + 9, 25, 14, radius: 2, fill: Ink.surface, stroke: Ink.border)
+            s.rect(x + 41, y + 26, 25, 14, radius: 2, fill: Ink.surface, stroke: Ink.border)
+            s.rect(x + 8, y + 14, 16, 2, radius: 1, fill: Ink.pine)
+            s.rect(x + 8, y + 19, 22, 2, radius: 1, fill: Ink.muted)
+            s.rect(x + 8, y + 24, 14, 2, radius: 1, fill: Ink.gold)
+        }
+    }
+
+    /// The plugin's overview: the workspaces as small previews along the top
+    /// (the current one marked, a narrow tile for a new one), the wallpaper
+    /// dimmed below, and the same three windows spread out with gaps.
+    private func overview(_ s: Sketch, x: CGFloat, y: CGFloat) {
+        s.clipped(x, y, 70, 44, radius: 3) { s in
+            s.rect(x, y, 70, 44, fill: Ink.base)
+            s.rect(x, y + 12, 70, 32, fill: .black.opacity(0.12))
+            s.rect(x, y, 70, 12, fill: Ink.bar.opacity(0.9))
+            s.rect(x, y + 12, 70, 0.4, fill: Ink.border)
+            // Three workspace previews and the narrow tile for a new one.
+            for i in 0..<3 {
+                let px = x + 11.75 + CGFloat(i) * 13.5
+                s.rect(px, y + 2.55, 11, 6.9, radius: 0.5, fill: Ink.base,
+                       stroke: i == 0 ? Ink.rose : Ink.border, line: 0.6)
+                s.rect(px + 1.4, y + 4, 4.6, 4, radius: 0.4, fill: Ink.surface)
+                s.rect(px + 6.8, y + 4, 2.8, 4, radius: 0.4, fill: Ink.surface)
+            }
+            let plus = x + 11.75 + 3 * 13.5
+            s.rect(plus, y + 2.55, 6, 6.9, radius: 0.5, fill: Ink.dot)
+            s.line([(plus + 1.7, y + 6), (plus + 4.3, y + 6)], Ink.subtle, width: 0.6)
+            s.line([(plus + 3, y + 4.7), (plus + 3, y + 7.3)], Ink.subtle, width: 0.6)
+            // The windows, spread out: the focused one keeps its mark.
+            tile(s, x + 5, y + 16, 30, 19, focus: true)
+            s.rect(x + 8, y + 21, 12, 1.8, radius: 0.9, fill: Ink.pine)
+            s.rect(x + 8, y + 24.5, 16, 1.8, radius: 0.9, fill: Ink.muted)
+            s.rect(x + 8, y + 28, 10, 1.8, radius: 0.9, fill: Ink.gold)
+            tile(s, x + 39, y + 16, 26, 11, focus: false)
+            s.rect(x + 42, y + 20.5, 10, 1.6, radius: 0.8, fill: Ink.pine)
+            s.rect(x + 42, y + 23.5, 14, 1.6, radius: 0.8, fill: Ink.muted)
+            tile(s, x + 41, y + 30, 22, 11, focus: false)
+            s.rect(x + 44, y + 34.5, 12, 1.6, radius: 0.8, fill: Ink.muted)
+            s.rect(x + 44, y + 37.5, 8, 1.6, radius: 0.8, fill: Ink.gold)
+        }
+    }
+
+    /// One spread-out window: a thin title bar over the body.
+    private func tile(_ s: Sketch, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, focus: Bool) {
+        s.clipped(x, y, w, h, radius: 1.5) { s in
+            s.rect(x, y, w, h, fill: Ink.surface)
+            s.rect(x, y, w, 2.4, fill: Ink.titleBar)
+        }
+        s.rect(x, y, w, h, radius: 1.5, stroke: focus ? Ink.rose : Ink.border, line: focus ? 0.8 : 0.6)
     }
 }
 

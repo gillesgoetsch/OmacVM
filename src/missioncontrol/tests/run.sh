@@ -40,6 +40,13 @@ expect "Qt 6.12: OmacVM's colour fix has nothing to change in it (it never edits
   "qtquick-color yes, patched 0, to patch 0, to restore 0" "$(python3 -I "$R/guest/shell-colors.py" --qmltypes "$T/qt612.qmltypes" --status "$PLUG")"
 expect "OmacVM never removes a bind or gesture at run time (unbind, :remove()" "" \
   "$(grep -nE 'unbind|:remove\(' "$M/guest/install.sh" | grep -v '^[0-9]*:#' || true)"
+# Swipe out to macOS waits while the overview is up: the gestures daemon looks
+# for the plugin's submap. A pin that renames it or stops entering it fails here.
+LUA=$PLUG/hypr/mac-mission-control.lua
+expect "the plugin's submap is mac-mission-control" yes "$(yes_no grep -q '^local SUBMAP = "mac-mission-control"' "$LUA")"
+expect "the plugin enters it while the overview is up" yes "$(yes_no grep -q 'hl\.dsp\.submap(enabled and SUBMAP' "$LUA")"
+expect "the gestures daemon waits on that submap" yes \
+  "$(yes_no grep -q '^MISSION_CONTROL_SUBMAP = "mac-mission-control"' "$R/gestures/guest/omacvm-gestures")"
 # A changed byte is found.
 cp -R "$PLUG" "$T/copy"; printf ' ' >> "$T/copy/Layout.js"
 expect "a changed byte fails the check" no "$(yes_no eval '(cd "$T/copy" && sha -c "$M/SHA256SUMS") >/dev/null 2>&1')"
@@ -228,7 +235,7 @@ expect "off: done" 0 "$rc"
 expect "off: windows shown, disabled, reloaded" "0 no yes" "$(cat "$S/hidden") $(enabled) $(logged 'hyprctl reload')"
 expect "off: no hooks or keys left in Hyprland" "no []" "$(there "$S/hooks") $(hyprctl binds -j)"
 expect "off: OmacVM's copy and the marker gone" "no no" "$(there "$P") $(there "$MARK")"
-expect "off: check says off" "skip off (experimental: omacvm enable mission-control)" "$(st off)"
+expect "off: check says off" "skip off (omacvm enable mission-control)" "$(st off)"
 : > "$LOG"; bash "$I" me off
 expect "off again: nothing asked of the shell or Hyprland" "" "$(cat "$LOG")"
 

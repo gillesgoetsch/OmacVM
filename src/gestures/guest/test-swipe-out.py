@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline test of Swipe out to macOS in the guest daemon (src/gestures/mac/test.sh):
 the daemon's own handle() with evdev stubbed, against a made-up Hyprland on a
-Unix socket (j/monitors, j/workspaces, j/getoption, dispatch). No VM, no uinput.
+Unix socket (j/monitors, j/workspaces, j/getoption, j/submap, dispatch). No VM, no uinput.
   off until the Mac says "X on"; "X off" turns it off again;
   past the lowest workspace of the focused display -> "X left";
   past the last one: the first swipe from a workspace with windows is
@@ -15,6 +15,9 @@ Unix socket (j/monitors, j/workspaces, j/getoption, dispatch). No VM, no uinput.
   each burst of Hyprland's workspace events (a made-up event socket), only
   when it changed, nothing at the lift; again on a new connection and when
   the event socket comes back; nothing after "X off"; "X on" as before.
+  Mission Control's overview up (Hyprland's submap mac-mission-control):
+  no swipe out, "E - -" until it closes; another submap, Hyprland's
+  "default" or no answer to j/submap: as before.
 """
 import importlib.machinery
 import importlib.util
@@ -64,6 +67,8 @@ class Hypr:
         self.lifted = False
         self.old_options = False  # answer options as Hyprland before 0.56 did ({"int": 1})
         self.v57 = False          # workspaces as Hyprland 0.57 says them: no id for a special or named one
+        self.submap = ""          # Hyprland's submap now ("" = its default one)
+        self.old_submap = False   # answer j/submap as a Hyprland that does not know it
 
     def ws(self, key):
         """A workspace reference (activeWorkspace): a number, or a name (a named workspace)."""
@@ -93,6 +98,7 @@ class Hypr:
             self.workspaces.append(dict(self.ws(act), monitor=name, windows=1))
         self.after_swipe = None
         self.lifted = False
+        self.submap = ""
 
     def answer(self, req):
         self.requests.append(req)
@@ -110,6 +116,8 @@ class Hypr:
             # Hyprland 0.56 answers a bool option with "bool"; older ones with "int".
             key = "int" if self.old_options else "bool"
             return json.dumps({"option": name, key: self.options[name] if key == "int" else bool(self.options[name]), "set": False})
+        if req == "j/submap" and not self.old_submap:
+            return json.dumps(self.submap or "default")   # a JSON string: "default" or the submap's name
         if req.startswith("dispatch "):
             return "ok"
         return "unknown request"
@@ -382,6 +390,37 @@ H.world(1, [1, 2], {1: 1, 2: 1})
 g.SWIPE.set(False)
 line("X on 2")
 check(told(1) == ["E - left"], "connected again (X on 2 again): said again at once")
+# Mission Control's overview: the plugin opens its layer and enters its submap (one burst).
+sent.clear()
+H.submap = "mac-mission-control"
+event("openlayer>>mac-mission-control", "submap>>mac-mission-control")
+check(told(2, wait=0.8) == ["E - -"], "Mission Control's overview opens (openlayer + submap>>mac-mission-control): one line, E - -")
+check(g.workspaces_now(SOCK)["overview"] is True, "... j/submap says mac-mission-control: the overview is up")
+sent.clear()
+H.world(2, [1, 2], {1: 1, 2: 0})   # (would be E right - without the overview)
+H.submap = "mac-mission-control"
+event("workspace>>2", "workspacev2>>2,2")
+check(told(1, wait=0.5) == [], "a workspace change while the overview is up: still E - -, nothing sent")
+sent.clear()
+H.world(1, [1, 2], {1: 1, 2: 1})   # its submap gone ("default")
+event("closelayer>>mac-mission-control", "submap>>")
+check(told(1) == ["E - left"], "the overview closes (submap>>): E - left again")
+sent.clear()
+H.submap = "resize"
+event("submap>>resize")
+check(told(1, wait=0.5) == [] and g.workspaces_now(SOCK)["overview"] is False,
+      "a submap of the person's own (resize): not the overview, nothing sent")
+H.submap = ""
+event("submap>>")
+check(told(1, wait=0.5) == [] and g.workspaces_now(SOCK)["overview"] is False,
+      "Hyprland's default submap (j/submap says \"default\"): nothing sent")
+H.old_submap = True
+H.submap = "mac-mission-control"
+event("submap>>mac-mission-control")
+check(told(1, wait=0.5) == [] and g.workspaces_now(SOCK)["overview"] is False,
+      "a Hyprland that does not answer j/submap: never taken for the overview, Swipe out stays on")
+H.old_submap = False
+H.submap = ""
 sent.clear()
 for c in list(evconns):
     c.close()
@@ -396,11 +435,22 @@ check(told(1, wait=0.5) == [] and not g.SWIPE.on, "X off: nothing sent on change
 line("X on")
 H.world(1, [1, 2], {1: 1, 2: 1})
 check(swipe(0.3) == ["X left"] and told(1, wait=0.3) == [], "X on (a Mac helper from 3.1.0-3.1.5): X left at the lift as before, no E")
+H.world(1, [1, 2], {1: 1, 2: 1})
+H.submap = "mac-mission-control"
+check(swipe(0.3) == [], "X on, Mission Control's overview up: the swipe pages it, no X left")
+H.world(1, [1, 2], {1: 1, 2: 1})
+H.submap = "resize"
+check(swipe(0.3) == ["X left"], "X on, a submap of the person's own (resize): X left as before")
+H.world(1, [1, 2], {1: 1, 2: 1})
+check(swipe(0.3) == ["X left"], "X on, the overview closed again: X left")
 check(g.edge_sides({"active": 2, "ids": [1, 2], "empty": True, "invert": True, "create_new": True}) == ("right", "-") and
       g.edge_sides({"active": 2, "ids": [1, 2, 3], "empty": True, "invert": True, "create_new": True}) == ("-", "-") and
       g.edge_sides(None) == ("-", "-") and
       g.edge_sides({"active": 1, "ids": [1, 2], "empty": False, "invert": True, "create_new": False}) == ("-", "left"),
       "edges on their own: the empty last; in the middle; nothing known; the first")
+check(g.edge_sides({"active": 1, "ids": [1], "empty": True, "invert": True, "create_new": True, "overview": True}) == ("-", "-") and
+      g.edge_sides({"active": 1, "ids": [1], "empty": True, "invert": True, "create_new": True, "overview": False}) == ("right", "left"),
+      "edges on their own: Mission Control's overview up: - - (the only, empty workspace); closed: right left")
 
 # ---- which swipes switch workspaces: Hyprland's hl.gesture lines (user, 2026-10-14: 3 fingers tile, 4 switch) ----
 cfg = tempfile.mkdtemp()
@@ -549,4 +599,7 @@ check(g.swipe_out_side(st, 0.2 * w, 0, w) == "left" and g.swipe_out_side(st, -0.
 check(g.swipe_out_side(None, 0.2 * w, 0, w) is None and g.swipe_out_side({}, 0.2 * w, 0, w) is None,
       "rule: no workspaces known: nothing")
 check(g.swipe_out_side(dict(st, ids=[]), 0.2 * w, 0, w) == "left", "rule: no list (only the active one): its own edge")
+check(g.swipe_out_side(dict(st, overview=True), 0.2 * w, 0, w) is None and
+      g.swipe_out_side(dict(st, overview=False), 0.2 * w, 0, w) == "left",
+      "rule: Mission Control's overview up: nothing (the swipe pages it); closed: left")
 sys.exit(1 if fails else 0)

@@ -659,7 +659,9 @@ Patches (all in `app/runtime/patches`, one per concern):
   guest is told), after caps on interface locations and type cost, with a 2 s
   budget and its asserts kept, and at pipeline creation caps on Function,
   Private and Workgroup arrays (`spirv-tools-val-*.patch`;
-  `Tests/virgl/test-venus-spirv-validate.sh`); copy regions
+  `Tests/virgl/test-venus-spirv-validate.sh`; from 3.4.5 an array length
+  from a spec constant operation is evaluated after specialization, ADR
+  0065's "Spec constant operations in array lengths"); copy regions
   inside their images and buffers (`vkr_format_extent.h`); attachment formats
   the device renders to.
 - `virgl-venus-submit-counts.patch`, `virgl-venus-pool-frees.patch`,

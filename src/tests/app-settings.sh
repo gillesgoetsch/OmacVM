@@ -14,6 +14,8 @@
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 T=$(mktemp -d)
+# SwiftUI's macros: a toolchain that has their plugins (Xcode's, as the release build)
+source "$R/src/tests/swift-toolchain.sh"; swift_toolchain "$T/mc" || { rm -rf "$T"; exit 1; }
 D=org.omacvm.test.settings.$$          # the app's settings domain
 G=org.omacvm.test.settings-gestures.$$ # its Gestures' (EscapeSwipe, MouseSwipeFingers, SwipeOut)
 trap 'defaults delete "$D" >/dev/null 2>&1; defaults delete "$G" >/dev/null 2>&1; rm -f "$HOME/Library/Preferences/$D.plist" "$HOME/Library/Preferences/$G.plist"; rm -rf "$T"' EXIT

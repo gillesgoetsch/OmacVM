@@ -110,6 +110,7 @@ final class WiFi: NSObject, CWEventDelegate {
   var onEvent: ((String) -> Void)?
   private let lock = NSLock()
   private var linkEvent: Date?        // CoreWLAN's last link, SSID, BSSID or power event
+  private var identity = WiFiIdentity()   // under lock
   private var steady = WiFiSteady()   // state() only (the hub's queue)
   private var heldLogged = Date.distantPast
   private let store = SCDynamicStoreCreate(nil, "omacvm-bridge" as CFString, nil, nil)
@@ -117,6 +118,7 @@ final class WiFi: NSObject, CWEventDelegate {
   func start() { client.delegate = self; subscribe() }
 
   func subscribe() {
+    forgetIdentity()   // start, wake, a new connection to CoreWLAN: events may have been missed
     try? client.stopMonitoringAllEvents()
     let events: [CWEventType] = [.powerDidChange, .ssidDidChange, .bssidDidChange, .linkDidChange,
                                  .modeDidChange, .countryCodeDidChange, .scanCacheUpdated]
@@ -129,8 +131,8 @@ final class WiFi: NSObject, CWEventDelegate {
   func ssidDidChangeForWiFiInterface(withName name: String) { linkChanged(); onEvent?("ssid") }
   func bssidDidChangeForWiFiInterface(withName name: String) { linkChanged(); onEvent?("bssid") }
   func linkDidChangeForWiFiInterface(withName name: String) { linkChanged(); onEvent?("link") }
-  func modeDidChangeForWiFiInterface(withName name: String) { onEvent?("mode") }
-  func countryCodeDidChangeForWiFiInterface(withName name: String) { onEvent?("country") }
+  func modeDidChangeForWiFiInterface(withName name: String) { forgetIdentity(); onEvent?("mode") }
+  func countryCodeDidChangeForWiFiInterface(withName name: String) { forgetIdentity(); onEvent?("country") }
   func scanCacheUpdatedForWiFiInterface(withName name: String) { onEvent?("scan-cache") }
   func clientConnectionInterrupted() { resubscribe("interrupted") }
   func clientConnectionInvalidated() { resubscribe("invalidated") }
@@ -149,7 +151,9 @@ final class WiFi: NSObject, CWEventDelegate {
     return primary.hasPrefix("en") && primary != wifiName
   }
 
-  private func linkChanged() { lock.lock(); linkEvent = Date(); lock.unlock() }
+  private func linkChanged() { lock.lock(); linkEvent = Date(); identity.invalidate(); lock.unlock() }
+  /// The name, BSSID and country code are read from CoreWLAN again at the next read.
+  func forgetIdentity() { lock.lock(); identity.invalidate(); lock.unlock() }
 
   /// Whether the system has a link on this interface (associated, for
   /// Wi-Fi). configd keeps it from the kernel's link events, so a radio scan
@@ -204,10 +208,20 @@ final class WiFi: NSObject, CWEventDelegate {
     s["interface"] = nn(i.interfaceName)
     s["power"] = power
     s["connected"] = connected
-    s["country_code"] = nn(i.countryCode())
+    // Name, BSSID, security, country code: from CoreWLAN only when they may
+    // have changed (WiFiIdentity: each read costs locationd a grant check).
+    let key = WiFiIdentity.Key(interface: i.interfaceName ?? "", connected: connected, locationOK: locationOK)
+    lock.lock(); let kept = identity.cached(key, now: Date()), since = identity.generation; lock.unlock()
+    let id = kept ?? {
+      var v: [String: Any] = ["country_code": nn(i.countryCode())]
+      if connected { v["ssid"] = nn(i.ssid()); v["bssid"] = nn(i.bssid()); v["security"] = i.security().rawValue }
+      lock.lock(); identity.store(v, for: key, since: since, now: Date()); lock.unlock()
+      return v
+    }()
+    s["country_code"] = id["country_code"] ?? NSNull()
     if connected {
-      let noise = i.noiseMeasurement(), sec = i.security()
-      s["ssid"] = nn(i.ssid()); s["bssid"] = nn(i.bssid())
+      let noise = i.noiseMeasurement(), sec = CWSecurity(rawValue: id["security"] as? Int ?? -1) ?? .unknown
+      s["ssid"] = id["ssid"] ?? NSNull(); s["bssid"] = id["bssid"] ?? NSNull()
       // Without Location Services a read may have no signal: shown as unknown.
       if rssi < 0 {
         s["rssi"] = rssi; s["noise"] = noise; s["snr"] = rssi - noise; s["quality"] = quality(rssi)
@@ -232,7 +246,8 @@ final class WiFi: NSObject, CWEventDelegate {
     guard let i = client.interface() else { throw APIError(503, "no Wi-Fi interface") }
     guard i.powerOn() else { throw APIError(503, "Wi-Fi is off") }
     let found: Set<CWNetwork> = cached ? (i.cachedScanResults() ?? []) : try i.scanForNetworks(withName: nil)
-    let known = knownSSIDs(), current = i.ssid()
+    lock.lock(); let kept = identity.keptSSID(i.interfaceName ?? "", now: Date()); lock.unlock()
+    let known = knownSSIDs(), current = kept ?? i.ssid()
     var best: [String: CWNetwork] = [:], bands: [String: Set<String>] = [:]
     for n in found {
       guard let ssid = n.ssid, !ssid.isEmpty else { continue }   // hidden, or no Location permission

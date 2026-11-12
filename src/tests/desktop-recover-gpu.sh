@@ -22,6 +22,10 @@
 # - the note says what happened and what to do if it goes blank again.
 # - a lost Vulkan (Venus) context (venus NAME venus|guard): nothing is ended; for
 #   ghostty the state file that sends the next Ghostty to the CPU, never through a link.
+# - the full name (3.4.5, #624): QEMU knows only the 15 bytes the VM's kernel keeps
+#   (cleanup-worker-); the note and the journal name the full one from the desktop
+#   user's processes of that name (executable, else first argument), only when one
+#   name fits; what is ended and its times stay keyed by the 15 bytes.
 #   src/tests/desktop-recover-gpu.sh [SCRIPT]   (another copy of the script, e.g. an older one)
 set -uo pipefail
 [[ $(uname -s) == Linux ]] || { echo "skip: Linux only (it reads /proc)"; exit 0; }
@@ -254,4 +258,178 @@ venus ghostty venus
 expect "a link where the folder goes: nothing written there"  "" "$(ls -A "$T/elsewhere")"
 grep -q "is not root's own folder" "$CALLS" && expect "the journal says so (folder)" yes yes \
   || expect "the journal says so (folder)" yes no
+# The full name (3.4.5, #624): the VM's kernel names a context by its process's comm,
+# 15 bytes (cleanup-worker-vulkan -> cleanup-worker-), and that is all QEMU sends.
+# These stand-ins are not this shell's children (their subshell ends at once): one
+# that is ended is gone from /proc, not left a zombie with the same comm.
+standin() {   # COMM ARG0 FILE ARGS...: FILE runs with ARG0 as argv[0]; its pid in P
+  local comm=$1 arg0=$2 c
+  shift 2
+  P=$( { (exec -a "$arg0" "$@") > /dev/null 2>&1 < /dev/null & } ; echo $! )
+  PIDS+=("$P")
+  for _ in $(seq 100); do
+    IFS= read -r c 2>/dev/null < "/proc/$P/comm" && [[ $c == "$comm" ]] && return 0
+    sleep 0.05
+  done
+  echo "FAIL could not start a stand-in named $comm"; fail=1
+}
+stop() {   # PID...: ended and gone from /proc
+  local p
+  kill -KILL "$@" 2>/dev/null
+  for p in "$@"; do
+    for _ in $(seq 100); do [[ -e /proc/$p ]] || break; sleep 0.05; done
+  done
+}
+journal() { grep '^logger' "$CALLS" | sed 's/^logger -t omacvm-desktop-recover -- //'; }
+# readlink, counted (the scan's only fork): RL=1 venus ... puts this one first.
+RL_REAL=$(command -v readlink)
+mkdir -p "$T/rl"
+printf '#!/bin/bash\necho x >> "%s"\nexec "%s" "$@"\n' "$T/readlinks" "$RL_REAL" > "$T/rl/readlink"
+chmod +x "$T/rl/readlink"
+counted() { : > "$T/readlinks"; PATH="$T/rl:$PATH" "$@"; }
+reads() { grep -c . "$T/readlinks"; }
+
+# A copy of sleep under the app's file name: the kernel takes the comm from it.
+# Only a real sleep: a multi-call binary (busybox, uutils) acts on its argv[0].
+SLEEP=$(readlink -f "$(command -v sleep)")
+mkdir -p "$T/w"
+if [[ ${SLEEP##*/} != sleep ]]; then
+  echo "skip: sleep is ${SLEEP:-missing} (a multi-call binary), no rows with a copied executable"
+else
+  cp "$SLEEP" "$T/w/cleanup-worker-vulkan"
+  # argv[0] "sleep": the name comes from the executable.
+  standin cleanup-worker- sleep "$T/w/cleanup-worker-vulkan" 600; w=$P
+  venus cleanup-worker- venus
+  expect "a 15-byte name: the note names the executable's full name" \
+    "cleanup-worker-vulkan stopped drawing" "$(note)"
+  expect "and so does its text" \
+    "The Mac refused cleanup-worker-vulkan's Vulkan commands, so its Vulkan graphics ended. The desktop keeps running. Restart cleanup-worker-vulkan; if it closed by itself, open it again." \
+    "$(body)"
+  expect "the journal names both (QEMU's to match qemu.log)" \
+    "cleanup-worker-vulkan (QEMU: cleanup-worker-) lost its Vulkan (Venus) context on the Mac (venus); nothing is ended, the desktop keeps drawing" \
+    "$(journal)"
+  expect "nothing is ended"                                    running "$(state "$w")"
+  venus cleanup-worker- guard
+  expect "guard: the note names the full name" \
+    "cleanup-worker-vulkan used all the graphics memory apps may have on this Mac, so its Vulkan graphics ended. The desktop keeps running. Restart cleanup-worker-vulkan; if it closed by itself, open it again." \
+    "$(body)"
+  stop "$w"
+  # The executable deleted while it runs (an update replaced it): still its name.
+  cp "$SLEEP" "$T/w/cleanup-worker-gone"
+  standin cleanup-worker- sleep "$T/w/cleanup-worker-gone" 600; w=$P
+  rm -f "$T/w/cleanup-worker-gone"
+  venus cleanup-worker- venus
+  expect "the executable deleted: its name without (deleted)"  "cleanup-worker-gone stopped drawing" "$(note)"
+  stop "$w"
+  # Both fit but differ: the executable's name wins (argv[0] is anyone's to set).
+  standin cleanup-worker- cleanup-worker-metal "$T/w/cleanup-worker-vulkan" 600; w=$P
+  venus cleanup-worker- venus
+  expect "executable and first argument differ: the executable's" "cleanup-worker-vulkan stopped drawing" "$(note)"
+  stop "$w"
+  # Two processes of that comm with different names: which one lost it is not known.
+  cp "$SLEEP" "$T/w/cleanup-worker-metal"
+  standin cleanup-worker- sleep "$T/w/cleanup-worker-vulkan" 600; w=$P
+  standin cleanup-worker- sleep "$T/w/cleanup-worker-metal" 600; w2=$P
+  venus cleanup-worker- venus
+  expect "two different full names: the 15 bytes, as before"   "cleanup-worker- stopped drawing" "$(note)"
+  expect "and the journal line as before (no QEMU name)" \
+    "cleanup-worker- lost its Vulkan (Venus) context on the Mac (venus); nothing is ended, the desktop keeps drawing" \
+    "$(journal)"
+  stop "$w2"
+  # Two of the same app agree.
+  standin cleanup-worker- sleep "$T/w/cleanup-worker-vulkan" 600; w2=$P
+  venus cleanup-worker- venus
+  expect "two processes of one app: its full name"             "cleanup-worker-vulkan stopped drawing" "$(note)"
+  stop "$w2"
+  # Only the desktop user's processes.
+  printf 'OMACVM_VM_TYPE=app\nOMACVM_USER=nobody\n' > "$T/env"
+  venus cleanup-worker- venus
+  expect "another user's process only: the 15 bytes"           "cleanup-worker- stopped drawing" "$(note)"
+  printf 'OMACVM_VM_TYPE=app\nOMACVM_USER=%s\n' "$(id -un)" > "$T/env"
+  stop "$w"
+  # A file name with a byte outside letters, digits, . _ -: not shown.
+  cp "$SLEEP" "$T/w/cleanup-worker-v;x"
+  standin cleanup-worker- sleep "$T/w/cleanup-worker-v;x" 600; w=$P
+  venus cleanup-worker- venus
+  expect "a ; in the executable's name: the 15 bytes"          "cleanup-worker- stopped drawing" "$(note)"
+  stop "$w"
+
+  # Many processes of that comm (anyone can start them): at most 32 are looked at,
+  # one readlink each, and the scan stays well within the Mac's 2 s.
+  many=()
+  for i in $(seq 50); do standin cleanup-worker- "x$i" "$T/w/cleanup-worker-vulkan" 600; many+=("$P"); done
+  t0=$(date +%s%N); venus cleanup-worker- venus; t1=$(date +%s%N)
+  ms=$(( (t1 - t0) / 1000000 ))
+  (( ms < 1000 )) && expect "50 processes of that comm: done in under 1 s" yes yes \
+    || expect "50 processes of that comm: done in under 1 s" "< 1000 ms" "$ms ms"
+  echo "     ($ms ms with $(ls -d /proc/[0-9]* | wc -l) processes)"
+  expect "and the full name"                                   "cleanup-worker-vulkan stopped drawing" "$(note)"
+  counted venus cleanup-worker- venus
+  expect "at most 32 of them looked at (one readlink each)"    32 "$(reads)"
+  stop "${many[@]}"
+fi
+
+# The first argument when the executable says nothing (python3 here): as several
+# arguments, or as one string (a process title).
+standin asr-transcriber /opt/x/asr-transcriber-cuda python3 -c "$NAMER" asr-transcriber --model x; a=$P
+venus asr-transcriber venus
+expect "the first argument's file name"                      "asr-transcriber-cuda stopped drawing" "$(note)"
+stop "$a"
+standin asr-transcriber python3 python3 -c "$NAMER" asr-transcriber --title "/opt/x/asr-transcriber-cuda --model x"; a=$P
+for _ in $(seq 100); do [[ $(tr '\0' '\n' < "/proc/$a/cmdline" 2>/dev/null | grep -c .) == 1 ]] && break; sleep 0.05; done
+venus asr-transcriber venus
+expect "a process title (one string): its first word's file name" "asr-transcriber-cuda stopped drawing" "$(note)"
+stop "$a"
+# A ; in it, or more than 64 bytes: not shown; 64 bytes are.
+standin asr-transcriber "/opt/x/asr-transcriber-c;d" python3 -c "$NAMER" asr-transcriber; a=$P
+venus asr-transcriber venus
+expect "a ; in the first argument: the 15 bytes"             "asr-transcriber stopped drawing" "$(note)"
+stop "$a"
+long=asr-transcriber-$(printf 'x%.0s' $(seq 48))   # 64 bytes
+standin asr-transcriber "/opt/x/$long" python3 -c "$NAMER" asr-transcriber; a=$P
+venus asr-transcriber venus
+expect "64 bytes: shown"                                     "$long stopped drawing" "$(note)"
+stop "$a"
+standin asr-transcriber "/opt/x/${long}x" python3 -c "$NAMER" asr-transcriber; a=$P
+venus asr-transcriber venus
+expect "65 bytes: the 15 bytes"                              "asr-transcriber stopped drawing" "$(note)"
+stop "$a"
+# Nothing of that name runs (it already ended): the 15 bytes, nothing looked up.
+counted venus asr-transcriber venus
+expect "nothing of that name runs: the 15 bytes"             "asr-transcriber stopped drawing" "$(note)"
+expect "and no readlink"                                     0 "$(reads)"
+# A name of 14 bytes was not cut: never looked up.
+standin cleanup-worker /opt/x/cleanup-worker-vulkan python3 -c "$NAMER" cleanup-worker; a=$P
+counted venus cleanup-worker venus
+expect "a 14-byte name: as it is"                            "cleanup-worker stopped drawing" "$(note)"
+expect "and nothing looked up"                               0 "$(reads)"
+stop "$a"
+
+# app: the note and the journal show the full name; the GPU process ended and its
+# times stay keyed by QEMU's 15 bytes.
+standin electron-app-wi /opt/x/electron-app-window python3 -c "$NAMER" electron-app-wi; ebrowser=$P
+standin electron-app-wi /opt/x/electron-app-window python3 -c "$NAMER" electron-app-wi --type=gpu-process; egpu=$P
+rm -rf "$T/stamps"
+run "$NOW" electron-app-wi pressure
+expect "app with a cut name: its GPU process is ended"       ended   "$(state "$egpu")"
+expect "its browser keeps running"                           running "$(state "$ebrowser")"
+expect "the note names the full name" "electron-app-window's graphics were restarted" "$(note)"
+expect "and so does its text" \
+  "macOS ran short of memory, so electron-app-window lost its graphics on the Mac. OmacVM restarted electron-app-window's GPU process: its windows draw again in a few seconds and open tabs stay; pages with WebGL may need a reload. Close something on the Mac or in the VM. If electron-app-window goes blank again, quit it and open it again." \
+  "$(body)"
+expect "the journal: both names, then the process ended by QEMU's" \
+  "electron-app-window (QEMU: electron-app-wi) lost its GPU context on the Mac (pressure); the desktop keeps drawing|ended electron-app-wi's GPU process (pid $egpu): electron-app-wi starts a new one" \
+  "$(journal | paste -sd'|')"
+expect "the times are kept under QEMU's name"                "1 no" \
+  "$(grep -c . "$T/stamps/gpu-electron-app-wi" 2>/dev/null) $([[ -e $T/stamps/gpu-electron-app-window ]] && echo yes || echo no)"
+standin electron-app-wi /opt/x/electron-app-window python3 -c "$NAMER" electron-app-wi --type=gpu-process; egpu=$P
+run $((NOW + 60)) electron-app-wi guard
+expect "lost again a minute later: left alone (keyed by the 15 bytes)" running "$(state "$egpu")"
+expect "the note names the full name"                        "electron-app-window stopped drawing" "$(note)"
+expect "guard: the text too" \
+  "electron-app-window used all the graphics memory apps may have on this Mac (the rest is kept for the desktop), so it lost its graphics. The desktop keeps running. Close some of its tabs or windows. Then reload or restart electron-app-window." \
+  "$(body)"
+journal | grep -q "^electron-app-window's GPU process was not restarted: restarted 1 min ago" \
+  && expect "the journal says why not" yes yes || expect "the journal says why not" yes "$(journal | paste -sd'|')"
+stop "$ebrowser" "$egpu"
 exit $fail

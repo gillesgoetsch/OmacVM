@@ -12,6 +12,8 @@
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 T=$(mktemp -d)
+# SwiftUI's macros: a toolchain that has their plugins (Xcode's, as the release build)
+source "$R/src/tests/swift-toolchain.sh"; swift_toolchain "$T/mc" || { rm -rf "$T"; exit 1; }
 OUT=${1:-$T/png}; mkdir -p "$OUT"
 D=org.omacvm.test.mouse-swipe.$$
 # The renderer's own defaults domain is its name: per run as well.

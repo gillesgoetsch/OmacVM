@@ -27,10 +27,12 @@ the first reason (VKR_SPIRV_VALIDATE_ENFORCE 0 at build time: spirv-val's
 refusals are only logged, one line per module; the refusals before it stay).
 A pipeline stage's Function and Private variables may hold at most 2^20
 elements after specialization (arrays of arrays multiplied, struct members
-added; a length from a spec constant operation is refused), and its Workgroup
-variables at most maxComputeSharedMemorySize bytes (VUID-RuntimeSpirv-
-Workgroup-06530; their sum without padding, the largest Block one when that
-is more, a length from a spec constant operation counted once), both over the
+added; a length from a spec constant operation is its value after
+specialization, one the scan does not evaluate or that is no valid length is
+refused, and the refusal names which), and its Workgroup variables at most
+maxComputeSharedMemorySize bytes (VUID-RuntimeSpirv-Workgroup-06530; their
+sum without padding, the largest Block one when that is more; a length from a
+spec constant operation as for the elements), both over the
 variables the stage's code gets: the Function ones of the functions its entry
 point reaches through calls (both Mac compilers translate only those), and the
 Private and Workgroup ones of the module, or on KosmicKrisp from SPIR-V 1.4
@@ -78,7 +80,8 @@ element count, the Workgroup bytes per entry point (two compute entry points
 whose Function variables are over the cap together pass), the interface
 locations per stage from the drivers' own limits, the type cost),
 Tests/virgl/fuzz-venus-spirv.sh (the element count, the Workgroup bytes and
-the interface check under the sanitizers). Hostile modules never reach a real driver in a test
+the interface check under the sanitizers; lengths from spec constant
+operations, 3.4.5). Hostile modules never reach a real driver in a test
 (STANDARDS 14b).
 
 diff --git a/meson.build b/meson.build
@@ -326,7 +329,7 @@ diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
     struct vkr_shader_module *module = vkr_shader_module_create_and_add(dispatch->data, args);
     if (!module) {
        vkr_spirv_free(spirv);
-@@ -542,13 +583,52 @@
+@@ -542,13 +583,51 @@
        own = vkr_spirv_scan(code->pCode, code->codeSize, why, why_size);
        if (!own)
           return false;
@@ -348,26 +351,25 @@ diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
 +    * reaches, and the globals the device's compiler makes for it (vkr_spirv.h) */
 +   const bool by_interface = physical_dev->spirv_target.options & VKR_SPIRV_INTERFACE_GLOBALS;
 +   uint64_t elements = 0, shared = 0;
++   const char *count_why = NULL, *size_why = NULL;
 +   const bool counted =
 +      spirv && vkr_spirv_function_elements(spirv, entry, by_interface, vkr_spec_lookup,
-+                                           st->pSpecializationInfo, &elements);
++                                           st->pSpecializationInfo, &elements, &count_why);
 +   const bool sized =
 +      spirv && vkr_spirv_workgroup_bytes(spirv, entry, by_interface, vkr_spec_lookup,
-+                                         st->pSpecializationInfo, &shared);
++                                         st->pSpecializationInfo, &shared, &size_why);
     if (!spirv) {
        snprintf(why, why_size, "stage 0x%x: a shader module without its scan", st->stage);
 +   } else if (!counted) {
-+      snprintf(why, why_size,
-+               "stage 0x%x: Function or Private variables of a size the scan cannot know (an "
-+               "array length from a spec constant operation, or types nested past 64 levels)",
-+               st->stage);
++      snprintf(why, why_size, "stage 0x%x: Function or Private variables of a size the scan cannot count: %s",
++               st->stage, count_why ? count_why : "?");
 +   } else if (elements > VKR_SPIRV_MAX_FUNCTION_ELEMENTS) {
 +      snprintf(why, why_size,
 +               "stage 0x%x: Function and Private variables of %" PRIu64 " elements (at most %u)",
 +               st->stage, elements, VKR_SPIRV_MAX_FUNCTION_ELEMENTS);
 +   } else if (!sized) {
-+      snprintf(why, why_size,
-+               "stage 0x%x: Workgroup variables of types nested past 64 levels", st->stage);
++      snprintf(why, why_size, "stage 0x%x: Workgroup variables of a size the scan cannot count: %s",
++               st->stage, size_why ? size_why : "?");
 +   } else if (shared > lim->maxComputeSharedMemorySize) {
 +      snprintf(why, why_size,
 +               "stage 0x%x: Workgroup variables of %" PRIu64
@@ -379,7 +381,7 @@ diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
     } else if (!entry) {
        snprintf(why, why_size, "stage 0x%x: no entry point \"%.64s\" for the stage", st->stage,
                 st->pName);
-@@ -1015,15 +1095,12 @@
+@@ -1015,15 +1094,12 @@
     struct vn_command_vkCreateRayTracingPipelinesKHR *args)
  {
     TRACE_FUNC();

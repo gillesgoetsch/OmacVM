@@ -1,6 +1,6 @@
 #!/bin/bash
-# Mission Control (feature mission-control: experimental, off by default,
-# Omarchy 4.5, needs Trackpad gestures; docs/features.md): the Mac Mission
+# Mission Control (feature mission-control: off by default, Omarchy 4.5,
+# needs Trackpad gestures; docs/features.md): the Mac Mission
 # Control plugin by Gilles Goetsch (MIT,
 # github.com/gillesgoetsch/omarchy-mac-mission-control), the files of the
 # commit in ../PIN byte for byte (../SHA256SUMS; ../sync.sh). As root in the VM:
@@ -284,7 +284,7 @@ status() {   # on|off: the switch
     elif ours; then echo "human off; the rest goes at the next apply while the session is open"
     elif [[ -n $own ]]; then echo "skip off in OmacVM; your own copy (omarchy plugin) is $(in_config && echo on || echo off)"
     elif ! at45 "$om"; then echo "skip off (needs Omarchy 4.5)"
-    else echo "skip off (experimental: omacvm enable mission-control)"; fi
+    else echo "skip off (omacvm enable mission-control)"; fi
     return 0
   fi
   if ! at45 "$om"; then echo "fail needs Omarchy 4.5 (this VM has ${om:-none}): Move to Omarchy 4.5 in OmacVM.app"; return 0; fi

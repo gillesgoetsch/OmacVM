@@ -9,7 +9,7 @@ The short version is the grid at the top of the [README](../README.md).
 | **Skip the notch** *(off by default)* | On the bar beside the notch, items that don't fit on their side continue on its other side, in the same order, instead of going behind the notch. They only hide when both sides are full. Either full screen; external displays keep their bar. **Display** > **Skip the notch** in the app's VM window (its (i) shows a picture), `omacvm notch --vm NAME --skip on` or the control centre |
 | **Trackpad gestures** | Three- and four-finger swipes switch workspaces and pinch zooms while the VM is full screen; macOS's own Spaces swipe is off meanwhile. With macOS's Three Finger Drag on, three fingers drag as in macOS and four switch workspaces. ⌃⌥ Esc takes you back to macOS, and from macOS back into the VM. The MacBook's trackpad, or a Magic Trackpad on a Mac mini, iMac or Studio |
 | **macOS-native scroll momentum** *(experimental, but awesome)* | Two-finger scrolling on a trackpad in every direction with your Mac's own acceleration and momentum, pinch included; mice scroll one to one. On by default ([how it works](#macos-native-scroll-momentum)) |
-| **Mission Control** *(experimental, off by default, Omarchy 4.5)* | Four fingers up in the full-screen VM and the windows of each display spread out under your fingers, with its workspaces along the top as live previews; four fingers down close it. While it is open, four fingers sideways go through the workspaces (two fingers on a Magic Mouse); click a window to go to it, drag it onto a workspace to move it there. The [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by [@gillesgoetsch](https://github.com/gillesgoetsch) (MIT). **Input > Mission Control** in the app's VM window, the control centre, or `omacvm enable mission-control` ([details](#mission-control)) |
+| **Mission Control** *(off by default, Omarchy 4.5)* | Four fingers up in the full-screen VM and the windows of each display spread out under your fingers, with its workspaces along the top as live previews; four fingers down close it. While it is open, four fingers sideways go through the workspaces (two fingers on a Magic Mouse); click a window to go to it, drag it onto a workspace to move it there. The [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by [@gillesgoetsch](https://github.com/gillesgoetsch) (MIT). **Input > Mission Control** in the app's VM window, the control centre, or `omacvm enable mission-control` ([details](#mission-control)) |
 | **The Mac's Wi-Fi in the bar** | Real network name and signal, nearby networks, and Omarchy's QR card to share the password (macOS asks you first). Joining a network and switching Wi-Fi stay on the Mac for now |
 | **The Mac's Bluetooth in the bar** | Omarchy's own Bluetooth panel for the Mac's devices: connect and disconnect them, battery levels (AirPods left, right and case), Bluetooth on and off, forget a device. Pairing a new one opens the Mac's Bluetooth settings |
 | **The Mac's audio in the bar** | Volume, mute, microphone, switching outputs (AirPods show up when they connect), with Omarchy's input meter |
@@ -250,9 +250,8 @@ swipe is as before. The swipe out uses the fingers your VM switches workspaces
 with (its `hl.gesture` lines; OmacVM sets up 3 and 4): if you give 3 fingers
 to something else, such as moving focus or snapping windows, only 4 fingers
 swipe out. Any other sideways gesture with 3 fingers counts, also one in a file
-of your own. With [Mission Control](#mission-control) open, a sideways swipe at
-the first or last workspace still goes out to macOS instead of to the next
-workspace in the overview.
+of your own. While [Mission Control](#mission-control) is open, Swipe out to
+macOS waits: sideways swipes stay in the VM.
 
 A **Magic Mouse** in the full-screen VM: two fingers sideways swipe
 Omarchy's workspaces, as four fingers on a trackpad (macOS's own Space
@@ -379,7 +378,7 @@ Switch it off with `omacvm disable scroll-momentum`, on again with `omacvm enabl
 
 The [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin for Omarchy's shell, by
 [@gillesgoetsch](https://github.com/gillesgoetsch) (MIT), as an OmacVM
-feature: experimental, off by default, on Omarchy 4.5 (a VM still on 4.0:
+feature: off by default, on Omarchy 4.5 (a VM still on 4.0:
 [Move to Omarchy 4.5](#move-to-omarchy-45) first; until then the switch is
 off and says so). Switch it in the app's VM window (**Input > Mission
 Control**; while the VM is stopped it is set up at the next start), in the

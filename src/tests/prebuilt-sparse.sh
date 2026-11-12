@@ -2,9 +2,10 @@
 # The prebuilt image's disk is packed sparse (src/prebuilt/sparsify.py, run by
 # make-image.sh): a raw disk whose zeros are allocated (as dd conv=sparse once
 # left the app's disk: 62 of 64 GB) gets its zeroed MiBs back as holes, its
-# bytes unchanged; tar then packs only the data, and unpacking it gives a
-# sparse disk again. Also: the archive names root as the owner, not this
-# Mac's user. macOS (APFS, F_PUNCHHOLE) only.
+# bytes unchanged; tar then packs only the data, and unpacking it
+# (unpack.py, src/tests/prebuilt-unpack.sh) gives a sparse disk again. Also:
+# the archive names root as the owner, not this Mac's user. macOS (APFS,
+# F_PUNCHHOLE) only.
 #   src/tests/prebuilt-sparse.sh
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -44,15 +45,15 @@ COPYFILE_DISABLE=1 tar --no-xattrs --uid 0 --gid 0 --uname root --gname root -C 
 expect "archive holds the data only" 1 "$(( $(stat -f %z "$T/img.tar") < 8 * 1048576 ))"
 expect "archive owner is root, not this Mac's user" "root/root" \
   "$(tar -tvf "$T/img.tar" | awk '{ print $3 "/" $4 }' | sort -u | paste -sd' ' -)"
-tar -xSf "$T/img.tar" -C "$T/x"
-expect "unpacked: bytes unchanged" "$sum" "$(shasum -a 256 < "$T/x/Omarchy/disk.img")"
-expect "unpacked: sparse" 1 "$(( $(kb "$T/x/Omarchy/disk.img") <= 3 * 1024 ))"
+python3 -I "$R/src/prebuilt/unpack.py" extract Omarchy/disk.img "$T/x/disk.img" 67108864 < "$T/img.tar"
+expect "unpacked: bytes unchanged" "$sum" "$(shasum -a 256 < "$T/x/disk.img")"
+expect "unpacked: sparse" 1 "$(( $(kb "$T/x/disk.img") <= 3 * 1024 ))"
 
 # make-image.sh makes the app's disk sparse when it packs and repacks it, and
 # stops when it is still mostly allocated.
 M=$R/src/prebuilt/make-image.sh
-expect "package: app disk made sparse after dd" 1 \
-  "$(grep -A1 'dd if="$b/disk.img" of="$stage/disk.img"' "$M" | grep -c 'sparse_disk "$stage/disk.img"')"
+expect "package: app disk made sparse after the copy" 1 \
+  "$(grep -A2 'unpack.py" copy "$b/disk.img" "$stage/disk.img"' "$M" | grep -c 'sparse_disk "$stage/disk.img"')"
 expect "repack: app disk made sparse" 1 "$(awk '/^stage_repack\(\) \{/ {on=1} on && /sparse_disk "\$stage\/disk.img"/ {n++} on && /^}$/ {exit} END {print n+0}' "$M")"
 expect "sparse_disk stops on a disk still half allocated" 1 "$(grep -c 'kb < PREBUILT_DISK_GB \* 1048576 / 2' "$M")"
 expect "tar names root as the owner" 1 "$(grep -c 'tar --no-xattrs --uid 0 --gid 0 --uname root --gname root' "$M")"
@@ -72,9 +73,12 @@ expect "tar names root as the owner" 1 "$(grep -c 'tar --no-xattrs --uid 0 --gid
   expect "compact: it says so" 1 "$([[ $msg == *"zeros made holes"* ]] && echo 1)"
   msg=$(prebuilt_compact "$g")
   expect "compact: a sparse disk is left alone" "" "$msg"
+  dd if=/dev/zero of="$g" bs=1m count=32 conv=notrunc status=none
+  msg=$(prebuilt_compact "$g" unpack)
+  expect "compact: right after the unpack it warns" 1 "$([[ $msg == "WARN: right after the unpack, disk.img took"* ]] && echo 1)"
   (( fail )) && exit 1; exit 0
 ) || fail=1
-expect "unpack: the app's disk is compacted" 1 "$(grep -A3 'mv "$f" "$2"' "$R/src/prebuilt/lib.sh" | grep -c 'prebuilt_compact "$2"')"
+expect "unpack: the app's disk is checked, a warning if it was not sparse" 1 "$(grep -A3 'mv "$f" "$2"' "$R/src/prebuilt/lib.sh" | grep -c 'prebuilt_compact "$2" unpack')"
 expect "setup: compacted once the VM is off" 1 "$(grep -c 'qemu_running || prebuilt_compact "$VM_DIR/disk.img"' "$R/app/scripts/prebuilt-vm.sh")"
 
 (( fail )) && { echo "prebuilt-sparse: FAILED"; exit 1; }

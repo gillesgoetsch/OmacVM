@@ -510,7 +510,7 @@ def test_omarchy_below_45_same_rule_as_the_mac(version, below):
 def test_mission_control_tags(features):
     f = by(features, "mission-control")
     assert f.default == "off" and f.needs == "gestures" and f.sides == ("vm",)
-    assert "experimental" in f.tags and "omarchy-45" in f.tags
+    assert "experimental" not in f.tags and "omarchy-45" in f.tags
 
 
 def test_mission_control_on_omarchy_40_unavailable_whatever_the_mac_says(features):

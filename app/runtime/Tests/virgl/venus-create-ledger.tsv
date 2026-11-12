@@ -20,11 +20,11 @@ vkCreateGraphicsPipelines	blend factors/ops/logic op, compare ops, cull mode, to
 vkCreateGraphicsPipelines	VkPipelineSampleLocationsStateCreateInfoEXT	A	as vkCmdSetSampleLocationsEXT, where Mesa copies them: sampleLocationsEnable on or dynamic, the locations not dynamic	p-gfx-sample-locations-far, -dyn-far; legal: p-gfx-sample-locations-off
 vkCreateGraphicsPipelines	VkPipelineColorWriteCreateInfoEXT attachmentCount	A	<= maxColorAttachments	
 vkCreateGraphicsPipelines	VkRenderingAttachmentLocationInfo / InputAttachmentIndexInfo counts	A	<= maxColorAttachments	gap 3
-vkCreate*Pipelines	specialization map entries	A	offset + size <= dataSize	p-spec-oob (host read)
+vkCreate*Pipelines	specialization map entries	A	offset + size <= dataSize; each constantID once (VUID-VkSpecializationInfo-constantID-04911, 3.4.5)	p-spec-oob (host read), p-spec-dup-id
 vkCreate*Pipelines	VkPipelineCreationFeedbackCreateInfo stage count	A	0 or the stage count (Mesa writes per stage)	
 vkCreate*Pipelines	VkPipelineRobustnessCreateInfo behaviors	A	known (kk_shader.h:152 UNREACHABLE)	
 vkCreate*Pipelines	stage module NULL, inline VkShaderModuleCreateInfo codeSize	A	a module or inline code; inline codeSize % 4 (gap 7)	p-stage-null-module, p-inline-spirv-odd
-vkCreate*Pipelines	SPIR-V content, entry point, workgroup size, descriptor sets	B	structural scan; entry point by name and model; workgroup after specialization; sets the entry's call graph uses	p-spirv-* (both crash), p-entry-missing (MVK 6), p-workgroup-huge (MVK 6), p-layout-mismatch (KK 11); PR-B: p-spirv-*, p-entry-missing, p-stage-mismatch, p-workgroup-*, p-shader-layout-*, p-unused-set-*
+vkCreate*Pipelines	SPIR-V content, entry point, workgroup size, descriptor sets	B	structural scan; entry point by name and model; workgroup after specialization; sets the entry's call graph uses; array lengths from spec constant operations evaluated after specialization, invalid or unevaluated ones refused (3.4.5)	p-spirv-* (both crash), p-entry-missing (MVK 6), p-workgroup-huge (MVK 6), p-layout-mismatch (KK 11); PR-B: p-spirv-*, p-entry-missing, p-stage-mismatch, p-workgroup-*, p-shader-layout-*, p-unused-set-* p-specop-length-ok, p-specop-length-over, p-specop-divzero
 vkCreate*Pipelines	color/depth formats, sample counts vs formats	B	known formats with attachment features (rendering info, inheritance); sample counts as in PR-A	p-gfx-format-bad (both 11); PR-B: p-gfx-format-bad, p-gfx-format-r64, p-gfx-depth-format-*, c-inherit-format-bad
 vkCreateComputePipelines	stage	A	COMPUTE	
 vkCreatePipelineLayout	setLayoutCount	A	<= maxBoundDescriptorSets (Mesa set_layouts[32])	gap 5: p-layout-sets-40

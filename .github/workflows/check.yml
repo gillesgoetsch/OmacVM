@@ -316,6 +316,9 @@ jobs:
       - name: Prebuilt image disk is packed sparse (holes for zeros, owner root)
         run: src/tests/prebuilt-sparse.sh
 
+      - name: Prebuilt disk unpacks sparse and bounded (never past the end, free-space floor, odd archives refused)
+        run: src/tests/prebuilt-unpack.sh
+
 
       - name: Ctrl-C in omacvm build stops the running step (a terminal, no VM)
         run: src/tests/build-ctrlc.sh
@@ -369,8 +372,14 @@ jobs:
       - name: Magic Mouse swipe setting (3 or 4 fingers) and its row, only with a Magic Mouse
         run: src/tests/app-mouse-swipe.sh
 
+      - name: Tests that build the app's SwiftUI sources take a toolchain with SwiftUI's macro plugins (Xcode's when a CLT swiftc comes first)
+        run: src/tests/swift-macros.sh
+
       - name: The VM window's settings stay across launches (defaults, two VMs, 3.0's files, the CLI; Extra brightness as the user left it)
         run: src/tests/app-settings.sh
+
+      - name: The e2e gate's row texts stay UTF-8 (cut by characters) and its result.json is always written
+        run: src/tests/e2e-result.sh
 
       - name: The note when macOS refuses the VM's keyboard tap
         run: src/tests/app-key-access.sh
@@ -913,6 +922,9 @@ jobs:
 
       - name: OmacVM's zram cap is the size zram-generator takes, also over Omarchy 4.5's own file; omacvm check's "zram swap" line (bash 5, GNU tools, as in the VM)
         run: src/tests/memory-zram-order.sh
+
+      - name: OmacVM's disk rule (no I/O scheduler on the VM's own disks) is read after Omarchy 4.5's, matches only QEMU's disks and passes udevadm verify
+        run: src/tests/disk-scheduler.sh
 
       - name: omarchy-mac's ARM package targets that Omarchy's repo has (bash 5, as in the VM)
         run: src/tests/omarchy-targets.sh
