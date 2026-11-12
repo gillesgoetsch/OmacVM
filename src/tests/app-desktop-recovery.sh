@@ -195,6 +195,13 @@ grep -q "notify-send|-a|OmacVM|-u|normal|Ghostty stopped drawing|Close it first:
   || { expect "venus ghostty: close it first, what ends, the CPU next time" yes no; cat "$CALLS"; }
 grep -q "lost its Vulkan (Venus) context on the Mac (guard)" "$CALLS" \
   && expect "venus: logged to the journal with the cause" yes yes || expect "venus: logged to the journal with the cause" yes no
+# A 15-byte name (the VM's kernel cut it, #624) with no process of that name (on the
+# Mac: no /proc at all; macOS's bash 3.2): the note and the journal keep it, as before.
+: > "$CALLS"
+"$G" venus cleanup-worker- venus > /dev/null; rc=$?
+n=$(grep -c "notify-send|-a|OmacVM|-u|normal|cleanup-worker- stopped drawing|The Mac refused cleanup-worker-'s Vulkan commands" "$CALLS")
+j=$(grep -c "^logger -t omacvm-desktop-recover -- cleanup-worker- lost its Vulkan (Venus) context on the Mac (venus)" "$CALLS")
+expect "venus, a 15-byte name nobody runs: kept, exit 0" "0 1 1" "$rc $n $j"
 # The VM stood still (QEMU's stall note): a note with the numbers, nothing restarts.
 : > "$CALLS"
 "$G" stall 58 51 64 > /dev/null
