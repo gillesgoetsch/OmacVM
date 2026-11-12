@@ -1011,6 +1011,11 @@ The less obvious ones, with causes and where the fix lives, are in
   alpha (`omacvm-displays` from 3.2.16): PPM has none, and black is not
   "nothing drawn" (a black wallpaper has alpha 255).
 - Do not put personal data in this repo.
+- `NSApp.activate()` for a question: macOS 15 to 27 refuse it, and
+  `activate(options: [])`, while another app is in front and no click reached
+  this app (a plug-in, QEMU's menu, `omacvm start`). Use `AskKeys`
+  (docs/adr/0068-ask-keys.md). `DispatchQueue.main.asyncAfter` does not run
+  while `runModal` runs inside a main-queue block: use a run loop timer.
 
 ## 9. Conventions
 

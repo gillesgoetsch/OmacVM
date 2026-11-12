@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import OmacVMDesktop
+import OmacVMWindow
 
 /// Where QEMU writes the VM's graphics memory (GPUMemory, in OmacVMDesktop).
 extension GPUMemory {
@@ -649,10 +650,10 @@ final class GPUMemoryWatch {
             "Restarting the desktop closes the apps open in the VM; anything not saved in them is lost."
         a.addButton(withTitle: "Restart the Desktop")
         a.addButton(withTitle: "Later")
-        a.window.level = .floating
-        a.window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         alert = a
-        NSApp.activate()
+        AskKeys.take(a.window, overVM: qemuPID)
+        // Comes with no warning, and Return restarts the desktop.
+        AskKeys.hold(a)
         let answer = a.runModal()
         alert = nil
         // The VM stopped while the window was up (stop() closed it).
