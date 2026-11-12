@@ -321,8 +321,8 @@ expect(notch["mission-control"] == nil && noNotch["mission-control"] == nil, "a 
 if let text = try? String(contentsOf: tsv, encoding: .utf8),
    let row = text.split(separator: "\n").first(where: { $0.hasPrefix("mission-control\t") }) {
     let f = row.split(separator: "\t", omittingEmptySubsequences: false)
-    expect(f.count >= 5 && f[1] == "off" && f[2] == "vm" && f[3] == "experimental,omarchy-45" && f[4] == "gestures",
-           "mission-control in src/features.tsv: off, vm, experimental,omarchy-45, needs gestures")
+    expect(f.count >= 5 && f[1] == "off" && f[2] == "vm" && f[3] == "omarchy-45" && f[4] == "gestures",
+           "mission-control in src/features.tsv: off, vm, omarchy-45 (not experimental), needs gestures")
 } else {
     expect(false, "mission-control in src/features.tsv")
 }
@@ -350,9 +350,12 @@ expect(MissionControl.isOn(features: ms1.record) && ms1.pending == "on\n" && Mis
        "mission-control stopped, on: the record says on, pending on")
 expect(MissionControl.switchState.applyArguments(vm: "V", on: true) == ["apply", "--vm", "V", "--vm-type", "app", "--feature", "mission-control=on", "--yes", "--transaction"],
        "mission-control at the start: apply's switch of it alone")
-expect(MissionControl.info.hasPrefix("Experimental.") && MissionControl.info.contains("Gilles Goetsch (MIT)") &&
+expect(!MissionControl.info.lowercased().contains("experimental") && MissionControl.info.contains("Gilles Goetsch (MIT)") &&
        !MissionControl.info.contains("Mission Control key") && !MissionControl.info.contains("F3"),
-       "mission-control (i): experimental, credits the plugin, never the Mission Control key")
+       "mission-control (i): not experimental, credits the plugin, never the Mission Control key")
+expect(!MissionControl.subtitle.lowercased().contains("xperimental") && MissionControl.subtitle.count <= 80 &&
+       ![MissionControl.needs45, MissionControl.needsGestures, MissionControl.onNote].contains(MissionControl.subtitle),
+       "mission-control row text beside the picture: short, not experimental, none of the notes")
 
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -228,7 +228,7 @@ expect "off: done" 0 "$rc"
 expect "off: windows shown, disabled, reloaded" "0 no yes" "$(cat "$S/hidden") $(enabled) $(logged 'hyprctl reload')"
 expect "off: no hooks or keys left in Hyprland" "no []" "$(there "$S/hooks") $(hyprctl binds -j)"
 expect "off: OmacVM's copy and the marker gone" "no no" "$(there "$P") $(there "$MARK")"
-expect "off: check says off" "skip off (experimental: omacvm enable mission-control)" "$(st off)"
+expect "off: check says off" "skip off (omacvm enable mission-control)" "$(st off)"
 : > "$LOG"; bash "$I" me off
 expect "off again: nothing asked of the shell or Hyprland" "" "$(cat "$LOG")"
 

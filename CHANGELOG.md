@@ -10,6 +10,11 @@ in more words.
   @gillesgoetsch: a Hyprland config reload while the overview is open no longer leaves most keys
   doing nothing until the next open and close. It comes with Update VM; with Mission Control on,
   Omarchy's shell restarts once.
+- **Mission Control** is no longer experimental. It stays off until you switch it on (Omarchy 4.5,
+  Trackpad gestures). Its row in the app's VM window (Input) now shows a small picture of what it
+  does: the windows spread out, with the workspaces along the top. The
+  [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by
+  @gillesgoetsch.
 
 ## 3.4.4
 
