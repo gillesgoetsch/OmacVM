@@ -1,0 +1,7 @@
+# OmacVM: no I/O scheduler on the VM's own virtual disks (QEMU's NVMe and
+# virtio disks): the Mac schedules the real I/O. Read after Omarchy 4.5's
+# 60-omarchy-io-scheduler.rules (kyber on every disk), so it wins on these
+# disks only; a USB disk passed in keeps Omarchy's choice (#778). It acts
+# only while OmacVM's record of the VM (/etc/omacvm/env) is there.
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="nvme*", ATTRS{model}=="QEMU NVMe Ctrl", TEST=="/etc/omacvm/env", ATTR{queue/scheduler}="none"
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="vd*", TEST=="/etc/omacvm/env", ATTR{queue/scheduler}="none"

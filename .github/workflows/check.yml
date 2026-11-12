@@ -923,6 +923,9 @@ jobs:
       - name: OmacVM's zram cap is the size zram-generator takes, also over Omarchy 4.5's own file; omacvm check's "zram swap" line (bash 5, GNU tools, as in the VM)
         run: src/tests/memory-zram-order.sh
 
+      - name: OmacVM's disk rule (no I/O scheduler on the VM's own disks) is read after Omarchy 4.5's, matches only QEMU's disks and passes udevadm verify
+        run: src/tests/disk-scheduler.sh
+
       - name: omarchy-mac's ARM package targets that Omarchy's repo has (bash 5, as in the VM)
         run: src/tests/omarchy-targets.sh
 

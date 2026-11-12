@@ -518,6 +518,7 @@ else
 fi
 if system; then
   log "memory";     "$R/memory/guest/install.sh"
+  log "disk";       "$R/disk/guest/install.sh"
   log "keyboard";   "$R/keyboard/guest/install.sh" "$U" "$layout" "${variant:-}"
 fi
 # Off means off on every route (off.sh): no service of the feature runs in the
