@@ -701,10 +701,11 @@ mv_run ok run; rc=$?
 expect "... Resume: to the end, every apply's log kept (the failed one, then steps 4 and 6)" "0 done 1 0 0" \
   "$rc $(jget state) $(grep -c 'No space left' "$V/logs/move-apply.log.2") $(grep -c 'No space left' "$V/logs/move-apply.log.1") $(grep -c 'No space left' "$V/logs/move-apply.log")"
 kal=$(awk '/^keep_apply_log\(\) \{/ { on = 1 } on { print } on && /^}$/ { exit }' "$A/scripts/move-vm.sh")
-expect "keep_apply_log: at most 4 earlier logs, the newest as .1; an empty one does not push them out" " 6 5 4 3 none" "$(LOG=$T/kl; mkdir -p "$LOG"
-  eval "$kal"; for i in 1 2 3 4 5 6; do echo "$i" > "$LOG/move-apply.log"; keep_apply_log; done; : > "$LOG/move-apply.log"; keep_apply_log
-  echo "$(cat "$LOG/move-apply.log" 2>/dev/null) $(cat "$LOG/move-apply.log.1") $(cat "$LOG/move-apply.log.2") $(cat "$LOG/move-apply.log.3") $(cat "$LOG/move-apply.log.4")" \
-  "$([[ -e $LOG/move-apply.log.5 ]] && echo five || echo none)")"
+expect "keep_apply_log: at most 9 earlier logs, the newest as .1; an empty one does not push them out" " 11 10 9 8 7 6 5 4 3 none" "$(LOG=$T/kl; mkdir -p "$LOG"
+  eval "$kal"; for i in 1 2 3 4 5 6 7 8 9 10 11; do echo "$i" > "$LOG/move-apply.log"; keep_apply_log; done; : > "$LOG/move-apply.log"; keep_apply_log
+  echo "$(cat "$LOG/move-apply.log" 2>/dev/null)" $(for n in 1 2 3 4 5 6 7 8 9; do cat "$LOG/move-apply.log.$n"; done) \
+  "$([[ -e $LOG/move-apply.log.10 ]] && echo ten || echo none)")"
+expect "... the failed apply's exit code is in its log" "1" "$(grep -c '^move-vm.sh: apply-vm.sh exit [1-9]' "$V/logs/move-apply.log.2")"
 fresh
 t0=$(date +%s)
 mv_run grub-restart run OMACVM_MOVE_BOOT_SECONDS=60; rc=$?

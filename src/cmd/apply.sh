@@ -43,6 +43,18 @@ source "$R/src/lib/features.sh"
 source "$R/src/lib/graphics.sh"
 source "$R/src/lib/mac-setup.sh"
 source "$R/src/lib/omarchy-move.sh"
+# A stop with no reason of its own (set -e after a command that said
+# nothing, such as ssh when the VM closes the connection) says so, with the
+# exit code and the last step: #771's move stopped at step 4 without a word.
+# Exits 1-4 are apply's own and come with their message.
+GI_LOG=""
+apply_exit() {
+  local rc=$?
+  [[ -z $GI_LOG ]] || rm -f "$GI_LOG"
+  (( rc <= 4 )) || printf '\033[1;31merror:\033[0m apply stopped (exit %s) after "%s" without saying why\n' "$rc" "${OMA_LAST:-the start}" >&2
+  return "$rc"
+}
+trap apply_exit EXIT
 features_load
 VM=""; IP=""; TYPE=""; U=""; KEY=~/.ssh/omacvm; VMKEY=""; KB=""; MAC=1; NAMED=1; TOKEN=1; TRANSACTION=0
 YES=0; NEWKEY=0; REINSTALL=(); KERNEL=0
@@ -361,31 +373,62 @@ fi
 # (never into an image: --image has no token). The user's ~/.ssh is written
 # as the user (guest/ssh-key.sh). The key goes in on stdin, its first line,
 # which read takes as it is (no shell reads it); the script follows it.
+# vm_again WHAT CMD [ARG...]: a step in the VM that may run twice (its input
+# a file, or made again for each try), tried again while ssh itself fails
+# (exit 255), for up to OMACVM_APPLY_SSH_SECONDS (move-vm.sh: 120; unset: one
+# try). A VM that just started can let SSH in and then not for a moment
+# (move-vm.sh's vtry does the same for its own calls): #771, the move's
+# apply stopped there. Any other exit is CMD's own answer. CMD's stderr is
+# shown; 0, or CMD's last exit in VM_RC, with ssh's reason in VM_WHY.
+VM_RC=0; VM_WHY=""
+vm_again() {
+  local what=$1 end e; shift
+  end=$(( $(date +%s) + ${OMACVM_APPLY_SSH_SECONDS:-0} ))
+  e=$(mktemp -t omacvm-again) || die "$what: no temporary file on the Mac"
+  while :; do
+    VM_RC=0; "$@" 2> "$e" || VM_RC=$?
+    (( VM_RC == 255 )) || break
+    VM_WHY=$(ssh_failure_why "$IP" "$e")
+    (( $(date +%s) < end )) || break
+    info "SSH to the VM dropped during $what ($VM_WHY): trying again"
+    sleep "${OMACVM_SSH_PAUSE:-5}"
+  done
+  cat "$e" >&2; rm -f "$e"
+  (( VM_RC == 0 ))
+}
+vm_die() {   # WHAT: after vm_again, apply ends with the step and how it failed
+  (( VM_RC != 255 )) || die "$1 did not get into the VM: $VM_WHY"
+  die "$1 did not get into the VM (exit $VM_RC in the VM, see above)"
+}
+vm_ssh_key() {   # the key in on stdin, its first line (read takes it as it is); the script follows it
+  { printf '%s\n' "$pubkey"; cat "$R/src/guest/ssh-key.sh"; } | gssh "$IP" "IFS= read -r k && exec bash -s -- '$U' \"\$k\""
+}
 if (( TOKEN )) && [[ -n ${OMA_VM_KEY:-} && -s ${OMA_VM_KEY:-}.pub ]]; then
   log "the VM folder's SSH key -> $IP"
   pubkey=$(head -1 "$OMA_VM_KEY.pub"); re='^ssh-ed25519 [[:print:]]+$'
   [[ $pubkey =~ $re ]] || die "$OMA_VM_KEY.pub: not one ssh-ed25519 key line"
-  { printf '%s\n' "$pubkey"; cat "$R/src/guest/ssh-key.sh"; } | gssh "$IP" "IFS= read -r k && exec bash -s -- '$U' \"\$k\""
+  vm_again "the VM folder's SSH key" vm_ssh_key || vm_die "The VM folder's SSH key"
 fi
-# vm_user_file NAME < FILE: FILE as the desktop user's
+# vm_user_file NAME FILE: FILE as the desktop user's
 # ~/.config/omacvm-bridge/NAME in the VM (600, the folder 700), written as the
 # user: root's install -d -o there followed a link the user put in its place
 # (~/.config/omacvm-bridge -> /etc: /etc became the user's). The commands are
 # fixed text; the content only goes through cat. Before OmacVM's own copy is
 # in the VM: nothing of src/ can be used here.
 vm_user_file() {
-  gssh "$IP" "set -e; u='$U'; H=\$(getent passwd \"\$u\" | cut -d: -f6); [ -n \"\$H\" ] && [ -d \"\$H\" ] || exit 1; cd /
+  gssh "$IP" "set -e; u='$U'; H=\$(getent passwd \"\$u\" | cut -d: -f6)
+    [ -n \"\$H\" ] && [ -d \"\$H\" ] || { echo \"the user \$u has no home folder\" >&2; exit 1; }; cd /
     exec setpriv --reuid=\"\$u\" --regid=\"\$(id -g \"\$u\")\" --init-groups -- env HOME=\"\$H\" /bin/sh -c '
       umask 077; d=\$1/.config/omacvm-bridge; mkdir -p \"\$d\" && chmod 700 \"\$d\" || exit 1
       t=\$(mktemp \"\$d/.\$2.XXXXXX\") || exit 1
-      cat > \"\$t\" && mv -f \"\$t\" \"\$d/\$2\" || { rm -f \"\$t\"; exit 1; }' sh \"\$H\" '$1'"
+      cat > \"\$t\" && mv -f \"\$t\" \"\$d/\$2\" || { rm -f \"\$t\"; exit 1; }' sh \"\$H\" '$1'" < "$2"
 }
 if (( TOKEN )) && { on gestures || needs_bridge; }; then bridge_token_ensure; fi
 if (( ! TOKEN )); then
   :
 elif [[ -f $T ]]; then
   log "bridge token -> $IP"
-  vm_user_file token < "$T"
+  vm_again "the bridge token" vm_user_file token "$T" || vm_die "The bridge token"
   # OmacVM.app: the VM's folder says which Mac's token the VM has now, so a
   # folder copied to another Mac is known as such there (src/lib/mac-setup.sh).
   if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM" 2>/dev/null); then
@@ -397,7 +440,7 @@ fi
 # The VM's own key for the control centre (vm_key_ensure in lib/mac.sh).
 if (( TOKEN && NAMED )) && on control-centre; then
   vk=$(vm_key_ensure "$TYPE" "$VM" "$( (( NEWKEY )) && echo new)")
-  vm_user_file vm-key < "$vk"
+  vm_again "the control centre's key" vm_user_file vm-key "$vk" || vm_die "The control centre's key"
 fi
 # Touch ID (ADR 0041): its own key, root's alone in the VM (PAM asks as
 # root). The VM asks through the app's port: no Bridge token in it. Off: the Mac's copy goes (the VM's goes in guest/install.sh).
@@ -407,8 +450,8 @@ if (( NEWKEY && NAMED )); then
 fi
 if (( TOKEN && NAMED )) && on touch-id; then
   tk=$(touchid_key_ensure "$TYPE" "$VM" "$( (( NEWKEY )) && echo new)")
-  gssh "$IP" "set -e; install -d -m755 /etc/omacvm; install -m600 -o root -g root /dev/stdin /etc/omacvm/touchid-key" < "$tk"
-  gssh "$IP" "rm -f /etc/omacvm/touchid-token" < /dev/null
+  vm_touchid_key() { gssh "$IP" "set -e; install -d -m755 /etc/omacvm; install -m600 -o root -g root /dev/stdin /etc/omacvm/touchid-key; rm -f /etc/omacvm/touchid-token" < "$tk"; }
+  vm_again "Touch ID's key" vm_touchid_key || vm_die "Touch ID's key"
 else
   # The key. The theme the VM sent for the Touch ID panel stays (colours
   # only): with Touch ID back on, the panel looks like the VM at once.
@@ -426,20 +469,32 @@ log "OmacVM -> $IP:/usr/local/share/omacvm"
 S=/usr/local/share/omacvm
 # Each part in the VM ends with its own code, so a failed copy says which part
 # it was; the VM's tar errors are shown then, quiet as before when it works (#771).
+# It may run twice (vm_again): a copy cut between its two moves (the one
+# there moved to omacvm.old, the new one not in yet) is put back first.
+# cps: the Mac's tar and the VM side's exits.
 cps=(0 0)
-COPYFILE_DISABLE=1 tar --no-xattrs -C "$R/src" --exclude build --exclude __pycache__ -czf - . |
-  gssh "$IP" "rm -rf $S.new $S.old && mkdir -p $S.new || exit 11
-              e=\$(mktemp) || exit 11
-              if ! tar --no-same-owner -C $S.new -xzf - 2> \"\$e\"; then
-                sed 's/^/in the VM: /' \"\$e\" >&2; rm -f \"\$e\"; exit 12
-              fi
-              rm -f \"\$e\"
-              if [ -d $S ]; then mv $S $S.old || exit 13; fi; mv $S.new $S || exit 13" ||
-  cps=("${PIPESTATUS[@]}")
+vm_copy() {
+  cps=(0 0)
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$R/src" --exclude build --exclude __pycache__ -czf - . |
+    gssh "$IP" "if [ ! -d $S ] && [ -d $S.old ]; then mv $S.old $S || exit 13; fi
+                rm -rf $S.new $S.old && mkdir -p $S.new || exit 11
+                e=\$(mktemp) || exit 11
+                if ! tar --no-same-owner -C $S.new -xzf - 2> \"\$e\"; then
+                  sed 's/^/in the VM: /' \"\$e\" >&2; rm -f \"\$e\"; exit 12
+                fi
+                rm -f \"\$e\"
+                if [ -d $S ]; then mv $S $S.old || exit 13; fi; mv $S.new $S || exit 13" ||
+    cps=("${PIPESTATUS[@]}")
+  # 255 only when the VM side ended that way and the Mac's tar did not fail first
+  # (141: it lost its reader): tried again then.
+  [[ ${cps[1]} == 255 && ( ${cps[0]} == 0 || ${cps[0]} == 141 ) ]] && return 255
+  [[ ${cps[0]} == 0 && ${cps[1]} == 0 ]]
+}
+vm_again "copying OmacVM" vm_copy || true
 if [[ ${cps[0]} != 0 || ${cps[1]} != 0 ]]; then
   # 141: the Mac's tar lost its reader (the VM side ended first).
   case ${cps[1]} in
-    255) part="SSH to the VM" ;;
+    255) die "OmacVM did not get into the VM (SSH to the VM failed: ${VM_WHY:-no answer}): nothing changed there" ;;
     11) part="clearing the last copy in the VM" ;;
     12) [[ ${cps[0]} == 0 || ${cps[0]} == 141 ]] && part="unpacking it in the VM" || part="packing it on the Mac (tar exit ${cps[0]})" ;;
     13) die "OmacVM did not get into the VM (swapping the new copy in failed, see above): the one before is in $S or $S.old" ;;
@@ -596,7 +651,7 @@ if (( TRANSACTION )); then
   [[ -z $strict ]] || GI_ARGS+=" --strict $strict"
 fi
 # What the guest said, to name what failed.
-GI_LOG=$(mktemp -t omacvm-apply); trap 'rm -f "$GI_LOG"' EXIT
+GI_LOG=$(mktemp -t omacvm-apply)   # removed by apply_exit
 # Why a part was not set up, from the guest's own lines. pkg-add's "update
 # the system first" (its exit 3: an old package list, or a partial update it
 # refused) is named whichever part said it: it holds for the whole VM, and
