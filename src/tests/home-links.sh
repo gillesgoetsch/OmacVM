@@ -104,7 +104,7 @@ run_all() {
   # apply's token and control key (the remote command run here).
   ( U=$LU IP=x; gssh() { shift; /bin/bash -c "$1"; }; die() { exit 1; }
     eval "$(sed -n '/^vm_user_file() {/,/^}/p' "$SRC/cmd/apply.sh")"
-    vm_user_file token < "$S/file"; vm_user_file vm-key < "$S/file" ) >/dev/null 2>&1
+    vm_user_file token "$S/file" < "$S/file"; vm_user_file vm-key "$S/file" < "$S/file" ) >/dev/null 2>&1
   OMACVM_MAC_FOLDER_USER=$LU OMACVM_MAC_FOLDER_FS=tmpfs bash "$G/app/guest/omacvm-mac-folder" >/dev/null 2>&1
   OMACVM_MAC_FOLDER_USER=$LU bash "$G/app/guest/omacvm-mac-folder" --stop >/dev/null 2>&1
 }
@@ -175,7 +175,7 @@ bash "$G/clock/guest/clock.sh" "$LU" on "HH:mm" >/dev/null 2>&1
 python3 "$G/guest/shell-colors.py" --user "$LU" --qmltypes "$T/qt.qmltypes" >/dev/null 2>&1
 ( U=$LU IP=x; gssh() { shift; /bin/bash -c "$1"; }; die() { exit 1; }
   eval "$(sed -n '/^vm_user_file() {/,/^}/p' "$SRC/cmd/apply.sh")"
-  echo tok > "$T/tok"; vm_user_file token < "$T/tok" ) >/dev/null 2>&1
+  echo tok > "$T/tok"; vm_user_file token "$T/tok" < "$T/tok" ) >/dev/null 2>&1
 OMACVM_MAC_FOLDER_USER=$LU OMACVM_MAC_FOLDER_FS=tmpfs bash "$G/app/guest/omacvm-mac-folder" >/dev/null 2>&1
 mounted=$(mountpoint -q "$H/Mac" && echo yes || echo no)
 OMACVM_MAC_FOLDER_USER=$LU bash "$G/app/guest/omacvm-mac-folder" --stop >/dev/null 2>&1
