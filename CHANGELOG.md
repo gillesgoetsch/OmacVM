@@ -61,6 +61,13 @@ in more words.
   during the unpack it stops, and removes the unfinished VM, if the drive gets below 10 GB free.
   What a run that was killed or cut short by a restart left behind is removed before the next
   one checks its space.
+- **Bridge** no longer keeps macOS's `locationd` busy while a VM runs. For the Wi-Fi name it read
+  the network's name, BSSID, security type and country code every 5 seconds, and macOS checks the
+  Location Services permission with `locationd` on each of those reads: about 2 % of a core on a
+  MacBook Air M2 the whole time a VM was open (8 % was seen on an M1 Max). The Bridge now reads
+  these four only when macOS says the Wi-Fi changed, after a wake, when the connection or the
+  permission changes, and at least every 5 minutes; the signal is still read every 5 seconds. On the Air `locationd` is back at
+  its idle level. The bar shows the same as before.
 
 ## 3.4.4
 

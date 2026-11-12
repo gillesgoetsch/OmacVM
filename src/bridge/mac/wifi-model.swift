@@ -78,3 +78,65 @@ struct WiFiSteady {
     return (keep, true)
   }
 }
+
+/// The network's name, BSSID, security and the country code, kept between
+/// reads.
+///
+/// macOS checks the reader's Location Services grant with locationd on every
+/// CoreWLAN read of these four: 25-33 ms of locationd's CPU per read on a
+/// MacBook Air M2 on Wi-Fi, for a granted reader (signal, noise, channel,
+/// rate, PHY mode and power do not go there). The Bridge re-read them on
+/// every 5 s signal tick while a VM listened, so locationd stayed at about
+/// 2 % of a core for nothing. They only change with a CoreWLAN event (SSID,
+/// BSSID, link, power, country code), which marks them stale. A change of
+/// interface, connection or grant reads them again too, and so does a
+/// connected read that came without a name. They are also read again once
+/// they are `maxAge` old, in case macOS dropped an event (a name that was
+/// right again within 5 s before); that costs one read in 5 minutes.
+struct WiFiIdentity {
+  struct Key: Equatable {
+    var interface: String
+    var connected: Bool
+    var locationOK: Bool
+  }
+
+  /// Kept values are read again after this long, event or not.
+  static let maxAge: TimeInterval = 300
+
+  private var key: Key?
+  private var values: [String: Any] = [:]
+  private var stale = true
+  private var readAt = Date.distantPast
+  /// Counts invalidations, so an event that comes while a read is under way
+  /// is not lost when that read is stored.
+  private(set) var generation = 0
+
+  /// A CoreWLAN event (or a wake, a new subscription): read them again.
+  mutating func invalidate() { stale = true; generation += 1 }
+
+  /// Not stale and younger than `maxAge` (a clock set back counts as old).
+  private func fresh(_ now: Date) -> Bool {
+    let age = now.timeIntervalSince(readAt)
+    return !stale && age >= 0 && age < Self.maxAge
+  }
+
+  /// The kept values for this read, or nil: read them from CoreWLAN.
+  func cached(_ k: Key, now: Date) -> [String: Any]? { fresh(now) && key == k ? values : nil }
+
+  /// The kept network name of this interface, only from a connected read
+  /// that had one; else nil, and the scan reads the name itself. A kept "not
+  /// connected" can be a read taken while the radio scanned off its channel,
+  /// so it never says there is no current network.
+  func keptSSID(_ interface: String, now: Date) -> String? {
+    guard fresh(now), let key, key.interface == interface, key.connected else { return nil }
+    return values["ssid"] as? String
+  }
+
+  /// What was just read at `now`, from a read that began at `generation`
+  /// `since`. A connected read with a grant but no name (taken mid-scan) is
+  /// not kept, so the next read asks again; nor is one an event overtook.
+  mutating func store(_ v: [String: Any], for k: Key, since: Int, now: Date) {
+    key = k; values = v; readAt = now
+    stale = since != generation || (k.connected && k.locationOK && (v["ssid"] == nil || v["ssid"] is NSNull))
+  }
+}
