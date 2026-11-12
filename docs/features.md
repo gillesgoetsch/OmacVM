@@ -250,9 +250,8 @@ swipe is as before. The swipe out uses the fingers your VM switches workspaces
 with (its `hl.gesture` lines; OmacVM sets up 3 and 4): if you give 3 fingers
 to something else, such as moving focus or snapping windows, only 4 fingers
 swipe out. Any other sideways gesture with 3 fingers counts, also one in a file
-of your own. With [Mission Control](#mission-control) open, a sideways swipe at
-the first or last workspace still goes out to macOS instead of to the next
-workspace in the overview.
+of your own. While [Mission Control](#mission-control) is open, Swipe out to
+macOS waits: sideways swipes stay in the VM.
 
 A **Magic Mouse** in the full-screen VM: two fingers sideways swipe
 Omarchy's workspaces, as four fingers on a trackpad (macOS's own Space

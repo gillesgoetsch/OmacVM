@@ -15,6 +15,10 @@ in more words.
   does: the windows spread out, with the workspaces along the top. The
   [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by
   @gillesgoetsch.
+- **Mission Control** with **Swipe out to macOS** on: a sideways swipe in the open overview on the
+  first workspace (or the empty last one) moved the Mac's Space instead of going through the
+  overview's workspaces. While the overview is open, Swipe out to macOS now waits: sideways swipes
+  stay in the VM, on every display. It comes with Update VM; nothing changes on the Mac.
 
 ## 3.4.4
 

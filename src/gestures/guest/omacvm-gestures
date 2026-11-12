@@ -642,6 +642,12 @@ def escape_notice(keys):
 SWIPE_OUT_MIN = env_float("OMACVM_SWIPE_OUT_MIN", 0.12)
 SWIPE_OUT_RATIO = 1.5                                      # ... and this much more sideways than up or down
 HYPR_WAIT = 0.3                                            # s to wait at the lift for the workspaces read at its start
+# While the Mac Mission Control plugin's overview is up (feature
+# mission-control), sideways swipes page its workspaces instead of switching
+# them, so none goes out to macOS: the plugin enters this Hyprland submap for
+# as long as the overview is up (its docs/DEVELOPING.md names it as the sign).
+# Hyprland has one submap for the session, so this holds on every display.
+MISSION_CONTROL_SUBMAP = "mac-mission-control"
 
 
 def hypr_socket():
@@ -700,7 +706,8 @@ def workspaces_now(sock=None):
     """The focused display's workspaces, as the swipe sees them: {"monitor",
     "active", "ids" (its normal workspaces), "empty" (the active one has no
     windows), "special" (a special workspace is open there), "invert",
-    "create_new"}; None when Hyprland does not answer."""
+    "create_new", "overview" (Mission Control's overview is up; False when
+    Hyprland does not say)}; None when Hyprland does not answer."""
     sock = sock or hypr_socket()
     monitors, spaces = hypr("j/monitors", sock), hypr("j/workspaces", sock)
     if not isinstance(monitors, list) or not isinstance(spaces, list):
@@ -718,14 +725,15 @@ def workspaces_now(sock=None):
             "empty": here.get("windows", 0) == 0,
             "special": special_shown(m),
             "invert": hypr_option("gestures:workspace_swipe_invert", True, sock),
-            "create_new": hypr_option("gestures:workspace_swipe_create_new", True, sock)}
+            "create_new": hypr_option("gestures:workspace_swipe_create_new", True, sock),
+            "overview": hypr("j/submap", sock) == MISSION_CONTROL_SUBMAP}
 
 
 def edge_sides(state):
     """Where a swipe would go from the workspaces now, as (fingers to the
     left, fingers to the right): "left"/"right" (out to that macOS Space) or
-    "-" (a workspace swipe here)."""
-    if not state or state.get("special") or not isinstance(state.get("active"), int):
+    "-" (a workspace swipe here, or Mission Control's overview pages)."""
+    if not state or state.get("special") or state.get("overview") or not isinstance(state.get("active"), int):
         return "-", "-"
     active, ids = state["active"], state.get("ids") or [state["active"]]
     prev = "left" if not any(i < active for i in ids) else "-"
@@ -736,8 +744,8 @@ def edge_sides(state):
 def swipe_out_side(state, dx, dy, width):
     """Where a swipe of dx, dy (touchpad units) goes, given the workspaces at
     its start: "left", "right" or None (a workspace swipe as usual, or no
-    swipe at all)."""
-    if not state or state.get("special") or not isinstance(state.get("active"), int):
+    swipe at all, or Mission Control's overview is up)."""
+    if not state or state.get("special") or state.get("overview") or not isinstance(state.get("active"), int):
         return None
     if abs(dx) < SWIPE_OUT_MIN * width or abs(dx) < SWIPE_OUT_RATIO * abs(dy):
         return None
@@ -978,7 +986,8 @@ HYPR_EVENTS = {b"workspace", b"workspacev2", b"focusedmon", b"focusedmonv2", b"c
                b"destroyworkspace", b"destroyworkspacev2", b"moveworkspace", b"moveworkspacev2", b"renameworkspace",
                b"activespecial", b"activespecialv2", b"openwindow", b"closewindow", b"movewindow", b"movewindowv2",
                b"monitoradded", b"monitoraddedv2", b"monitorremoved", b"monitorremovedv2", b"configreloaded",
-               b"changeworkspaceid"}   # a workspace got a new id (0.56.2 sends it too; Omarchy's monitor_workspaces)
+               b"changeworkspaceid",   # a workspace got a new id (0.56.2 sends it too; Omarchy's monitor_workspaces)
+               b"submap"}              # Mission Control's overview opened or closed (MISSION_CONTROL_SUBMAP)
 EDGE_QUIET = 0.03        # s: a burst of Hyprland's events is read as one change ...
 EDGE_BURST = 0.2         # ... for at most this long
 EDGE_RECHECK = 30.0      # s: looked at again without an event (a missed one)

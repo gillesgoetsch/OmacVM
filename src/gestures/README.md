@@ -58,8 +58,12 @@ its connection (only after the Mac's `X on`); the Mac takes it only from the VM 
 front while captured, at most once a second, and moves the way ⌃⌥ Esc does
 (`EscapeSwipe`), only to that side: no Space there = nothing at all. Hyprland's own
 swipe may have made a new empty workspace meanwhile: the guest goes back to the one
-the swipe began on. Tests: `mac/test-escape.c`, `guest/test-swipe-out.py` (a made-up
-Hyprland), `mac/test.sh` 2b (the line over a real connection).
+the swipe began on. While the Mac Mission Control plugin's overview is up (feature
+`mission-control`: Hyprland's submap is `mac-mission-control`, `j/submap`), sideways
+swipes stay in the VM and none goes out (`E - -`, no `X`), on every display: Hyprland
+has one submap for the session. Tests: `mac/test-escape.c`, `guest/test-swipe-out.py` (a made-up
+Hyprland), `mac/test.sh` 2b (the line over a real connection),
+`src/missioncontrol/tests/run.sh` (the pinned plugin still enters that submap).
 
 ## macOS-native scroll momentum
 
