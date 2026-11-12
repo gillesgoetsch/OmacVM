@@ -28,8 +28,10 @@ struct MissionControlRow: View {
         let n = note ?? row.note
         SettingRow(title: "Mission Control", subtitle: n ?? MissionControl.subtitle,
                    subtitleIsError: n?.hasPrefix("Could not") == true, info: MissionControl.info, probe: "mission-control") {
-            MissionControlPicture()
+            // The spinner goes before the picture, so the picture keeps its place
+            // under Swipe out to macOS's while the switch runs.
             if busy { ProgressView().controlSize(.small) }
+            MissionControlPicture()
             RowSwitch(title: "Mission Control", isOn: Binding(get: { row.on }, set: { v in if v != row.on { flip(v, running: running) } }),
                       enabled: row.enabled)
         }
