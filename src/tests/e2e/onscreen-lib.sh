@@ -43,7 +43,7 @@
 #                                         said ok on 0 checks). Hidden starts stay fine for other rows
 OS_WIDTH=800 OS_MIN_H=500 OS_MAX_H=800
 PRESENT_MIN_CHECKS=20
-OS_ASK_GUARD=0.5   # the app's AskKeys.guardTime: the question's buttons wait that long
+OS_ASK_GUARD=0.5   # the app's USBAlertAsker.guardTime (USBAsk.swift): the question's buttons wait that long
 
 # Rounded to whole points (AX gives fractions after a resize).
 _os_int() { printf '%.0f' "$1"; }

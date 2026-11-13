@@ -42,7 +42,7 @@ G="found=0.13 gap=0.006 alert=1@layer3 vm=1 space=4 early=stays front=501 late=a
 same "usb: the question as it should be" "" "$(os_usb_ask_problems "$G" 0 4 4)"
 p=$(os_usb_ask_problems "found=0.13 gap=0.006 alert=1@layer3 vm=1 space=4 early=answered@0.16 front=501 late=stays sent=Return@0.15,Escape@0.30 " 1 4 4)
 [[ $p == *"within 0.5 s"* && $p == *"did not answer"* && $p != *"harness"* ]] && ok "usb: answered by the early Return" || bad "usb: early Return: '$p'"
-# The early keys count from when the question can have come up (their times + gap), inside AskKeys' 0.5 s.
+# The early keys count from when the question can have come up (their times + gap), inside USBAlertAsker's 0.5 s guard.
 p=$(os_usb_ask_problems "${G/gap=0.006/gap=0.25}" 0 4 4)
 [[ $p == "the early keys went out after the half second (Escape up to 0.55 s after the question): the harness was late" ]] &&
   ok "usb: keys sent too late to prove anything" || bad "usb: late keys: '$p'"
@@ -97,7 +97,7 @@ if xcrun swiftc -O "$R/src/tests/e2e/onscreen-tool.swift" -o "$T/onscreen-tool" 
   out=$("$T/onscreen-tool" space 2>&1); [[ $out =~ ^[0-9]+$ ]] && ok "tool: space ($out)" || bad "tool: space: '$out'"
   out=$("$T/onscreen-tool" onscreen $$ 2>&1); [[ $out == 0 ]] && ok "tool: onscreen of a shell: 0" || bad "tool: onscreen: '$out'"
   # ask-keys' clock on a made-up question that comes up 0.13 s after the plug-in (as on the M1): with
-  # AskKeys' half second the early keys do nothing and the late Return answers; without it they answer.
+  # USBAlertAsker's half-second guard the early keys do nothing and the late Return answers; without it they answer.
   out=$("$T/onscreen-tool" ask-keys-sim 0.13 0.5 2>&1); rc=$?
   p=$(os_usb_ask_problems "$out " "$rc" 1 1)
   [[ $rc == 0 && -z $p ]] && ok "tool: ask-keys with the guard: passes ($out)" || bad "tool: ask-keys with the guard: rc $rc '$out' '$p'"
