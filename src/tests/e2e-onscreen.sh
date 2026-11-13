@@ -38,10 +38,21 @@ isnt "cursor: the arrow" os_cursor_hidden "visible=1 empty=0 at 10,10"
 isnt "cursor: shown, image unknown" os_cursor_hidden "visible=1 empty=? at 10,10"
 
 # The USB question's first second (the tool's ask-keys line, its exit code, the Space before and after).
-G="found=0.04 alert=1@layer3 vm=1 space=4 early=stays front=501 late=answered@0.71 sent=Return@0.15,Escape@0.30,Return@0.65 "
+G="found=0.13 gap=0.006 alert=1@layer3 vm=1 space=4 early=stays front=501 late=answered@0.71 sent=Return@0.17,Escape@0.30,Return@0.65 "
 same "usb: the question as it should be" "" "$(os_usb_ask_problems "$G" 0 4 4)"
-p=$(os_usb_ask_problems "found=0.04 alert=1@layer3 vm=1 space=4 early=answered@0.16 front=501 late=stays sent=Return@0.15 " 1 4 4)
-[[ $p == *"within 0.5 s"* && $p == *"did not answer"* ]] && ok "usb: answered by the early Return" || bad "usb: early Return: '$p'"
+p=$(os_usb_ask_problems "found=0.13 gap=0.006 alert=1@layer3 vm=1 space=4 early=answered@0.16 front=501 late=stays sent=Return@0.15,Escape@0.30 " 1 4 4)
+[[ $p == *"within 0.5 s"* && $p == *"did not answer"* && $p != *"harness"* ]] && ok "usb: answered by the early Return" || bad "usb: early Return: '$p'"
+# The early keys count from when the question can have come up (their times + gap), inside AskKeys' 0.5 s.
+p=$(os_usb_ask_problems "${G/gap=0.006/gap=0.25}" 0 4 4)
+[[ $p == "the early keys went out after the half second (Escape up to 0.55 s after the question): the harness was late" ]] &&
+  ok "usb: keys sent too late to prove anything" || bad "usb: late keys: '$p'"
+p=$(os_usb_ask_problems "${G/gap=0.006 /}" 0 4 4); [[ $p == *"no gap word"* ]] && ok "usb: no gap, no proof" || bad "usb: no gap: '$p'"
+# Recorded: 3.4.6's rc on the M1 (2026-11-13 10:10, the clock started in a second process 0.1-0.2 s
+# after the question came up), and 3.4.5 there (10:13, the question never in front).
+p=$(os_usb_ask_problems "found=0.03 alert=0@layer0 vm=1 space=1 early=answered@0.46 front=88630 sent=Return@0.31,Escape@0.38 " 3 1 1)
+[[ $p == *"within 0.5 s"* && $p == *"no gap word"* ]] && ok "usb: recorded rc row with the late clock" || bad "usb: recorded rc row: '$p'"
+p=$(os_usb_ask_problems "found=0.05 front=92834 sent= " 3 1 1)
+[[ $p == *"not in front"* && $p == *"within 0.5 s"* ]] && ok "usb: recorded 3.4.5 row" || bad "usb: recorded 3.4.5 row: '$p'"
 p=$(os_usb_ask_problems "found=0.05 front=600 sent= " 3 4 4); [[ $p == *"not in front"* ]] && ok "usb: question not in front" || bad "usb: not in front: '$p'"
 p=$(os_usb_ask_problems "found=0.04 alert=1@layer0 vm=1 space=4 early=stays front=501 late=answered@0.7 sent= " 0 4 4)
 [[ $p == *"no floating"* ]] && ok "usb: question not floating" || bad "usb: layer 0: '$p'"
