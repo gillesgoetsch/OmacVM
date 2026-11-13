@@ -12,7 +12,9 @@
 #   os_usb_ask_problems "ASK-KEYS WORDS" RC SPACE_BEFORE SPACE_AFTER
 #                                         what is wrong with the USB question's first second (the tool's
 #                                         ask-keys line and exit code; the Space before the plug-in and
-#                                         after): nothing printed when it is right
+#                                         after): nothing printed when it is right; Return and
+#                                         Escape must go out within OS_ASK_GUARD of when the question
+#                                         can have come up (their times + gap), or the row proves nothing
 #   os_usb_keep_json DATE                 usb.json with the made-up test device (1209:0001) remembered as
 #                                         Keep on Mac (USBMemory's file, version 1)
 #   os_leftovers APP VMDIR VMNAME         reads "PID ARGS" lines (ps -axww -o pid=,args=) and prints
@@ -41,6 +43,7 @@
 #                                         said ok on 0 checks). Hidden starts stay fine for other rows
 OS_WIDTH=800 OS_MIN_H=500 OS_MAX_H=800
 PRESENT_MIN_CHECKS=20
+OS_ASK_GUARD=0.5   # the app's USBAlertAsker.guardTime (USBAsk.swift): the question's buttons wait that long
 
 # Rounded to whole points (AX gives fractions after a resize).
 _os_int() { printf '%.0f' "$1"; }
@@ -77,6 +80,18 @@ os_usb_ask_problems() {
   [[ $r == *"question=none"* ]] && { echo "no question in 5 s"; return 0; }
   [[ $rc == 3 ]] && echo "the question was not in front (no key sent after that)"
   [[ $r == *" early=stays "* ]] || echo "Return or Escape answered it within 0.5 s"
+  # The early keys inside the half second: their times run from when the tool saw the question, which
+  # can have been up for gap s by then. (3.4.6's run started the clock 0.1-0.2 s late: no gap word.)
+  local gap="" ks
+  [[ $r =~ " gap="([0-9.]+)" " ]] && gap=${BASH_REMATCH[1]}
+  if [[ $r =~ " sent=Return@"([0-9.]+)",Escape@"([0-9.]+) ]]; then
+    if [[ -z $gap ]]; then echo "no gap word: when the question came up is not known"
+    else
+      ks=$(awk -v r="${BASH_REMATCH[1]}" -v e="${BASH_REMATCH[2]}" -v g="$gap" -v h="$OS_ASK_GUARD" \
+        'BEGIN { if (r + g >= h || e + g >= h) printf "%.2f", e + g }')
+      [[ -z $ks ]] || echo "the early keys went out after the half second (Escape up to $ks s after the question): the harness was late"
+    fi
+  elif [[ $rc != 3 ]]; then echo "Return and Escape were not both sent early"; fi
   [[ $r == *" late=answered@"* ]] || echo "Return after 0.5 s did not answer it"
   if [[ $r =~ " alert="([0-9]+)"@layer"([0-9]+) ]]; then
     (( BASH_REMATCH[1] >= 1 && BASH_REMATCH[2] >= 3 )) || echo "no floating question window on screen"

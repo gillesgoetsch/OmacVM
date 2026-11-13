@@ -36,12 +36,17 @@
 //   appstate PID             active=0|1 hidden=0|1 policy=regular|accessory|prohibited front=PID
 //   key PID CODE             a key press (virtual key CODE: 36 Return, 53 Escape), only while PID is in
 //                            front (exit 3 otherwise: nothing sent)
-//   ask-keys PID BUTTON [OTHER]
-//                            the question's first second: waits up to 5 s for PID's AXButton BUTTON,
-//                            then while PID is in front Return at 0.15 s and Escape at 0.3 s (the
-//                            question must stay), at 0.4 s PID's and OTHER's windows on screen and the
-//                            Space, Return at 0.65 s (it must go): key=value words with the times;
-//                            exit 3 when PID was not in front (no key sent then)
+//   ask-keys PID BUTTON NAME OBJECT [OTHER]
+//                            the question's first second: posts NAME (with OBJECT: the plug-in), looks
+//                            for PID's AXButton BUTTON every 5 ms for up to 5 s and starts the clock
+//                            when it is there, then while PID is in front Return at 0.15 s and Escape
+//                            at 0.3 s (the question must stay), at 0.4 s PID's and OTHER's windows on
+//                            screen and the Space, Return at 0.65 s (it must go): key=value words with
+//                            the times (found: since the post; gap: the most it was up before the
+//                            clock); exit 3 when PID was not in front (no key sent then)
+//   ask-keys-sim APPEAR GUARD
+//                            the same on a made-up question (CI): up APPEAR s after the post, keys
+//                            answer it from GUARD s after that
 // A click goes out only when PID is in front and the element under the point is PID's (exit 3
 // otherwise: nothing pressed). Exit 0 done, 1 not found / refused, 2 usage, 3 not ours / not front.
 // xcrun swiftc -O onscreen-tool.swift -o onscreen-tool
@@ -228,6 +233,69 @@ func activeSpace() -> UInt64 {
     return unsafeBitCast(a, to: Active.self)(unsafeBitCast(c, to: Conn.self)())
 }
 
+// MARK: The USB question's first second
+
+/// What ask-keys reads and sends: the app's question and real keys, or a made-up question
+/// (ask-keys-sim, for CI).
+struct AskIO {
+    var plug: () -> Void                 // the plug-in that brings the question
+    var up: () -> Bool                   // its button is there
+    var front: () -> pid_t
+    var key: (CGKeyCode) -> Void         // a press and release (after the front check)
+    var alert: () -> (count: Int, layer: Int)
+    var other: (() -> Int)?              // OTHER's windows on screen
+    var space: () -> UInt64
+}
+
+/// The clock starts at the question: this process plugs the device in and looks every 5 ms. Started
+/// in a second process after the plug-in, it saw the question 0.1-0.2 s late on the Air and the M1
+/// (3.4.6), and its "early" keys came after the half second. gap: from the last look that missed
+/// (or the plug-in) to the find, the most the question can have been up when the clock started.
+/// A key's time is when its press went out.
+func askKeys(_ io: AskIO, _ pid: pid_t) -> Int32 {
+    let tp = Date()
+    io.plug()
+    var missed = tp
+    while true {
+        let l = Date()
+        if io.up() { break }
+        missed = l
+        if Date().timeIntervalSince(tp) > 5 { say("question=none"); return 1 }
+        usleep(5_000)
+    }
+    let t0 = Date()
+    func at(_ s: Double) { let w = s - Date().timeIntervalSince(t0); if w > 0 { usleep(useconds_t(w * 1_000_000)) } }
+    func now() -> String { String(format: "%.2f", Date().timeIntervalSince(t0)) }
+    var out = ["found=" + String(format: "%.2f", t0.timeIntervalSince(tp)), "gap=" + String(format: "%.3f", t0.timeIntervalSince(missed))]
+    var sent: [String] = []
+    func press(_ code: CGKeyCode, _ name: String) -> Bool {
+        let f = io.front()
+        guard f == pid else { say((out + ["front=\(f)", "sent=\(sent.joined(separator: ","))"]).joined(separator: " ")); return false }
+        let t = now(); io.key(code); sent.append("\(name)@\(t)")
+        return true
+    }
+    for (s, code, name) in [(0.15, CGKeyCode(36), "Return"), (0.30, CGKeyCode(53), "Escape")] {
+        at(s)
+        guard press(code, name) else { return 3 }
+    }
+    // Where it is, while it waits: PID's windows on screen (the highest layer), OTHER's, the Space.
+    at(0.40)
+    let mine = io.alert()
+    out.append("alert=\(mine.count)@layer\(mine.layer)")
+    if let other = io.other { out.append("vm=\(other())") }
+    out.append("space=\(io.space())")
+    at(0.45)
+    let early = io.up()
+    out.append("early=\(early ? "stays" : "answered@" + now())")
+    at(0.65)
+    guard press(36, "Return") else { return 3 }
+    var late = "stays"
+    for _ in 0..<75 { if !io.up() { late = "answered@" + now(); break }; usleep(20_000) }
+    out += ["front=\(pid)", "late=\(late)", "sent=\(sent.joined(separator: ","))"]
+    say(out.joined(separator: " "))
+    return early && late != "stays" ? 0 : 1
+}
+
 // MARK: Commands
 
 guard args.count >= 2 else { usage() }
@@ -398,43 +466,32 @@ case "key":
     say("sent \(code)")
 case "ask-keys":
     let pid = pidArg()
-    guard args.count >= 4 else { usage() }
-    let label = args[3]
-    func up() -> Bool { find(pid, kAXButtonRole as String, label) != nil }
-    let start = Date()
-    while !up() {
-        if Date().timeIntervalSince(start) > 5 { say("question=none"); exit(1) }
-        usleep(20_000)
-    }
-    let t0 = Date()
-    func at(_ s: Double) { let w = s - Date().timeIntervalSince(t0); if w > 0 { usleep(useconds_t(w * 1_000_000)) } }
-    func now() -> String { String(format: "%.2f", Date().timeIntervalSince(t0)) }
-    var out = ["found=" + String(format: "%.2f", t0.timeIntervalSince(start))]
-    var sent: [String] = []
-    for (s, code, name) in [(0.15, CGKeyCode(36), "Return"), (0.30, CGKeyCode(53), "Escape")] {
-        at(s)
-        let f = frontNow()
-        guard f == pid else { say((out + ["front=\(f)", "sent=\(sent.joined(separator: ","))"]).joined(separator: " ")); exit(3) }
-        key(code); sent.append("\(name)@\(now())")
-    }
-    // Where it is, while it waits: PID's windows on screen (the highest layer), OTHER's, the Space.
-    at(0.40)
-    let mine = onScreen(pid)
-    out.append("alert=\(mine.count)@layer\(mine.map(\.layer).max() ?? 0)")
-    if args.count >= 5, let other = pid_t(args[4]) { out.append("vm=\(onScreen(other).count)") }
-    out.append("space=\(activeSpace())")
-    at(0.45)
-    let early = up()
-    out.append("early=\(early ? "stays" : "answered@" + now())")
-    at(0.65)
-    let f = frontNow()
-    guard f == pid else { say((out + ["front=\(f)", "sent=\(sent.joined(separator: ","))"]).joined(separator: " ")); exit(3) }
-    key(36); sent.append("Return@\(now())")
-    var late = "stays"
-    for _ in 0..<75 { if !up() { late = "answered@" + now(); break }; usleep(20_000) }
-    out += ["front=\(pid)", "late=\(late)", "sent=\(sent.joined(separator: ","))"]
-    say(out.joined(separator: " "))
-    exit(early && late != "stays" ? 0 : 1)
+    guard args.count >= 6 else { usage() }
+    let label = args[3], name = args[4], object = args[5]
+    let other = args.count >= 7 ? pid_t(args[6]) : nil
+    exit(askKeys(AskIO(
+        plug: { DistributedNotificationCenter.default().postNotificationName(Notification.Name(name), object: object,
+                                                                                  userInfo: nil, deliverImmediately: true) },
+        up: { find(pid, kAXButtonRole as String, label) != nil },
+        front: frontNow,
+        key: key,
+        alert: { let w = onScreen(pid); return (w.count, w.map(\.layer).max() ?? 0) },
+        other: other.map { o in { onScreen(o).count } },
+        space: activeSpace), pid))
+case "ask-keys-sim":
+    // ask-keys' clock on a made-up question, no window and no input (CI): it comes up APPEAR s after
+    // the plug-in, and Return or Escape answers it from GUARD s after that (0: a build without the guard).
+    guard args.count >= 4, let appear = Double(args[2]), let hold = Double(args[3]) else { usage() }
+    var plugged = Date.distantFuture, gone = false
+    func t() -> Double { Date().timeIntervalSince(plugged) }
+    exit(askKeys(AskIO(
+        plug: { plugged = Date() },
+        up: { t() >= appear && !gone },
+        front: { 1 },
+        key: { _ in if t() >= appear + hold { gone = true } },
+        alert: { (1, 3) },
+        other: { 1 },
+        space: { 1 }), 1))
 default:
     usage()
 }

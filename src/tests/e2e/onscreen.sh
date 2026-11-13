@@ -538,8 +538,8 @@ usb_part() {
   sp0=$("$T" space)
   # 1: the question, Return and Escape in its first half second, Return after it: Connect
   k=$(date +%s); usb_keys_start 8 || why="no key count in the VM (python3?)"
-  usb_fake plug
-  posted; r=$("$T" ask-keys "$LP" "Connect to $VM" "$QP"); rc=$?; posted
+  # The tool plugs the device in itself: its clock starts when the question is there (onscreen-tool.swift)
+  posted; r=$("$T" ask-keys "$LP" "Connect to $VM" "$UREQ.test" plug "$QP"); rc=$?; posted
   sp=$("$T" space)
   a=$(os_usb_ask_problems "$r " "$rc" "$sp0" "$sp" | tr '\n' ';')
   waitfor 15 usb_is 1 >/dev/null || a+="the VM does not list the device after Connect ($(usb_n)); "
