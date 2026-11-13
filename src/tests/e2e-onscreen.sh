@@ -85,6 +85,15 @@ if xcrun swiftc -O "$R/src/tests/e2e/onscreen-tool.swift" -o "$T/onscreen-tool" 
   # The USB row's readings (no window, no input): a Space id, no windows of a process without any.
   out=$("$T/onscreen-tool" space 2>&1); [[ $out =~ ^[0-9]+$ ]] && ok "tool: space ($out)" || bad "tool: space: '$out'"
   out=$("$T/onscreen-tool" onscreen $$ 2>&1); [[ $out == 0 ]] && ok "tool: onscreen of a shell: 0" || bad "tool: onscreen: '$out'"
+  # ask-keys' clock on a made-up question that comes up 0.13 s after the plug-in (as on the M1): with
+  # AskKeys' half second the early keys do nothing and the late Return answers; without it they answer.
+  out=$("$T/onscreen-tool" ask-keys-sim 0.13 0.5 2>&1); rc=$?
+  p=$(os_usb_ask_problems "$out " "$rc" 1 1)
+  [[ $rc == 0 && -z $p ]] && ok "tool: ask-keys with the guard: passes ($out)" || bad "tool: ask-keys with the guard: rc $rc '$out' '$p'"
+  out=$("$T/onscreen-tool" ask-keys-sim 0.13 0 2>&1); rc=$?
+  p=$(os_usb_ask_problems "$out " "$rc" 1 1)
+  [[ $rc == 1 && $out == *" early=answered@"* && $p == *"within 0.5 s"* ]] && ok "tool: ask-keys without the guard: fails ($out)" ||
+    bad "tool: ask-keys without the guard: rc $rc '$out' '$p'"
 else bad "tool does not build: $(head -5 "$T/swiftc.log")"; fi
 
 # The harness refuses a release build and a VM outside the test app's VMs folder (exit 2, nothing started).
