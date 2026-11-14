@@ -238,17 +238,6 @@ In an OmacVM.app window, ⌃⌥ Esc gives the keyboard back to macOS (the app
 you were in before, else Finder); press it again in macOS to get the window
 back with the keyboard.
 
-**A key of your own** in Omarchy leaves the full-screen VM as ⌃⌥ Esc does:
-bind Hyprland's custom event `omacvm-escape`, for example in
-`~/.config/hypr/bindings.lua`:
-
-```lua
-hl.bind("SUPER + ALT + ESCAPE", hl.dsp.event("omacvm-escape"))
-```
-
-It needs the trackpad gestures (their daemon in the VM passes it on).
-**⌃⌥ Esc** takes you back in from macOS, as before.
-
 **Swipe out to macOS** (off by default; OmacVM.app's setting or the control
 centre): swipe past your first or last workspace and
 the macOS Space beside the VM follows your fingers, as a macOS Space swipe

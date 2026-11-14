@@ -78,9 +78,6 @@
 //                                     its first or last workspace: out to the macOS Space on
 //                                     that side in one step (acted on only for the VM in front
 //                                     while captured, at most once a second)
-//   L                                 a key of Omarchy's (Hyprland's custom event omacvm-escape):
-//                                     out of the VM as the escape combo goes (acted on only for
-//                                     the VM in front while captured)
 // and first, the handshake (any VM on these networks, and any Mac program on
 // 127.0.0.1, can connect; neither side ever sends the Bridge's token itself):
 //   C <guest nonce>                   from the guest: 32 hex digits
@@ -2688,26 +2685,18 @@ static int leaveToward(int dir, CGDirectDisplayID done) {
 
 static void leaveVMToward(int dir) { leaveToward(dir, 0); }
 
-// The guest on a connection (fd, gen): still there (1), whether its VM is the
-// one in front (target), and its name for the log (who).
-static int guestOf(int fd, unsigned gen, int *target, char *who, size_t n) {
-  int known = 0;
-  pthread_mutex_lock(&sendLock);
-  for (int i = 0; i < MAX_CLIENTS; i++)
-    if (clients[i].fd == fd && clients[i].gen == gen) {
-      known = 1; *target = clients[i].target;
-      snprintf(who, n, "%s", clients[i].name[0] ? clients[i].name : clients[i].ip);
-    }
-  pthread_mutex_unlock(&sendLock);
-  return known;
-}
-
 // "X left|right" from a guest (main thread): only the VM in front, captured,
 // with the setting on, and one at a time.
 static void swipeOutFrom(int fd, unsigned gen, int dir) {
-  int target = 0;
+  int target = 0, known = 0;
   char who[256] = "";
-  int known = guestOf(fd, gen, &target, who, sizeof who);
+  pthread_mutex_lock(&sendLock);
+  for (int i = 0; i < MAX_CLIENTS; i++)
+    if (clients[i].fd == fd && clients[i].gen == gen) {
+      known = 1; target = clients[i].target;
+      snprintf(who, sizeof who, "%s", clients[i].name[0] ? clients[i].name : clients[i].ip);
+    }
+  pthread_mutex_unlock(&sendLock);
   const char *side = dir < 0 ? "left" : "right", *no = NULL;
   double now = monoNow();
   if (!known) no = "that guest is gone";
@@ -2719,23 +2708,6 @@ static void swipeOutFrom(int fd, unsigned gen, int dir) {
   swipeOutAt = now;
   logf_("swipe out to the %s from \"%s\"", side, who);
   leaveVMToward(dir);
-}
-
-// "L" from a guest (main thread): a key of Omarchy's (Hyprland's custom event
-// omacvm-escape) leaves the VM the way the escape combo does. Only the VM in
-// front, captured: a VM in a window, or one the combo already left, stays.
-static void leaveFrom(int fd, unsigned gen) {
-  int target = 0;
-  char who[256] = "";
-  const char *no = NULL;
-  if (!guestOf(fd, gen, &target, who, sizeof who)) no = "that guest is gone";
-  else if (!target || !frontIsVM || frontForeign) no = "its VM is not the one in front";
-  else if (!capturing) no = "not captured";
-  if (no) { logf_("escape key from \"%s\": %s: ignored", who, no); return; }
-  capturing = 0; escaped = 1; movesCancelled = 0;
-  logf_("escape key from \"%s\": capture off", who);
-  sendState("esc");
-  leaveVM();
 }
 
 // "E" (after "X on 2"): left -1, right +1, "-" 0; anything else 2.
@@ -2762,7 +2734,7 @@ static int waysFrom(const char *s, unsigned ways[2]) {
 
 // One line a guest sent after its handshake (its reader thread). "E <l> <r>"
 // and "G ..." are kept with its connection (the trackpad's thread reads them
-// when a swipe begins); "X left|right" and "L" are acted on on the main thread.
+// when a swipe begins); "X left|right" is acted on on the main thread.
 // Anything else is skipped.
 static void guestLine(int fd, unsigned gen, const char *line) {
   char a[8], b[8], more;
@@ -2799,7 +2771,6 @@ static void guestLine(int fd, unsigned gen, const char *line) {
     pthread_mutex_unlock(&sendLock);
     return;
   }
-  if (!strcmp(line, "L")) { dispatch_async(dispatch_get_main_queue(), ^{ leaveFrom(fd, gen); }); return; }
   int dir = !strcmp(line, "X left") ? -1 : !strcmp(line, "X right") ? 1 : 0;
   if (dir) dispatch_async(dispatch_get_main_queue(), ^{ swipeOutFrom(fd, gen, dir); });
 }
