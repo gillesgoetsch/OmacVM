@@ -1,0 +1,104 @@
+From: OmacVM
+Subject: [PATCH] cocoa: no frame shown in surfaces of the other colour
+
+What: with HDR on, a frame whose colour is not that of the window's
+surfaces (a 10-bit PQ frame and 8-bit sRGB surfaces, or the other way
+round) is held: the window keeps its last frame, and at the end of the
+surfaces' hold-off (PRESENT_REALLOC_NS after they were made) the present
+timer makes surfaces of the right depth and draws the newest frame. A
+held frame never reaches the present queue, whole or in tiles (the tiled
+present is taken after this point, and its tiles follow the surfaces'
+generation). qemu.log: "cocoa: present: a PQ|sRGB frame held until its
+surfaces are made (N this run)", the first and every 100th.
+
+Why: a new depth gets new surfaces at once, but at most once a second
+(omacvm-cocoa-hdr-headroom.patch); within PRESENT_REALLOC_NS of the last
+ones a second depth change was drawn into the surfaces there were, and PQ
+codes showed as sRGB (or sRGB as PQ) for up to half a second. "HDR only
+in full screen" (omacvm-cocoa-hdr-follow.patch) switches the guest's
+output between 8-bit sRGB and 10-bit PQ: no frame may be tagged wrong at
+a switch. Linear surfaces (extra brightness) draw both kinds right through
+their shader, and without HDR both depths are sRGB: those draw as before.
+The timer is never set at or before now (omacvm_hf_hold_due).
+
+Threads: QEMU's thread (BQL), as the present.
+
+Upstream: OmacVM only (IOSurface present).
+Test: app/runtime/Tests/display/test-hdr-follow.sh (the rule, a model of
+the hold-off, the wiring; --self-test: the wiring checks fail on the code
+before).
+
+Applies after omacvm-cocoa-hdr-follow-logic.patch and
+omacvm-cocoa-video-awake.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -60,6 +60,7 @@
+ #include "ui/omacvm-modifiers.h"
+ #include "ui/omacvm-display-settle.h"
+ #include "ui/omacvm-edr.h"
++#include "ui/omacvm-hdr-follow.h"
+ #include "ui/omacvm-bright.h"
+ #include "ui/omacvm-pointer-bright.h"
+ #include "ui/omacvm-pointer-heads.h"
+@@ -8753,6 +8754,13 @@
+ static int64_t present_period_ns;
+ static int64_t present_alloc_ns;       /* when the surfaces were made */
+ static bool present_realloc_due;       /* surfaces of the wrong size */
++/*
++ * OmacVM: the frame is held (alloc): the surfaces there are show the other
++ * colour (PQ or sRGB) and new ones come at the hold-off's end
++ * (ui/omacvm-hdr-follow.h). QEMU thread.
++ */
++static bool present_held;
++static uint64_t present_holds;         /* frames held this run (for the log) */
+ static uint64_t present_cap;           /* largest display: w << 32 | h */
+ 
+ /*
+@@ -9643,6 +9651,7 @@
+     uint32_t cap_w = cap >> 32, cap_h = (uint32_t)cap;
+     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+ 
++    present_held = false;
+     if (!w || !h) {
+         return false;
+     }
+@@ -9669,7 +9678,15 @@
+                          now - depth_ns >= NANOSECONDS_PER_SECOND;
+         if (now - present_alloc_ns < PRESENT_REALLOC_NS && !depth_now) {
+             present_realloc_due = true;
+-            timer_mod(present_timer, present_alloc_ns + PRESENT_REALLOC_NS);
++            timer_mod(present_timer, omacvm_hf_hold_due(present_alloc_ns, PRESENT_REALLOC_NS, now));
++            /*
++             * A frame of the other colour (PQ in 8-bit sRGB surfaces, or
++             * sRGB in PQ ones) is not drawn into them: the window keeps the
++             * last frame until the surfaces are made, then the newest one.
++             */
++            present_held = omacvm_hf_wrong_colour(present_deep, present_linear, deep,
++                                                  present_color == 1 &&
++                                                  cocoa_gl_present_hdr_wanted());
+             return true;
+         }
+         if (depth_now) {
+@@ -10124,6 +10141,21 @@
+         dispatch_async(dispatch_get_main_queue(), ^{
+             omacvm_bright_look();
+         });
++    }
++    if (present_held) {
++        /*
++         * Its colour is not the surfaces': the last frame stays, and the
++         * present timer (alloc) makes the right surfaces and draws the newest
++         * frame then. No frame of the other depth reaches the queue, whole
++         * or in tiles (the tiles are taken below and follow the surfaces).
++         */
++        if (++present_holds == 1 || present_holds % 100 == 0) {
++            info_report("cocoa: present: a %s frame held until its surfaces are made "
++                        "(%" PRIu64 " this run)", deep ? "PQ" : "sRGB", present_holds);
++        }
++        CGLSetCurrentContext(prev);
++        gl_dirty = true;
++        return true;
+     }
+     /*
+      * The surfaces there are decide how to draw, not the switch: during

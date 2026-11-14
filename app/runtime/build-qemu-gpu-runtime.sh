@@ -1253,6 +1253,16 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-video-awake-l
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-video-awake.patch"
 "$native_dir/Tests/display/test-video-awake.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the display is not kept on for a video as tested, or its rules fail (test-video-awake.sh)"
+# OmacVM: no frame shown in surfaces of the other colour (PQ in 8-bit sRGB
+# ones or sRGB in PQ ones: held until the right ones are made). Its rules'
+# test, a check that the wiring checks fail on the code before, the wiring.
+# Before no-app-nap.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hdr-follow-logic.patch"
+"$native_dir/Tests/display/test-hdr-follow.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a depth-hold wiring check passes without the patch (test-hdr-follow.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-depth-hold.patch"
+"$native_dir/Tests/display/test-hdr-follow.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the depth hold is not wired as tested (test-hdr-follow.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
