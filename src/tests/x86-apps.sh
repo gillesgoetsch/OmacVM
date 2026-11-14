@@ -5,8 +5,11 @@
 # status line the check and the control centre show. While it is on, x86_64
 # programs go to box64 only: qemu-user's x86_64 rule (Omarchy 4.5) is held
 # back by a file of OmacVM's in /etc/binfmt.d, and given back when off (#752).
-# pacman, makepkg, systemctl and systemd-binfmt are stand-ins;
-# /proc/sys/fs/binfmt_misc is a scratch folder. The tiny x86_64 test program
+# The build needs about 1.5 GB of free memory: on refuses up front with less,
+# and names memory when the compiler is killed (gcc's line, or the kernel's
+# OOM killer during the build); apply shows that line as the reason.
+# pacman, makepkg, systemctl, systemd-binfmt and journalctl are stand-ins;
+# /proc/sys/fs/binfmt_misc and /proc/meminfo are in a scratch folder. The tiny x86_64 test program
 # is checked as an ELF (it runs only in a VM).
 #   src/tests/x86-apps.sh
 set -uo pipefail
@@ -114,10 +117,28 @@ echo "runuser $*" >> "$CALLS"
 while [[ $1 != -- ]]; do shift; done; shift
 exec "$@"
 EOF
+# MAKEPKG: ok, fail, gcc-oom (gcc's line when its compiler is killed),
+# kernel-oom (the OOM killer took it now, as the kernel log says).
 cat > "$T/bin/makepkg" <<'EOF'
 #!/bin/bash
-[[ $MAKEPKG == ok ]] || exit 1
-: > "$PKGDEST/omacvm-box64-$V-aarch64.pkg.tar.zst"
+case $MAKEPKG in
+  ok) : > "$PKGDEST/omacvm-box64-$V-aarch64.pkg.tar.zst" ;;
+  gcc-oom) echo "cc: fatal error: Killed signal terminated program cc1"; exit 1 ;;
+  kernel-oom) date +%s > "$S/oom"; exit 1 ;;
+  *) exit 1 ;;
+esac
+EOF
+# journalctl -k ... --since @SECONDS -g PATTERN: the kernel's OOM line when
+# $S/oom (its time) is not older than --since.
+cat > "$T/bin/journalctl" <<'EOF'
+#!/bin/bash
+echo "journalctl $*" >> "$CALLS"
+since=0
+while (( $# )); do [[ $1 == --since ]] && since=${2#@}; shift; done
+if [[ -f $S/oom ]] && (( $(cat "$S/oom") >= since )); then
+  echo "Nov 14 22:01:02 omarchy kernel: Out of memory: Killed process 4242 (cc1) total-vm:2900000kB, anon-rss:1380000kB"
+fi
+exit 0
 EOF
 printf '#!/bin/bash\nexit 0\n' > "$T/bin/chown"
 # guest/pkg-add: installs what is missing (its own test: src/tests/pkg-safe.sh).
@@ -151,9 +172,17 @@ E=$T/root/etc/binfmt.d
 # QEMU=yes qemu-user-static-binfmt (Omarchy 4.5); FEX=yes FEX's x86_64 rule;
 # HOLD ours|own|link: /etc/binfmt.d/qemu-x86_64-static.conf, OmacVM's or the
 # person's (a rule, or a link to /dev/null). Rules loaded as at boot;
-# REGISTERED=no: box64's is lost since.
+# REGISTERED=no: box64's is lost since. MEM="TOTAL AVAILABLE SWAPFREE" (kB):
+# /proc/meminfo (none: no file), "-" for a line it does not have;
+# OOM=SECONDS: a kernel OOM line from that time.
 setup() {
   rm -rf "$T/root" "$S"; mkdir -p "$B" "$U" "$T/root/var/log" "$T/root/tmp" "$S" "$T/vartmp"
+  if [[ -n ${MEM:-} ]]; then
+    read -r mt ma sf <<<"$MEM"
+    { echo "MemTotal:       $mt kB"; echo "MemFree:          123456 kB"
+      [[ $ma == - ]] || echo "MemAvailable:   $ma kB"; [[ $sf == - ]] || echo "SwapFree:       $sf kB"; } > "$T/root/proc/meminfo"
+  fi
+  if [[ -n ${OOM:-} ]]; then echo "$OOM" > "$S/oom"; fi
   if [[ -n ${INSTALLED:-} ]]; then echo "$INSTALLED" > "$S/omacvm-box64.ver"; echo box64 > "$S/omacvm-box64.provides"; : > "$S/omacvm-box64.rule"; fi
   echo "${PACKAGER:-$OMACVM}" > "$S/omacvm-box64.packager"
   if [[ -n ${BOX64:-} ]]; then echo "$BOX64" > "$S/box64.ver"; : > "$S/box64.rule"; fi
@@ -332,6 +361,70 @@ expect "on, build fails: tools removed all the same" yes "$(called "pacman -Rns 
 expect "on, build fails: nothing installed" no "$(called "pacman -U")"
 expect "on, build fails: says where the log is" yes "$(grep -q "the build failed (details in $T/root/var/log/omacvm-x86-apps.log)" <<<"$OUT" && echo yes || echo no)"
 
+# ---------- memory: a check before the build, out of memory named after it ----------
+# MemTotal of a 3 GB VM (2954 MB) and of a 4 GB one (about 3.85 GiB).
+GB3=3024896 GB4=4033000
+NEED="OmacVM: box64's build needs about 1.5 GB of free memory in the VM, and only"
+AFTER="GB is free: close apps in the VM or give it more memory, then switch x86 apps on again"
+MISSING="cmake python" MEM="$GB3 614400 307200" run on
+expect "on, 900 MB free: refused before anything is installed or built" \
+  "1 no no no no no" "$CODE $(called "pacman -U") $(called "pacman -R") $(called "pkg-add") $(called "runuser") $(called "mktemp")"
+expect "on, 900 MB free: the memory line, rounded down" "$NEED 0.8 $AFTER" "$OUT"
+expect "on, refused: no build log started" no "$([[ -e $T/root/var/log/omacvm-x86-apps.log ]] && echo yes || echo no)"
+MEM="$GB3 1563000 9000" run on
+expect "on, just under 1.5 GB free: refused, never says 1.5" "1 $NEED 1.4 $AFTER" "$CODE $OUT"
+MISSING="cmake python" MEM="$GB3 1900000 756000" run on
+expect "on, 2.5 GB free (3 GB VM with the desktop open): built as before" "0 yes" "$CODE $(called "runuser -u nobody")"
+MEM="$GB3 1572864 -" run on
+expect "on, exactly 1.5 GB free, no swap line: built" 0 "$CODE"
+MEM="$GB3 - 307200" run on
+expect "on, meminfo without MemAvailable: no check, built" 0 "$CODE"
+INSTALLED=$V REGISTERED=yes MEM="$GB3 300000 0" run on
+expect "on, box64 there already and little memory: no check, ok (Update VM never refuses)" \
+  "0 x86 apps: box64 $V runs x86_64 programs and AppImages" "$CODE $OUT"
+INSTALLED=0.4.2-1 REGISTERED=yes MEM="$GB3 300000 0" run on
+expect "on, older box64 and little memory: refused, the old one stays" "1 0.4.2-1" "$CODE $(cat "$S/omacvm-box64.ver")"
+
+LOGP=$T/root/var/log/omacvm-x86-apps.log
+OOM3="OmacVM: the VM ran out of memory building box64 (it has 3 GB of memory): close apps in the VM or give it more memory, then switch x86 apps on again (details in $LOGP)"
+MISSING="cmake" MAKEPKG=gcc-oom MEM="$GB3 1900000 756000" run on
+expect "on, compiler killed (gcc's line): status 1, the out-of-memory line last" "1 $OOM3" "$CODE $(tail -1 <<<"$OUT")"
+expect "on, compiler killed: tools removed, nothing installed, build folder gone" "yes no " \
+  "$(called "pacman -Rns --noconfirm cmake") $(called "pacman -U") $(ls -d "$T"/vartmp/omacvm-box64.* 2>/dev/null)"
+MAKEPKG=gcc-oom MEM="$GB4 2800000 1000000" run on
+expect "on, compiler killed in a 4 GB VM: says 4 GB, not 3" yes "$([[ $OUT == *"(it has 4 GB of memory)"* ]] && echo yes)"
+MAKEPKG=gcc-oom run on
+expect "on, compiler killed, no meminfo: the line without the size" \
+  "OmacVM: the VM ran out of memory building box64: close apps in the VM or give it more memory, then switch x86 apps on again (details in $LOGP)" "$(tail -1 <<<"$OUT")"
+MAKEPKG=kernel-oom MEM="$GB3 1900000 756000" run on
+expect "on, the kernel's OOM killer during the build: the out-of-memory line" "1 $OOM3" "$CODE $(tail -1 <<<"$OUT")"
+expect "on, the kernel's log read from the build's start" yes "$(grep -qE '^journalctl -k .*--since @[0-9]+ .*Out of memory: Killed process' "$T/calls" && echo yes)"
+MAKEPKG=fail OOM=$(( $(date +%s) - 600 )) MEM="$GB3 1900000 756000" run on
+expect "on, build fails, an OOM line from before the build: not memory, the build failed" \
+  "1 x86 apps: the build failed (details in $LOGP)" "$CODE $(tail -1 <<<"$OUT")"
+
+# apply's reason (src/cmd/apply.sh why_not/what_failed, as vulkan-feature.sh
+# runs them): the guest's last "OmacVM: " line of a switch, without its prefix.
+wf=$(awk '/^why_not\(\) \{/ {on = 1} on {print} on && /^}$/ {n++; if (n == 2) exit}' "$R/src/cmd/apply.sh")
+[[ $wf == *'what_failed() {'* ]] || { echo "FAIL why_not/what_failed not found in src/cmd/apply.sh"; fail=1; }
+title=$(awk -F'\t' '$1 == "x86-apps" { print $6 }' "$R/src/features.tsv")
+reason() {   # the x86 step's output -> what apply says failed
+  ( ONLY=x86-apps GI_LOG=$T/gi.log
+    { echo "==> x86 apps (the first time: box64 builds in the VM, a few minutes)"; echo "$1"
+      echo "==> x86 apps: not set up (see above)"; echo "guest/install.sh: x86-apps was not set up (see above)"; } > "$GI_LOG"
+    FTITLE=("$title"); feature_index() { [[ $1 == x86-apps ]] && echo 0; }
+    failed_part() { echo "$1|$2"; }
+    eval "$wf"; what_failed )
+}
+MEM="$GB3 614400 307200" run on
+expect "apply's reason, too little memory" \
+  "x86-apps|x86 Linux apps was not set up: box64's build needs about 1.5 GB of free memory in the VM, and only 0.8 GB is free: close apps in the VM or give it more memory, then switch x86 apps on again" \
+  "$(reason "$OUT")"
+MAKEPKG=gcc-oom MEM="$GB3 1900000 756000" run on
+expect "apply's reason, out of memory" \
+  "x86-apps|x86 Linux apps was not set up: the VM ran out of memory building box64 (it has 3 GB of memory): close apps in the VM or give it more memory, then switch x86 apps on again (details in $LOGP)" \
+  "$(reason "$(tail -1 <<<"$OUT")")"
+
 MISSING="cmake" PKGADD=fail run on
 expect "on, pkg-add cannot install the build tools: fails, no build" "1 no" "$CODE $(called "runuser")"
 
@@ -402,6 +495,25 @@ expect "PKGBUILD: not named box64 (the AUR's name), provides and conflicts with 
 expect "PKGBUILD: two sources, two sha256s" "2 2" \
   "$(bash -c 'source "$1"; echo "${#source[@]} ${#sha256sums[@]}"' _ "$pk")"
 expect "PKGBUILD: no SKIP checksum" 0 "$(grep -c SKIP "$pk")"
+# The build's flags, from build() itself (cmake and nproc are stand-ins):
+# makepkg's own (no -g) plus -DNDEBUG and GCC's collector params, the same
+# for C and C++.
+mkdir -p "$T/pk"
+printf '#!/bin/bash\necho "cmake $* | $CFLAGS | $CXXFLAGS" >> "$PK"\n' > "$T/pk/cmake"
+printf '#!/bin/bash\necho 4\n' > "$T/pk/nproc"
+chmod +x "$T/pk/"*
+flags=$(cd "$T/pk" && PK=$T/pk/out PATH="$T/pk:$PATH" CFLAGS="-O2 -pipe" CXXFLAGS="-O2 -pipe" \
+  bash -c 'source "$1"; build' _ "$pk" >/dev/null 2>&1; head -1 "$T/pk/out")
+gc="-DNDEBUG --param ggc-min-expand=20 --param ggc-min-heapsize=32768"
+expect "PKGBUILD: build type None (makepkg's flags), no RelWithDebInfo" yes \
+  "$([[ $flags == *"-D CMAKE_BUILD_TYPE=None "* ]] && ! grep -q 'CMAKE_BUILD_TYPE=RelWithDebInfo' "$pk" && echo yes)"
+expect "PKGBUILD: C and C++ get makepkg's flags, -DNDEBUG and the GC params, no -g" \
+  "-O2 -pipe $gc | -O2 -pipe $gc" "${flags#* | }"
+expect "PKGBUILD: no -g anywhere in build()" 0 "$(sed -n '/^build()/,/^}/p' "$pk" | grep -cE '(^|[ "])-g( |"|$)')"
+# Only the debug info went (the package strips it): no new pkgrel, so VMs
+# that have this box64 keep it. A new commit starts at 1 again.
+expect "PKGBUILD: pkgrel 1 (the flags change does not rebuild box64 on VMs that have it)" 1 \
+  "$(bash -c 'source "$1"; echo "$pkgrel"' _ "$pk")"
 expect "PKGBUILD: generic ARM64 build (not the 16K-page M1 profile)" yes "$(grep -q -- '-D ARM64=ON -D ARM_DYNAREC=ON' "$pk" && ! grep -q -- '-D M1' "$pk" && echo yes)"
 expect "parts.tsv: x86/ is the feature's" yes "$(grep -q $'^x86-apps\tx86/\\*\\*$' "$R/src/release/parts.tsv" && echo yes)"
 exit $fail
