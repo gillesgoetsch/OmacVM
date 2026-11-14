@@ -201,6 +201,9 @@ jobs:
       - name: Building behind a proxy (scutil samples, the VM's variables, sudo, systemd-run, retries, a stub proxy)
         run: src/tests/proxy.sh
 
+      - name: The home disk (data.img, a second NVMe disk only with HOME_GB; omacvm build --home-gb; omacvm check's line)
+        run: src/tests/home-disk.sh
+
       - name: Freeing disk space (2 update snapshots kept, a trim at apply, omacvm check's lines; the 10 GiB warning, #749)
         run: src/tests/disk-space.sh
 
