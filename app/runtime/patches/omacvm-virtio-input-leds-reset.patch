@@ -1,0 +1,39 @@
+From: OmacVM
+Subject: [PATCH] virtio-input: a reset keyboard has no LED lit (#784)
+
+What: when a virtio keyboard stops (the guest resets it: a restart inside the
+VM, QEMU still running), its LED state goes back to none lit, and the UIs
+hear it (qemu_input_handler_set_leds_mask, the LED notifier).
+
+Why: the guest's next driver starts with every LED off and reports only
+changes from there. Kept, the old state (Caps Lock on before the restart)
+stayed lit for the UI for good, so OmacVM's Cocoa UI took the restarted
+guest's Caps Lock for on (omacvm-cocoa-caps-lock.patch) and the VM typed
+the other case from the Mac's.
+
+Only keyboards (the handler takes keys) and only when an LED was lit; mice,
+tablets and the multitouch device are not touched.
+
+Upstream: upstreamable (VNC, spice and D-Bus read the same stale mask).
+Test: app/runtime/Tests/keys/test-caps-lock.sh (with the patched sources:
+the reset is there); the restart row of work/run-1114/mini-1114 caps-repro.
+Applies after qemu-cocoa-precise-scroll.patch.
+
+--- a/hw/input/virtio-input-hid.c
++++ b/hw/input/virtio-input-hid.c
+@@ -227,6 +227,15 @@
+     if (vinput->active) {
+         qemu_input_handler_activate(vhid->hs);
+     } else {
++        /*
++         * OmacVM (#784): a reset device has no LED lit, and the guest's next
++         * driver reports only changes from there. Kept, the old LEDs (Caps
++         * Lock on before a restart inside the VM) stayed lit for the UI.
++         */
++        if ((vhid->handler->mask & INPUT_EVENT_MASK_KEY) && vhid->ledstate) {
++            vhid->ledstate = 0;
++            qemu_input_handler_set_leds_mask(vhid->hs, 0);
++        }
+         qemu_input_handler_deactivate(vhid->hs);
+     }
+ }

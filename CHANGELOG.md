@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.7 (unreleased)
+
+- **Caps Lock** (#784, reported by @epicoun): after a new desktop session or a restart inside the VM
+  with the Mac's Caps Lock on, the VM's Caps Lock came back the other way round: capitals with the
+  Mac's light off, until Caps Lock was pressed outside the VM. The VM now reads its own Caps Lock
+  from its keyboard light and follows the Mac's again at the next key or pointer move. Needs the app
+  update, from the VM's next start.
+
 ## 3.4.5
 
 Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need about

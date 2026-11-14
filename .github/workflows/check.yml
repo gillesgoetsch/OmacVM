@@ -562,6 +562,9 @@ jobs:
       - name: Modifier keys follow each event's flags (Universal Control, issue 412; the old rules fail it)
         run: app/runtime/Tests/keys/test-modifier-state.sh
 
+      - name: Caps Lock follows the Mac's after the guest lost its lock (new session, restart; issue 784; the old rule fails it)
+        run: app/runtime/Tests/keys/test-caps-lock.sh
+
       - name: Closing the VM window (shut down, keep running, ask; issue 358)
         run: app/runtime/Tests/display/test-close.sh
 
