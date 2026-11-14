@@ -1,7 +1,9 @@
 // Offline tests of keys-model.swift (when the media-key tap is created again,
 // and when it must go because a permission was taken away),
 // the mute that goes with the Mac's volume at 0 (OutputMute), and
-// wifi-model.swift (a steady Wi-Fi state). No permissions, no Wi-Fi.
+// wifi-model.swift (a steady Wi-Fi state), and notifications-model.swift (the
+// Mac's notifications on screen and the action that closes each). No
+// permissions, no Wi-Fi.
 import CoreGraphics
 import Foundation
 
@@ -559,6 +561,58 @@ let before = wi.generation
 wi.invalidate()   // an event while a read is under way
 wi.store(office, for: on, since: before, now: w0)
 check(wi.cached(on, now: w0) == nil, "wifi identity: an event during a read is not lost")
+
+// ---- MacNotifications: the Mac's banners and alerts on screen, and how each closes ----
+struct NCElement: NotificationElement {
+  var subrole: String? = nil
+  var actions: [String] = []
+  var children: [NCElement] = []
+  var name = ""
+}
+func ncAction(_ title: String) -> String { "Name:\(title)\nTarget:0x0\nSelector:(null)" }
+func ncNote(_ name: String, _ subrole: String, _ titles: [String]) -> NCElement {
+  NCElement(subrole: subrole, actions: ["AXPress"] + titles.map(ncAction),
+            children: [NCElement(actions: ["AXShowMenu"], name: name + ": title"), NCElement(actions: ["AXShowMenu"], name: name + ": body")],
+            name: name)
+}
+// NotificationCenter's windows on macOS 27.2 with two alerts and a banner on
+// screen, as its Accessibility tree has them: the list in the window
+// "Notification Center", and a desktop widget's own window.
+func ncWindows(close: String, details: String, show: String) -> [NCElement] {
+  let list = NCElement(children: [
+    ncNote("alert 1", "AXNotificationCenterAlert", [details, close]),
+    ncNote("alert 2", "AXNotificationCenterAlert", [details, close]),
+    ncNote("banner", "AXNotificationCenterBanner", [details, show, close]),
+  ])
+  let center = NCElement(subrole: "AXSystemDialog", actions: ["AXRaise"], children: [
+    NCElement(subrole: "AXHostingView", children: [NCElement(children: [
+      NCElement(actions: ["AXScrollUpByPage", "AXScrollDownByPage"], children: [list]),
+      NCElement(name: "widgets-overlay-view"),
+    ])]),
+  ])
+  let widget = NCElement(subrole: "AXUnknown", actions: ["AXRaise"], children: [
+    NCElement(subrole: "AXHostingView", children: [NCElement(actions: ["AXShowMenu"], name: "Weather")]),
+  ])
+  return [center, widget]
+}
+let english = MacNotifications.closable(ncWindows(close: "Close", details: "Show Details", show: "Show"), close: "Close")
+check(english.map(\.element.name) == ["alert 1", "alert 2", "banner"],
+      "notifications: every alert and banner on screen, in macOS's order; the widget's window left alone")
+check(english.allSatisfy { $0.action == ncAction("Close") }, "notifications: each by its Close action, not Show Details, Show or a press")
+let german = ncWindows(close: "Schließen", details: "Details einblenden", show: "Anzeigen")
+check(MacNotifications.closable(german, close: "Schließen").map(\.action) == Array(repeating: ncAction("Schließen"), count: 3),
+      "notifications: NotificationCenter in German: its Schließen")
+check(MacNotifications.closable(german, close: "Close").isEmpty, "notifications: ... never by an English title it does not have")
+check(MacNotifications.closable([ncNote("alert", "AXNotificationCenterAlert", ["Show Details"])], close: "Close").isEmpty,
+      "notifications: one without a Close action stays")
+check(MacNotifications.closable([ncNote("banner", "AXNotificationCenterBanner", ["Closed", "Close all"])], close: "Close").isEmpty,
+      "notifications: a title that only starts with Close is no Close")
+let nested = NCElement(subrole: "AXNotificationCenterAlert", actions: [ncAction("Close")],
+                       children: [ncNote("inside", "AXNotificationCenterBanner", ["Close"])], name: "outer")
+check(MacNotifications.closable([nested], close: "Close").map(\.element.name) == ["outer"],
+      "notifications: one notification closes once, its parts are not walked")
+check(MacNotifications.closable([NCElement(subrole: "AXSystemDialog", name: "no notifications")], close: "Close").isEmpty,
+      "notifications: none on screen: nothing to close")
 
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("models: all ok")
