@@ -3,7 +3,8 @@
 -- hl.config with an unknown key records a config error (shown on the screen) and does
 -- not raise one; hl.get_config gives nil and a message for an unknown key; a config
 -- load starts from the defaults; hl.env is setenv(), so os.getenv sees what it set.
--- And OmacVM's folder ends up ahead of Omarchy's bin on the session's PATH (#748).
+-- And OmacVM's folder ends up ahead of Omarchy's bin on the session's PATH (#748), and
+-- Omarchy's "Dismiss all notifications" also closes the Mac's (the Bridge's client).
 -- Run by src/tests/dmabuf-alpha.sh:
 --   lua omacvm_vm_test.lua PIECE [ROUTE=FILE,FILE...]...
 -- PIECE: src/guest/omacvm_vm.lua; each ROUTE: the Lua files OmacVM's installers
@@ -28,8 +29,9 @@ local function write(path, text)
 end
 
 -- The stand-in. known: the keys this Hyprland has, with their defaults. env: the
--- process environment hl.env writes (opts.path: PATH at Hyprland's start).
-local values, known, errors, sets
+-- process environment hl.env writes (opts.path: PATH at Hyprland's start). binds: what
+-- hl.bind got; execs: the commands hl.exec_cmd ran.
+local values, known, errors, sets, binds, execs
 local env = {}
 local real_getenv = os.getenv
 os.getenv = function(k)
@@ -44,7 +46,7 @@ local function hyprland(skip_default, opts)
     ["render.keep_unmodified_copy"] = 2, ["render.cm_auto_hdr"] = 1,
   }
   if skip_default ~= nil then known[KEY] = skip_default end
-  values, errors, sets = {}, {}, {}
+  values, errors, sets, binds, execs = {}, {}, {}, {}, {}
   for k, v in pairs(known) do values[k] = v end
   hl = {
     config = function(t)
@@ -64,7 +66,8 @@ local function hyprland(skip_default, opts)
     window_rule = function() end,
     on = function() end,
     timer = function() end,
-    exec_cmd = function() end,
+    exec_cmd = function(cmd) execs[#execs + 1] = cmd end,
+    bind = function(keys, dispatcher, opts) binds[#binds + 1] = { keys = keys, dispatcher = dispatcher, opts = opts } end,
   }
   if not opts.no_env then
     hl.env = function(k, v) env[k] = tostring(v) end
@@ -186,6 +189,40 @@ if have_piece then
   check("no PATH at all: the folder, then Hyprland's fallback", env.PATH == OVR .. ":/usr/local/bin:/usr/bin")
   hyprland(false, { path = START, no_env = true }); load_config(P)
   check("no hl.env: PATH left as it is, no error" .. errs(), env.PATH == START and #errors == 0)
+end
+
+-- The Mac's notifications with Omarchy's "Dismiss all notifications" (Super+Shift+comma on
+-- Omarchy 4.0 and 4.5). Hyprland runs every bind a key matches, so OmacVM's bind sits next
+-- to Omarchy's own. The Bridge's client is there while the Bridge is on (guest/off.sh
+-- removes it); here a stand-in for io.open says whether it is.
+local CLIENT = "/usr/local/bin/omacvm-bridge"
+local client_there = true
+local real_open = io.open
+io.open = function(path, mode)
+  if path == CLIENT then return client_there and real_open(piece, "r") or nil end
+  return real_open(path, mode)
+end
+local function binds_on(keys)
+  local found = {}
+  for _, b in ipairs(binds) do if b.keys == keys then found[#found + 1] = b end end
+  return found
+end
+if have_piece then
+  local P = { piece }
+  hyprland(false); load_config(P)
+  local on = binds_on("SUPER + SHIFT + comma")
+  check("Dismiss all notifications: one bind of OmacVM's on Super+Shift+comma, a function" .. errs(),
+    #on == 1 and type(on[1].dispatcher) == "function" and #errors == 0)
+  check("... without a description: Omarchy's keybindings menu lists the key once (Omarchy's own)",
+    on[1] ~= nil and (on[1].opts == nil or on[1].opts.description == nil))
+  if on[1] then
+    client_there = true; on[1].dispatcher()
+    check("pressed, the Bridge on: its client asks the Mac to close its notifications",
+      #execs == 1 and execs[1] == CLIENT .. " notifications dismiss")
+    execs = {}; client_there = false; on[1].dispatcher()
+    check("pressed, the Bridge off (no client): nothing runs, nothing reaches the Mac", #execs == 0)
+  end
+  client_there = true
 end
 
 if failed == 0 then print("omacvm_vm_test: all passed") end

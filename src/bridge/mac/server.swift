@@ -484,10 +484,21 @@ func handle(_ fd: Int32, peer: String) {
     } catch {
       respond(fd, 500, ["error": "\(error)"])
     }
+  case ("POST", "/notifications/dismiss"):
+    // The Mac's banners and alerts close (notifications.swift) only while an
+    // OmacVM.app VM is in front, where they cover it. The front app and its
+    // windows: read on the main thread (this one is a connection's).
+    guard DispatchQueue.main.sync(execute: { VMScreens.front() != nil }) else {
+      log("/notifications/dismiss from \(peer): no OmacVM.app VM in front")
+      respond(fd, 409, ["error": "no OmacVM.app VM in front"]); return
+    }
+    let r = MacNotifications.closeOnScreen()
+    log("/notifications/dismiss from \(peer): closed \(r.closed) of \(r.found)")
+    respond(fd, 200, ["closed": r.closed])
   case ("POST", "/power"), ("POST", "/join"), ("POST", "/disconnect"):
     respond(fd, 501, ["error": "Wi-Fi control is not implemented yet (stage 2)"])
   case (_, "/state"), (_, "/scan"), (_, "/audio"), (_, "/display"), (_, "/bluetooth"), (_, "/timezone"), (_, "/wifi/password"), (_, "/events"),
-       (_, "/display/external"), (_, "/display/external-brightness"):
+       (_, "/display/external"), (_, "/display/external-brightness"), (_, "/notifications/dismiss"):
     respond(fd, 405, ["error": "method not allowed"])
   default:
     respond(fd, 404, ["error": "not found"])

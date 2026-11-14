@@ -32,6 +32,8 @@
 //   POST /bluetooth/settings   opens the Mac's Bluetooth settings (pairing)
 //   POST /wallpaper        image body: the Mac's wallpaper (and lock-screen background)
 //   GET  /timezone         {"zone": "Europe/Zurich"}: the Mac's time zone, which the VM follows (omacvm-timezone)
+//   POST /notifications/dismiss  the Mac's banners and alerts on screen close, while an OmacVM.app
+//                          VM is in front: {"closed": N} (notifications.swift)
 //   /omacvm/...            the control centre's requests (control.swift, docs/adr/0031): hello, status,
 //                          updates, updates/check, settings/update-checks, jobs, jobs/<id>; OmacVM.app
 //                          relays its VMs' ones on the Unix socket omacvm-bridge/relay.sock (owner only)

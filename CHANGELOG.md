@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## Unreleased
+
+- **Dismiss all notifications also closes the Mac's.** In full screen macOS shows its banners and
+  alerts (such as *App Background Activity*) over the VM, where nothing in the VM reaches them.
+  Omarchy's own Super+Shift+, now also closes the ones on the Mac's screen, through the Bridge
+  (its Accessibility permission), while the VM is in front. Omarchy's other notification keys stay
+  the VM's. It comes with Update VM.
+
 ## 3.4.5
 
 Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need about
