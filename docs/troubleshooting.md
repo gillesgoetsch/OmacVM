@@ -2043,3 +2043,26 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 - **Where:** `src/disk/guest/install.sh`,
   `src/disk/guest/61-omacvm-io-scheduler.rules`, `src/guest/check.sh` ("disk
   scheduler"); test `src/tests/disk-scheduler.sh`.
+
+## 66. app: YouTube makes the Mac work harder than other videos (Ambient mode)
+
+- **Symptom:** a YouTube video in the VM's browser keeps the Mac busier
+  (warmer, shorter on battery) than a video of the same size from a file or
+  another site. Activity Monitor shows more GPU time for the VM.
+- **Cause:** YouTube's Ambient mode, on by default: a soft glow in the
+  video's colours behind the player, in full screen in the black bars above
+  and below the video. To draw it the page runs an animation 120 times a
+  second and repaints the whole browser window about 15 times a second, on
+  top of the video's own frames. In the VM each of those frames goes the
+  whole way to the Mac's screen. Measured in a test VM on a Mac mini M4
+  (Google Chrome, YouTube's 1080p60 AV1 stream, full screen, two runs each):
+  with Ambient mode 69 frames per second reach the Mac instead of 60, and
+  the VM's GPU time on the Mac goes up by about half (276 against 180 ms
+  per second). Chrome on macOS draws the glow too, at a lower cost.
+- **What you can do:** Ambient mode is YouTube's own look, so OmacVM leaves
+  it as it is. To turn it off: the gear in the player, then Ambient mode.
+  The browser keeps the choice for later videos. The bars around a full
+  screen video are then black.
+- **Not the cause:** the YouTube page itself (a paused video costs about
+  as much as an idle VM), comments, recommendations, the network or the
+  sound.
