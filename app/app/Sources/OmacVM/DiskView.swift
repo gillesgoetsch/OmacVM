@@ -12,9 +12,11 @@ enum VMDisk {
         var freeBytes: Int64?
     }
 
-    static func info(_ c: VMConfig) -> Info? {
+    /// `home`: the home disk (data.img) of a VM that has one.
+    static func info(_ c: VMConfig, home: Bool = false) -> Info? {
         let keys: Set<URLResourceKey> = [.fileSizeKey, .totalFileAllocatedSizeKey]
-        guard let v = try? c.disk.resourceValues(forKeys: keys), let size = v.fileSize else { return nil }
+        guard let disk = home ? c.homeDisk : c.disk,
+              let v = try? disk.resourceValues(forKeys: keys), let size = v.fileSize else { return nil }
         let vol = try? c.folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
         var free = vol?.volumeAvailableCapacityForImportantUsage
         // Some drives answer 0 or nothing for "important usage": their plain free space then.
@@ -57,6 +59,23 @@ enum VMDisk {
             throw HelperError.io("Could not grow disk.img: \(why).")
         }
         try c.writeEnv(["DISK_GB": "\(newGB)"])
+    }
+
+    /// Makes the home disk (data.img) `newGB` long (the VM is off). Only
+    /// ever longer: xfs cannot shrink. vm.env's HOME_GB follows, and systemd
+    /// grows the file system when the VM mounts it (x-systemd.growfs in the
+    /// VM's fstab, src/vm/base-install.sh).
+    static func growHome(_ c: VMConfig, to newGB: Int) throws {
+        if let why = MoveFiles.openWhy(c) { throw HelperError.io(why) }
+        let newBytes = Int64(newGB) * DiskSize.gib
+        guard let disk = c.homeDisk, let now = info(c, home: true) else { throw HelperError.io("No \(HomeDisk.file) in \(c.folder.path).") }
+        guard newBytes > now.maxBytes else { throw HelperError.io("The home disk is already \(DiskSize.text(now.maxBytes)).") }
+        // QEMU has both disks open or neither.
+        if inUse(c) { throw HelperError.io("\(HomeDisk.file) is in use (the VM runs?): shut the VM down first.") }
+        guard truncate(disk.path, off_t(newBytes)) == 0 else {
+            throw HelperError.io("Could not grow \(HomeDisk.file): \(String(cString: strerror(errno))).")
+        }
+        try c.writeEnv(["HOME_GB": "\(newGB)"])
     }
 
     // MARK: Smaller
@@ -378,9 +397,11 @@ enum VMDisk {
 /// opens a − / + for the new size in the row, from what Omarchy needs to
 /// what the Mac has free (DiskSize.bounds). Larger: done at once (the guest
 /// grows into it at its start). Smaller: the VM starts, makes room and
-/// restarts once (VMDisk).
+/// restarts once (VMDisk). `home`: the same row for the home disk of a VM
+/// that has one (data.img, docs/adr/0076), which only gets larger.
 struct DiskRow: View {
     @ObservedObject var state: AppState
+    var home = false
     @State private var info: VMDisk.Info?
     @State private var jobs: [DiskSize.Job] = []
     @State private var resize: DiskSize.Resize?
@@ -391,16 +412,19 @@ struct DiskRow: View {
     /// The window pictures: no disk to read, the size open and chosen.
     var preview: (need: DiskSize.Need, gb: Int)? = nil
 
-    private var currentGB: Int { info.map { DiskSize.wholeGB($0.maxBytes) } ?? state.config.diskGB }
+    private var currentGB: Int {
+        info.map { DiskSize.wholeGB($0.maxBytes) } ?? (home ? state.config.homeGB ?? 0 : state.config.diskGB)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SettingRow(title: "Disk", subtitle: pending.text, subtitleIsError: pending.error, probe: "disk") {
+            SettingRow(title: home ? "Home disk" : "Disk", subtitle: pending.text, subtitleIsError: pending.error,
+                       probe: home ? "home-disk" : "disk") {
                 if let i = info {
                     UsageBar(fraction: Double(i.usedBytes) / Double(max(1, i.maxBytes)))
                     Text("\(DiskSize.text(i.usedBytes)) used of \(DiskSize.text(i.maxBytes))").font(.subheadline).foregroundStyle(.secondary)
                 } else {
-                    Text("No disk.img").font(.subheadline).foregroundStyle(.secondary)
+                    Text("No \(home ? HomeDisk.file : "disk.img")").font(.subheadline).foregroundStyle(.secondary)
                 }
                 Button("Change…") { open() }
                     .disabled(info == nil || resize != nil || state.storage.moving != nil || editing
@@ -525,6 +549,10 @@ struct DiskRow: View {
             newGB = p.gb
             return
         }
+        if home {
+            bounds = DiskSize.bounds(currentGB: current, need: nil, unknownWhy: HomeDisk.onlyLarger, freeBytes: free)
+            return
+        }
         let running = state.vmRunning()
         Task.detached {
             // Running: the guest's own numbers; off (or no answer): disk.img's.
@@ -565,7 +593,8 @@ struct DiskRow: View {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         do {
-            let change = try VMDisk.change(state.config, to: newGB)
+            var change: VMDisk.Change?
+            if home { try VMDisk.growHome(state.config, to: newGB) } else { change = try VMDisk.change(state.config, to: newGB) }
             if let c = VMConfig.load(from: state.config.folder) { state.config = c }
             editing = false
             refresh()
@@ -587,9 +616,10 @@ struct DiskRow: View {
     }
 
     private func refresh() {
-        info = VMDisk.info(state.config)
-        jobs = VMDisk.jobs(state.config)
-        resize = VMDisk.resize(state.config)
+        info = VMDisk.info(state.config, home: home)
+        // The grow job and the smaller size are the system disk's.
+        jobs = home ? [] : VMDisk.jobs(state.config)
+        resize = home ? nil : VMDisk.resize(state.config)
         if preview != nil, !editing { open() }
     }
 }

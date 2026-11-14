@@ -173,6 +173,21 @@ enum RenderVMWindow {
         disk.disk = (DiskSize.Need(allocated: 13 * DiskSize.gib, used: 9 * DiskSize.gib, rootStart: 2 * DiskSize.gib), 128)
         window("window-8-disk-larger", state, disk)
 
+        // A VM with a home disk (docs/adr/0076): its row under the disk's.
+        // The pictures after it are of a VM without one again.
+        let env = folder.appendingPathComponent("vm.env")
+        let envBefore = try? Data(contentsOf: env)
+        let homeDisk = folder.appendingPathComponent(HomeDisk.file)
+        FileManager.default.createFile(atPath: homeDisk.path, contents: Data(count: 8 << 20))
+        _ = truncate(homeDisk.path, 200 << 30)
+        try? config.writeEnv(["HOME_GB": "200"])
+        state.config = VMConfig.load(from: folder) ?? config
+        disk.disk = nil
+        window("window-8-home-disk", state, disk)
+        try? FileManager.default.removeItem(at: homeDisk)
+        try? envBefore?.write(to: env)
+        state.config = config
+
         // An update is ready: the banner (and its What's New from the new
         // app's own CHANGELOG), stopped and while the VM runs.
         let staged = makeStagedApp(tmp, version: "3.1.1")
