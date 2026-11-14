@@ -22,7 +22,10 @@ confirm):
    a few minutes. Either way you get your own user, password, features,
    keyboard and timezone. `--prebuilt` or `--build` for scripts; details,
    what is in the images and how they are made: [prebuilt.md](prebuilt.md).
-   OmacVM.app's own setup offers the same choice.
+   OmacVM.app's own setup offers the same choice. A build can give your home
+   folder a disk of its own, on xfs (`--home-gb N`, off by default: for
+   databases, build trees and VM images;
+   [Home disk](routes/app.md#home-disk-off-by-default)).
 2. **How much of the Mac the VM gets**: Low, Balanced, High or Best, shown as
    CPUs and memory, or Custom. Best leaves macOS and the GPU a buffer of a
    quarter of the memory, at least 8 GB. More is allowed (OmacVM.app and
