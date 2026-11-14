@@ -78,6 +78,9 @@
 //                                     its first or last workspace: out to the macOS Space on
 //                                     that side in one step (acted on only for the VM in front
 //                                     while captured, at most once a second)
+//   L                                 Hyprland's custom event omacvm-escape (a binding of the
+//                                     user's): out of the VM as the escape combo goes (acted on
+//                                     only for the VM in front while captured)
 // and first, the handshake (any VM on these networks, and any Mac program on
 // 127.0.0.1, can connect; neither side ever sends the Bridge's token itself):
 //   C <guest nonce>                   from the guest: 32 hex digits
@@ -2710,6 +2713,21 @@ static void swipeOutFrom(int fd, unsigned gen, int dir) {
   leaveVMToward(dir);
 }
 
+// "L" from a guest (main thread): out of the VM as the combo goes, only for
+// the VM in front while captured.
+static void escapeFrom(int fd, unsigned gen) {
+  int target = 0;
+  pthread_mutex_lock(&sendLock);
+  for (int i = 0; i < MAX_CLIENTS; i++)
+    if (clients[i].fd == fd && clients[i].gen == gen) target = clients[i].target;
+  pthread_mutex_unlock(&sendLock);
+  if (!target || !capturing) { logf_("escape event from the guest: not the VM in front, captured: ignored"); return; }
+  capturing = 0; escaped = 1; movesCancelled = 0;
+  logf_("escape event from the guest: capture off");
+  sendState("esc");
+  leaveVM();
+}
+
 // "E" (after "X on 2"): left -1, right +1, "-" 0; anything else 2.
 static int edgeWord(const char *w) {
   return !strcmp(w, "left") ? -1 : !strcmp(w, "right") ? 1 : !strcmp(w, "-") ? 0 : 2;
@@ -2734,7 +2752,7 @@ static int waysFrom(const char *s, unsigned ways[2]) {
 
 // One line a guest sent after its handshake (its reader thread). "E <l> <r>"
 // and "G ..." are kept with its connection (the trackpad's thread reads them
-// when a swipe begins); "X left|right" is acted on on the main thread.
+// when a swipe begins); "X left|right" and "L" are acted on on the main thread.
 // Anything else is skipped.
 static void guestLine(int fd, unsigned gen, const char *line) {
   char a[8], b[8], more;
@@ -2771,6 +2789,7 @@ static void guestLine(int fd, unsigned gen, const char *line) {
     pthread_mutex_unlock(&sendLock);
     return;
   }
+  if (!strcmp(line, "L")) { dispatch_async(dispatch_get_main_queue(), ^{ escapeFrom(fd, gen); }); return; }
   int dir = !strcmp(line, "X left") ? -1 : !strcmp(line, "X right") ? 1 : 0;
   if (dir) dispatch_async(dispatch_get_main_queue(), ^{ swipeOutFrom(fd, gen, dir); });
 }

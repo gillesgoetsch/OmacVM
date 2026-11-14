@@ -18,6 +18,8 @@ Unix socket (j/monitors, j/workspaces, j/getoption, j/submap, dispatch). No VM, 
   Mission Control's overview up (Hyprland's submap mac-mission-control):
   no swipe out, "E - -" until it closes; another submap, Hyprland's
   "default" or no answer to j/submap: as before.
+  Hyprland's custom event omacvm-escape (a binding of the user's): "L",
+  once; other events: nothing.
 """
 import importlib.machinery
 import importlib.util
@@ -590,6 +592,15 @@ H.world(1, [1, 2], {1: 1, 2: 1})
 check(swipe(0.3, fingers=3) == [] and swipe(0.3, fingers=4) == ["X left"],
       "X on (old Mac): 3 fingers (focus here) no X; 4 fingers X left")
 g.workspace_swipes = real_ws
+
+# ---- a binding of the user's out to macOS ----
+threading.Thread(target=g.watch_escape, daemon=True).start()
+time.sleep(0.5)
+sent.clear()
+event("custom>>omacvm-escape-not", "workspace>>2")
+event("custom>>omacvm-escape")
+time.sleep(0.3)
+check([s for s in sent if s == "L"] == ["L"], "custom>>omacvm-escape: L to the Mac, once; other events: nothing")
 
 # ---- the rule on its own ----
 st = {"active": 1, "ids": [1, 2], "empty": False, "special": False, "invert": True, "create_new": True}

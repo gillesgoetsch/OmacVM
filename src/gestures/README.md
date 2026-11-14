@@ -93,7 +93,7 @@ in the VM; `omacvm apply` runs it).
 
 Protocol (TCP, one line each): see the header of `mac/omacvm-gestures.c`
 (`F`, `S`, `O`, `A`, `W`, `P`, `K`, `X on|off` to the guest; `R <gestures> <glide> <proof> <name>`
-from it, with the VM's name in base64, then `X left|right`). First both sides prove they know the
+from it, with the VM's name in base64, then `X left|right` and `L`). First both sides prove they know the
 Bridge's token (HMAC-SHA256 over two nonces and the Mac address the helper
 accepted on, the Mac first), so the token never goes over the wire and the VM
 ignores a listener that cannot prove it (on 127.0.0.1, for OmacVM.app, any Mac
