@@ -74,6 +74,7 @@ expect "fresh: Keyboard sharing apps off" false "$(val app.shareKeyboard)"
 expect "fresh: Vulkan windows without a copy on (vkWindowsNoCopy)" true "$(val app.vkWindowsNoCopy)"
 expect "fresh: HDR and 10-bit colour off" false "$(val app.hdr)"
 expect "fresh: Extra brightness off" false "$(val app.extraBrightness)"
+expect "fresh: HDR only in full screen off" false "$(val app.hdrFullScreenOnly)"
 expect "fresh: Pause drawing while hidden off" false "$(val app.pauseWhileHidden)"
 expect "fresh: Pointer on its own layer off" false "$(val app.pointerPlane)"
 expect "fresh: Draw only what changed off" false "$(val app.presentTiles)"
@@ -111,7 +112,7 @@ done
 
 # (b) Changes as the window makes them, read by the next launches; (c) per VM.
 mkdir -p "$H/Shared"
-for kv in "startFullScreen false" "keepDockAway false" "audioThread false" "gpuOffMainLoop false" "shareKeyboard true" "vkWindowsNoCopy false" "hdr true" "extraBrightness true" "pauseWhileHidden true" "pointerPlane true" "presentTiles true" "ghosttyGPU true" "mediaControls false" "closeAction ask" "appIconTheme flexoki-light" \
+for kv in "startFullScreen false" "keepDockAway false" "audioThread false" "gpuOffMainLoop false" "shareKeyboard true" "vkWindowsNoCopy false" "hdr true" "extraBrightness true" "hdrFullScreenOnly true" "pauseWhileHidden true" "pointerPlane true" "presentTiles true" "ghosttyGPU true" "mediaControls false" "closeAction ask" "appIconTheme flexoki-light" \
           "escapeSwipe all" "mouseSwipeFingers 3" "swipeOut true" "updateChecks false"; do
   run set $kv || { echo "FAIL set $kv"; fail=1; }
 done
@@ -129,6 +130,7 @@ for launch in 1 2; do
   expect "launch $launch: Vulkan windows copied" false "$(val app.vkWindowsNoCopy)"
   expect "launch $launch: HDR and 10-bit colour on" true "$(val app.hdr)"
   expect "launch $launch: Extra brightness on" true "$(val app.extraBrightness)"
+  expect "launch $launch: HDR only in full screen on" true "$(val app.hdrFullScreenOnly)"
   expect "launch $launch: Pause drawing while hidden on" true "$(val app.pauseWhileHidden)"
   expect "launch $launch: Pointer on its own layer on" true "$(val app.pointerPlane)"
   expect "launch $launch: Draw only what changed on" true "$(val app.presentTiles)"
@@ -161,6 +163,7 @@ expect "the Vulkan windows switch is a key in the app's domain" 0 "$(defaults re
 expect "the HDR switch is the hidden switch's key in the app's domain" 1 "$(defaults read "$D" hdr)"
 expect "the extra brightness switch is the key QEMU reads in the app's domain" 1 "$(defaults read "$D" extraBrightness)"
 expect "the pause switch is the key QEMU reads in the app's domain" 1 "$(defaults read "$D" pauseWhileHidden)"
+expect "HDR only in full screen is the key QEMU reads in the app's domain" 1 "$(defaults read "$D" hdrFullScreenOnly)"
 expect "the media controls switch is the key the launcher watches in the app's domain" 0 "$(defaults read "$D" mediaControls)"
 expect "update checks in the file the control centre shares" "false" \
   "$(plutil -extract update_checks raw -o - "$T/settings/settings.json")"
@@ -339,6 +342,33 @@ if [[ $m1 != *"%"* ]]; then
   echo "ok   Draw only what changed (i): no M1 Max power figures before td2b"
 else
   echo "FAIL Draw only what changed (i): gives M1 Max percentages from td2 (prompt over the VM, re-run pending)"; fail=1
+fi
+# HDR only in full screen (experimental, ADR 0074): under HDR's row, only with an HDR display;
+# the switch only with HDR on and not in GPU safe mode. Its (i) states the trade-offs and the
+# Hyprland versions, and no number that the build's own rows have not measured (no Air figure,
+# no "holds for one frame", no watts until the M1 Max A/B/B/A of this build).
+hf=$(sed -n '/^struct HDRFullScreenOnlyRow/,/^}/p' "$R/app/app/Sources/OmacVM/SettingsRows.swift")
+hfinfo=$(grep 'static let info' <<<"$hf")
+view=$(sed -n '/if preview?.hdr ?? Mac.hasHDRDisplay {/,/}/p' "$R/app/app/Sources/OmacVM/SettingsView.swift")
+if [[ $view == *"HDRRow("*"HDRFullScreenOnlyRow(tick: state.tick)"* ]] &&
+   grep -qF 'enabled: Settings.hdr && !Settings.gpuSafeMode' <<<"$hf" && grep -qF 'badge: "experimental"' <<<"$hf"; then
+  echo "ok   HDR only in full screen: under HDR, with an HDR display, experimental, only with HDR on"
+else
+  echo "FAIL HDR only in full screen: not under HDR's row, or the switch works without HDR or in GPU safe mode"; fail=1
+fi
+if [[ $hfinfo == *"Experimental"* && $hfinfo == *"HDR in a window shows as SDR"* &&
+      $hfinfo == *"Any full-screen window turns HDR on"* && $hfinfo == *"Only the main window's display"* &&
+      $hfinfo == *"On Hyprland 0.56 (Omarchy 4.5)"* && $hfinfo == *"0.57 offers HDR to the full-screen app, but switches the display one frame late"* &&
+      $hfinfo == *"Off: HDR exactly as before"* ]]; then
+  echo "ok   HDR only in full screen (i): the trade-offs, the scope and the Hyprland versions"
+else
+  echo "FAIL HDR only in full screen (i): misses a trade-off, the scope or the Hyprland versions"; fail=1
+fi
+if [[ $hfinfo != *"Air"* && $hfinfo != *"one frame at"* && $hfinfo != *"holds for"* && ! $hfinfo =~ [0-9]+(\.[0-9]+)?\ W ]] &&
+   ! grep -qi 'saves battery' <<<"$hf"; then
+  echo "ok   HDR only in full screen: no unmeasured figure or battery claim yet"
+else
+  echo "FAIL HDR only in full screen: a figure or battery claim the build's rows have not measured"; fail=1
 fi
 
 exit $fail
