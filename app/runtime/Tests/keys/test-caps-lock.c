@@ -23,7 +23,7 @@
 
 #include "omacvm-capslock.h"
 
-#define NUM_LED (1u << 0)       /* QEMU_NUM_LOCK_LED */
+#define NUM_LED (1u << 1)       /* QEMU_NUM_LOCK_LED */
 
 enum { LOCKS, NO_LOCK, SHIFT_COMPOSE };
 
