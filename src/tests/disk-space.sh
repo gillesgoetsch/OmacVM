@@ -213,6 +213,9 @@ expect "free space: the block found" yes "$([[ $blk == *'10 * 1024 * 1024 * 1024
 expect "free space: 9.0 GiB: warn, a person, says what to do" \
   "WARN|free space|9.0 GiB free on /, Omarchy's update needs 10 GiB: delete files in your home you no longer need, or give the VM a larger disk (VM window, Disk › Change… with the VM shut down)|1" \
   "$(free $((9 * G)))"
+expect "free space: a home on its own disk (the home disk line's hd): no word of the home" \
+  "WARN|free space|9.0 GiB free on /, Omarchy's update needs 10 GiB: give the VM a larger disk (VM window, Disk › Change… with the VM shut down)|1" \
+  "$(hd=/dev/nvme1n1 free $((9 * G)))"
 expect "free space: read as Omarchy's guard reads it" "df --output=avail --block-size=1 /" "$(free $((9 * G)) >/dev/null; cat "$CALLS")"
 expect "free space: one byte under 10 GiB: warn" WARN "$(free $((10 * G - 1)) | cut -d'|' -f1)"
 expect "free space: exactly 10 GiB: ok (Omarchy updates)" "ok|free space|10.0 GiB free on /|" "$(free $((10 * G)))"

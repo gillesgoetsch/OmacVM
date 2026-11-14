@@ -1320,7 +1320,9 @@ avail=$(df --output=avail --block-size=1 / 2>/dev/null | tail -n 1 | tr -d ' ')
 if [[ $avail =~ ^[0-9]+$ ]]; then
   gib=$(awk -v b="$avail" 'BEGIN { printf "%.1f", b / 1073741824 }')
   if (( avail < FREE_MIN )); then
-    warn "free space" "$gib GiB free on /, Omarchy's update needs 10 GiB: delete files in your home you no longer need, or give the VM a larger disk (VM window, Disk › Change… with the VM shut down)" human
+    # A home on its own disk (hd, the "home disk" line) holds none of this space.
+    [[ -n ${hd:-} ]] && tip="" || tip="delete files in your home you no longer need, or "
+    warn "free space" "$gib GiB free on /, Omarchy's update needs 10 GiB: ${tip}give the VM a larger disk (VM window, Disk › Change… with the VM shut down)" human
   else ok "free space" "$gib GiB free on /"; fi
 fi
 # The desktop user's runtime folder (/run/user/UID), a tmpfs of 10 % of the
