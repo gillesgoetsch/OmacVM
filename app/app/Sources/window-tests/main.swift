@@ -1,6 +1,6 @@
 // The VM window's rules (OmacVMWindow), without a VM or the app:
 //   cd app/app && swift run window-tests
-// Custom resources, the disk's size (slider bounds, smaller in steps), "omacvm in Terminal", the window's
+// Custom resources, the disk's size (slider bounds, smaller in steps), the home disk, "omacvm in Terminal", the window's
 // height, the keyboard note, the SSH repair. Exit 0 when all pass. CI runs it on every pull request.
 import Darwin
 import AppKit
@@ -145,6 +145,16 @@ expect(DiskSize.shrinkScript(fsBytes: 66_551_971_840).contains("btrfs filesystem
        && !DiskSize.shrinkScript(fsBytes: 1).contains("mkfs"), "shrink script: btrfs to the planned bytes, nothing else")
 expect(DiskSize.checkScript.contains("scrub start -B -r") && DiskSize.checkScript.contains("sfdisk --verify"),
        "check script: read-only scrub and the partition table")
+
+// MARK: The home disk (data.img, docs/adr/0073)
+
+expect(HomeDisk.arguments(path: nil).isEmpty, "no home disk: no argument, the VM starts as before")
+expect(HomeDisk.arguments(path: "/v/a,,b/data.img")
+       == ["-drive", "if=none,id=home,file=/v/a,,b/data.img,format=raw,cache=writeback,discard=unmap",
+           "-device", "nvme,serial=omacvm-home,drive=home"], "home disk: an NVMe disk with the system disk's options, no boot index")
+let homeBounds = DiskSize.bounds(currentGB: 200, need: nil, unknownWhy: HomeDisk.onlyLarger, freeBytes: 110 * gb)
+expect(homeBounds.minGB == 200 && homeBounds.maxGB == 300 && homeBounds.why.hasSuffix(HomeDisk.onlyLarger),
+       "home disk: only larger, up to the Mac's free space less its reserve (\(homeBounds.why))")
 
 // MARK: Disk smaller: disk.img's GPT and btrfs, on a made-up disk
 
