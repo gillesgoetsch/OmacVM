@@ -599,7 +599,7 @@ jobs:
         run: app/runtime/Tests/display/test-guest-pause.sh
       - name: The Mac's display on while a video plays in the VM (ADR 0070; the rules, the wiring)
         run: app/runtime/Tests/display/test-video-awake.sh
-      - name: No frame in surfaces of the other colour (HDR; the rules, the wiring)
+      - name: HDR only in full screen and no frame in surfaces of the other colour (ADR 0074; the rules, the wiring)
         run: app/runtime/Tests/display/test-hdr-follow.sh
       - name: The pointer's layer as bright as the boosted frames (ADR 0054; the checks catch code without it)
         run: |

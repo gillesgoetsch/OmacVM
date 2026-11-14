@@ -27,7 +27,7 @@ if [[ $# -ge 1 ]]; then
 else
   # The patches' new side: context and added lines, without the removed ones.
   m=$work/new.m
-  for p in omacvm-cocoa-present-depth-hold.patch; do
+  for p in omacvm-cocoa-present-depth-hold.patch omacvm-cocoa-hdr-follow.patch; do
     awk '/^@@/ {on=1; next} on && /^-/ {next} on {print substr($0, 2)}' "$patches/$p"
   done > "$m"
 fi
@@ -70,6 +70,25 @@ if (( full )); then   # the order needs the whole function (the hunks have only 
   held=$(awk '/^    if \(present_held\) \{/ {on=1} on {print} on && /^    }$/ {exit}' <<<"$present")
   has "a held frame is drawn again once the surfaces are made" "$held" 'gl_dirty = true;'
 fi
+# The surfaces' state for the main thread, published by QEMU's thread.
+has "the present publishes PQ surfaces" "$present" 'qatomic_set(&omacvm_hf_pq, hf_pq);'
+has "and since when" "$present" 'qatomic_set(&omacvm_hf_pq_ns, qemu_clock_get_ns(QEMU_CLOCK_REALTIME));'
+has "and counts the switches" "$present" 'qatomic_inc(&omacvm_hf_flips);'
+# The headroom the guest is told.
+has "the headroom: today's rule with the switch off" "$guest" 'if (omacvm_hf_switch != 1) {'
+has "the headroom: the rule with it on" "$guest" 'return omacvm_hf_edr(&omacvm_hf_hold, display, current, potential, use_potential,'
+has "the headroom reads the published state" "$guest" '!qatomic_read(&omacvm_hf_pq), qatomic_read(&omacvm_hf_pq_ns),'
+has "the window's display is the key" "$now" 'return omacvm_hf_guest_edr(omacvm_screen_id(s),'
+has "the test display goes the same way" "$now" 'return omacvm_hf_guest_edr(0, hook_n, hook_p, false);'
+has "a minute line of switches" "$watch" 'unsigned flips = qatomic_xchg(&omacvm_hf_flips, 0);'
+# The switch: the app's key, only with HDR, live, and in the layout only when on.
+has "the switch is the app's key" "$hread" 'boolForKey:@"hdrFullScreenOnly"'
+has "the switch only with HDR" "$hread" 'if (!cocoa_gl_present_hdr_wanted()) {'
+has "a QEMU not started as the app" "$hread" 'getenv("OMACVM_HDR_FULL_SCREEN_ONLY")'
+has "a change goes to the guest" "$hread" 'omacvm_send_layout();'
+has "it is watched live" "$hinit" 'forKeyPath:@"hdrFullScreenOnly"'
+has "the layout says it only when on" "$layout" 'entry[@"hdr_follow"] = @YES;'
+order "read at the hello before the first headroom" "$line" 'omacvm_hf_init();' 'omacvm_edr_set(omacvm_edr_now());'
 if (( self )); then
   exec 1>&3 3>&-
   if (( passed )); then
