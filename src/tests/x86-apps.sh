@@ -365,7 +365,7 @@ expect "on, build fails: says where the log is" yes "$(grep -q "the build failed
 # MemTotal of a 3 GB VM (2954 MB) and of a 4 GB one (about 3.85 GiB).
 GB3=3024896 GB4=4033000
 NEED="OmacVM: box64's build needs about 1.5 GB of free memory in the VM, and only"
-AFTER="GB is free: close apps in the VM or give it more memory, then switch x86 apps on again"
+AFTER="GB is free: close apps in the VM or give it more memory"
 MISSING="cmake python" MEM="$GB3 614400 307200" run on
 expect "on, 900 MB free: refused before anything is installed or built" \
   "1 no no no no no" "$CODE $(called "pacman -U") $(called "pacman -R") $(called "pkg-add") $(called "runuser") $(called "mktemp")"
@@ -386,18 +386,19 @@ INSTALLED=0.4.2-1 REGISTERED=yes MEM="$GB3 300000 0" run on
 expect "on, older box64 and little memory: refused, the old one stays" "1 0.4.2-1" "$CODE $(cat "$S/omacvm-box64.ver")"
 
 LOGP=$T/root/var/log/omacvm-x86-apps.log
-OOM3="OmacVM: the VM ran out of memory building box64 (it has 3 GB of memory): close apps in the VM or give it more memory, then switch x86 apps on again (details in $LOGP)"
+OOM3="OmacVM: the VM ran out of memory building box64 (it has 3 GB of memory): close apps in the VM or give it more memory"
+OOMTAIL="x86 apps: details in $LOGP"
 MISSING="cmake" MAKEPKG=gcc-oom MEM="$GB3 1900000 756000" run on
-expect "on, compiler killed (gcc's line): status 1, the out-of-memory line last" "1 $OOM3" "$CODE $(tail -1 <<<"$OUT")"
+expect "on, compiler killed (gcc's line): status 1, the out-of-memory line, then the log" "1 $OOM3|$OOMTAIL" "$CODE $(tail -2 <<<"$OUT" | paste -sd'|' -)"
 expect "on, compiler killed: tools removed, nothing installed, build folder gone" "yes no " \
   "$(called "pacman -Rns --noconfirm cmake") $(called "pacman -U") $(ls -d "$T"/vartmp/omacvm-box64.* 2>/dev/null)"
 MAKEPKG=gcc-oom MEM="$GB4 2800000 1000000" run on
 expect "on, compiler killed in a 4 GB VM: says 4 GB, not 3" yes "$([[ $OUT == *"(it has 4 GB of memory)"* ]] && echo yes)"
 MAKEPKG=gcc-oom run on
 expect "on, compiler killed, no meminfo: the line without the size" \
-  "OmacVM: the VM ran out of memory building box64: close apps in the VM or give it more memory, then switch x86 apps on again (details in $LOGP)" "$(tail -1 <<<"$OUT")"
+  "OmacVM: the VM ran out of memory building box64: close apps in the VM or give it more memory" "$(tail -2 <<<"$OUT" | head -1)"
 MAKEPKG=kernel-oom MEM="$GB3 1900000 756000" run on
-expect "on, the kernel's OOM killer during the build: the out-of-memory line" "1 $OOM3" "$CODE $(tail -1 <<<"$OUT")"
+expect "on, the kernel's OOM killer during the build: the out-of-memory line" "1 $OOM3" "$CODE $(tail -2 <<<"$OUT" | head -1)"
 expect "on, the kernel's log read from the build's start" yes "$(grep -qE '^journalctl -k .*--since @[0-9]+ .*Out of memory: Killed process' "$T/calls" && echo yes)"
 MAKEPKG=fail OOM=$(( $(date +%s) - 600 )) MEM="$GB3 1900000 756000" run on
 expect "on, build fails, an OOM line from before the build: not memory, the build failed" \
@@ -418,12 +419,17 @@ reason() {   # the x86 step's output -> what apply says failed
 }
 MEM="$GB3 614400 307200" run on
 expect "apply's reason, too little memory" \
-  "x86-apps|x86 Linux apps was not set up: box64's build needs about 1.5 GB of free memory in the VM, and only 0.8 GB is free: close apps in the VM or give it more memory, then switch x86 apps on again" \
+  "x86-apps|x86 Linux apps was not set up: box64's build needs about 1.5 GB of free memory in the VM, and only 0.8 GB is free: close apps in the VM or give it more memory" \
   "$(reason "$OUT")"
 MAKEPKG=gcc-oom MEM="$GB3 1900000 756000" run on
 expect "apply's reason, out of memory" \
-  "x86-apps|x86 Linux apps was not set up: the VM ran out of memory building box64 (it has 3 GB of memory): close apps in the VM or give it more memory, then switch x86 apps on again (details in $LOGP)" \
-  "$(reason "$(tail -1 <<<"$OUT")")"
+  "x86-apps|x86 Linux apps was not set up: the VM ran out of memory building box64 (it has 3 GB of memory): close apps in the VM or give it more memory" \
+  "$(reason "$OUT")"
+# apply cuts what failed at 160 characters (src/lib/mac.sh failed_part; OmacVM.app shows that line):
+# both reasons fit whole, the free amount is at most 1.4, a VM up to 999 GB.
+long=$(reason "OmacVM: the VM ran out of memory building box64 (it has 999 GB of memory): close apps in the VM or give it more memory")
+expect "apply's reasons fit failed_part's 160 characters" "yes yes" \
+  "$(t=$(MEM="$GB3 614400 307200" run on; reason "$OUT"); (( ${#t} - 9 <= 160 )) && echo yes) $( (( ${#long} - 9 <= 160 )) && echo yes)"
 
 MISSING="cmake" PKGADD=fail run on
 expect "on, pkg-add cannot install the build tools: fails, no build" "1 no" "$CODE $(called "runuser")"

@@ -194,7 +194,8 @@ fi
 
 if ! mem_ok; then
   # one decimal, rounded down: "only 1.4 GB" is never shown as 1.5
-  echo "OmacVM: box64's build needs about 1.5 GB of free memory in the VM, and only $(( FREE_KB * 10 / 1048576 / 10 )).$(( FREE_KB * 10 / 1048576 % 10 )) GB is free: close apps in the VM or give it more memory, then switch x86 apps on again" >&2
+  # (kept short: apply's reason, "x86 Linux apps was not set up: ...", is cut at 160 characters)
+  echo "OmacVM: box64's build needs about 1.5 GB of free memory in the VM, and only $(( FREE_KB * 10 / 1048576 / 10 )).$(( FREE_KB * 10 / 1048576 % 10 )) GB is free: close apps in the VM or give it more memory" >&2
   exit 1
 fi
 echo "x86 apps: building box64 $VER (a few minutes, log $LOG)"
@@ -215,7 +216,8 @@ build_failed() {   # $1: when the build started
   local gb
   out_of_memory "$1" || fail "the build failed"
   gb=$(vm_gb)
-  echo "OmacVM: the VM ran out of memory building box64${gb:+ (it has $gb GB of memory)}: close apps in the VM or give it more memory, then switch x86 apps on again (details in $LOG)" >&2
+  echo "OmacVM: the VM ran out of memory building box64${gb:+ (it has $gb GB of memory)}: close apps in the VM or give it more memory" >&2
+  echo "x86 apps: details in $LOG" >&2
   exit 1
 }
 : > "$LOG"
