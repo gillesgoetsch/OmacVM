@@ -3,6 +3,19 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.0 (unreleased)
+
+- **A disk of its own for your home folder** (off by default). `omacvm build --home-gb N` builds a
+  VM whose `/home` is a second disk, `data.img`, on xfs; the system stays on btrfs with its update
+  snapshots. btrfs copies a block before it changes it and compresses what it writes, which costs
+  most where files change in place: on xfs the same disk took about 2.7 times the synced writes a
+  second and twice the transactions of a PostgreSQL benchmark, and a file rewritten at random
+  stayed in 2 pieces instead of 885,849 (ADR 0073). git clone and compiles are the same. The home
+  disk is sparse, gives back what you delete at once, and grows in the VM window (Home disk ›
+  Change…); xfs cannot shrink. `omacvm check` has a "home disk" line. Only for VMs built here
+  with the option: other VMs, prebuilt VMs and the app's own setup are as before; the steps for a
+  VM you have are in docs/routes/app.md.
+
 ## 3.4.8
 
 The VM's Caps Lock follows the Mac's again after a new session, a restart in the VM or a start with it on.
