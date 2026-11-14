@@ -176,7 +176,7 @@ class SyncCase(unittest.TestCase):
         (c / "status").write_text("connected\n")
         (c / "edid").write_bytes(displayid_edid(width, height, size=size))
 
-    def run_sync(self) -> subprocess.CompletedProcess:
+    def run_sync(self, mode: str = "--once") -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env.update({
             "PATH": f"{self.bin}:{env['PATH']}",
@@ -188,7 +188,7 @@ class SyncCase(unittest.TestCase):
             "XDG_CONFIG_HOME": str(self.tmp / "config"),
             "XDG_RUNTIME_DIR": str(self.tmp / "run"),
         })
-        return subprocess.run([BASH, str(SYNC), "--once"], env=env, capture_output=True,
+        return subprocess.run([BASH, str(SYNC), mode], env=env, capture_output=True,
                               text=True, timeout=60)
 
     def evals(self) -> list[str]:
@@ -559,7 +559,7 @@ def overlap(a, b) -> bool:
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
-class HDR(SyncCase):
+class HDRCase(SyncCase):
     """HDR and 10-bit colour (the app's switch): Virtual-1 at 10 bits only when
     this start asked for it and the 10-bit driver runs; PQ only while QEMU says
     it shows PQ ("edr", the headroom of the window's display)."""
@@ -574,21 +574,26 @@ class HDR(SyncCase):
         self.taint.write_text("O\n")
         self.set_window(5120, 2880)
 
-    def layout(self, edr=None):
+    def layout(self, edr=None, follow=None):
         main = {"output": "Virtual-1", "x": 0, "y": 0, "width": 1728, "height": 1117, "scale": 2}
         if edr is not None:
             main["edr"] = edr
+        if follow is not None:
+            main["hdr_follow"] = follow
         (self.tmp / "no-layout.json").write_text(json.dumps({"layout": [main]}))
 
-    def run_sync(self) -> subprocess.CompletedProcess:
+    def run_sync(self, mode: str = "--once") -> subprocess.CompletedProcess:
         os.environ.update({"OMACVM_HOST_ENV": str(self.host_env),
                            "OMACVM_VIRTIO_GPU_STATUS": str(self.status),
                            "OMACVM_VIRTIO_GPU_TAINT": str(self.taint)})
         try:
-            return super().run_sync()
+            return super().run_sync(mode)
         finally:
             for k in ("OMACVM_HOST_ENV", "OMACVM_VIRTIO_GPU_STATUS", "OMACVM_VIRTIO_GPU_TAINT"):
                 os.environ.pop(k, None)
+
+
+class HDR(HDRCase):
 
     def test_nothing_before_qemus_layout(self):
         self.run_sync()
@@ -739,6 +744,131 @@ class HDR(SyncCase):
         self.run_sync()
         self.assertEqual(len(self.evals()), sent)
         self.assertEqual(self.window_rules(), [self.CLAMP])
+
+
+class HDRFullScreenOnly(HDRCase):
+    """HDR only in full screen (experimental, ADR 0074): QEMU's layout says
+    "hdr_follow" and omacvm-displays writes the state to display-sync/hdr-follow;
+    "sdr" runs Virtual-1 8-bit sRGB, anything else is today's PQ rule, byte for
+    byte. --hdr sends only the HDR part of the last rule, outside the guard."""
+
+    PQ = (', bitdepth = 10, cm = "hdr", supports_wide_color = 1, supports_hdr = 1, '
+          'max_luminance = 812, min_luminance = 0.0005, sdr_max_luminance = 203 })')
+    SDR = ', bitdepth = 8, cm = "srgb", supports_wide_color = 1, supports_hdr = 1 })'
+    CLAMP, DEFAULT, window_rules = HDR.CLAMP, HDR.DEFAULT, HDR.window_rules
+
+    def follow(self, state: str | None):
+        f = self.state / "hdr-follow"
+        if state is None:
+            f.unlink(missing_ok=True)
+        else:
+            self.state.mkdir(parents=True, exist_ok=True)
+            f.write_text(state + "\n")
+
+    def calls(self) -> list[str]:
+        return (self.hypr / "calls").read_text().splitlines()
+
+    def test_off_is_todays_rule(self):
+        self.layout(4)
+        self.run_sync()
+        today = self.evals()[-1]
+        self.assertTrue(today.endswith(self.PQ), today)
+        # Every state but "sdr", or "sdr" without the layout's word: the same rule.
+        for follow, state in ((None, "sdr"), (False, "sdr"), ("yes", "sdr"), (True, "pq"), (True, "off"),
+                              (True, "declined: cm_auto_hdr"), (True, None), (True, "SDR")):
+            self.layout(4, follow)
+            self.follow(state)
+            (self.hypr / "evals").unlink(missing_ok=True)
+            (self.state / "Virtual-1.hdr").unlink()      # sent again, to compare
+            (self.state / "Virtual-1.history").unlink(missing_ok=True)   # (not a ping-pong)
+            self.run_sync()
+            self.assertEqual(self.evals(), [today], (follow, state))
+
+    def test_sdr_while_nothing_is_full_screen(self):
+        self.layout(4, True)
+        self.follow("sdr")
+        self.run_sync()
+        last = self.evals()[-1]
+        self.assertTrue(last.endswith(self.SDR), last)
+        self.assertEqual(self.window_rules(), [])        # no clamp for an SDR output
+        self.layout(0, True)                             # QEMU cannot show PQ: today's 10-bit sRGB
+        self.run_sync()
+        self.assertIn('bitdepth = 10, cm = "srgb"', self.evals()[-1])
+
+    def test_hdr_swaps_only_the_hdr_part(self):
+        self.layout(4, True)
+        self.follow("pq")
+        self.run_sync()
+        pq = self.evals()[-1]
+        base = pq[:-len(self.PQ)]
+        self.follow("sdr")
+        r = self.run_sync("--hdr")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.evals()[-1], base + self.SDR)
+        # SDR: the rule first, then the default tone map (no frame of the PQ
+        # output on the default curve); kept and recorded as shown.
+        self.assertEqual(self.calls()[-2:], [base + self.SDR, self.DEFAULT])
+        self.assertEqual((self.state / "Virtual-1.rule").read_text().strip(), base + self.SDR)
+        self.assertEqual((self.state / "Virtual-1.hdr").read_text(), self.SDR[:-3])
+        self.follow("pq")
+        self.run_sync("--hdr")
+        # PQ: the clamp first (no frame tone-mapped), then the rule.
+        self.assertEqual(self.calls()[-2:], [self.CLAMP, pq])
+        n = len(self.evals())
+        self.run_sync("--hdr")                           # unchanged: nothing sent
+        self.run_sync()                                  # a whole run sees it shown
+        self.assertEqual(len(self.evals()), n)
+
+    def test_flips_never_count_towards_the_hold(self):
+        self.layout(4, True)
+        self.run_sync()
+        for i in range(12):                              # full screen in and out, fast
+            self.follow("sdr" if i % 2 == 0 else "pq")
+            r = self.run_sync("--hdr")
+            self.assertNotIn("keeping", r.stderr)
+        self.assertEqual(len(self.evals()), 13)
+        self.assertFalse((self.state / "Virtual-1.hold").exists())
+        self.assertFalse((self.state / "held").exists())
+        # A layout change after them is followed, not held.
+        self.set_window(3840, 2160)
+        r = self.run_sync()
+        self.assertNotIn("keeping", r.stderr)
+        self.assertIn("3840", self.evals()[-1])
+
+    def test_flips_go_on_while_held(self):
+        self.layout(4, True)
+        self.run_sync()
+        (self.state / "Virtual-1.hold").write_text(f"{time.time() + 60}\n")
+        self.follow("sdr")
+        self.run_sync("--hdr")
+        self.assertTrue(self.evals()[-1].endswith(self.SDR))
+
+    def test_hdr_leaves_the_users_rule(self):
+        self.layout(4, True)
+        self.run_sync()
+        n = len(self.evals())
+        self.config.write_text(self.config.read_text() + 'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 1 })\n-- mine\nhl.monitor({ output = "Virtual-1", bitdepth = 10 })\n')
+        self.follow("sdr")
+        self.run_sync("--hdr")
+        self.assertEqual(len(self.evals()), n)
+
+    def test_hdr_before_any_rule_does_nothing(self):
+        self.layout(4, True)
+        self.follow("sdr")
+        r = self.run_sync("--hdr")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.evals(), [])
+
+    def test_refused_flip_says_so(self):
+        self.layout(4, True)
+        self.run_sync()
+        shown = (self.state / "Virtual-1.hdr").read_text()
+        (self.hypr / "refuse").write_text("")
+        self.follow("sdr")
+        r = self.run_sync("--hdr")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("rejected the HDR change", r.stderr)
+        self.assertEqual((self.state / "Virtual-1.hdr").read_text(), shown)
 
 
 class Placement(unittest.TestCase):

@@ -754,6 +754,27 @@ the 8-bit path.
 - GPU safe mode turns it off. `omacvm check` has an "HDR" line.
 - How it works: [ADR 0049](../adr/0049-hdr-guest-tone-maps.md).
 
+### HDR only in full screen (experimental, off by default)
+
+Under the HDR switch: **HDR only in full screen**. With HDR on, the VM's
+main display then runs as with HDR off (8-bit colour, no HDR work in the
+VM's apps and desktop) while no window there is in full screen, and
+switches to HDR when one goes full screen (a video's full-screen button,
+F11, a player, Super+F); back to SDR about 2 seconds after the last one is
+gone.
+
+- HDR in a window shows as SDR; go full screen to see it in HDR.
+- Any full-screen window turns HDR on, also a terminal.
+- Works the same on Omarchy 4.5 (Hyprland 0.56) and newer: OmacVM switches
+  the display itself; Hyprland's own auto HDR stays off.
+- A Hyprland config with `render:cm_auto_hdr`, `render:direct_scanout` or
+  `quirks:prefer_hdr` on, or an own rule for the main display: HDR stays on
+  all the time, and `omacvm check` says why ("HDR output").
+- Works at once in a running VM; the VM's part comes with Update VM. GPU
+  safe mode turns it off. From the command line: `defaults write
+  org.omacvm.app hdrFullScreenOnly -bool true`.
+- How it works: [ADR 0074](../adr/0074-hdr-only-in-full-screen.md).
+
 ## Extra brightness (experimental, off by default)
 
 On a Mac with an XDR display (a 14- or 16-inch MacBook Pro, a Pro Display

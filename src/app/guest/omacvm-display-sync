@@ -306,8 +306,14 @@ PY
 # other displays' windows draw through an 8-bit layer without PQ
 # (omacvm-cocoa-displays.patch). An app before this switch (its hidden hdr
 # default: omacvm.hdr=1, QEMU tags 10-bit frames PQ by itself): PQ at 1600.
+# HDR only in full screen (experimental, ADR 0074): with the app's switch
+# QEMU's layout says "hdr_follow" for Virtual-1, and omacvm-displays writes
+# "sdr" to $state_dir/hdr-follow while no window there is in full screen:
+# then the output runs 8-bit sRGB (still supports_hdr, for KMS recorders),
+# the HDR-off path; QEMU tags each frame by its depth. Anything else in
+# that file, no file, or no "hdr_follow": the PQ rule above.
 hdr_fields() {
-  local OMACVM_HDR="" OMACVM_DEEPCOLOR="" edr
+  local OMACVM_HDR="" OMACVM_DEEPCOLOR="" edr follow
   [[ ${1:-} == Virtual-1 ]] || return 0
   local host_env=${OMACVM_HOST_ENV:-/run/omacvm/host.env}
   [[ -r $host_env ]] && source "$host_env"
@@ -331,16 +337,30 @@ for o in layout if isinstance(layout, list) else []:
         v = o.get("edr")
         # From QEMU, so a number; anything else counts as none.
         ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-        print(f"{min(max(v, 1.0), 16.0):.2f}" if ok and v >= 1 else "none")
+        follow = " follow" if o.get("hdr_follow") is True else ""
+        print(f"{min(max(v, 1.0), 16.0):.2f}{follow}" if ok and v >= 1 else "none")
         raise SystemExit(0)
 print("none")
 PY
 ) || return 0
-  if [[ $edr == none ]]; then
+  read -r edr follow <<<"$edr"
+  if [[ $edr != none && $follow == follow && $(cat "$state_dir/hdr-follow" 2>/dev/null) == sdr ]]; then
+    printf ', bitdepth = 8, cm = "srgb", supports_wide_color = 1, supports_hdr = 1'
+  elif [[ $edr == none ]]; then
     printf ', bitdepth = 10, cm = "srgb", supports_wide_color = 1, supports_hdr = 1'
   else
     printf ', bitdepth = 10, cm = "hdr", supports_wide_color = 1, supports_hdr = 1, max_luminance = %s, min_luminance = 0.0005, sdr_max_luminance = 203' \
       "$(python3 -c 'import sys; print(round(203 * float(sys.argv[1])))' "$edr")"
+  fi
+}
+
+# hyprctl with a time limit (5 s) where the system has timeout(1): a
+# Hyprland that does not answer (shutting down) cannot hold the caller.
+hyprctl_limited() {
+  if command -v timeout >/dev/null; then
+    timeout 5 hyprctl "$@"
+  else
+    hyprctl "$@"
   fi
 }
 
@@ -365,7 +385,7 @@ hdr_tonemap() {
   had=$(cat "$state_dir/tonemap" 2>/dev/null || true)
   # Unchanged, or never on: nothing to send.
   [[ $want == "$had" || ($want == on && -z $had) ]] && return 0
-  response=$(hyprctl eval "hl.window_rule({ name = \"omacvm-hdr\", match = { class = \".*\" }, tonemap = \"$want\" })" 2>&1) || true
+  response=$(hyprctl_limited eval "hl.window_rule({ name = \"omacvm-hdr\", match = { class = \".*\" }, tonemap = \"$want\" })" 2>&1) || true
   if [[ $response == ok ]]; then
     printf '%s\n' "$want" > "$state_dir/tonemap"
     rm -f "$state_dir/tonemap.refused"
@@ -864,6 +884,50 @@ reload_on_display_change() {
     apply_preferred_modes
   fi
 }
+
+# hdr_only: Virtual-1's last rule again with only its HDR fields new (HDR
+# only in full screen: omacvm-displays changed $state_dir/hdr-follow). Under
+# the same lock as a whole run, which reads the rule file again inside it;
+# not for an output with the user's own rule; without a rule sent yet the
+# next whole run does it. No follow_check: a full-screen flip is no layout
+# change, so flips never count towards (or wait for) its hold. The tone map
+# goes before a PQ rule (no frame tone-mapped) and after an SDR one (no
+# frame of the PQ output tone-mapped by the default curve). Every hyprctl
+# call has a time limit. Exit 3: Hyprland refused the rule (the agent then
+# declines and puts the PQ rule back).
+hdr_only() {
+  local lock_fd rule old base hdr digest response
+  mkdir -p "$state_dir"
+  if command -v flock >/dev/null && exec {lock_fd}>"$state_dir/lock"; then
+    flock -w 20 "$lock_fd" || true
+  fi
+  old=$(cat "$state_dir/Virtual-1.rule" 2>/dev/null) || old=""
+  if [[ -z $old ]] || user_rule Virtual-1; then
+    return 0
+  fi
+  local re='^(hl\.monitor\(\{ output = "Virtual-1", mode = "[^"]*", position = "[^"]*", scale = "[^"]*")'
+  [[ $old =~ $re ]] || return 0
+  base=${BASH_REMATCH[1]}
+  hdr=$(hdr_fields Virtual-1)
+  [[ -n $hdr ]] || return 0
+  rule="$base$hdr })"
+  [[ $rule != "$old" ]] || return 0
+  [[ $hdr != *'cm = "hdr"'* ]] || hdr_tonemap "$hdr"
+  response=$(hyprctl_limited eval "$rule" 2>&1) || true
+  if [[ $response != ok ]]; then
+    printf 'omacvm-display-sync: Hyprland rejected the HDR change for Virtual-1: %s\n' "$response" >&2
+    return 3
+  fi
+  [[ $hdr == *'cm = "hdr"'* ]] || hdr_tonemap "$hdr"
+  digest=$(cksum <<<"$rule" | cut -d' ' -f1)
+  sent_ok Virtual-1 "$digest" "$hdr"
+  keep_rule Virtual-1 "$rule"
+}
+
+if [[ ${1:-} == --hdr ]]; then
+  hdr_only
+  exit
+fi
 
 # Config reloads can restore Aquamarine's cached preferred mode without a
 # DRM hotplug event. Re-read the live EDID once, without starting a watcher.

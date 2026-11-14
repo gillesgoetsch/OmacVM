@@ -1173,6 +1173,15 @@ bench lock and are indications only):
   frames' own path (8-bit, or PQ with HDR at once). Hidden: no frames, and
   macOS drops the headroom about 15 s later; fully covered: no frames, but
   macOS keeps 2x headroom.
+- **HDR only in full screen** (experimental, `hdrFullScreenOnly`, ADR 0074):
+  the guest runs Virtual-1 8-bit sRGB while no window there is in full
+  screen and the PQ rule while one is (`omacvm-displays`' follower,
+  `omacvm-display-sync --hdr`); the scanout depth is the frame's colour tag
+  (8-bit sRGB, 10-bit PQ), so no frame is tagged wrong. QEMU never draws a
+  frame into surfaces of the other colour: in the surfaces' hold-off such a
+  frame is held until the right ones are made (also without the switch, with
+  HDR). While SDR the guest is told the PQ headroom it had (or the display's
+  most), not the ~1 the panel falls to without EDR.
 - **HDR clients**: an app must hand Hyprland a PQ image description
   (`wp_color_manager_v1`). GStreamer's `waylandsink` does; mpv 0.41 with
   `--gpu-api=opengl` does not (mpv's master does, with `vo=gpu-next`; app

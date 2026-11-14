@@ -644,6 +644,16 @@ enum Settings {
         get { UserDefaults.standard.bool(forKey: ExtraBrightness.key) }
         set { UserDefaults.standard.set(newValue, forKey: ExtraBrightness.key) }
     }
+    /// HDR only in full screen (experimental, off by default, ADR 0074): with
+    /// HDR on, the VM's main display runs SDR (the HDR-off path) while no
+    /// window there is in full screen, and HDR while one is. QEMU reads this
+    /// key itself while the VM runs (it runs as the app) and tells the
+    /// guest, so a change counts at once. HDRFullScreenOnlyRow or
+    /// defaults write org.omacvm.app hdrFullScreenOnly -bool true
+    static var hdrFullScreenOnly: Bool {
+        get { UserDefaults.standard.bool(forKey: "hdrFullScreenOnly") }
+        set { UserDefaults.standard.set(newValue, forKey: "hdrFullScreenOnly") }
+    }
     /// Pause drawing while hidden (experimental, off by default): while the
     /// VM's main window cannot be seen the guest turns that display off and
     /// stops drawing. QEMU reads this key itself while the VM runs (it runs

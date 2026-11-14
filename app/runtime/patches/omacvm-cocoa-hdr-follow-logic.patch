@@ -1,0 +1,142 @@
+From: OmacVM
+Subject: [PATCH] ui: HDR only in full screen's rules, tested without AppKit
+
+What: a header with no AppKit in it: whether a frame would show wrong
+colours in the surfaces there are (PQ in 8-bit sRGB ones, or sRGB in PQ
+ones), when such a held frame is drawn (the hold-off's end, never at or
+before now), and the headroom the guest is told while its frames are
+8-bit with "HDR only in full screen" on (what the display had while PQ
+showed, else its most, capped at 16; after the frames turn PQ not less
+until macOS's ramp is done, 3 s). Used by
+omacvm-cocoa-present-depth-hold.patch and omacvm-cocoa-hdr-follow.patch
+(which explain the why).
+
+Why its own file: so the rules are tested without QEMU or a window
+(app/runtime/Tests/display/test-hdr-follow.sh applies this patch to an
+empty folder; at build time and in CI).
+
+Upstream: not applicable (OmacVM's present and display port).
+Test: app/runtime/Tests/display/test-hdr-follow.c.
+
+diff --git a/ui/omacvm-hdr-follow.h b/ui/omacvm-hdr-follow.h
+new file mode 100644
+--- /dev/null
++++ b/ui/omacvm-hdr-follow.h
+@@ -0,0 +1,117 @@
++/*
++ * OmacVM, HDR only in full screen (experimental, ADR 0074): the rules
++ * without AppKit, tested on their own
++ * (app/runtime/Tests/display/test-hdr-follow.c); ui/cocoa.m feeds them.
++ *
++ * The guest's own scanout format is the per-frame signal: an 8-bit scanout
++ * is sRGB, a 10-bit one (GL_RGB10_A2) is PQ while HDR is on. With the app's
++ * switch hdrFullScreenOnly the guest's display agent runs the main window's
++ * output 8-bit sRGB while no window there is in full screen, and today's
++ * 10-bit PQ while one is (omacvm-displays, omacvm-display-sync). So each
++ * frame carries its own colour; two things are left for QEMU:
++ *
++ * 1. A frame is never drawn into surfaces of the other colour. New surfaces
++ *    for a new depth are made at once (omacvm-cocoa-hdr-headroom.patch), but
++ *    at most once a second and not within PRESENT_REALLOC_NS of the last
++ *    ones: in that hold-off a PQ frame went into 8-bit sRGB surfaces (or an
++ *    sRGB one into PQ surfaces) and showed wrong colours until the surfaces
++ *    were made again. Now such a frame is held: the window keeps the last
++ *    frame, and the hold-off's end makes the right surfaces and draws the
++ *    newest frame. Linear surfaces (extra brightness) draw both kinds right
++ *    through their shader, and without HDR both depths are sRGB: no hold.
++ *
++ * 2. The headroom the guest is told while its frames are 8-bit. Those frames
++ *    have no EDR, so the panel's headroom falls to about 1; told that, the
++ *    guest would build its PQ rule for SDR white and the first full screen
++ *    would show HDR flat. So while the frames are SDR the guest is told the
++ *    headroom it had while PQ showed, on this display (else the display's
++ *    most, capped at 16); after the frames turn PQ, not less than that until
++ *    macOS's ramp is done (the current headroom reaches it, or 3 s). The same
++ *    rule as PR #709's omacvm_edr_guest (which can use this one).
++ */
++#ifndef OMACVM_HDR_FOLLOW_H
++#define OMACVM_HDR_FOLLOW_H
++
++#include <math.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include "omacvm-edr.h"
++
++/* A headroom above this (x SDR white) is remembered as the display's HDR headroom. */
++#define OMACVM_HF_SDR_PEAK 1.05
++/* After the frames turn PQ, the guest keeps its value until macOS's ramp is done. */
++#define OMACVM_HF_SETTLE_NS 3000000000LL
++
++/*
++ * Whether a frame (frame_deep: a 10-bit scanout) would show wrong colours in
++ * the surfaces there are (surf_deep: half float, surf_linear: extra
++ * brightness's linear light). pq: 10-bit frames are PQ this run (HDR wanted
++ * and the surfaces tagged).
++ */
++static inline bool omacvm_hf_wrong_colour(bool surf_deep, bool surf_linear, bool frame_deep, bool pq)
++{
++    return pq && !surf_linear && surf_deep != frame_deep;
++}
++
++/*
++ * When a held frame is drawn: at the hold-off's end, never at or before now
++ * (a timer in the past makes QEMU's main loop spin with the BQL held).
++ */
++static inline int64_t omacvm_hf_hold_due(int64_t alloc_ns, int64_t realloc_ns, int64_t now)
++{
++    int64_t due = alloc_ns + realloc_ns;
++
++    return due > now ? due : now + 1000000;
++}
++
++typedef struct OmacvmHfEdr {
++    bool known;         /* a display was seen */
++    uint32_t display;   /* the key: the window's display ... */
++    double potential;   /* ... and its most */
++    double held;        /* the last settled value while PQ showed (> SDR), -1 none */
++    int64_t open_ns;    /* the switch to PQ the settling is for */
++    bool settled;
++} OmacvmHfEdr;
++
++/*
++ * The headroom the guest is told (omacvm-edr.h's rules for the value).
++ * sdr: the frames are 8-bit now. PQ: the current headroom, but not less than
++ * the SDR value until macOS's ramp is done (current reaches it, or 3 s after
++ * open_ns, when the frames turned PQ). A new display (or a new most) forgets
++ * the held value. Never more than the display's most.
++ */
++static inline double omacvm_hf_edr(OmacvmHfEdr *h, uint32_t display, double current, double potential,
++                                   bool use_potential, bool sdr, int64_t open_ns, int64_t now)
++{
++    bool same = h->known && display == h->display &&
++                fabs(potential - h->potential) <= 0.01 * fmax(fabs(h->potential), 1.0);
++    if (!same) {
++        h->known = true;
++        h->display = display;
++        h->potential = potential;
++        h->held = -1;
++        h->settled = false;
++    }
++    double top = omacvm_edr_value(potential, potential, true);
++    double base = h->held > 0 && h->held < top ? h->held : top;
++    if (sdr) {
++        return base;
++    }
++    double v = omacvm_edr_value(current, potential, use_potential);
++    if (open_ns != h->open_ns) {
++        h->open_ns = open_ns;
++        h->settled = false;
++    }
++    if (!h->settled) {
++        if (v < base && now - open_ns < OMACVM_HF_SETTLE_NS) {
++            return base;
++        }
++        h->settled = true;
++    }
++    if (v > OMACVM_HF_SDR_PEAK) {
++        h->held = v;
++    }
++    return v;
++}
++
++#endif
