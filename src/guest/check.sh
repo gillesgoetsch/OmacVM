@@ -658,13 +658,17 @@ hdr_copy_note() {
 # (linux-virtio-gpu-hdr-metadata.patch). LOADER-WORD: /run/omacvm/virtio-gpu;
 # BUILD-HAS: this kernel's build has it (1/0); RUNS: that build is older than
 # this boot, so it is the one running (1/0); PQ: Virtual-1 runs PQ now (1/0; SDR
-# while the Mac cannot show PQ: display-sync's rule then has Hyprland clear it).
+# while the Mac cannot show PQ: display-sync's rule then has Hyprland clear it);
+# FOLLOW: HDR only in full screen's state (display-sync/hdr-follow; "sdr": SDR
+# because no window is in full screen, not because the Mac cannot show PQ).
 hdr_recording_line() {
-  local st=$1 has=${2:-0} runs=${3:-0} pq=${4:-1}
+  local st=$1 has=${2:-0} runs=${3:-0} pq=${4:-1} follow=${5:-}
   if [[ $st != omacvm* || $st == "omacvm 8-bit"* ]]; then
     printf 'skip\t%s\n' "the 10-bit driver does not run (see HDR output)"
   elif (( has && runs && pq )); then
     printf 'ok\t%s\n' "the screen is HDR (PQ) now and tells recorders so: Omarchy's recorder (gpu-screen-recorder) makes SDR of it"
+  elif (( has && runs )) && [[ $follow == sdr ]]; then
+    printf 'ok\t%s\n' "the screen is SDR now (HDR only in full screen: no window in full screen) and tells recorders so: recordings as without HDR"
   elif (( has && runs )); then
     printf 'ok\t%s\n' "the screen is SDR now (the Mac cannot show PQ) and tells recorders so: recordings as without HDR"
   elif (( has )); then
@@ -982,14 +986,28 @@ app)
   # (omacvm.deepcolor=1); the 10-bit driver's loader says which driver runs.
   # While PQ, display-sync's window rule keeps Hyprland from tone-mapping
   # windows (Chrome looked gray): its file "tonemap" says clamp.
+  # HDR only in full screen (the app's experimental switch, ADR 0074):
+  # omacvm-displays' state in display-sync/hdr-follow: "sdr" (no window in
+  # full screen: the HDR-off path), "pq", "off" or "declined: why".
   if grep -qx 'OMACVM_DEEPCOLOR=1' /run/omacvm/host.env 2>/dev/null; then
     st=$(cat /run/omacvm/virtio-gpu 2>/dev/null)
     out=$(as_user hyprctl monitors -j 2>/dev/null | jq -r '.[] | select(.name == "Virtual-1") | "\(.currentFormat) \(.colorManagementPreset)"' 2>/dev/null)
+    follow=$(cat "$RUN/omacvm/display-sync/hdr-follow" 2>/dev/null)
+    fnote=""
+    case $follow in
+      pq) fnote="; HDR only in full screen: a window is in full screen" ;;
+      declined:*) fnote="; HDR only in full screen is on but HDR stays on all the time (${follow#declined: })" ;;
+    esac
     case "$st|$out" in
       omacvm*"|XRGB2101010 hdr"|omacvm*"|XBGR2101010 hdr")
         keep=$(hdr_copy_note "$(as_user hyprctl getoption render:keep_unmodified_copy 2>/dev/null)")
-        if [[ $(cat "$RUN/omacvm/display-sync/tonemap" 2>/dev/null) == clamp ]]; then ok "HDR output" "10-bit, HDR (PQ) on the main window's display$keep"
-        else warn "HDR output" "Virtual-1 is HDR (PQ), but Hyprland tone-maps the windows (pages look gray): no tonemap = \"clamp\" window rule from omacvm-display-sync"; fi ;;
+        if [[ $(cat "$RUN/omacvm/display-sync/tonemap" 2>/dev/null) != clamp ]]; then
+          warn "HDR output" "Virtual-1 is HDR (PQ), but Hyprland tone-maps the windows (pages look gray): no tonemap = \"clamp\" window rule from omacvm-display-sync"
+        elif [[ $follow == declined:* ]]; then warn "HDR output" "10-bit, HDR (PQ) on the main window's display$keep$fnote"
+        else ok "HDR output" "10-bit, HDR (PQ) on the main window's display$keep$fnote"; fi ;;
+      omacvm*"|XRGB8888 srgb"|omacvm*"|XBGR8888 srgb")
+        if [[ $follow == sdr ]]; then ok "HDR output" "8-bit SDR now (HDR only in full screen, experimental): HDR (PQ) while a window on the main window's display is in full screen"
+        else warn "HDR output" "the 10-bit driver runs, but Virtual-1 is ${out:-not known} (an own rule for it in monitors.lua?)"; fi ;;
       omacvm*"|XRGB2101010 "*|omacvm*"|XBGR2101010 "*) ok "HDR output" "10-bit colour (${out#* }); HDR where the app's window shows it" ;;
       omacvm*) warn "HDR output" "the 10-bit driver runs, but Virtual-1 is ${out:-not known} (an own rule for it in monitors.lua?)" ;;
       *) warn "HDR output" "the app asked for 10-bit colour, but the stock driver runs: ${st#stock }$( [[ -z $st ]] && echo "no word from omacvm-virtio-gpu-load (omacvm apply, then restart the VM)")" ;;
@@ -1012,7 +1030,7 @@ app)
       grep -a -q drm_connector_attach_hdr_output_metadata_property "$vk" && has=1
     [[ -f $vk ]] && (( $(stat -c %Y "$vk") < $(date +%s) - $(cut -d. -f1 /proc/uptime) )) && runs=1
     pq=0; [[ ${out#* } == hdr ]] && pq=1   # Virtual-1's preset, from the HDR output line
-    IFS=$'\t' read -r rs rt < <(hdr_recording_line "$(cat /run/omacvm/virtio-gpu 2>/dev/null)" "$has" "$runs" "$pq")
+    IFS=$'\t' read -r rs rt < <(hdr_recording_line "$(cat /run/omacvm/virtio-gpu 2>/dev/null)" "$has" "$runs" "$pq" "$follow")
     case $rs in
       ok) ok "HDR recordings" "$rt" ;;
       warn) warn "HDR recordings" "$rt" ;;
