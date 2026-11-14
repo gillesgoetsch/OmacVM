@@ -145,6 +145,14 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   OmacVM.app with **Keep the Dock and hot corners away** on (the default)
   hides it anyway; with that setting off, **Full screen including notch**
   starts as normal full screen. `omacvm check` points this out.
+- **A top hot corner fires over the strip beside the notch** (OmacVM.app,
+  full screen with the notch via Omanotch): the strip is the Mac's menu-bar
+  area, not the VM's. While the pointer is there it is the Mac's (Omanotch
+  shows it with the VM's arrow) and the VM's own pointer waits behind the
+  camera until you move back down. **Keep the Dock and hot corners away**
+  covers the VM's screen below the strip, not the strip's two top corners:
+  a hot corner set at the top left or top right (System Settings › Desktop &
+  Dock › Hot Corners) can still fire there.
 - **The strip beside the notch stays black after you open the lid**
   (OmacVM.app, **Full screen including notch**, the VM started with the lid
   closed and only an external display on): leave full screen and enter it
