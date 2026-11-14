@@ -39,6 +39,9 @@ and sends, after "X on 2":
 or, after "X on" (Mac helpers 3.1.0-3.1.5):
   X <left|right>                    a swipe went past the first or last workspace: out to the
                                     macOS Space on that side
+and at any time:
+  L                                 a key of Omarchy's (Hyprland's custom event omacvm-escape):
+                                    out to macOS, as the escape combo goes
 
 Without macOS-native scroll momentum (the scroll-momentum feature; "Glide"
 in the code, after the glide that follows a flick) the helper sends 3+-finger frames and 2-finger pinches; pointer,
@@ -1248,6 +1251,59 @@ class SwipeOut:
 SWIPE = SwipeOut()
 
 
+# ---- A key of Omarchy's out to macOS ----
+# A Hyprland binding leaves the full-screen VM as ⌃⌥ Esc does: it emits
+# Hyprland's custom event, and this daemon tells the Mac ("L"), which takes
+# it only from the VM in front while captured. For example:
+#   hl.bind("SUPER + ALT + ESCAPE", hl.dsp.event("omacvm-escape"))
+ESCAPE_EVENT = b"custom>>omacvm-escape"
+
+
+class EscapeKey:
+    def __init__(self):
+        self.send = None   # run() sets it: a line to the Mac (any thread)
+
+    def watch(self):
+        """Hyprland's event socket for good (Hyprland may start, stop and
+        start again)."""
+        while True:
+            try:
+                # Inside the try: Hyprland's folder can go between its look and its stat.
+                sock = hypr_socket()
+                if sock:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as ev:
+                        ev.connect(os.path.join(os.path.dirname(sock), ".socket2.sock"))
+                        self.events(ev)
+            except OSError:
+                pass
+            time.sleep(1)
+
+    def events(self, ev):
+        """Until Hyprland goes: each omacvm-escape event to the Mac."""
+        buf = b""
+        while True:
+            data = ev.recv(65536)
+            if not data:
+                return
+            *lines, buf = (buf + data).split(b"\n")
+            for line in lines:
+                if line == ESCAPE_EVENT:
+                    self.leave()
+
+    def leave(self):
+        send = self.send
+        if not send:
+            return   # not connected to the Mac (yet)
+        try:
+            send(b"L\n")
+        except OSError:
+            return   # the connection is going: run() connects again
+        print("omacvm-gestures: out to macOS (a key of Omarchy's)", flush=True)
+
+
+ESCAPE = EscapeKey()
+
+
 def bridge_token():
     """The Bridge's token in the desktop user's home. This daemon is root:
     only the user's own plain file counts (opened without following a link,
@@ -1374,7 +1430,7 @@ def run(pad, keys, glide):
         def send(data, s=s):
             with lock:
                 s.sendall(data)
-        SWIPE.send = send
+        SWIPE.send = ESCAPE.send = send
         CONNECTED.set()
         print(f"omacvm-gestures: connected to {host}:{PORT} (gestures {'on' if GESTURES else 'off'}, "
               f"scroll momentum {'on' if GLIDE_ON else 'off'})", flush=True)
@@ -1460,6 +1516,7 @@ def main():
     glide = Glide(pad)
     print(f"omacvm-gestures: virtual touchpad {ui.device.path}"
           f"{', macOS-native scroll momentum on' if GLIDE_ON else ''}", flush=True)
+    threading.Thread(target=ESCAPE.watch, daemon=True).start()
     serve(pad, keys, glide)
 
 

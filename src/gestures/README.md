@@ -43,6 +43,13 @@ app from before (else Finder) and brings the window back. It re-arms when you
 come back to the full-screen VM, or press the combo again.
 If the Mac helper stops, the tap goes with it and macOS has its gestures back.
 
+**A key of Omarchy's** leaves the same way: a Hyprland binding that emits the
+custom event `omacvm-escape`, such as
+`hl.bind("SUPER + ALT + ESCAPE", hl.dsp.event("omacvm-escape"))`, makes the
+guest daemon say `L` over its connection, and the Mac moves as ⌃⌥ Esc does,
+only for the VM in front while captured. Tests: `mac/test-escape.c`,
+`guest/test-escape-key.py`.
+
 **Swipe out to macOS** (#342, opt-in: `SwipeOut` in `org.omacvm.gestures`, off by
 default; OmacVM.app's "Swipe out to macOS", the control centre): a swipe of three or
 more fingers past the first or the last workspace goes on to the macOS Space on that
@@ -93,7 +100,7 @@ in the VM; `omacvm apply` runs it).
 
 Protocol (TCP, one line each): see the header of `mac/omacvm-gestures.c`
 (`F`, `S`, `O`, `A`, `W`, `P`, `K`, `X on|off` to the guest; `R <gestures> <glide> <proof> <name>`
-from it, with the VM's name in base64, then `X left|right`). First both sides prove they know the
+from it, with the VM's name in base64, then `X left|right` and `L`). First both sides prove they know the
 Bridge's token (HMAC-SHA256 over two nonces and the Mac address the helper
 accepted on, the Mac first), so the token never goes over the wire and the VM
 ignores a listener that cannot prove it (on 127.0.0.1, for OmacVM.app, any Mac

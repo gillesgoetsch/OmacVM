@@ -49,7 +49,9 @@
 #    guest of 3.1.0-3.1.5 still moves in one step. The guest says "E" at once and on
 #    every workspace change from Hyprland's event socket (test-swipe-out.py, a
 #    made-up Hyprland), or decides at the lift for an older Mac; the lines go over
-#    the real connection (2b).
+#    the real connection (2b). A key of Omarchy's (Hyprland's custom event
+#    omacvm-escape, "L" from the guest, test-escape-key.py) leaves the VM in front
+#    as the combo does, only while captured (test-escape.c).
 # 6. Scroll momentum takes only a trackpad's scrolling (built-in or Magic
 #    Trackpad, also one connected later): wheel mice, smooth-scrolling mice and
 #    a Magic Mouse go to the VM app one to one (test-scroll.c, made-up events
@@ -342,6 +344,9 @@ grep -E '^(ok|FAIL|skip) ' "$T/swipe-out"
 # The escape combo's question: Hyprland's focused output, where it sits on the Mac.
 python3 "$HERE/../guest/test-focus.py" "$HERE/../guest/omacvm-gestures" > "$T/focus" 2>&1 || fail=1
 grep -E '^(ok|FAIL|skip) ' "$T/focus"
+# A key of Omarchy's out to macOS: Hyprland's custom event omacvm-escape, "L" to the Mac.
+python3 "$HERE/../guest/test-escape-key.py" "$HERE/../guest/omacvm-gestures" > "$T/escape-key" 2>&1 || fail=1
+grep -E '^(ok|FAIL|skip) ' "$T/escape-key"
 # The guest's reconnects without the Mac's helper: 2 s, then 10 s, one log line per outage.
 python3 "$HERE/../guest/test-retry.py" "$HERE/../guest/omacvm-gestures" > "$T/retry" 2>&1 || fail=1
 grep -E '^(ok|FAIL|skip) ' "$T/retry"
