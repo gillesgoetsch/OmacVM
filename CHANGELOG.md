@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.8 (unreleased)
+
+- **Dismiss all notifications also closes the Mac's.** In full screen macOS shows its banners and
+  alerts (such as *App Background Activity*) over the VM, where nothing in the VM reaches them.
+  Omarchy's own Super+Shift+, now also closes the ones on the Mac's screen, through the Bridge
+  (its Accessibility permission), while the VM is in front. Omarchy's other notification keys stay
+  the VM's. It comes with Update VM.
+
 ## 3.4.7
 
 x86 apps switch on in 3 GB VMs, and HDR holds after a quick re-login and in Hyprland 0.57.2 screenshots.
