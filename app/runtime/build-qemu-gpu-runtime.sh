@@ -1037,9 +1037,10 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-modifier-stat
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-modifier-state.patch"
 "$native_dir/Tests/keys/test-modifier-state.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the modifier keys are not set from the flags as tested (test-modifier-state.sh)"
-# The guest's Caps Lock from its LED: a lock the guest lost (a new session, a
-# restart inside the VM) comes back at the next event (#784); a reset virtio
-# keyboard reports no LED lit. Its rules' test, then the wiring.
+# The guest's Caps Lock from its LEDs: a lock the guest lost (a new session, a
+# restart inside the VM, a press before its keyboard started) comes back at the
+# next event (#784); a virtio keyboard reports its start and, reset, no LED lit.
+# Its rules' test, then the wiring.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-caps-lock-logic.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-caps-lock.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-virtio-input-leds-reset.patch"

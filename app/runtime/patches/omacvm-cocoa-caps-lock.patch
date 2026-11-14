@@ -8,20 +8,25 @@ inside the VM (QEMU keeps running), a press while the guest was still
 starting. QEMU's count stayed "on", so nothing was sent, and the next Caps
 Lock off on the Mac turned the guest's on: capitals with the Mac's light
 off (issue #784, reported by @epicoun), until Caps Lock was pressed outside
-the VM.
+the VM. The same came from Shift + Caps Lock where the guest makes it
+Compose (Omarchy 4.5's default): the Mac's flag flips, the guest's lock
+does not.
 
-Now the guest's lock follows what its keyboard's Caps Lock LED reports
-(virtio-input's EV_LED through QEMU's LED notifier; Hyprland keeps the LED
-with its lock): each LED change is the answer to a press of ours (one per
-press, within 500 ms) or the guest's own. A lock lost with the Mac's on is
-put back at the next input event; a lock set in the guest (another
-keyboard) stays until the Mac's flag changes; a guest whose Caps Lock key
-does not lock (Compose, Escape) never answers and gets one press per change
-of the Mac's flag, as before. As the guest's keyboard starts, a LED that
-disagrees with our presses wins too (a press that came while the guest was
-not listening went nowhere); a reset keyboard reports no LED lit
-(omacvm-virtio-input-leds-reset.patch). The rules: ui/omacvm-capslock.h.
-The notifier is added at the first input event, with the BQL held as for the
+Now the guest's lock follows what its keyboard's LEDs report (virtio-input's
+EV_LED through QEMU's LED notifier, with the whole LED mask; Hyprland keeps
+the Caps Lock LED with its lock): a Caps Lock LED change is the answer to a
+press of ours (one per press, within 500 ms) or the guest's own; a Num Lock
+or Scroll Lock change says nothing about Caps Lock; a report with no LED
+changed is the guest's keyboard starting
+(omacvm-virtio-input-leds-reset.patch), and a press before it went nowhere.
+A lock lost with the Mac's on is put back at the next input event; a lock
+set in the guest (another keyboard) stays until the Mac's flag changes; a
+guest whose Caps Lock key does not lock (Compose, Escape) never answers and
+gets one press per change of the Mac's flag, as before; a press sent with
+Shift held (as the guest has it, qkbd) that gets no answer leaves the
+guest's lock until the Mac's flag changes: the Mac's light is then not
+applied, never the other way round. The rules: ui/omacvm-capslock.h. The
+notifier is added at the first input event, with the BQL held as for the
 events.
 
 Upstream: upstreamable (upstream's ui/cocoa.m has the same count).
@@ -31,27 +36,27 @@ Applies after omacvm-cocoa-modifier-state.patch.
 
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -2335,8 +2335,27 @@
-     qkbd_state_key_event(kbd, KEY_LEFTSHIFT, left);
+@@ -2336,7 +2336,27 @@
      qkbd_state_key_event(kbd, KEY_RIGHTSHIFT, right);
      return true;
-+}
+ }
 +
 +/*
-+ * OmacVM (#784): the guest's Caps Lock, from what its Caps Lock LED reports
++ * OmacVM (#784): the guest's Caps Lock, from what its keyboard's LEDs report
 + * (ui/omacvm-capslock.h, no AppKit in there), or that its keyboard started or
 + * stopped. The LED notifier runs with the BQL held, as handleEventLocked does.
 + */
 +#include "ui/omacvm-capslock.h"
++QEMU_BUILD_BUG_ON(OMACVM_CAPS_LED != QEMU_CAPS_LOCK_LED);
 +static OmacVMCaps omacvm_caps;
 +static bool omacvm_caps_listening;
-+
+ 
 +static void omacvm_caps_led_changed(Notifier *notifier, void *data)
 +{
-+    omacvm_caps_led(&omacvm_caps, qemu_input_get_leds_mask(dcl.con) & QEMU_CAPS_LOCK_LED,
-+                    qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
- }
- 
++    omacvm_caps_leds(&omacvm_caps, qemu_input_get_leds_mask(dcl.con),
++                     qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
++}
++
 +static Notifier omacvm_caps_led_notifier = {
 +    .notify = omacvm_caps_led_changed
 +};
@@ -59,7 +64,7 @@ Applies after omacvm-cocoa-modifier-state.patch.
  - (bool) handleEventLocked:(NSEvent *)event
  {
      /* Return true if we handled the event, false if it should be given to OSX */
-@@ -2376,12 +2395,21 @@
+@@ -2376,12 +2396,22 @@
      }
  
      /*
@@ -69,19 +74,20 @@ Applies after omacvm-cocoa-modifier-state.patch.
 +     * Caps Lock: a press and a release when the Mac's flag and the guest's
 +     * lock differ, the guest's lock as its Caps Lock LED reported it (#784: a
 +     * new session or a restart inside the VM clears it without a press of
-+     * ours). The other modifiers follow the flags (omacvmSyncModifiers), on
++     * ours). Shift as the guest has it now (Shift + Caps Lock can be Compose
++     * there). The other modifiers follow the flags (omacvmSyncModifiers), on
 +     * every input event: a change while QEMU was not in front is put right
 +     * with the next one.
       */
 -    if (!!(modifiers & NSEventModifierFlagCapsLock) !=
 -        qkbd_state_modifier_get(kbd, QKBD_MOD_CAPSLOCK)) {
 +    if (!omacvm_caps_listening) {
-+        omacvm_caps_led(&omacvm_caps, qemu_input_get_leds_mask(dcl.con) & QEMU_CAPS_LOCK_LED,
-+                        qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
++        omacvm_caps_start(&omacvm_caps, qemu_input_get_leds_mask(dcl.con));
 +        qemu_input_led_notifier_add(&omacvm_caps_led_notifier);
 +        omacvm_caps_listening = true;
 +    }
 +    if (omacvm_caps_step(&omacvm_caps, !!(modifiers & NSEventModifierFlagCapsLock),
++                         qkbd_state_modifier_get(kbd, QKBD_MOD_SHIFT),
 +                         qemu_clock_get_ms(QEMU_CLOCK_REALTIME))) {
          qkbd_state_key_event(kbd, KEY_CAPSLOCK, true);
          qkbd_state_key_event(kbd, KEY_CAPSLOCK, false);

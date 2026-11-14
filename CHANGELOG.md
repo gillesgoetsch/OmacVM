@@ -5,11 +5,13 @@ in more words.
 
 ## 3.4.7 (unreleased)
 
-- **Caps Lock** (#784, reported by @epicoun): after a new desktop session or a restart inside the VM
-  with the Mac's Caps Lock on, the VM's Caps Lock came back the other way round: capitals with the
-  Mac's light off, until Caps Lock was pressed outside the VM. The VM now reads its own Caps Lock
-  from its keyboard light and follows the Mac's again at the next key or pointer move. Needs the app
-  update, from the VM's next start.
+- **Caps Lock** (#784, reported by @epicoun): after a new desktop session, a restart inside the VM
+  or a VM start with the Mac's Caps Lock on, the VM's Caps Lock could come back the other way round:
+  capitals with the Mac's light off, until Caps Lock was pressed outside the VM. The VM now reads
+  its own Caps Lock from its keyboard light and follows the Mac's again at the next key or pointer
+  move. Shift + Caps Lock (Compose on Omarchy 4.5) no longer turns it round either: the Mac's light
+  may stay on then, the VM's Caps Lock stays as it was. Needs the app update, from the VM's next
+  start.
 
 ## 3.4.5
 
