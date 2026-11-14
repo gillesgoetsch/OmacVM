@@ -33,10 +33,20 @@ sha256sums=('4d836ccb3cca54c1c4a208baac9497013129304b06d339262f0fe429f66ae5cb'
             '1d4a8787a8a92267c1be673ec194c69e3bb33d14c800575d94131084142fcff0')
 
 build() {
+  # makepkg's own flags (-O2, no -g: the package strips debug info anyway) plus
+  # upstream's -DNDEBUG, and GCC's collector runs sooner (by default it waits
+  # for its heap to double). box64's gtkclass.c then needs about 1.2 GB instead
+  # of 4.1 GB with RelWithDebInfo's -g: a 4 GB VM (the smallest OmacVM makes)
+  # builds it with the desktop open, a 3 GB one too. Same code (only the debug
+  # info goes; the GC params give identical object files), so pkgrel stays and
+  # VMs that have box64 keep theirs.
+  local gc="--param ggc-min-expand=20 --param ggc-min-heapsize=32768"
+  CFLAGS+=" -DNDEBUG $gc"; CXXFLAGS+=" -DNDEBUG $gc"
   cmake -S "box64-$_commit" -B build \
-    -D CMAKE_BUILD_TYPE=RelWithDebInfo -D CMAKE_INSTALL_PREFIX=/usr \
+    -D CMAKE_BUILD_TYPE=None -D CMAKE_INSTALL_PREFIX=/usr \
     -D ARM64=ON -D ARM_DYNAREC=ON -D NOGIT=ON
-  # One job per GB of free memory, at most one per core: 4 GB VMs build with the desktop open.
+  # One job per GB of free memory, at most one per core (gtkclass.c needs
+  # about 1.2 GB, every other file far less).
   local jobs mem
   jobs=$(nproc)
   mem=$(awk '/^MemAvailable:/ { print int($2 / 1048576) }' /proc/meminfo)
