@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.7 (unreleased)
+
+- **x86 Linux apps in small VMs**: switching x86 apps on failed in VMs with 3 or 4 GB of memory
+  ("the build failed"): one file of box64 needed about 4.1 GB to compile, and since zram is capped
+  (3.4.2) the VM's kernel killed the compiler. box64 now builds without debug info (the package
+  stripped it anyway) and with GCC freeing memory sooner: about 1.2 GB, so a 3 GB VM gets through
+  with the desktop open. The package is the same box64, so a VM that has it keeps it. With less
+  than 1.5 GB free in the VM, switching it on now stops at once and says so, and a compiler killed
+  anyway is named as the VM running out of memory (troubleshooting 65).
+
 ## 3.4.5
 
 Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need about
