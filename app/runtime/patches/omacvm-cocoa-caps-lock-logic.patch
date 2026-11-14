@@ -1,0 +1,167 @@
+From: OmacVM
+Subject: [PATCH] ui: the guest's Caps Lock from its LEDs, tested without AppKit
+
+What: a header with no AppKit in it: whether one Caps Lock press goes to the
+guest for an input event, from the Mac's Caps Lock flag, Shift as the guest
+has it, and what the guest keyboard's LEDs reported. A Caps Lock LED change
+is the answer to a press of ours (one per press, within 500 ms) or the
+guest's own lock; a Num Lock or Scroll Lock change is ignored; a report with
+no LED changed is the guest's keyboard starting (presses before it went
+nowhere), and the guest's lock is what the LED says. A lock gone in the guest
+(a new session, a restart inside the VM, a press lost while the guest
+started) with the Mac's on is put back at the next event; a lock set in the
+guest stays until the Mac's flag changes; a press sent with Shift held that
+gets no answer (Omarchy 4.5's Shift + Caps Lock = Compose) leaves the guest's
+lock as it is until the Mac's flag changes. Used by
+omacvm-cocoa-caps-lock.patch (which explains the why).
+
+Why its own file: so the rules are tested without QEMU or a window
+(app/runtime/Tests/keys/test-caps-lock.sh applies this patch to an empty
+folder; at build time and in CI).
+
+Upstream: upstreamable together with omacvm-cocoa-caps-lock.patch.
+Test: app/runtime/Tests/keys/test-caps-lock.c.
+
+diff --git a/ui/omacvm-capslock.h b/ui/omacvm-capslock.h
+new file mode 100644
+--- /dev/null
++++ b/ui/omacvm-capslock.h
+@@ -0,0 +1,138 @@
++/*
++ * OmacVM: the guest's Caps Lock follows the Mac's (#784).
++ *
++ * No AppKit in here, so it is tested on its own
++ * (app/runtime/Tests/keys/test-caps-lock.c); ui/cocoa.m feeds it.
++ *
++ * Caps Lock is a lock in the guest: each press flips it. QEMU sent a press
++ * whenever the Mac's Caps Lock flag differed from what its own presses had
++ * left. The guest can lose its lock without a press from QEMU: a new desktop
++ * session, a restart inside the VM (QEMU keeps running), a press that came
++ * while the guest was still starting. From then on the two were the other way
++ * round until Caps Lock was pressed outside the VM.
++ *
++ * The guest shows its lock on the keyboard's Caps Lock LED (virtio-input's
++ * EV_LED, QEMU's LED notifier with the keyboard's LED mask). The guest
++ * reports only LED changes. What the notifier can bring:
++ * - the Caps Lock LED changed: the answer to a press of ours (one per press,
++ *   within OMACVM_CAPS_SETTLE_MS), or else the guest's own lock;
++ * - only Num Lock or Scroll Lock changed: nothing about Caps Lock;
++ * - no LED changed: the guest's keyboard started (DRIVER_OK,
++ *   omacvm-virtio-input-leds-reset.patch). A press of ours before that went
++ *   nowhere (virtio-input drops events while the driver is not up): the
++ *   guest's lock is what the LED says.
++ * With the guest's own lock known:
++ * - gone (the LED off) while the Mac's is on: one press at the next input
++ *   event puts it back;
++ * - set in the guest (the LED on, by another keyboard): kept until the Mac's
++ *   flag changes, as before.
++ * A guest whose Caps Lock key does not lock (Compose, Escape, Control) never
++ * answers with its LED: one press per change of the Mac's flag, as before.
++ * Shift + Caps Lock may be another key in the guest (Omarchy 4.5's default
++ * omarchy:shift_caps_compose: Compose), while the Mac's flag flips: a press
++ * that went with Shift held and got no answer leaves the guest's lock as its
++ * LED says, until the Mac's flag changes. The Mac's light is then not
++ * applied, never the other way round.
++ *
++ * Limits:
++ * - qemu_input_get_leds_mask(dcl.con) reads the first keyboard handler:
++ *   OmacVM gives QEMU exactly one keyboard (virtio-keyboard-pci, Runner.swift;
++ *   test-caps-lock.sh checks it).
++ * - A guest that drives its Caps Lock LED for something else (xkb's
++ *   grp_led:caps, an LED daemon), or copies another keyboard's lock onto it
++ *   (a USB keyboard passed through), shows a lock that is not its Caps Lock:
++ *   taken as the guest's own (kept), so Caps Lock can be out of step there,
++ *   one press per forced change at most.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef OMACVM_CAPSLOCK_H
++#define OMACVM_CAPSLOCK_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++/* How long the guest's LED may take to answer a press of ours. */
++#define OMACVM_CAPS_SETTLE_MS 500
++
++/* The Caps Lock bit of the LED mask (QEMU_CAPS_LOCK_LED; cocoa.m checks it). */
++#define OMACVM_CAPS_LED (1u << 2)
++
++typedef struct {
++    bool sent;          /* the guest's lock, as far as we know */
++    bool led;           /* the guest's Caps Lock LED, as last reported */
++    bool mac;           /* the Mac's flag as last seen */
++    bool keep;          /* the guest's own: no press until the Mac's flag changes */
++    bool shift;         /* Shift was held in the guest for the last press */
++    uint32_t leds;      /* the guest keyboard's LED mask, as last reported */
++    int inflight;       /* presses of ours whose LED change has not come yet */
++    int64_t press_ms;   /* when the last one went out */
++} OmacVMCaps;
++
++/* Presses with no answer in time: they went nowhere or did not lock. */
++static inline void omacvm_caps_expire(OmacVMCaps *s, int64_t now_ms)
++{
++    if (s->inflight > 0 && now_ms - s->press_ms >= OMACVM_CAPS_SETTLE_MS) {
++        s->inflight = 0;
++        if (s->shift) {
++            /* Shift + Caps Lock was another key (Compose): the lock did not move. */
++            s->sent = s->led;
++            s->keep = true;
++        }
++    }
++}
++
++/* The first input event: the LEDs as they are now (the notifier is added then). */
++static inline void omacvm_caps_start(OmacVMCaps *s, uint32_t leds)
++{
++    s->leds = leds;
++    s->led = s->sent = s->keep = (leds & OMACVM_CAPS_LED) != 0;
++}
++
++/* QEMU's LED notifier: leds is the guest keyboard's LED mask now. */
++static inline void omacvm_caps_leds(OmacVMCaps *s, uint32_t leds, int64_t now_ms)
++{
++    bool led = (leds & OMACVM_CAPS_LED) != 0;
++
++    omacvm_caps_expire(s, now_ms);
++    if (leds == s->leds) {
++        /* No LED changed: the guest's keyboard started; our presses went nowhere. */
++        s->inflight = 0;
++    } else {
++        s->leds = leds;
++        if (led == s->led) {
++            return;     /* Num Lock or Scroll Lock */
++        }
++        s->led = led;
++        if (s->inflight > 0) {
++            s->inflight--;
++            return;     /* the answer to a press of ours */
++        }
++    }
++    /* The guest's own lock: a new session or a restart (off), another keyboard (on). */
++    s->sent = led;
++    s->keep = led;
++}
++
++/*
++ * One input event: true when one Caps Lock press (down, up) goes to the guest
++ * now. mac: the Mac's Caps Lock flag; shift: Shift is held in the guest.
++ */
++static inline bool omacvm_caps_step(OmacVMCaps *s, bool mac, bool shift, int64_t now_ms)
++{
++    omacvm_caps_expire(s, now_ms);
++    if (mac != s->mac) {
++        s->mac = mac;
++        s->keep = false;
++    }
++    if (mac == s->sent || s->keep) {
++        return false;
++    }
++    s->sent = mac;
++    s->shift = shift;
++    s->inflight++;
++    s->press_ms = now_ms;
++    return true;
++}
++
++#endif
