@@ -36,15 +36,14 @@ public enum HomeDisk {
     /// home on its system disk: the row is for a VM built here.
     public static func setupNote(download: Bool) -> String {
         download ? "Only for a VM built here: choose Build Here above."
-                 : "Your home folder on a disk of its own, on xfs. It can grow later, not shrink."
+                 : "A second disk for your home folder, faster for databases and builds."
     }
 
     /// The setup row's (i).
     public static let setupHelp = """
-        Omarchy's disk is btrfs, which its update snapshots need. btrfs copies a block before it changes it, \
-        so files that change in place (databases, build trees, container and VM images) are slower on it. \
-        With a home disk the system stays on btrfs and your home folder gets a second disk, on xfs. \
-        It takes space on the Mac only as you fill it, and gives back what you delete. \
-        It is chosen here, for a new VM: it can grow later in the VM's settings, but never shrink or be taken away.
+        Your home folder gets a second disk with the xfs file system. Files that change in place are faster: \
+        databases, build trees, container and VM images. The system stays on btrfs for update snapshots. \
+        The disk takes Mac space only as it fills and frees deleted space. Add it only to a new VM. \
+        You can grow it later in settings, never shrink or remove it.
         """
 }
