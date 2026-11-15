@@ -1118,7 +1118,7 @@ block before it changes it and compresses what it writes, and that costs
 most where files change in place: databases, build trees, container and VM
 images. A VM built with a home disk keeps the system on btrfs and has
 `/home` on a second disk, on xfs: in our tests about 2.7 times the synced
-writes a second, twice the transactions of a PostgreSQL benchmark, and a
+writes a second, 1.5 to 2.2 times the transactions of a PostgreSQL benchmark, and a
 file rewritten at random stays in 2 pieces instead of 885,849
 ([ADR 0073](../adr/0073-home-on-its-own-disk.md) has the numbers). Work
 that waits on the CPU (git clone, a compile) is the same on both.

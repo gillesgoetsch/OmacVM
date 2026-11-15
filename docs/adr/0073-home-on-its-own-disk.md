@@ -32,9 +32,14 @@ xfs with `noatime`:
 | 4k read, QD1, cold | 146 µs | 125 µs |
 | 4k read, QD32, 4 jobs | 133k IOPS | 201k IOPS |
 | 4k write + fsync, QD1 | 1,067/s | 2,870/s |
-| pgbench, 8 clients | 3,635 tps (5,112 on a fresh btrfs) | 8,007 tps |
-| a tree of 34k files (756 MB) written | 2.2 s fresh, 14.1 s on an aged btrfs | 0.62 s |
+| pgbench, 8 clients | 3,635 tps (3,577 to 3,925) | 8,007 tps (7,870 to 8,264) |
+| a tree of 34k files (756 MB) written | 14.1 s (2.5 to 21.8 s) | 0.62 s (0.56 to 0.63 s) |
 | a 4 GiB file after 20 s of random 4k overwrites | 885,849 extents, 0.75 GB/s buffered read | 2 extents, 6.5 GB/s |
+
+btrfs was uneven from boot to boot in the last two steps, which run after
+the overwrites. In a fourth boot of the same kind it did 5,112 tps and
+wrote the tree in 2.2 s, against 7,770 tps and 0.62 s on xfs: 1.5 and 3.5
+times, where the medians say 2.2 and 23 times.
 
 git clone and cargo build wait on the CPU and took the same on both. On xfs
 the device options again made no difference (NVMe, virtio-blk, an iothread,
