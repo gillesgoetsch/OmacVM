@@ -277,6 +277,8 @@ enum RenderVMWindow {
             page("setup-3-home-disk-page", state, p)
             p.prebuilt = .found(PrebuiltImage(release: "prebuilt-3.4.5", bytes: 4_600_000_000, omarchy: "4.5.0"))
             page("setup-4-home-disk-download-page", state, p)
+            // The Home disk row's (i), as its popover shows it (InfoButton).
+            sheet("popover-4-home-disk") { InfoText(text: HomeDisk.setupHelp) }
             state.screen = .ready
             state.config = config
             state.storage.shownRoot = tmp
