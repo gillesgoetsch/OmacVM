@@ -46,9 +46,14 @@ the device options again made no difference (NVMe, virtio-blk, an iothread,
 direct I/O): the file system is what holds this work back, not QEMU's disk.
 
 Not everything is faster on xfs. In the same runs big sequential I/O was a
-little slower, and 4k random writes that nothing syncs were half as fast
-(not looked into; work that needs its writes safe syncs them, the rows
-above):
+little slower, and direct 4k random writes that nothing syncs were half as
+fast. That last number follows btrfs's data checksums, not the disk: with
+them btrfs did 12,295 to 15,879 IOPS in 6 of 7 runs, with zstd and without
+compression (5,443 in the seventh, on a busy Mac), and every file system
+without them did 6,347 to 8,056 on the same disk: xfs, ext4, and btrfs
+itself with copy on write off (`chattr +C`, 6,347 to 7,327). What btrfs
+does differently with such a write was not traced; work that needs its
+writes safe syncs them (the rows above).
 
 | | btrfs, zstd:1 | xfs |
 |---|---|---|
