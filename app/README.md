@@ -143,7 +143,8 @@ Accessibility of its own.
 
 ## What the app does
 
-1. Asks for a VM name, your user and password, resources and where the disk goes.
+1. Asks for a VM name, your user and password, resources, the disk's size (and
+   a home disk of its own, off by default) and where the disk goes.
 2. Builds the VM (10-30 minutes): try-omarchy's release boots as a temporary
    live system, OmacVM's installers put Arch Linux ARM (btrfs, GRUB) and
    Omarchy (omarchy-mac) on the disk, then OmacVM's VM side.

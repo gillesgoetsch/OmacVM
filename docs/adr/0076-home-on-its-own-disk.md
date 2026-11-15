@@ -1,7 +1,8 @@
-# 0076: /home on its own disk, on xfs, for a VM built with `--home-gb`
+# 0076: /home on its own disk, on xfs, for a VM built with a home disk
 
-Status: proposed (`home-disk`). Off by default: only a VM built with
-`omacvm build --home-gb N` has it. Every other VM starts and runs as before.
+Status: proposed (`home-disk`). Off by default: only a VM built with a home
+disk has it (the setup's Home disk row, `omacvm build --home-gb N`). Every
+other VM starts and runs as before.
 
 ## Context
 
@@ -21,9 +22,9 @@ time, and checksums and compression on every block.
 
 ## Measured
 
-Mac mini M4 Pro, OmacVM 3.4.5's QEMU 11.1.1 with the app's disk options, a
-test VM with 8 vCPUs, Linux 7.3.3, both file systems fresh on the same
-emulated NVMe disk, median of 3 boots. btrfs with the VM's mount options,
+An M4 Pro Mac (internal SSD), OmacVM 3.4.5's QEMU 11.1.1 with the app's disk
+options, a test VM with 8 vCPUs, Linux 7.3.3, both file systems fresh on the
+same emulated NVMe disk, median of 3 boots. btrfs with the VM's mount options,
 xfs with `noatime`:
 
 | | btrfs, zstd:1 | xfs |
@@ -39,7 +40,31 @@ git clone and cargo build wait on the CPU and took the same on both. On xfs
 the device options again made no difference (NVMe, virtio-blk, an iothread,
 direct I/O): the file system is what holds this work back, not QEMU's disk.
 
-The home disk itself, in a VM built with `--home-gb 16` (Mac mini M4 Pro,
+Not everything is faster on xfs. In the same runs big sequential I/O was a
+little slower, and 4k random writes that nothing syncs were half as fast
+(not looked into; work that needs its writes safe syncs them, the rows
+above):
+
+| | btrfs, zstd:1 | xfs |
+|---|---|---|
+| sequential read, 1 MiB, 8 jobs, direct | 6,638 MB/s | 6,207 MB/s |
+| sequential write, 1 MiB, 8 jobs, direct, one sync at the end | 3,215 MB/s | 3,025 MB/s |
+| 4 GiB read back cold through the page cache, 8 jobs | 6,721 MB/s | 5,506 MB/s |
+| 4k random write, QD1, direct, no sync | 15,840 IOPS | 7,026 IOPS |
+
+The same on a VM in daily use on that Mac, with a 50 GB home in about
+490,000 files: one script in the home before and after its move from `@home`
+to a home disk (2 runs before, 3 after), reads from the Mac's cache both
+times:
+
+| | btrfs `@home` | xfs home disk |
+|---|---|---|
+| 4k write + fsync, QD1 | 855 to 1,408/s | 1,626 to 2,034/s |
+| pgbench, 8 clients | 3,443 to 3,508 tps | 6,010 to 6,318 tps |
+| a tree of 74,809 files (1 GB) written | 4.7 to 5.2 s | 2.1 to 2.6 s |
+| a 4 GiB file after 20 s of random 4k overwrites | 812,000 to 834,000 extents | 1 extent |
+
+The home disk itself, in a VM built with `--home-gb 16` (the same Mac,
 macOS 27.2.1, 6 vCPUs, 8 GB, Omarchy 4.5, Linux 7.2.11, a build of this
 branch):
 
@@ -68,13 +93,21 @@ branch):
 
 ## Decision
 
-- **Opt-in at the build**: `omacvm build --home-gb N`. vm.env gets
-  `HOME_GB=N`, and that line is what says a VM has a home disk: the app and
-  its scripts attach `data.img` for it and count it as one of the VM's files
-  (a start without it is refused, as without disk.img). Not a feature in
-  `src/features.tsv`: those switch on and off on a running VM, and a home
-  cannot move back and forth. Not the app's setup screen yet, and not with
-  a prebuilt VM, whose first boot makes the home on the system disk.
+- **Opt-in at the build**: the Home disk row of the app's setup (Off, or a
+  size, under Disk), `omacvm build --home-gb N`, or its questions under
+  Custom, where it asks for the disk's size. vm.env gets `HOME_GB=N`, and
+  that line is what says a VM has a home disk: the app and its scripts
+  attach `data.img` for it and count it as one of the VM's files (a start
+  without it is refused, as without disk.img).
+- **A build option like the disk's size, not a feature** in
+  `src/features.tsv`: those switch on and off on a running VM
+  (`omacvm enable`, the control centre, `off.sh`), and a home cannot move
+  back and forth. Nothing of it is in `/etc/omacvm/env`.
+- **Not with a prebuilt VM.** Its first boot makes the user's home from the
+  image's template on the system disk, and the image has no `xfsprogs`: a
+  home disk there needs new images and a first boot that makes the file
+  system before the user. `--home-gb` with `--prebuilt` is refused, and the
+  setup's row is off while Download is chosen.
 - **On the Mac**: `data.img`, a sparse raw file beside disk.img, attached
   as a second NVMe disk with the system disk's options
   (`cache=writeback,discard=unmap`, ADR 0039; the flush barrier of ADR 0053
@@ -117,6 +150,14 @@ branch):
   update snapshot with its GRUB entry need btrfs on `/`.
 - **Not a third partition on disk.img**: the app's resize takes the last
   partition for the btrfs root.
+- **Not xfs in a file on the btrfs** (a loop device with direct I/O; one
+  boot of the test VM above): 741 synced 4k writes a second and 5,808 tps
+  in pgbench, under btrfs itself on the first and well under xfs on a disk
+  of its own.
+- **Not btrfs without copy on write for the home** (`chattr +C`; median of
+  3 boots): the rewritten file stays in 1 extent and pgbench does 5,343
+  tps, but synced 4k writes stay at 1,583 a second, and it holds only for
+  files made after the switch, without checksums.
 - **Factory Reset**: an OmacVM VM on Omarchy 4.5 has no `@factory`, so
   Omarchy's reset changes nothing there (`omacvm check` says so). Where a VM
   has one, the reset empties `@home` and `@log` and puts the installed
