@@ -486,7 +486,9 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   (`qemu-darwin-disk-flush-barrier.patch`, ADR 0053; `OMACVM_DISK_FLUSH=full|fsync`), qemu.log
   "OmacVM: disk flush: ...", check line "disk flush"; `src/tests/disk-flush.sh`,
   `app/runtime/Tests/disk/test-flush.sh`.
-  A home disk (off by default, `omacvm build --home-gb N`, ADR 0073): `HOME_GB` in vm.env,
+  A home disk (off by default; a build option like the disk's size, not a feature: the setup's
+  Home disk row, `omacvm build --home-gb N` or its Custom questions; never with a prebuilt VM,
+  ADR 0073): `HOME_GB` in vm.env,
   `data.img` in the VM's folder as a second NVMe disk (serial `omacvm-home`, the system
   disk's options, no boot index; the last disk in `Runner.arguments` and in every
   `qemu_headless`: `HomeDisk.swift`, `vm-common.sh`'s `HOME_DISK`), xfs on the whole disk with
@@ -558,7 +560,7 @@ new note or (i) gets a `layoutProbe` and a picture there.
 | USB devices | `usb-enabled`, remembered devices `usb.json`; while on, QEMU's app menu has "USB Devices…" (`OMACVM_USB_REQUEST`, `omacvm-cocoa-usb-menu.patch`: QEMU yields its activation to the app, which opens its list, USBRun.showList) | off | VM |
 | Fast network | `fast-network` + `features` `fast-network=on` | off | VM |
 | Disk | `disk.img`'s length, `vm.env` `DISK_GB`; `disk-jobs`, `disk-resize` | 64 GB at setup | VM |
-| Home disk (only shown for a VM built with one; larger only) | `data.img`'s length, `vm.env` `HOME_GB` (`omacvm build --home-gb N`; the line is what says the VM has one) | none (no line: `/home` on `disk.img`) | VM |
+| Home disk (the setup: Off or a size, off while Download is chosen; the VM window: only for a VM built with one, larger only) | `data.img`'s length, `vm.env` `HOME_GB` (also `omacvm build --home-gb N`; the line is what says the VM has one) | none (no line: `/home` on `disk.img`) | VM |
 | Move to Omarchy 4.5 (no switch: a card under the header on every Omarchy 4.0 VM, not dismissable; while the backup is kept, Storage's "Omarchy 4.0 backup" row) | `omarchy` (written by apply from the guest's `omarchy-move.sh record`: `4.5.0 aarch64 stable`, `4.0.3rc4 omarchy-mac rc`; no file = offered, the guest's preflight decides), `move-4.5` (the journal, `format=1`: `state` running, failed, interrupted, undoing, done, kept, undone or done-final, `step` of 8, `pid`, `qemu_pid`, `settle_pid`, `boot`, `resumable`, `commit_started`, `ask_guest`, `guest_state`, `guest_phase`, `backup_at`, `reason`), `before-omarchy-4.5/` (APFS clones of disk.img and efi-vars.fd, the small records, README.txt; until Delete Backup…, on the card or the backup row), `move-4.5.stop` (Stop and Quit); `app/scripts/move-vm.sh`, `OmarchyMoveCard.swift`, rules `OmacVMWindow/OmarchyMove.swift` (`swift run window-tests`), `src/tests/app-move-vm.sh`, pictures `window-move-*`, `sheet-move-*` | offered on 4.0 | VM |
 | VMs folder | `vmsRoot`, `otherVMsRoots` | `~/OmacVM` | app |
 | omacvm in Terminal | a link to the app's `omacvm` on the PATH | not installed | Mac |

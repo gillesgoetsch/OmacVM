@@ -52,8 +52,9 @@ VM runs, and goes back by itself when a new version does not start
   [disk options](../adr/0039-system-disk-options.md)). Files deleted
   outside your home folder stay while an update snapshot still holds them:
   OmacVM keeps the last 2 (omarchy-mac 4.0 kept 5).
-- A disk of its own for your home folder, on xfs, for a VM built with
-  `omacvm build --home-gb N`: [Home disk](#home-disk-off-by-default).
+- A disk of its own for your home folder, on xfs, for a VM built with one
+  (the setup's Home disk row, `omacvm build --home-gb N`):
+  [Home disk](#home-disk-off-by-default).
 - Where things are: the app in `~/Applications`, the VMs in
   `~/OmacVM/<VM name>/`; moves, other drives, sizes and downloads:
   [where things are](#where-things-are).
@@ -1122,15 +1123,23 @@ file rewritten at random stays in 2 pieces instead of 885,849
 ([ADR 0073](../adr/0073-home-on-its-own-disk.md) has the numbers). Work
 that waits on the CPU (git clone, a compile) is the same on both.
 
+In the app's setup: **Home disk** under Disk, Off or a size. From the
+command line:
+
 ```bash
 omacvm build --home-gb 200     # with the other options of omacvm build
 ```
 
+`omacvm build`'s questions ask for it under Custom, after the disk's size
+(0: none).
+
 - The build makes `data.img` beside `disk.img` in the VM's folder, sparse
   like it: it takes what your home holds, not its size. What you delete in
   your home goes back to the Mac at once (xfs `discard`).
-- `--home-gb` builds the VM here (`--build`). A prebuilt VM and the app's
-  own setup make no home disk yet.
+- Only for a VM built here. A prebuilt VM has its home on its system disk:
+  `--home-gb` with `--prebuilt` is refused, and the setup's row is off
+  while Download is chosen.
+- It is chosen once, for a new VM: no switch turns it off later.
 - Larger: Home disk › Change… in the VM window, with the VM shut down.
   Omarchy grows into it at the next start. xfs cannot shrink, so the home
   disk never gets smaller: start with what you need and grow.
