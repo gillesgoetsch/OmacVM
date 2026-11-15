@@ -83,13 +83,24 @@ were noise in both arms and say nothing.
 Not measured yet (owed before the switch's text is final): a busy desktop,
 burst scrolling at 120 Hz (a lower scroll frame rate would be a cut, not a
 rare drop: the switch does not ship then), idle, sound glitches, the
-guest's timer lateness, browser scores, input latency, M1 Pro, M3, M4.
+guest's timer lateness, browser scores, input latency, M1 Pro, M3, and whole-Mac watts on an
+M4 (the mini was measured hidden, from thread counters only, see
+Consequences).
 
 ## Consequences
 
 - The threads that stay in the app's group share the performance cluster
   and run at its lower clock too (M1 Max: qemu_main 7.7 % of a core at
   2.59 GHz -> 22 % at 1.62 GHz). They keep their own QoS and settings.
+- On an M4 they can also move to the efficiency cores. Mac mini M4, hidden
+  rows from thread counters only (no whole-Mac watts): qemu_main is not in
+  the group, yet with the switch on its P-core share fell from 100 % to
+  3-5 % in video (its CPU rose from 6 % to 19 % of a core) and from 89 % to
+  30 % while scrolling. So on an M4 the frame and sound path runs on E
+  cores while the switch is on. "Frame path and audio never join" holds in
+  the code, but not in where macOS runs them. This is why the switch stays
+  opt-in and Experimental, and why its gates (same scroll fps, sound
+  glitch count, qemu_main's own energy off vs on) must pass on screen.
 - The row's (i) states the measured watts, the drop counts and which Macs
   are not measured; it is updated with the M1 Max set before 3.5.0.
 - If Apple ever refuses non-real-time threads in an audio work interval,

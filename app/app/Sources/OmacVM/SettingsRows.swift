@@ -311,11 +311,11 @@ struct VCPUClockSaverRow: View {
     var tick = 0
     @State private var on = Settings.vcpuClockSaver
 
-    static let info = "Experimental. macOS runs every thread of the app in front at a high CPU clock, and the VM's CPUs get that clock too, even for a video or a terminal. With this on, the VM's CPUs get the clock their own work needs, like an app in the background. Graphics, sound, HDR and 120 Hz keep their own settings, but they share the Mac's CPU cores, which then run at a lower clock while the VM is light. Measured on an M1 Max playing a 1080p video at 120 Hz: the whole Mac took 14.7-15.4 W instead of 17.7 W (2.4-3.1 W less). The trade-off: 1 to 3 dropped video frames in 12,000-15,000, none with it off. On a MacBook Air (M2) it saved only 0.1-0.2 W for video and scrolling, and nothing at idle. Other Macs are not measured yet. Sound with it on is not measured yet. Works at once in a running VM, and off puts the VM's CPUs back as before at once. GPU safe mode keeps it off."
+    static let info = "Experimental. macOS runs every thread of the app in front at a high CPU clock, and the VM's CPUs get that clock too, even for a video or a terminal. With this on, the VM's CPUs get the clock their own work needs, like an app in the background. Graphics, sound, HDR and 120 Hz keep their own settings, but they share the Mac's CPU cores, which then run at a lower clock or on efficiency cores while the VM is light. Measured on an M1 Max playing a 1080p video at 120 Hz: the whole Mac took 14.7-15.4 W instead of 17.7 W (2.4-3.1 W less). The trade-off: 1 to 3 dropped video frames in 12,000-15,000, none with it off. On a MacBook Air (M2) it saved only 0.1-0.2 W for video and scrolling, and nothing at idle. On a Mac mini (M4) the VM's CPUs and the main thread moved to efficiency cores; its whole-Mac watts are not measured. Other Macs are not measured yet. Sound with it on is not measured yet. Works at once in a running VM, and off puts the VM's CPUs back as before at once. GPU safe mode keeps it off."
 
     var body: some View {
         SettingRow(title: "VM CPU clock saver", badge: "experimental",
-                   subtitle: Settings.gpuSafeMode ? "Off while GPU safe mode is on." : "Up to 3 W less on an M1 Max (measured there only). Can drop a rare video frame. Works at once.",
+                   subtitle: Settings.gpuSafeMode ? "Off while GPU safe mode is on." : "Up to 3 W less on an M1 Max, little on a MacBook Air (M2); other Macs not measured. Can drop a rare video frame. Works at once.",
                    info: Self.info, probe: "vcpu-clock-saver") {
             RowSwitch(title: "VM CPU clock saver", isOn: $on, enabled: !Settings.gpuSafeMode)
         }
