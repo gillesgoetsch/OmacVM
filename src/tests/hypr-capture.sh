@@ -1,7 +1,7 @@
 #!/bin/bash
 # OmacVM.app's fix for screenshots and screen sharing of HDR apps (#579,
 # src/app/guest/hypr-capture/): Hyprland's cm_helpers.glsl with two changes,
-# one folder per Hyprland release (0.56.2/, 0.57.0/), each put in only for
+# one folder per Hyprland release (0.56.2/, 0.57.0/, 0.57.2/), each put in only for
 # that Hyprland.
 #  0. The releases Omarchy ships (RELEASES: stable and edge) each have a folder.
 #  1. Each folder's original names its tag's commit and files (downloaded);
@@ -24,7 +24,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
 SRC=$here/../app/guest/hypr-capture
 # Omarchy's Hyprland now: stable (pkgs.omarchy.org/stable) and edge (the dev channel). A new one: a folder first.
-RELEASES="0.56.2 0.57.0"
+RELEASES="0.56.2 0.57.2"
 fail=0
 ok()  { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
@@ -337,6 +337,15 @@ mkdir -p "$T/only-0.56.2"; cp "$L/hypr-capture.sh" "$L/guard.py" "$T/only-0.56.2
 expect "0.57.0-2 with the 0.56.2 folder only: names 0.57.0-2, not 0.56.2's commit" \
   test "$(OMACVM_HC_ROOT=$R "$T/only-0.56.2/hypr-capture.sh" --status | cut -f2 | sed 's/: screenshots.*//')" = \
        "no OmacVM fix for Hyprland 0.57.0-2 yet (OmacVM has a fix for 0.56.2)"
+# Omarchy edge's 0.57.2-2 (and Arch Linux ARM's 0.57.2-1) before OmacVM had its folder: 0.57.0's commit is not
+# 0.57.2's (their cm_helpers.glsl differ in one line, d7f16472), so the 0.56.2 and 0.57.0 folders leave it uncovered
+rm -r "$PDB/hyprland-0.57.0-2"; pkg hyprland 0.57.2-2; mkbin "" 0.57.2
+mkdir -p "$T/no-0.57.2"; cp "$L/hypr-capture.sh" "$L/guard.py" "$T/no-0.57.2/"; cp -R "$L/0.56.2" "$L/0.57.0" "$T/no-0.57.2/"
+expect "0.57.2-2 with the 0.56.2 and 0.57.0 folders only: uncovered, names 0.57.2-2" \
+  test "$(OMACVM_HC_ROOT=$R "$T/no-0.57.2/hypr-capture.sh" --status | cut -f2 | sed 's/: screenshots.*//')" = \
+       "no OmacVM fix for Hyprland 0.57.2-2 yet (OmacVM has fixes for 0.56.2 and 0.57.0)"
+run >/dev/null
+expect "0.57.2-2 with this OmacVM: the 0.57.2 folder's file" cmp -s "$SRC/0.57.2/cm_helpers.glsl" "$OURS"
 rm -r "$PDB"; run >/dev/null
 
 (( fail == 0 )) && echo "hypr-capture: all passed"

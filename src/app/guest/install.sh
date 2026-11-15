@@ -17,7 +17,7 @@
 #  * a hyprpicker that draws the frozen screen of screenshots only when it
 #    changes (hyprpicker/; the package's drew every display on every frame)
 #  * screenshots and screen sharing of HDR apps at SDR white in an HDR VM
-#    (hypr-capture/: a fixed shader file per Hyprland release, 0.56.2 and 0.57.0)
+#    (hypr-capture/: a fixed shader file per Hyprland release, 0.56.2, 0.57.0 and 0.57.2)
 #  * every Mac display in full screen (omacvm-displays; the switch
 #    "Use external displays" in the bar's display menu)
 #  * AirPods and media controls: the VM's player as the Mac's Now Playing
@@ -195,7 +195,7 @@ if ! pgrep -x hyprpicker >/dev/null; then
   find /run/user -mindepth 2 -maxdepth 2 -type f -name '.hyprpicker_*' -delete 2>/dev/null || true
 fi
 # Screenshots, colour picks and screen sharing of HDR apps (Chrome) in an HDR VM
-# came out 2.54 times too bright: Hyprland 0.56.2 and 0.57.0 put their SDR white
+# came out 2.54 times too bright: Hyprland 0.56.2 and 0.57.x put their SDR white
 # at 80 nits in its copy for captures (#579). A fixed copy of that one shader
 # file (one per Hyprland release), only while the installed Hyprland is the one
 # it was made for; pacman hooks take it out before Hyprland changes and put the

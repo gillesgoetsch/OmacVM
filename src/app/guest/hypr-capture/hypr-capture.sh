@@ -1,6 +1,6 @@
 #!/bin/bash
 # OmacVM.app: screenshots and screen sharing of HDR apps in an HDR VM (#579).
-# Hyprland 0.56.2 and 0.57.0 make the SDR copy that screenshots (grim, Omarchy's
+# Hyprland 0.56.2 and 0.57.x make the SDR copy that screenshots (grim, Omarchy's
 # screenshot and its frozen screen), colour picks (hyprpicker) and screen
 # sharing (xdg-desktop-portal-hyprland) read with SDR white at 80 nits for
 # windows drawn in HDR (PQ: Chrome, Chromium), which put it at
@@ -11,7 +11,7 @@
 # it, at its start and at `hyprctl reloadshaders`.
 # Only while /usr/bin/Hyprland was built from the release the file was made for
 # and carries each shader file it works with byte for byte (guard.py, one folder
-# per release: 0.56.2/, 0.57.0/). Any other Hyprland reads its own copy: the bug
+# per release: 0.56.2/, 0.57.0/, 0.57.2/). Any other Hyprland reads its own copy: the bug
 # may be back, nothing breaks; --status names the installed hyprland package
 # (pacman's database) and the releases OmacVM has fixes for. pacman hooks take
 # our file out before /usr/bin/Hyprland changes and put the new binary's
