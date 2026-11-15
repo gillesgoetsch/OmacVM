@@ -52,6 +52,8 @@ enum RenderVMWindow {
         var moveBackup: (bytes: Int64, exact: Bool)? = nil
         /// The Battery saver group open (nil: as the app's key says).
         var batterySaverOpen: Bool? = nil
+        /// The setup: what its lookup for a ready made VM said (nil: the Mac's own lookup).
+        var prebuilt: PrebuiltImage.Lookup? = nil
     }
 
     static func allowed(bundleID: String?) -> Bool {
@@ -268,6 +270,13 @@ enum RenderVMWindow {
             state.screen = .setup
             window("setup-1", state, p)
             page("setup-2-page", state, p)
+            // A home disk chosen (docs/adr/0076); and with a ready made VM
+            // to download, where the row is off and says why.
+            state.config.homeGB = 128
+            p.prebuilt = PrebuiltImage.Lookup.none
+            page("setup-3-home-disk-page", state, p)
+            p.prebuilt = .found(PrebuiltImage(release: "prebuilt-3.4.5", bytes: 4_600_000_000, omarchy: "4.5.0"))
+            page("setup-4-home-disk-download-page", state, p)
             state.screen = .ready
             state.config = config
             state.storage.shownRoot = tmp
