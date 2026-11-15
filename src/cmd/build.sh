@@ -12,7 +12,8 @@
 #   --vm-type app (the only one)   --vm-name NAME   --hostname NAME
 #   --resources low|balanced|high|best   --cpus N   --memory-gb N   --disk-gb N
 #   --user NAME   --full-name "NAME"
-#   --home-gb N: a second disk of N GB for /home, on xfs (needs --build)
+#   --home-gb N: a second disk of N GB for /home, on xfs (needs --build; the
+#   questions ask for it under Custom)
 #   --feature NAME=on|off, or --FEATURE / --no-FEATURE (omacvm features lists
 #   them: bridge wallpaper gestures scroll-momentum omanotch mac-clock camera battery external-brightness no-idle-lock autologin thp-kernel
 #   x86-apps; idle-lock, its name before 3.0.1, the other way round)
@@ -110,7 +111,7 @@ while (( $# )); do
     --dry-run) DRY=1; shift ;;
     --plan) PLAN=1; DRY=1; shift ;;
     --json) JSON=1; shift ;;
-    -h|--help) sed -n '2,23s/^# \{0,1\}//p' "$0"; DONE=1; exit 0 ;;
+    -h|--help) sed -n '2,24s/^# \{0,1\}//p' "$0"; DONE=1; exit 0 ;;
     --no-*) feature_flag "${1#--no-}" off; shift ;;
     --*) feature_flag "${1#--}" on; shift ;;
     *) usage "unknown option $1 (see --help)" ;;
@@ -241,7 +242,7 @@ if (( ! YES )) && [[ -z $CPUS && -z $MEM_GB && -z $RES ]]; then
   say "    GPU a buffer of $(( mac_mem_gb / 4 > 8 ? mac_mem_gb / 4 : 8 )) GB."
   opts=()
   for t in 0 1 2 3; do tier_values "$t"; rec=""; (( t == 1 )) && rec="  (recommended)"; opts+=("${TIERS[$t]}|$T_CPUS CPUs, $T_MEM GB memory$rec"); done
-  opts+=("Custom|choose CPUs, memory and the disk size")
+  opts+=("Custom|choose CPUs, memory$([[ $SOURCE == build ]] && echo ", the disk size and a home disk" || echo " and the disk size")")
   ui_select tier "How much of this Mac ($mac_cores CPUs, $mac_mem_gb GB) should the VM get?" 1 "${opts[@]}"
   (( tier == 4 )) && { custom=1; tier=1; }
 fi
@@ -252,6 +253,11 @@ if (( ${custom:-0} )); then
   CPUS=$(ask_value "CPUs (1-$CAP_CPUS)" "$CPUS" '^[0-9]+$')
   MEM_GB=$(ask_value "memory in GB (4-$CAP_MEM_GB)" "$MEM_GB" '^[0-9]+$')
   DISK_GB=$(ask_value "disk size limit in GB (64 or more; it only takes what it holds)" "$DISK_GB" '^[0-9]+$')
+  # Only for a VM built here: a prebuilt VM's home is on its system disk.
+  if [[ $SOURCE == build ]]; then
+    HOME_GB=$(ask_value "home disk in GB (0: none; your home on a disk of its own, on xfs: it can grow, not shrink)" "${HOME_GB:-0}" '^(0|[1-9][0-9]{0,4})$')
+    [[ $HOME_GB != 0 ]] || HOME_GB=""
+  fi
 fi
 [[ $CPUS =~ ^[0-9]+$ ]] && (( CPUS >= 1 && CPUS <= CAP_CPUS )) || usage "--cpus: 1 to $CAP_CPUS"
 [[ $MEM_GB =~ ^[0-9]+$ ]] && (( MEM_GB >= 4 && MEM_GB <= CAP_MEM_GB )) || usage "--memory-gb: 4 to $CAP_MEM_GB GB"
