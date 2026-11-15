@@ -1320,6 +1320,30 @@ int main(void) {
     soOn = 0; swipeOutLook(); sent();
   }
 
+  // ---- "L" (Hyprland's custom event omacvm-escape): out of the VM as the combo goes ----
+  {
+    const uint64_t three3[] = { 101, 102, 103 };
+    layout(1, three3, 3, NULL, 0);
+    owner[101] = terminal; winOn[101] = 11; owner[102] = vm; winOn[102] = 22; owner[103] = safari; winOn[103] = 33;
+    pointer = CGPointMake(1000, 700); front = terminal; world[0].cur = 101;
+    frontChanged(terminal, -1, 0, "", 11, 1); sent();
+    inVM(vm, 102);
+    unsigned g0 = clients[0].gen;
+    keys = spaceKeys = mcKeys = hidden = 0;
+    guestLine(clients[0].fd, g0, "L"); settleSteps();
+    check(spaceKeys == 1 && lastKey.keycode == 123 && world[0].cur == 101 && front == terminal && !mcKeys && !hidden,
+          "L: Move left a space, out to the Space it came from, as the combo (Swipe out to macOS off)");
+    check(!strcmp(sent(), "S esc ctrl-opt|") && !capturing && escaped, "L: ... capture off, the guest lets go (S esc)");
+    settle(vm, NET_APP); sent();
+    check(press(K, HID, 0) == 1 && world[0].cur == 102 && front == vm, "L: ... the combo in macOS goes back into the VM");
+    settle(vm, NET_APP); sent();
+    keys = 0;
+    pthread_mutex_lock(&sendLock); clients[0].target = 0; pthread_mutex_unlock(&sendLock);
+    guestLine(clients[0].fd, g0, "L"); settleSteps();
+    check(!keys && world[0].cur == 102 && capturing, "L from a VM that is not the one in front: ignored");
+    pthread_mutex_lock(&sendLock); clients[0].target = 1; pthread_mutex_unlock(&sendLock);
+  }
+
   // ---- Swipe out that follows the fingers ("X on 2", "E"): made-up trackpad frames, a made-up Dock ----
   {
     int big = 1 << 18;
