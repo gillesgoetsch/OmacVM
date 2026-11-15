@@ -170,7 +170,8 @@ struct VMConfig: Equatable {
     var cpus = 4
     var memoryMB = 8192
     var diskGB = 64
-    /// The home disk's size (vm.env's HOME_GB, from `omacvm build --home-gb`);
+    /// The home disk's size (vm.env's HOME_GB, from the setup's Home disk row
+    /// or `omacvm build --home-gb`);
     /// nil: /home is on disk.img, as in every VM without it (docs/adr/0073).
     var homeGB: Int?
     var sshPort = 52222
@@ -274,7 +275,7 @@ struct VMConfig: Equatable {
         CPUS=\(cpus)
         MEM_MB=\(memoryMB)
         DISK_GB=\(diskGB)
-        SSH_PORT=\(sshPort)
+        \(HomeDisk.envLine(gb: homeGB))SSH_PORT=\(sshPort)
         VM_USER=\(q(user))
         VM_FULLNAME=\(q(fullName))
         VM_HOSTNAME=\(q(hostname))

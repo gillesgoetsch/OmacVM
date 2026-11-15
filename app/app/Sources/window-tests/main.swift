@@ -152,6 +152,10 @@ expect(HomeDisk.arguments(path: nil).isEmpty, "no home disk: no argument, the VM
 expect(HomeDisk.arguments(path: "/v/a,,b/data.img")
        == ["-drive", "if=none,id=home,file=/v/a,,b/data.img,format=raw,cache=writeback,discard=unmap",
            "-device", "nvme,serial=omacvm-home,drive=home"], "home disk: an NVMe disk with the system disk's options, no boot index")
+expect(HomeDisk.envLine(gb: nil) == "" && HomeDisk.envLine(gb: 128) == "HOME_GB=128\n",
+       "home disk: vm.env has HOME_GB only for a VM with one")
+expect(HomeDisk.setupNote(download: true).contains("Build Here") && HomeDisk.setupNote(download: false).contains("xfs"),
+       "home disk: the setup row says it is only for a VM built here while Download is chosen")
 let homeBounds = DiskSize.bounds(currentGB: 200, need: nil, unknownWhy: HomeDisk.onlyLarger, freeBytes: 110 * gb)
 expect(homeBounds.minGB == 200 && homeBounds.maxGB == 300 && homeBounds.why.hasSuffix(HomeDisk.onlyLarger),
        "home disk: only larger, up to the Mac's free space less its reserve (\(homeBounds.why))")
