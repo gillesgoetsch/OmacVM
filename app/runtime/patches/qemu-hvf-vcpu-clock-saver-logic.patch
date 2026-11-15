@@ -1,0 +1,189 @@
+From: OmacVM
+Subject: [PATCH] hvf: the VM CPU clock saver's rules in a header of their own
+
+What: include/qemu/omacvm-vcpu-clock-saver.h: the switch from
+OMACVM_VCPU_CLOCK_SAVER (1 or 0; unset: the app's switch decides), the
+group (a work interval made once, at the first join), a vCPU's join and
+leave on its own thread (a failed join is not tried again until the switch
+goes off), the tally of what the vCPUs did with a change, and the line for
+qemu.log. qemu-hvf-vcpu-clock-saver.patch wires it into the vCPU threads,
+omacvm-cocoa-vcpu-clock-saver.patch into the app's switch.
+
+Why: macOS runs every thread of the app in front at the clock it gives that
+window, so QEMU's vCPU threads ran at 2.55-3.0 GHz on an M1 Max for a video
+the guest needs about 1.5 GHz for. In a thread group of their own macOS
+sets their clock by their own load. The interval is never started (no
+deadline), and QoS, priority and timer tier stay as they are. ADR 0073.
+
+Upstream: not sent (a Darwin scheduling choice).
+Test: app/runtime/Tests/vcpu/test-vcpu-clock-saver.sh (the rules on threads
+like QEMU's vCPU threads, in CI; with the patched files also the wiring, in
+the runtime build).
+
+--- /dev/null
++++ b/include/qemu/omacvm-vcpu-clock-saver.h
+@@ -0,0 +1,164 @@
++/*
++ * OmacVM: VM CPU clock saver (experimental, off by default; ADR 0073).
++ *
++ * macOS runs every thread of the app in front, which shows frames, at the
++ * clock it gives that window: QEMU's vCPU threads ran at 2.55-3.0 GHz on an
++ * M1 Max for a video the guest needs about 1.5 GHz for (the same work with
++ * the window hidden). With the switch on, the vCPU threads join a work
++ * interval of their own, so they are a thread group of their own and macOS
++ * sets their clock by their own load. The interval is never started: no
++ * deadline, nothing real-time. Their QoS class, priority and timer tier stay
++ * as they are. Only vCPU threads join; the main loop, sound, present and
++ * display link threads stay where they are.
++ *
++ * A vCPU thread joins and leaves on its own thread (macOS allows only that)
++ * and leaves before it ends (libdispatch stops a thread that ends while
++ * joined). A vCPU whose join failed does not try again until the switch
++ * goes off. The group is made at the first join, so with the switch off
++ * nothing of it is loaded or made.
++ *
++ * OMACVM_VCPU_CLOCK_SAVER=1 or 0 decides instead of the app's switch (a
++ * QEMU not started as the app, GPU safe mode, tests).
++ */
++#ifndef OMACVM_VCPU_CLOCK_SAVER_H
++#define OMACVM_VCPU_CLOCK_SAVER_H
++
++#include <os/workgroup.h>
++#include <dlfcn.h>
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* hvf: every vCPU follows the switch on its own thread (BQL held). */
++void omacvm_vcpu_clock_saver_set(bool on, const char *why);
++
++/* One vCPU thread's place; only that thread touches it. */
++typedef struct OmacvmVcs {
++    os_workgroup_join_token_s token;
++    bool joined;
++    bool failed;    /* its join failed: no new try until the switch goes off */
++} OmacvmVcs;
++
++/* What the vCPUs did with the last change of the switch (BQL). */
++typedef struct OmacvmVcsTally {
++    unsigned gen;   /* the last change */
++    int left;       /* vCPUs that have not followed it yet */
++    int total;
++    int joined;
++} OmacvmVcsTally;
++
++static os_workgroup_t omacvm_vcs_wg;
++static const char *omacvm_vcs_missing;  /* why there is no group (after the first try) */
++
++/* OMACVM_VCPU_CLOCK_SAVER: 1 on, 0 off; -1 not set (the app's switch decides). */
++static inline int omacvm_vcs_env(void)
++{
++    const char *v = getenv("OMACVM_VCPU_CLOCK_SAVER");
++
++    if (v && strcmp(v, "1") == 0) {
++        return 1;
++    }
++    if (v && strcmp(v, "0") == 0) {
++        return 0;
++    }
++    return -1;
++}
++
++/*
++ * The group, made once. The only public way to a work interval with a
++ * thread group of its own is AudioToolbox's AudioWorkIntervalCreate, looked
++ * up at run time (QEMU does not link AudioToolbox).
++ */
++static inline void omacvm_vcs_make(void)
++{
++    typedef os_workgroup_t (*create_fn)(const char *, os_clockid_t, os_workgroup_attr_t);
++    void *h = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox",
++                     RTLD_LAZY | RTLD_LOCAL);
++    create_fn create = h ? (create_fn)dlsym(h, "AudioWorkIntervalCreate") : NULL;
++
++    if (!create) {
++        omacvm_vcs_missing = "no work interval on this macOS";
++        return;
++    }
++    omacvm_vcs_wg = create("QEMU vCPUs", OS_CLOCK_MACH_ABSOLUTE_TIME, NULL);
++    if (!omacvm_vcs_wg) {
++        omacvm_vcs_missing = "the work interval was refused";
++    }
++}
++
++static inline os_workgroup_t omacvm_vcs_group(void)
++{
++    static pthread_once_t once = PTHREAD_ONCE_INIT;
++
++    pthread_once(&once, omacvm_vcs_make);
++    return omacvm_vcs_wg;
++}
++
++/*
++ * On the vCPU's own thread: in the group while on, out while off. Joining
++ * twice or leaving twice does nothing. True: in the group now.
++ */
++static inline bool omacvm_vcs_follow(OmacvmVcs *s, bool on)
++{
++    os_workgroup_t wg;
++
++    if (!on) {
++        if (s->joined) {
++            os_workgroup_leave(omacvm_vcs_wg, &s->token);
++            s->joined = false;
++        }
++        s->failed = false;
++        return false;
++    }
++    if (s->joined || s->failed) {
++        return s->joined;
++    }
++    wg = omacvm_vcs_group();
++    if (!wg || os_workgroup_join(wg, &s->token) != 0) {
++        s->failed = true;
++        return false;
++    }
++    s->joined = true;
++    return true;
++}
++
++/* A change of the switch for `total` vCPUs: its number. */
++static inline unsigned omacvm_vcs_tally_begin(OmacvmVcsTally *t, int total)
++{
++    t->gen++;
++    t->left = total;
++    t->total = total;
++    t->joined = 0;
++    return t->gen;
++}
++
++/*
++ * One vCPU followed change `gen` (in the group or not). True: it was the
++ * last one, so the log can say what all of them did. A vCPU that follows an
++ * older change (a newer one came first) counts for nothing.
++ */
++static inline bool omacvm_vcs_tally_done(OmacvmVcsTally *t, unsigned gen, bool joined)
++{
++    if (gen != t->gen || t->left <= 0) {
++        return false;
++    }
++    t->joined += joined;
++    return --t->left == 0;
++}
++
++/* For qemu.log: "on, 9 of 10 vCPUs (why)", "off (why)" or why not. */
++static inline void omacvm_vcs_text(char *buf, size_t n, bool on, const OmacvmVcsTally *t,
++                                   const char *why)
++{
++    if (!on) {
++        snprintf(buf, n, "off (%s)", why);
++    } else if (t->joined == 0 && omacvm_vcs_missing) {
++        snprintf(buf, n, "not available: %s (%s)", omacvm_vcs_missing, why);
++    } else {
++        snprintf(buf, n, "on, %d of %d vCPUs (%s)", t->joined, t->total, why);
++    }
++}
++
++#endif

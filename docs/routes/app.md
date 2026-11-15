@@ -604,6 +604,34 @@ The Mac's input methods type in Omarchy (feature `mac-ime`; what it does:
   step), `app/runtime/Tests/keys/test-ime.sh` (the window code's rules and
   hooks), `swift run features-tests` (the port only with the record's on).
 
+## VM CPU clock saver (experimental, off by default)
+
+The VM window's settings have **VM CPU clock saver** (General, after
+Resources). macOS runs every thread of the app in front at the CPU clock it
+gives that window, and QEMU's vCPU threads got that high clock too, even for
+a video or a terminal. With the switch on, the vCPU threads are a thread
+group of their own (they join a work interval that is never started), so
+macOS sets their clock by their own work, like an app in the background:
+
+- Only the vCPU threads move. Their QoS class, priority and timer tier stay
+  as they are; the main loop, sound, present and display threads stay in the
+  app's group. Those share the Mac's performance cores, which then run at a
+  lower clock while the VM is light.
+- Measured on an M1 Max playing a 1080p video at 120 Hz: 17.7 W -> 14.7-15.4
+  W for the whole Mac, with 1 to 3 dropped video frames in 12,000-15,000
+  (none with it off). A MacBook Air (M2) saved 0.1-0.2 W for video and
+  scrolling and nothing at idle. M1 Pro, M3 and M4 are not measured. The
+  owner accepted the rare drops for this opt-in switch only (ADR 0073).
+- It works at once in a running VM (QEMU watches the setting; each vCPU
+  joins or leaves on its own thread). Off puts the vCPUs back at once. GPU
+  safe mode keeps it off. `defaults write org.omacvm.app vcpuClockSaver
+  -bool true` does the same as the row.
+- QEMU's log (`logs/qemu.log`): "OmacVM: vCPU clock saver: off (the
+  switch)" at the start, and after each change "on, 10 of 10 vCPUs (the
+  switch)" or "off (the switch)"; "not available: no work interval on this
+  macOS" if macOS refuses it (the vCPUs then run as before). `omacvm check`
+  has a "VM CPU clock saver" line while it is on.
+
 ## Pause drawing while hidden (experimental, off by default)
 
 The VM window's settings have **Pause drawing while hidden** (Display). With

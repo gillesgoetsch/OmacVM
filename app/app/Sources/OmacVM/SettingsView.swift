@@ -184,6 +184,7 @@ struct SettingsSections: View {
             SectionTitle(text: "General", first: true)
             Card {
                 ResourcesRow(state: state)
+                VCPUClockSaverRow(tick: state.tick)
                 GraphicsRow(state: state)
                 GPUComputeRow(state: state)
                 GPUOffMainLoopRow(tick: state.tick)

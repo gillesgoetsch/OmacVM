@@ -642,7 +642,11 @@ final class Runner {
         if tiles.on {
             env["OMACVM_GL_PRESENT_TILES"] = env["OMACVM_GL_PRESENT_TILES"] == "check" ? "check" : "1"
         }
+        // VM CPU clock saver (ADR 0073): QEMU, which runs as the app, reads and
+        // watches vcpuClockSaver itself; an inherited OMACVM_VCPU_CLOCK_SAVER
+        // decides instead (as OMACVM_GUEST_PAUSE does). GPU safe mode keeps it off.
         if Settings.gpuSafeMode {
+            env["OMACVM_VCPU_CLOCK_SAVER"] = "0"
             env["OMACVM_VIRGL_POLL_FENCES"] = "1"
             env["OMACVM_GL_PRESENT"] = "layer"
             env["OMACVM_GL_PRESENT_ON_TICK"] = "1"

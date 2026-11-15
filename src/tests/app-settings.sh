@@ -75,6 +75,7 @@ expect "fresh: Vulkan windows without a copy on (vkWindowsNoCopy)" true "$(val a
 expect "fresh: HDR and 10-bit colour off" false "$(val app.hdr)"
 expect "fresh: Extra brightness off" false "$(val app.extraBrightness)"
 expect "fresh: Pause drawing while hidden off" false "$(val app.pauseWhileHidden)"
+expect "fresh: VM CPU clock saver off" false "$(val app.vcpuClockSaver)"
 expect "fresh: Pointer on its own layer off" false "$(val app.pointerPlane)"
 expect "fresh: Draw only what changed off" false "$(val app.presentTiles)"
 expect "fresh: Ghostty on the Mac's GPU off" false "$(val app.ghosttyGPU)"
@@ -111,7 +112,7 @@ done
 
 # (b) Changes as the window makes them, read by the next launches; (c) per VM.
 mkdir -p "$H/Shared"
-for kv in "startFullScreen false" "keepDockAway false" "audioThread false" "gpuOffMainLoop false" "shareKeyboard true" "vkWindowsNoCopy false" "hdr true" "extraBrightness true" "pauseWhileHidden true" "pointerPlane true" "presentTiles true" "ghosttyGPU true" "mediaControls false" "closeAction ask" "appIconTheme flexoki-light" \
+for kv in "startFullScreen false" "keepDockAway false" "audioThread false" "gpuOffMainLoop false" "shareKeyboard true" "vkWindowsNoCopy false" "hdr true" "extraBrightness true" "pauseWhileHidden true" "vcpuClockSaver true" "pointerPlane true" "presentTiles true" "ghosttyGPU true" "mediaControls false" "closeAction ask" "appIconTheme flexoki-light" \
           "escapeSwipe all" "mouseSwipeFingers 3" "swipeOut true" "updateChecks false"; do
   run set $kv || { echo "FAIL set $kv"; fail=1; }
 done
@@ -130,6 +131,7 @@ for launch in 1 2; do
   expect "launch $launch: HDR and 10-bit colour on" true "$(val app.hdr)"
   expect "launch $launch: Extra brightness on" true "$(val app.extraBrightness)"
   expect "launch $launch: Pause drawing while hidden on" true "$(val app.pauseWhileHidden)"
+  expect "launch $launch: VM CPU clock saver on" true "$(val app.vcpuClockSaver)"
   expect "launch $launch: Pointer on its own layer on" true "$(val app.pointerPlane)"
   expect "launch $launch: Draw only what changed on" true "$(val app.presentTiles)"
   expect "launch $launch: Ghostty on the Mac's GPU on" true "$(val app.ghosttyGPU)"
@@ -161,6 +163,7 @@ expect "the Vulkan windows switch is a key in the app's domain" 0 "$(defaults re
 expect "the HDR switch is the hidden switch's key in the app's domain" 1 "$(defaults read "$D" hdr)"
 expect "the extra brightness switch is the key QEMU reads in the app's domain" 1 "$(defaults read "$D" extraBrightness)"
 expect "the pause switch is the key QEMU reads in the app's domain" 1 "$(defaults read "$D" pauseWhileHidden)"
+expect "the VM CPU clock saver switch is the key QEMU reads in the app's domain" 1 "$(defaults read "$D" vcpuClockSaver)"
 expect "the media controls switch is the key the launcher watches in the app's domain" 0 "$(defaults read "$D" mediaControls)"
 expect "update checks in the file the control centre shares" "false" \
   "$(plutil -extract update_checks raw -o - "$T/settings/settings.json")"

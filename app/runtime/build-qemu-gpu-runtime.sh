@@ -1253,6 +1253,17 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-video-awake-l
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-video-awake.patch"
 "$native_dir/Tests/display/test-video-awake.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the display is not kept on for a video as tested, or its rules fail (test-video-awake.sh)"
+# OmacVM: VM CPU clock saver (experimental, off by default; ADR 0073): with
+# the app's switch on, the vCPU threads join a work interval of their own,
+# so macOS sets their clock by their own load. Its rules' test, a check that
+# the wiring checks fail on the code before, the wiring. Before no-app-nap.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-hvf-vcpu-clock-saver-logic.patch"
+"$native_dir/Tests/vcpu/test-vcpu-clock-saver.sh" --self-test "$source_dir/accel/hvf/hvf-accel-ops.c" "$source_dir/ui/cocoa.m" || \
+  die "a VM CPU clock saver wiring check passes without the patches (test-vcpu-clock-saver.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-hvf-vcpu-clock-saver.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-vcpu-clock-saver.patch"
+"$native_dir/Tests/vcpu/test-vcpu-clock-saver.sh" "$source_dir/accel/hvf/hvf-accel-ops.c" "$source_dir/ui/cocoa.m" || \
+  die "the VM CPU clock saver is not wired as tested, or its rules fail (test-vcpu-clock-saver.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"

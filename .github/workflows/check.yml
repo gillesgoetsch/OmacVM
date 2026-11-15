@@ -500,6 +500,11 @@ jobs:
       - name: vCPU stall note (a vCPU blocked on the Mac's memory or without a core)
         run: app/runtime/Tests/vcpu/test-vcpu-stall.sh
 
+      - name: VM CPU clock saver (ADR 0073; join, scheduling kept, leave before the end, no retry; omacvm check line)
+        run: |
+          app/runtime/Tests/vcpu/test-vcpu-clock-saver.sh
+          src/tests/vcpu-clock-saver-check.sh
+
       - name: Graphics memory guard keeps a part for the desktop (the rules)
         run: app/runtime/Tests/virgl/test-gpu-guard-policy.sh
 

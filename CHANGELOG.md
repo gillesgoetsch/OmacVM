@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.0 (unreleased)
+
+- **VM CPU clock saver (experimental, off by default).** A new switch in the
+  VM window's settings (General). macOS runs every thread of the app in
+  front at a high CPU clock, and the VM's CPUs got that too, even for a
+  video. With this on, the VM's CPUs get the clock their own work needs. On
+  an M1 Max playing a 1080p video the whole Mac took 14.7-15.4 W instead of
+  17.7 W; the trade-off is 1 to 3 dropped video frames in 12,000-15,000. A
+  MacBook Air (M2) saves only 0.1-0.2 W; other Macs are not measured yet.
+  It works at once in a running VM; GPU safe mode keeps it off.
+  `omacvm check` shows it while it is on. ADR 0073.
+
 ## 3.4.5
 
 Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need about
