@@ -1237,9 +1237,22 @@ and 5):
 
 4. In `/etc/fstab`, put a `#` before the line of `/home` and add
    `LABEL=omacvm-home /home xfs noatime,discard,x-systemd.growfs 0 0`.
+   Linux numbers two disks anew at each start, so GRUB's entry without an
+   initramfs ("with Linux Image") must name the root by PARTUUID:
+
+   ```bash
+   echo GRUB_DISABLE_LINUX_PARTUUID=false >> /etc/default/grub
+   grub-mkconfig -o /boot/grub/grub.cfg
+   ```
+
 5. Restart the VM. `omacvm check` says where `/home` is. The old home stays
    in the system disk's `@home` until you empty it
    (`mount -o subvol=@home /dev/disk/by-label/omarchy /mnt`).
+
+To go back while `@home` still has the old home: in `/etc/fstab` take the
+new line out and the `#` away, shut the VM down, and take `HOME_GB` out of
+`vm.env`. The VM is then as it was at step 3; what changed in the home
+since is on `data.img` only.
 
 ## Every Mac display
 
