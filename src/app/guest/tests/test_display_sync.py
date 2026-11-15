@@ -161,6 +161,7 @@ class SyncCase(unittest.TestCase):
         fake.chmod(0o755)
         self.config = self.tmp / "monitors.lua"
         self.set_scale("2")
+        self.sig = None             # the session's HYPRLAND_INSTANCE_SIGNATURE
 
     def tearDown(self):
         # the look the guard schedules for when a hold ends
@@ -188,6 +189,10 @@ class SyncCase(unittest.TestCase):
             "XDG_CONFIG_HOME": str(self.tmp / "config"),
             "XDG_RUNTIME_DIR": str(self.tmp / "run"),
         })
+        # Not the Hyprland of the shell running the tests.
+        env.pop("HYPRLAND_INSTANCE_SIGNATURE", None)
+        if self.sig:
+            env["HYPRLAND_INSTANCE_SIGNATURE"] = self.sig
         return subprocess.run([BASH, str(SYNC), "--once"], env=env, capture_output=True,
                               text=True, timeout=60)
 
@@ -739,6 +744,114 @@ class HDR(SyncCase):
         self.run_sync()
         self.assertEqual(len(self.evals()), sent)
         self.assertEqual(self.window_rules(), [self.CLAMP])
+
+    # A new Hyprland in the same runtime folder (log out and in within about
+    # 10 s, SDDM restarted) has none of the rules: the files said they were
+    # sent, so the tone map never reached it.
+    def hyprland(self, sig: str, socket: bool = True, age: float = 0) -> pathlib.Path:
+        d = self.tmp / "run/hypr" / sig
+        d.mkdir(parents=True, exist_ok=True)
+        if socket:
+            (d / ".socket.sock").write_text("")
+        if age:
+            t = time.time() - age
+            os.utime(d, (t, t))
+        return d
+
+    def log_in_again(self, sig: str):
+        """The old session's Hyprland is gone (its folder with it), a new one runs."""
+        shutil.rmtree(self.tmp / "run/hypr", ignore_errors=True)
+        self.hyprland(sig)
+        self.sig = sig
+
+    def test_new_instance_gets_the_tone_map_again(self):
+        self.layout(2)
+        self.log_in_again("aaa_1794715374_232763981")
+        self.run_sync()
+        self.assertEqual(self.window_rules(), [self.CLAMP])
+        self.assertEqual((self.state / "instance").read_text(), "aaa_1794715374_232763981\n")
+        sent = len(self.evals())
+        self.log_in_again("bbb_1794715390_118273645")
+        r = self.run_sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.window_rules(), [self.CLAMP, self.CLAMP])
+        self.assertEqual(len(self.evals()), sent + 1)
+        self.assertEqual((self.state / "instance").read_text(), "bbb_1794715390_118273645\n")
+        self.assertEqual((self.state / "tonemap").read_text(), "clamp\n")
+
+    def test_same_instance_sends_nothing(self):
+        self.layout(2)
+        self.log_in_again("aaa_1")
+        self.run_sync()
+        sent, rules = len(self.evals()), len(self.window_rules())
+        r = self.run_sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.evals()), sent)
+        self.assertEqual(len(self.window_rules()), rules)
+
+    def test_two_runs_in_a_new_instance(self):
+        # the reload hook and the watcher both run at a login: one sends
+        self.layout(2)
+        self.log_in_again("aaa_1")
+        self.run_sync()
+        self.log_in_again("bbb_2")
+        self.run_sync()
+        sent, rules = len(self.evals()), len(self.window_rules())
+        self.run_sync()
+        self.assertEqual(len(self.evals()), sent)
+        self.assertEqual(len(self.window_rules()), rules)
+
+    def test_no_signature_takes_the_newest_with_a_socket(self):
+        self.layout(2)
+        self.hyprland("old_1", age=60)
+        self.hyprland("new_2", age=30)
+        self.hyprland("nosocket_3", socket=False)          # newest, no Hyprland in it
+        self.run_sync()
+        self.assertEqual((self.state / "instance").read_text(), "new_2\n")
+        self.assertEqual(self.window_rules(), [self.CLAMP])
+
+    def test_no_hyprland_folder_changes_nothing(self):
+        self.layout(2)
+        self.run_sync()
+        self.assertFalse((self.state / "instance").exists())
+        self.assertEqual(self.window_rules(), [self.CLAMP])
+        self.hyprland("nosocket_1", socket=False)
+        self.run_sync()
+        self.assertFalse((self.state / "instance").exists())
+        self.assertEqual(self.window_rules(), [self.CLAMP])
+
+    def test_process_of_an_ended_session_changes_nothing(self):
+        # Its signature is set, but that Hyprland's socket is gone: clearing
+        # would make it and the new session's process take turns resending.
+        self.layout(2)
+        self.log_in_again("aaa_1")
+        self.run_sync()
+        before = {p.name: p.read_text() for p in self.state.iterdir() if p.is_file()}
+        sent, rules = len(self.evals()), len(self.window_rules())
+        self.sig = "ended_0"
+        r = self.run_sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        after = {p.name: p.read_text() for p in self.state.iterdir() if p.is_file()}
+        self.assertEqual(after, before)
+        self.assertEqual(len(self.evals()), sent)
+        self.assertEqual(len(self.window_rules()), rules)
+
+    def test_new_instance_keeps_rule_and_held_and_resends_the_rule(self):
+        self.layout(2)
+        self.log_in_again("aaa_1")
+        self.run_sync()
+        rule = (self.state / "Virtual-1.rule").read_text()
+        (self.state / "held").write_text("2026-11-15T05:00:00 Virtual-1 changed 6 times\n")
+        (self.state / "Virtual-2.sent").write_text("1\n")    # an output that left
+        (self.state / "Virtual-3.rule").write_text("kept\n")
+        first = self.evals()[-1]
+        self.log_in_again("bbb_2")                          # same window: mode, scale, place match
+        self.run_sync()
+        self.assertEqual(self.evals()[-1], first)           # the whole rule again
+        self.assertEqual((self.state / "Virtual-1.rule").read_text(), rule)
+        self.assertTrue((self.state / "held").exists())
+        self.assertEqual((self.state / "Virtual-3.rule").read_text(), "kept\n")
+        self.assertFalse((self.state / "Virtual-2.sent").exists())
 
 
 class Placement(unittest.TestCase):

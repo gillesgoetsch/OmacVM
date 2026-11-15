@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.7 (unreleased)
+
+- **HDR after a quick re-login**: with HDR on, pages looked 3-4 % darker and highlights were cut
+  after logging out and in again within about 10 s (or after SDDM restarted), on Omarchy's stable
+  and edge channels alike, until the next reboot. The VM's display sync kept its record of what it
+  had sent to Hyprland across the new login, so the new Hyprland never got the rule that stops it
+  tone-mapping windows. It now notices a new Hyprland and sends its rules again; nothing more is
+  sent within one login. `omacvm check`'s "HDR output" line counts the rule only when it went to the
+  running Hyprland. Update VM puts it in.
+
 ## 3.4.5
 
 Mission Control is a normal option now; faster disks on Omarchy 4.5; new VMs no longer need about
