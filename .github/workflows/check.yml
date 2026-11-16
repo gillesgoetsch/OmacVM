@@ -703,6 +703,9 @@ jobs:
       - name: omacvm check's "window surfaces" line says which surfaces the app's window used (lossless or plain)
         run: src/tests/surfaces-check.sh
 
+      - name: omacvm check's "Copy only what changed" line says how the window's frames were copied (partial present)
+        run: src/tests/partial-check.sh
+
       - name: Disk flushes as write barriers (patch pinned and tested, log lines, check)
         run: src/tests/disk-flush.sh
 
