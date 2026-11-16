@@ -1095,8 +1095,10 @@ app)
     aq=$(/usr/local/lib/omacvm/aquamarine/omacvm-aquamarine-build --status 2>/dev/null) || true
     hw=$(as_user hyprctl getoption cursor:no_hardware_cursors -j 2>/dev/null | jq -r '.int' 2>/dev/null)
     hp=$(pgrep -x Hyprland | head -n1)
-    if [[ ! -f /run/omacvm/mac-pointer.env ]]; then
-      warn "Mac pointer" "macPointer is on, but Hyprland draws the pointer: aquamarine with cursor hotspots is ${aq:-not installed (omacvm apply)} at this start (sudo omacvm-aquamarine-build, then restart the VM)"
+    if [[ ! -f /run/omacvm/mac-pointer.env && $aq == "built for "* ]]; then
+      warn "Mac pointer" "macPointer is on, but Hyprland draws the pointer: aquamarine with cursor hotspots was built after this start (restart the VM)"
+    elif [[ ! -f /run/omacvm/mac-pointer.env ]]; then
+      warn "Mac pointer" "macPointer is on, but Hyprland draws the pointer: aquamarine with cursor hotspots is ${aq:-not installed (omacvm apply)} (sudo omacvm-aquamarine-build, then restart the VM)"
     elif [[ -z $hp ]] || ! grep -q ' /usr/local/lib/omacvm/aquamarine/' "/proc/$hp/maps" 2>/dev/null; then
       warn "Mac pointer" "macPointer is on, but the running Hyprland has Omarchy's aquamarine (restart the VM)"
     elif [[ $hw != 0 ]]; then
