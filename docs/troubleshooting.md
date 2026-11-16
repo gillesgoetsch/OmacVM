@@ -2058,7 +2058,9 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   (Google Chrome, YouTube's 1080p60 AV1 stream, full screen, two runs each):
   with Ambient mode 69 frames per second reach the Mac instead of 60, and
   the VM's GPU time on the Mac goes up by about half (276 against 180 ms
-  per second). Chrome on macOS draws the glow too, at a lower cost.
+  per second). On a MacBook Air M2 (60 Hz, VM in full screen, live YouTube,
+  so a rough figure) the whole Mac drew about 0.9 W less with Ambient mode
+  off. Chrome on macOS draws the glow too, at a lower cost.
 - **What you can do:** Ambient mode is YouTube's own look, so OmacVM leaves
   it as it is. To turn it off: the gear in the player, then Ambient mode.
   The browser keeps the choice for later videos. The bars around a full
