@@ -29,8 +29,12 @@
 #                             own input until (epoch s, 0 never), FOREIGN = the
 #                             watcher's last foreign input (epoch s, 0 none)
 #   person_check              the verdict now
-#   person_locked             exit 0 while the session is locked (the console's screen lock in
-#                             the IORegistry); present-locked.sh runs only then
+#   person_locked             exit 0 while the session is locked: the lock flag in the
+#                             IORegistry, and still set after a display wake (a
+#                             sleeping display sets the flag too); present-locked.sh
+#                             runs only then
+#   person_lock_flag          exit 0 while the flag is set, no wake (for loops that poll:
+#                             no flag always means unlocked)
 #   person_watch_start, person_watch_stop
 #   person_gate ROW           between two rows: what the watcher saw since the last
 #                             gate goes to person_overlap (a hook, if the harness
@@ -46,6 +50,9 @@ PERSON_POLL=${PERSON_POLL:-10}
 PERSON_TICK=${PERSON_TICK:-2}
 # Shared with onscreen.sh's runs before (its LASTF): our last own input, epoch s.
 PERSON_OWN=${PERSON_OWN:-$HOME/Library/Caches/omacvm-e2e-last-input}
+# person_locked: when a lock was last seen after a display wake (epoch s).
+PERSON_LOCKSEEN=${PERSON_LOCKSEEN:-$HOME/Library/Caches/omacvm-e2e-lock-seen}
+PERSON_REWAKE=${PERSON_REWAKE:-300}
 PERSON_WHY=""
 
 # The sources (tests replace these functions with made-up ones).
@@ -63,6 +70,8 @@ _person_tcp() { nettop -m tcp -l 1 -L 1 -n 2>/dev/null; }
 _person_idle_raw() { ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {print int($NF / 1000000000); exit}'; }
 _person_now() { date +%s; }
 _person_lock_raw() { ioreg -n Root -d1 -k IOConsoleUsers 2>/dev/null; }
+# Lights the display like a key press would, without an input event: no password, no unlock.
+_person_wake() { caffeinate -u -t 2; sleep 3; }
 
 person_remote() {
   local r="" a ps
@@ -84,7 +93,23 @@ person_remote() {
 person_hid_idle() { local i; i=$(_person_idle_raw); echo "${i:-0}"; }
 
 # No `ioreg | grep -q`: grep ends ioreg early, and under pipefail its SIGPIPE always made it No.
-person_locked() { [[ $(_person_lock_raw) == *'"CGSSessionScreenIsLocked"=Yes'* ]]; }
+person_lock_flag() { [[ $(_person_lock_raw) == *'"CGSSessionScreenIsLocked"=Yes'* ]]; }
+# The flag alone is no lock screen: macOS sets it while the display sleeps or the screen
+# saver runs, also with "Require password" off (a test Mac read Yes for a day and was
+# never locked). So wake the display and look again; only a flag that stays is a lock.
+# A lock seen that way is not woken again for PERSON_REWAKE s while the flag stays, so a
+# harness that waits on it does not light the lock screen every few seconds.
+person_locked() {
+  local s
+  person_lock_flag || { rm -f "$PERSON_LOCKSEEN" 2>/dev/null; return 1; }
+  s=$(cat "$PERSON_LOCKSEEN" 2>/dev/null)
+  [[ $s =~ ^[0-9]+$ ]] && (( $(_person_now) - s < PERSON_REWAKE )) && return 0
+  _person_wake
+  person_lock_flag || return 1
+  mkdir -p "$(dirname "$PERSON_LOCKSEEN")" 2>/dev/null
+  _person_now > "$PERSON_LOCKSEEN" 2>/dev/null
+  return 0
+}
 
 person_posted() {   # [SECONDS]: our input from now until SECONDS from now
   local until=$(( $(_person_now) + ${1:-2} )) old
