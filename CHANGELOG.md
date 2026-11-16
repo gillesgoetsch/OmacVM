@@ -12,6 +12,13 @@ in more words.
   with the desktop open. The package is the same box64, so a VM that has it keeps it. With less
   than 1.5 GB free in the VM, switching it on now stops at once and says so, and a compiler killed
   anyway is named as the VM running out of memory (troubleshooting 65).
+- **HDR screenshots and screen sharing on Hyprland 0.57.2**: with HDR on, screenshots, colour picks
+  and screen shares of Chrome came out too bright again on Omarchy's edge channel (and with Arch
+  Linux ARM's own Hyprland), which moved to 0.57.2: OmacVM's fix (#579) had files for 0.56.2 and
+  0.57.0 only and stays out of a Hyprland it was not made for. It now has one for 0.57.2 too
+  (Hyprland's own file of 0.57.2, with its one-line change, plus the same two OmacVM changes).
+  Update VM puts it in; `omacvm check`'s "HDR captures" line says "ok" again there. Omarchy's
+  stable 0.56.2 is unchanged. No channel ships 0.57.1, so it has no file.
 
 ## 3.4.6
 
