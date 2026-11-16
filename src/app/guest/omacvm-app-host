@@ -13,8 +13,21 @@
 # (the runtime decodes beside its GPU thread: the shim lets Chromium's decoder
 # wait for each picture) and omacvm.valogical (the runtime samples a texture at
 # the size the guest says: the shim tells it each video surface's own size).
+# With omacvm.hwcursor=1 also /run/omacvm/mac-pointer.env, when OmacVM's
+# aquamarine (cursor hotspots) is built for the installed package: the
+# compositor's unit reads it (LD_LIBRARY_PATH: only that library is in the
+# folder) and omacvm_app.lua puts the pointer on the cursor plane. Without the
+# file this start has no Mac pointer: Omarchy's aquamarine, Hyprland draws
+# the pointer.
 set -euo pipefail
 out=/run/omacvm/host.env
+ptr=/run/omacvm/mac-pointer.env
 install -d -m755 /run/omacvm
 python3 -I /usr/local/lib/omacvm/omacvm-smbios > "$out.tmp"
 chmod 644 "$out.tmp"; mv "$out.tmp" "$out"
+rm -f "$ptr"
+if grep -qx 'OMACVM_HWCURSOR=1' "$out" &&
+   lib=$(/usr/local/lib/omacvm/aquamarine/omacvm-aquamarine-build --lib 2>/dev/null); then
+  printf 'LD_LIBRARY_PATH=%s\n' "$lib" > "$ptr.tmp"
+  chmod 644 "$ptr.tmp"; mv "$ptr.tmp" "$ptr"
+fi

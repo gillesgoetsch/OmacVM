@@ -1086,6 +1086,25 @@ app)
       ok "Pointer layer" "on the cursor plane (experimental): pointer moves do not redraw the screen"
     fi
   fi
+  # Mac pointer for the VM (the app's hidden macPointer): this start asked for
+  # it (omacvm.hwcursor=1). It runs when OmacVM's aquamarine (cursor hotspots)
+  # is built for the installed package (omacvm-app-host then wrote
+  # mac-pointer.env), the running Hyprland loaded it and puts the pointer on
+  # the cursor plane; else Hyprland draws the pointer as without the setting.
+  if grep -qx 'OMACVM_HWCURSOR=1' /run/omacvm/host.env 2>/dev/null; then
+    aq=$(/usr/local/lib/omacvm/aquamarine/omacvm-aquamarine-build --status 2>/dev/null) || true
+    hw=$(as_user hyprctl getoption cursor:no_hardware_cursors -j 2>/dev/null | jq -r '.int' 2>/dev/null)
+    hp=$(pgrep -x Hyprland | head -n1)
+    if [[ ! -f /run/omacvm/mac-pointer.env ]]; then
+      warn "Mac pointer" "macPointer is on, but Hyprland draws the pointer: aquamarine with cursor hotspots is ${aq:-not installed (omacvm apply)} at this start (sudo omacvm-aquamarine-build, then restart the VM)"
+    elif [[ -z $hp ]] || ! grep -q ' /usr/local/lib/omacvm/aquamarine/' "/proc/$hp/maps" 2>/dev/null; then
+      warn "Mac pointer" "macPointer is on, but the running Hyprland has Omarchy's aquamarine (restart the VM)"
+    elif [[ $hw != 0 ]]; then
+      warn "Mac pointer" "the cursor plane is there, but Hyprland draws the pointer (cursor:no_hardware_cursors ${hw:-unknown}: an own setting in the Hyprland config?)"
+    else
+      ok "Mac pointer" "the Mac's own cursor shows the pointer (experimental; $aq)"
+    fi
+  fi
   # Video decoding on the Mac's media engine (an app with it lists decoders).
   drv=virtio_gpu; [[ -f /usr/local/lib/dri/omacvm_drv_video.so ]] && drv=omacvm
   # The shim prints the Mac's per-VM limit (past it, players decode on the CPU).

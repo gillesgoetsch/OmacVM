@@ -63,6 +63,25 @@ ln -sf $VG/omacvm-virtio-gpu-build /usr/local/bin/omacvm-virtio-gpu-build
 install -Dm644 virtio-gpu/95-omacvm-virtio-gpu.hook /etc/pacman.d/hooks/95-omacvm-virtio-gpu.hook
 $VG/omacvm-virtio-gpu-build --hook > /var/log/omacvm-virtio-gpu.log 2>&1 || true
 echo "OmacVM.app: virtio-gpu driver $($VG/omacvm-virtio-gpu-build --status 2>/dev/null || true)"
+# Hyprland's aquamarine with cursor hotspots, for the app's hidden macPointer
+# (the Mac's own cursor shows the pointer): Omarchy's recipe with one patch,
+# the library kept in /usr/local/lib/omacvm/aquamarine/<version>, where ld.so
+# does not look. omacvm-app-host hands it to the compositor's unit (the
+# drop-in) only in a start that asks and only when it is built for the
+# installed package; else Hyprland runs Omarchy's. Built here only when this
+# start asks for the Mac pointer or a build is there already (a few minutes;
+# a VM that never asks needs none); the pacman hook builds again after an
+# aquamarine update.
+AQ=/usr/local/lib/omacvm/aquamarine
+install -Dm755 aquamarine/omacvm-aquamarine-build $AQ/omacvm-aquamarine-build
+install -Dm644 aquamarine/aquamarine-cursor-plane-hotspot.patch $AQ/aquamarine-cursor-plane-hotspot.patch
+ln -sf $AQ/omacvm-aquamarine-build /usr/local/bin/omacvm-aquamarine-build
+install -Dm644 aquamarine/95-omacvm-aquamarine.hook /etc/pacman.d/hooks/95-omacvm-aquamarine.hook
+install -Dm644 aquamarine/90-omacvm-mac-pointer.conf /etc/systemd/user/wayland-wm@.service.d/90-omacvm-mac-pointer.conf
+if grep -qx 'OMACVM_HWCURSOR=1' /run/omacvm/host.env 2>/dev/null || compgen -G "$AQ/*/" > /dev/null; then
+  $AQ/omacvm-aquamarine-build > /var/log/omacvm-aquamarine.log 2>&1 || true
+  echo "OmacVM.app: aquamarine for the Mac pointer $($AQ/omacvm-aquamarine-build --status 2>/dev/null || true)"
+fi
 # Clipboard both ways, over a virtio port (the agent is try-omarchy's).
 ../../guest/pkg-add wl-clipboard || true
 # uaccess: the logged-in user may open the port (before 73-seat-late.rules).
