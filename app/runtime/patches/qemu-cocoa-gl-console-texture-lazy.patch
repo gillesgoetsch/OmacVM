@@ -224,9 +224,9 @@ index 11f15f1..70c50ae 100644
 +        } else if (omacvm_console_check_on()) {
 +            present_lossless = 0;
 +            info_report("cocoa: lossless surfaces: off (OMACVM_TEST_CONSOLE_CHECK reads them back)");
-         } else if (pd && !strcmp(pd, "check")) {
-             /*
-              * The partial present's check mode reads the shown surface back
+         } else if (@available(macOS 27.0, *)) {
+             /* checked there */
+         } else {
 @@ -9597,7 +9740,7 @@ static bool cocoa_gl_present(void)
          w = omacvm_view_w ? omacvm_view_w : (surface ? surface_width(surface) : 0);
          h = omacvm_view_h ? omacvm_view_h : (surface ? surface_height(surface) : 0);
