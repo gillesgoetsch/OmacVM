@@ -68,6 +68,24 @@ mixer played); on the own thread they are all guest side (vCPUs waiting for
 the BQL while virgl holds it, or no Mac time). Full log: the audio-crackle
 track notes.
 
+## The tick follows the stream (3.5.0, `qemu-audio-tick-follows-stream.patch`)
+
+Same build both ways, `OMACVM_AUDIO_THREAD_PERIOD_US=1000` (the old fixed
+1 ms tick) vs the tick following the stream (5.33 ms here). Mac mini M4,
+hidden test VM (4 vCPUs, Omarchy 4.5, ALSA period 1024, buffer 32768),
+the tone for 3 minutes per case, sdlprobe with loopback and mute
+(work/power-1116/snd/kit):
+
+| Case | 1 ms | follows |
+|---|---|---|
+| tone (pacat), idle | 0 / 0 | 0 / 0 |
+| tone + stress-ng in the user's app.slice | 0 / 0 | 0 / 0 |
+| tone + glmark2 | 10 / 13 (xruns 0/5) | 6 / 16 (xruns 1/1) |
+| round trip (jack_iodelay) | 211.7, 212.0 ms | 208.8, 208.9 ms |
+
+Breaks are QEMU's mixer / what SDL got. The pacing's forgive and sync-step
+traces counted the same in both (367 / 412-415 per boot).
+
 ## Results (MacBook Pro M4 Max, 8 vCPUs, 10 minutes each, bench lock held)
 
 glmark2's terrain scene (a new scene every 10 s) and 8 busy `yes` loops on

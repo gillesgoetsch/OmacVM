@@ -3,6 +3,15 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.0 (unreleased)
+
+- **Sound wakes the Mac less often.** While anything plays (or a stream is
+  open in silence), the VM's sound thread woke 1000 times a second. It now
+  ticks with the stream: every 5.3 ms with the usual buffers, shorter when a
+  guest app or the Mac's output (AirPods) needs it. Same delay, no new
+  breaks in the tests. MacBook Air M2, a video with sound in the browser:
+  about 0.1 W less for the whole Mac.
+
 ## 3.4.7
 
 x86 apps switch on in 3 GB VMs, and HDR holds after a quick re-login and in Hyprland 0.57.2 screenshots.
