@@ -3,7 +3,8 @@
 #
 #   src/tests/app-nap.sh            offline checks (no VM, no QEMU build): the patch is pinned,
 #                                   the runtime build applies and checks it, the activity starts
-#                                   before the run loop, keeps idle sleep, has its switch and log lines
+#                                   before the run loop, keeps idle sleep, has its switch and log lines,
+#                                   NSAppSleepDisabled is registered before main
 #   src/tests/app-nap.sh --live PID a running OmacVM QEMU (its window out of sight: screen locked,
 #                                   another Space, minimized): every vCPU thread at priority 31 or
 #                                   above (napped: 4, clamped to Utility QoS: 20). Wait 2 minutes
@@ -74,6 +75,15 @@ check "activity is retained" grep -qF 'reason:@"the virtual machine runs"] retai
 check "cocoa_main starts it before the run loop" \
   awk '/^ static int cocoa_main\(void\)/ { m = 1 } m && /^\+    omacvm_no_app_nap\(\);/ { a = NR } m && /\[NSApp run\];/ { exit !(a && a < NR) }' "$P"
 check "switch OMACVM_APP_NAP=1 lets macOS nap it" grep -qF 'getenv("OMACVM_APP_NAP")' "$P"
+# The activity alone still let macOS 27 clamp a hidden QEMU to Utility QoS (vCPUs at priority 20).
+# NSAppSleepDisabled opts it out of App Nap. A test app ignored it when registered once NSApp
+# existed, so a constructor registers it before main. The switch leaves it out too.
+check "patch registers NSAppSleepDisabled" grep -qF '+            registerDefaults:@{ @"NSAppSleepDisabled": @YES }];' "$P"
+check "... in a constructor, before main" grep -qF '+static void __attribute__((constructor)) omacvm_no_app_nap_default(void)' "$P"
+check "... unless OMACVM_APP_NAP=1" \
+  awk '/omacvm_no_app_nap_default\(void\)/ { m = 1 } m && /omacvm_app_nap_allowed\(\)/ { a = NR } m && /registerDefaults:/ { exit !(a && a < NR) }' "$P"
+check "runtime build stops when NSAppSleepDisabled is missing from cocoa.m" \
+  grep -qF "grep -qF 'registerDefaults:@{ @\"NSAppSleepDisabled\": @YES }'" "$BUILD"
 for line in "App Nap: off while the VM runs" "App Nap: allowed (OMACVM_APP_NAP=1)"; do
   check "patch logs 'OmacVM: $line'" grep -qF "OmacVM: $line" "$P"
 done

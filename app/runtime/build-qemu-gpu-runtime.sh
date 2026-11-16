@@ -1254,10 +1254,13 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-video-awake.p
 "$native_dir/Tests/display/test-video-awake.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the display is not kept on for a video as tested, or its rules fail (test-video-awake.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
-# locked, another Space) macOS slowed the whole VM to a few percent.
+# locked, another Space) macOS slowed the whole VM to a few percent, and on
+# macOS 27 clamped it to Utility QoS despite the activity.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
 grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep' "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
+grep -qF 'registerDefaults:@{ @"NSAppSleepDisabled": @YES }' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: QEMU's window process must opt out of App Nap (no-app-nap patch)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"
