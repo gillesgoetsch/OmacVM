@@ -52,16 +52,16 @@ installed() { pacman -Q aquamarine 2>/dev/null | awk '{ print $2 }' || true; }
 
 stamp_for() { echo "$(sha256sum < "$patch_file" 2>/dev/null | cut -d' ' -f1) $1"; }
 
-lib_of() {   # VERSION: its library file
+has_lib() {   # VERSION: a library file is there
   local f
   for f in "$root/$1"/libaquamarine.so.*; do
-    [[ -f $f && ! -L $f ]] && { echo "$f"; return 0; }
+    [[ -f $f && ! -L $f ]] && return 0
   done
   return 1
 }
 
 current() {   # VERSION: built, for this version and from this patch
-  [[ -n $1 ]] && lib_of "$1" > /dev/null && [[ $(cat "$root/$1/stamp" 2>/dev/null) == "$(stamp_for "$1")" ]]
+  [[ -n $1 ]] && has_lib "$1" && [[ $(cat "$root/$1/stamp" 2>/dev/null) == "$(stamp_for "$1")" ]]
 }
 
 failed() {   # VERSION WHY: said, and kept for --status
@@ -69,9 +69,10 @@ failed() {   # VERSION WHY: said, and kept for --status
   { mkdir -p "$root/$1" && printf '%s\n' "$2" > "$root/$1/error"; } 2>/dev/null || true
 }
 
-soname() { objdump -p "$1" 2>/dev/null | awk '$1 == "SONAME" { print $2 }'; }
+# "" for a file that is no library (a failed build leaves an empty one).
+soname() { objdump -p "$1" 2>/dev/null | awk '$1 == "SONAME" { print $2 }' || true; }
 
-symbols() { nm -D --defined-only "$1" 2>/dev/null | awk '{ print $NF }' | sort -u; }
+symbols() { nm -D --defined-only "$1" 2>/dev/null | awk '{ print $NF }' | sort -u || true; }
 
 # pkgver-pkgrel of a PKGBUILD on stdin (read, never run).
 recipe_version() {
@@ -135,7 +136,7 @@ build() {   # 0 = built or current; 1 = failed
   sys=$(readlink -f "$system_lib" 2>/dev/null) && [[ -f $sys ]] || { failed "$version" "no $system_lib"; return 1; }
   missing=$(tools)
   [[ -z $missing ]] ||
-    { failed "$version" "build tools missing: $missing (pacman -S --needed base-devel git cmake hyprwayland-scanner)"; return 1; }
+    { failed "$version" "build tools missing: $missing (omacvm apply adds them)"; return 1; }
   left=$((budget - SECONDS))
   if ! { work=$(mktemp -d "$P/var/tmp/omacvm-aquamarine.XXXXXX") && stage=$(mktemp -d "$P/var/tmp/omacvm-aquamarine.XXXXXX") &&
          chown "$builder:$builder" "$work"; }; then
@@ -193,7 +194,7 @@ status() {
   [[ -n $v ]] || { echo "no aquamarine package in this VM"; return 1; }
   if current "$v"; then echo "built for aquamarine $v"; return 0; fi
   if [[ -s $root/$v/error ]]; then why="build failed: $(head -n1 "$root/$v/error")"
-  elif lib_of "$v" > /dev/null; then why="out of date (another patch)"
+  elif has_lib "$v"; then why="out of date (another patch)"
   else why="not built yet"; fi
   echo "not built for aquamarine $v: $why"
   return 1
@@ -201,7 +202,11 @@ status() {
 
 case ${1:-} in
   --status|--lib|--unprivileged) ;;
-  *) [[ $EUID == 0 || -n $P ]] || { echo "omacvm-aquamarine: run as root" >&2; exit 2; } ;;
+  *) [[ $EUID == 0 || -n $P ]] || { echo "omacvm-aquamarine: run as root" >&2; exit 2; }
+     # One at a time: omacvm apply and the pacman hook can come together, and
+     # each takes the other's library and stamp away before it writes its own.
+     mkdir -p "$root" && exec 9> "$root/lock" && flock -w "$budget" 9 ||
+       { echo "omacvm-aquamarine: another build holds $root/lock" >&2; exit 1; } ;;
 esac
 case ${1:-} in
   --status)

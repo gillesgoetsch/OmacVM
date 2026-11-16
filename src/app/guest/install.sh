@@ -79,6 +79,8 @@ ln -sf $AQ/omacvm-aquamarine-build /usr/local/bin/omacvm-aquamarine-build
 install -Dm644 aquamarine/95-omacvm-aquamarine.hook /etc/pacman.d/hooks/95-omacvm-aquamarine.hook
 install -Dm644 aquamarine/90-omacvm-mac-pointer.conf /etc/systemd/user/wayland-wm@.service.d/90-omacvm-mac-pointer.conf
 if grep -qx 'OMACVM_HWCURSOR=1' /run/omacvm/host.env 2>/dev/null || compgen -G "$AQ/*/" > /dev/null; then
+  # The build's tools (Omarchy has them; kept, as the pacman hook builds again).
+  ../../guest/pkg-add base-devel git cmake hyprwayland-scanner || true
   $AQ/omacvm-aquamarine-build > /var/log/omacvm-aquamarine.log 2>&1 || true
   echo "OmacVM.app: aquamarine for the Mac pointer $($AQ/omacvm-aquamarine-build --status 2>/dev/null || true)"
 fi

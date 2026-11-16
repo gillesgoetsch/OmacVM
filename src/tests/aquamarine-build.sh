@@ -10,8 +10,8 @@
 # library to the compositor only in a start that asks, and omacvm_app.lua puts
 # the pointer on the cursor plane only then. A made-up file system
 # (OMACVM_AQUAMARINE_TEST_ROOT), a made-up recipe repository and stand-ins for
-# pacman, chown, nproc, setpriv, timeout, objdump, nm and makepkg: no root,
-# no network, no compiler.
+# pacman, chown, nproc, flock, setpriv, timeout, objdump, nm and makepkg: no
+# root, no network, no compiler.
 #   src/tests/aquamarine-build.sh
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -54,8 +54,11 @@ echo "timeout $*" >> "$CALLS"
 printf '%s\n' "$FAKE_BUILD"
 EOF
 # A "library" is a text file: its first line the soname, then its symbols.
-printf '#!/bin/bash\n[[ -f $2 ]] && echo "  SONAME               $(head -n1 "$2")"\n' > "$T/bin/objdump"
-printf '#!/bin/bash\n[[ -f $3 ]] && tail -n +2 "$3" | sed "s/^/0000000000001000 T /"\n' > "$T/bin/nm"
+# As the real ones, they fail on an empty file (what a failed build leaves).
+printf '#!/bin/bash\n[[ -s $2 ]] || { echo "objdump: $2: file format not recognized" >&2; exit 1; }\necho "  SONAME               $(head -n1 "$2")"\n' > "$T/bin/objdump"
+printf '#!/bin/bash\n[[ -s $3 ]] || { echo "nm: $3: no symbols" >&2; exit 1; }\ntail -n +2 "$3" | sed "s/^/0000000000001000 T /"\n' > "$T/bin/nm"
+# flock: one build at a time (macOS has none; the lock itself is the kernel's).
+printf '#!/bin/bash\necho "flock $*" >> "$CALLS"\n' > "$T/bin/flock"
 for tool in git makepkg fakeroot cmake hyprwayland-scanner g++ patch; do
   [[ -e $T/bin/$tool ]] || printf '#!/bin/bash\necho "%s $*" >> "$CALLS"\n' "$tool" > "$T/bin/$tool"
 done
@@ -89,7 +92,8 @@ guest built
 expect "a current build: --lib names its folder" "$T/root/$AQ/$V" "$(run --lib)"
 expect "a current build: --status" "built for aquamarine $V" "$(run --status)"
 expect "a current build: nothing is built again" "omacvm-aquamarine: $V: up to date" "$(run)"
-expect "a current build: nothing fetched" "" "$(calls)"
+expect "a current build: nothing fetched" "" "$(grep -E '^(timeout|chown)' "$CALLS")"
+has "a build takes the lock first, and waits for another at most as long as a build may take" "flock -w 900 9" "$(calls)"
 out=$(FAKE_VERSION=0.16.0-1.1 run --lib); expect "the package moved on: --lib names nothing" "1:" "$?:$out"
 has "the package moved on: --status says so" "not built for aquamarine 0.16.0-1.1: not built yet" "$(FAKE_VERSION=0.16.0-1.1 run --status)"
 echo "0000 $V" > "$T/root/$AQ/$V/stamp"
@@ -104,7 +108,7 @@ out=$(FAKE_VERSION="" run --lib); expect "no aquamarine package: --lib names not
 # ---------- the hook: only a VM that had a build builds again ----------
 guest
 run --hook > /dev/null; expect "hook, no build before: exit 0" 0 $?
-expect "hook, no build before: nothing fetched" "" "$(calls)"
+expect "hook, no build before: nothing fetched" "" "$(grep -E '^(timeout|chown)' "$CALLS")"
 guest built
 out=$(FAKE_VERSION=0.16.0-1.1 run --hook); expect "hook after an update, the network down: exit 0 (never fails the update)" 0 $?
 has "hook after an update: the old version's build goes" "$V: removed (aquamarine is 0.16.0-1.1)" "$out"
@@ -114,6 +118,11 @@ has "hook after an update: builds for the new version, as its own user id" \
 has "hook after an update: the new version" "--unprivileged 0.16.0-1.1 " "$(calls)"
 has "hook after an update: within the time cap" "timeout --kill-after=10 " "$(calls)"
 has "a failed build says why" "not built for aquamarine 0.16.0-1.1: build failed: fatal: unable to access" "$(FAKE_VERSION=0.16.0-1.1 run --status)"
+guest
+out=$(run); expect "a first build that fails before it makes a library: exit 1" 1 $?
+has "a first build that fails: said, and kept for --status and the next hook" "build failed: fatal: unable to access" "$out $(run --status)"
+: > "$CALLS"; run --hook > /dev/null
+has "the hook tries again after a failed first build" "--unprivileged $V " "$(calls)"
 out=$(FAKE_VERSION=0.16.0-1.1 run --lib); expect "a failed build: --lib names nothing (Hyprland runs Omarchy's)" "1:" "$?:$out"
 : > "$CALLS"
 FAKE_VERSION=0.16.0-1.1 run --hook > /dev/null
@@ -137,11 +146,12 @@ out=$(FAKE_BUILD=$STOCK run)
 has "Omarchy's library again (the patch did nothing): not installed" "the build does not send cursor hotspots" "$out"
 guest; rm "$T/bin/hyprwayland-scanner"
 out=$(FAKE_BUILD=$OURS run); expect "a build tool missing: exit 1" 1 $?
-has "a build tool missing: said, nothing fetched" "build tools missing: hyprwayland-scanner" "$out$(calls)"
+has "a build tool missing: said, and omacvm apply adds it (never pacman -S by hand)" "build tools missing: hyprwayland-scanner (omacvm apply adds them)" "$out"
+expect "a build tool missing: nothing fetched" "" "$(grep -E '^(timeout|chown)' "$CALLS")"
 printf '#!/bin/bash\n' > "$T/bin/hyprwayland-scanner"; chmod +x "$T/bin/hyprwayland-scanner"
 guest built
 run --remove > /dev/null
-expect "--remove: the builds go, the patch and the script stay" "aquamarine-cursor-plane-hotspot.patch" "$(ls "$T/root/$AQ" | tr '\n' ' ' | sed 's/ $//')"
+expect "--remove: the builds go, the patch stays" "aquamarine-cursor-plane-hotspot.patch lock" "$(ls "$T/root/$AQ" | tr '\n' ' ' | sed 's/ $//')"
 
 # ---------- the build itself: Omarchy's recipe of the installed version, the patch after its own ----------
 # A recipe repository with two versions; makepkg here only runs prepare() on
@@ -207,6 +217,8 @@ INSTALL=$(cat "$G/install.sh")
 has "install.sh puts the builder where the hook and omacvm-app-host run it" "AQ=/$AQ" "$INSTALL"
 has "install.sh builds only for a start that asks or a VM that has a build" \
   "if grep -qx 'OMACVM_HWCURSOR=1' /run/omacvm/host.env 2>/dev/null || compgen -G \"\$AQ/*/\" > /dev/null; then" "$INSTALL"
+has "install.sh adds the build's tools through pkg-add, before the build" "../../guest/pkg-add base-devel git cmake hyprwayland-scanner || true
+  \$AQ/omacvm-aquamarine-build >" "$INSTALL"
 has "install.sh: the drop-in for every compositor uwsm starts" "/etc/systemd/user/wayland-wm@.service.d/90-omacvm-mac-pointer.conf" "$INSTALL"
 HOOK=$(cat "$G/aquamarine/95-omacvm-aquamarine.hook")
 has "pacman hook: runs the installed builder" "Exec = /$AQ/omacvm-aquamarine-build --hook" "$HOOK"
