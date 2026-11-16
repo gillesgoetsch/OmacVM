@@ -1067,6 +1067,11 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-lat
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-audio-own-thread.patch"
 grep -q 'getenv("OMACVM_AUDIO_THREAD")' "$source_dir/audio/audio-rt.c" || \
   die "audio/audio-rt.c: the sound's own thread is missing (audio-own-thread patch)"
+# Its tick follows the streams (the guest's DMA entries, the codec's buffer,
+# the Mac's output buffer) instead of every 1 ms.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-audio-tick-follows-stream.patch"
+grep -q 'audio_rt_update_period' "$source_dir/audio/audio-rt.c" || \
+  die "audio/audio-rt.c: the sound thread's tick does not follow the streams (tick-follows-stream patch)"
 # OmacVM: the VM's GPU work without the BQL (OMACVM_GPU_UNLOCKED=1, ADR 0046):
 # the present BH on the main thread only, a GPU lock for the AppKit thread's
 # own virgl draws, then the unlocked runs in virtio-gpu.
