@@ -110,7 +110,7 @@ out=$(FAKE_VERSION=0.16.0-1.1 run --hook); expect "hook after an update, the net
 has "hook after an update: the old version's build goes" "$V: removed (aquamarine is 0.16.0-1.1)" "$out"
 expect "hook after an update: the old library is gone" "" "$(ls "$T/root/$AQ/$V" 2>/dev/null)"
 has "hook after an update: builds for the new version, as its own user id" \
-  "setpriv --reuid=64917 --regid=64917 --clear-groups --no-new-privs -- env -i PATH=/usr/local/bin:/usr/bin:/bin:/usr/bin/core_perl HOME=" "$(calls)"
+  "setpriv --reuid=64918 --regid=64918 --clear-groups --no-new-privs -- env -i PATH=/usr/local/bin:/usr/bin:/bin:/usr/bin/core_perl HOME=" "$(calls)"
 has "hook after an update: the new version" "--unprivileged 0.16.0-1.1 " "$(calls)"
 has "hook after an update: within the time cap" "timeout --kill-after=10 " "$(calls)"
 has "a failed build says why" "not built for aquamarine 0.16.0-1.1: build failed: fatal: unable to access" "$(FAKE_VERSION=0.16.0-1.1 run --status)"

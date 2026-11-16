@@ -580,10 +580,14 @@ the VM's SSH on `127.0.0.1:<port>`.
   with its hotspot, one guest pixel a Mac pixel, the same picture as the
   pointer layer's within 1 of 255 a pixel and at the same place within one
   pixel; it turns into an empty cursor while Hyprland hides its pointer and
-  comes back with the next move. While a window is dragged the pointer is
-  ahead of the window by the time the guest's frames take. Not measured on
-  screen there: the pointer's lag (no screen capture in that Mac session
-  shows the Mac's own cursor).
+  comes back with the next move; a window dragged with Super and the left
+  button moves by the pointer's way (300 by 150 points, 5 runs), under
+  Hyprland's drag cursor. While a window is dragged the pointer is ahead of
+  the window by the time the guest's frames take. Not measured on screen
+  there: the pointer's lag (no screen capture in that Mac session shows the
+  Mac's own cursor). Not checked: two displays, HDR and Extra brightness (the
+  Mac's cursor is not boosted with the frames), the notch strip, and the
+  full-screen pointer guard near a corner.
   `omacvm-cocoa-hw-cursor.patch`, rules in
   `omacvm-cocoa-hw-cursor-logic.patch` (unit test
   `app/runtime/Tests/display/test-hw-cursor.sh`); the guest side:

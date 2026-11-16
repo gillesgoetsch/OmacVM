@@ -38,8 +38,9 @@ system_lib=$P/usr/lib/libaquamarine.so
 # Omarchy's recipes: every version it published is in this repository's history.
 recipes=${OMACVM_AQUAMARINE_RECIPES:-https://github.com/omacom/omarchy-pkgs.git}
 recipe_path=pkgbuilds/aquamarine
-# The build's own user id: no account, no other process runs as it.
-builder=64917
+# The build's own user id: no account, no other process runs as it (the
+# virtio-gpu driver's build has another).
+builder=64918
 own=(-o root -g root); [[ -z $P ]] || own=()
 budget=900   # seconds: the pacman hook holds the update for it
 work="" stage=""
