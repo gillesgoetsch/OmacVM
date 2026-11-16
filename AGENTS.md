@@ -349,9 +349,12 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   next event. Num Lock and Scroll Lock changes are ignored. The virtio
   keyboard reports its start (DRIVER_OK, no LED changed: a press before it
   went nowhere, the LED wins) and a reset one reports no LED lit
-  (`omacvm-virtio-input-leds-reset.patch`). A lock set in the guest stays
-  until the Mac's flag changes; a Caps Lock key that does not lock in the
-  guest gets one press per change; a press with Shift held that gets no
+  (`omacvm-virtio-input-leds-reset.patch`). Whether the guest's Caps Lock
+  key locks is learnt from our presses (its LED answers within 2 s, no Shift
+  around it); a key that does not lock (Omarchy 4.0: Compose, Caps Lock on
+  both Shifts) gets one press per change of the Mac's flag, whatever the LED
+  does, and so does one not known yet. Where it locks, a lock set in the
+  guest stays until the Mac's flag changes; a press with Shift held that gets no
   answer (Omarchy 4.5: Shift + Caps Lock = Compose) leaves the guest's lock
   until the Mac's flag changes (`omacvm-cocoa-caps-lock*.patch`,
   ui/omacvm-capslock.h, #784, `app/runtime/Tests/keys/test-caps-lock.sh`;

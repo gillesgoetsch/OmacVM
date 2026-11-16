@@ -3,7 +3,9 @@
  * A model guest and the QEMU and Linux behaviour around it:
  * - each press flips the guest's lock, unless its Caps Lock key does not lock
  *   (Compose, Escape), or Shift is held and Shift + Caps Lock is Compose
- *   (Omarchy 4.5's default omarchy:shift_caps_compose);
+ *   (Omarchy 4.5's default omarchy:shift_caps_compose); Omarchy 4.0 makes the
+ *   key Compose and locks with both Shifts, one Shift ends it
+ *   (compose:caps,shift:both_capslock_cancel);
  * - the guest's LEDs (Caps Lock, Num Lock) follow some milliseconds later, in
  *   order; Linux passes on only LED changes, and QEMU's LED notifier hears each
  *   of them with the keyboard's whole LED mask;
@@ -263,6 +265,53 @@ static bool shift_compose_case(void)
     return off_composing && off && on && !g.lock;
 }
 
+/* Omarchy 4.0: both Shifts set the guest's lock (Caps Lock is Compose), one Shift
+   ends it; QEMU has the Shift events first (Shift held in the guest). */
+static void guest_both_shifts(Guest *g, bool mac, bool on)
+{
+    ev2(g, mac, true);
+    g->lock = on;
+    led_later(g, OMACVM_CAPS_LED, on);
+}
+
+static bool both_shifts_case(void)
+{
+    Guest g;
+    fresh(&g, 15, NO_LOCK);
+    ev(&g, false);
+    guest_both_shifts(&g, false, true);   /* keys-both-shifts */
+    for (int i = 0; i < 10; i++) {
+        wait_ms(&g, 500);
+        ev(&g, false);
+    }
+    int p0 = g.presses;
+    ev(&g, true);                     /* keys-caps-lock: on ... */
+    wait_ms(&g, 300);
+    ev(&g, false);                    /* ... and off 300 ms later */
+    for (int i = 0; i < 10; i++) {
+        wait_ms(&g, 500);
+        ev(&g, false);
+    }
+    int p1 = g.presses;
+    ev(&g, true);                     /* the Mac's on (known now: Compose) ... */
+    wait_ms(&g, 100);
+    guest_both_shifts(&g, true, false);   /* ... one Shift ends the guest's lock */
+    for (int i = 0; i < 20; i++) {
+        wait_ms(&g, 100);
+        ev(&g, true);
+    }
+    guest_both_shifts(&g, true, true);    /* both Shifts again, the Mac's on */
+    for (int i = 0; i < 20; i++) {
+        wait_ms(&g, 100);
+        ev(&g, true);
+    }
+    int p2 = g.presses;
+    ev(&g, false);
+    wait_ms(&g, 100);
+    ev(&g, false);
+    return p0 == 0 && p1 == 2 && p2 == 3 && g.presses == 4;
+}
+
 static void cases(void)
 {
     Guest g;
@@ -407,11 +456,19 @@ static void cases(void)
     ev(&g, true);
     wait_ms(&g, 30);
     ev(&g, true);
-    check(g.presses == 0 && g.lock, "... the Mac's on as well: no press (already on)");
+    check(g.presses == 2 && g.lock, "... the Mac's on as well, the guest's key not known yet: one press, answered, "
+          "and the next event puts the lock back (two presses, on)");
     ev(&g, false);
     wait_ms(&g, 30);
     ev(&g, false);
-    check(g.presses == 1 && !g.lock, "... the Mac's off: one press, off");
+    check(g.presses == 3 && !g.lock, "... the Mac's off: one press, off");
+
+    /* Omarchy 4.0: Caps Lock is Compose, both Shifts are Caps Lock and one Shift
+       ends it (compose:caps,shift:both_capslock_cancel). Locked with both Shifts,
+       then Caps Lock on and off on the Mac 300 ms apart (the e2e's
+       keys-caps-lock after keys-both-shifts): two Compose presses. */
+    check(both_shifts_case(), "Omarchy 4.0: locked with both Shifts, then the Mac's Caps Lock on and off: "
+          "one press each (Compose), the lock left to Shift");
 
     /* Our presses answered, then the lock set in the guest between two events:
        kept; the Mac's on and off follow. */
@@ -568,6 +625,36 @@ static void random_no_lock(unsigned seed)
     check(g.presses == changes, what);
 }
 
+/* Random, Omarchy 4.0 (Caps Lock as Compose, both Shifts lock, one Shift ends it):
+   exactly one press per change of the Mac's flag, whatever the lock and Num Lock do. */
+static void random_both_shifts(unsigned seed)
+{
+    Guest g;
+    srand(seed);
+    fresh(&g, 2 + rand() % 899, NO_LOCK);
+    bool mac = false;
+    int changes = 0;
+    for (int r = 0; r < 2000; r++) {
+        int what = rand() % 5;
+        if (what == 0) {
+            mac = !mac;
+            changes++;
+        } else if (what == 1) {
+            guest_num(&g, !g.num);
+        } else if (what == 2) {
+            guest_both_shifts(&g, mac, !g.lock);
+        }
+        for (int i = 0; i < 1 + rand() % 4; i++) {
+            wait_ms(&g, rand() % 300);
+            ev(&g, mac);
+        }
+    }
+    char what[200];
+    snprintf(what, sizeof what, "random run, Omarchy 4.0's both Shifts (seed %u): one press per change of the Mac's flag "
+             "(%d presses, %d changes)", seed, g.presses, changes);
+    check(g.presses == changes, what);
+}
+
 int main(void)
 {
     cases();
@@ -576,6 +663,9 @@ int main(void)
     }
     for (unsigned s = 1; s <= 4; s++) {
         random_no_lock(s);
+    }
+    for (unsigned s = 1; s <= 4; s++) {
+        random_both_shifts(s);
     }
     if (fails) {
         printf("test-caps-lock: %d failed\n", fails);
