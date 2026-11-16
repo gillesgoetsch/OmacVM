@@ -23,3 +23,19 @@ func shareKeyboardTests() {
     expect(ShareKeyboard.key == "shareKeyboard" && ShareKeyboard.variable == "OMACVM_KEYS_LAST",
            "share keyboard: the key the helpers read, the variable QEMU's patch reads")
 }
+
+/// #784: an Apple ISO keyboard -> QEMU's TRYOMARCHY_KEYBOARD=iso (its swap patch's switch).
+func isoKeyboardTests() {
+    var env = ["HOME": "/Users/a"]
+    ISOKeyboard.apply(true, to: &env)
+    expect(env["TRYOMARCHY_KEYBOARD"] == "iso" && env["HOME"] == "/Users/a", "ISO keyboard: TRYOMARCHY_KEYBOARD=iso for QEMU")
+    ISOKeyboard.apply(false, to: &env)
+    expect(env["TRYOMARCHY_KEYBOARD"] == nil, "ANSI or JIS keyboard: none, also not passed on from the app's own environment")
+    expect(ISOKeyboard.variable == "TRYOMARCHY_KEYBOARD", "ISO keyboard: the variable qemu-cocoa-iso-section-grave-swap.patch reads")
+    let patch = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .appendingPathComponent("../../../runtime/patches/qemu-cocoa-iso-section-grave-swap.patch").standardized
+    let text = (try? String(contentsOf: patch, encoding: .utf8)) ?? ""
+    expect(text.contains("getenv(\"TRYOMARCHY_KEYBOARD\")") && text.contains("strcmp(geometry, \"iso\")"),
+           "ISO keyboard: the patch swaps on exactly that variable and value (\(patch.lastPathComponent))")
+    print("info ISO keyboard on this Mac: \(ISOKeyboard.isISO)")
+}

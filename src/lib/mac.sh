@@ -1,5 +1,5 @@
 # Shared helpers for build.sh and apply.sh (sourced, Mac side).
-log() { printf '\033[1;32m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
+log() { OMA_LAST=$*; printf '\033[1;32m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 # python3 and the Swift answers without Xcode's Command Line Tools (src/lib/tools.sh).

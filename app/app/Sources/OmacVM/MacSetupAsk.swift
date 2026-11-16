@@ -1,5 +1,6 @@
 import AppKit
 import OmacVMFeatures
+import OmacVMWindow
 
 /// Is this Mac set up for a VM (OmacVMFeatures' MacSetup): asked before each
 /// start (AppDelegate.askMacHelpers) and shown in the window (AppState's
@@ -35,16 +36,16 @@ extension MacSetup {
     /// The question before a start: the fix (Update VM, Check for Updates,
     /// a System Settings pane) or Later. Over a full-screen Space too (a
     /// start from there: omacvm start, --start), as USB's questions.
-    @MainActor func ask(vm: String) -> Answer {
+    @MainActor func ask(vm: String, personAsked: Bool) -> Answer {
         let a = NSAlert()
         a.alertStyle = .warning
         a.messageText = title(vm: vm)
         a.informativeText = message(vm: vm)
         a.addButton(withTitle: button)
         a.addButton(withTitle: "Later").keyEquivalent = "\u{1b}"
-        a.window.level = .floating
-        a.window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        NSApp.activate()
+        AskKeys.take(a.window, personAsked: personAsked)
+        // It can come 2 s after the start, and Return runs the fix.
+        AskKeys.hold(a)
         return a.runModal() == .alertFirstButtonReturn ? .fix : .later
     }
 }

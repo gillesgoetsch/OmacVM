@@ -213,8 +213,10 @@ Until then, other ways work for some of these:
 ## Known limits
 
 - The question and the list are the app's own windows, floating over the
-  VM's window. Over a full-screen VM neither has been checked on a Mac's
-  screen yet (see How it was tested).
+  VM's window. They get the keys from the VM with an old macOS flag
+  ([ADR 0068](adr/0068-ask-keys.md)); without it a click on them still works.
+  Over a full-screen VM the question was answered by Escape on a Mac mini;
+  Return and the list there are not checked yet (see How it was tested).
 - A Mac that goes to sleep with a device connected to the VM is untested: if
   the device comes back more than 4 seconds after macOS sees it go, the VM
   loses it, and OmacVM takes it as a new plug-in: it asks again, or for a

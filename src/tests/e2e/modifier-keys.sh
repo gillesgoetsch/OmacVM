@@ -16,8 +16,8 @@
 #     --out DIR     summary.tsv and each case's guest trace (default ~/omacvm-e2e/keys-<time>)
 # Needs: NAME running from ~/Applications/"OmacVM Test.app" (org.omacvm.app.test),
 # clang (builds keyseq.c). Between cases it waits while someone is at the Mac
-# (person.sh: a remote session, input not ours): a key of theirs or a loaded
-# remote session can move the timing the cases check. A case that failed while
+# (person.sh: input not ours; an idle remote session does not count): a key of
+# theirs can move the timing the cases check. A case that failed while
 # someone came and went gets a BLOCKED "person" row. Our own events are stamped
 # (person_posted), so they never count as someone's.
 # Exit 0 only when every case passed; 1 a case failed; 2 a wrong call; 3 it could

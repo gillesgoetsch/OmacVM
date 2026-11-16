@@ -1,13 +1,15 @@
 import AppKit
 import OmacVMUSB
+import OmacVMWindow
 
 /// The question when a device is plugged in while the VM runs (USBSession),
 /// as a standard macOS alert from this app: floating, on every Space and
 /// over a full-screen window (as GPUMemory's alert), so it shows on the VM's
 /// full-screen Space without switching. After the answer the VM's window
 /// gets the keys back. Non-modal: the session can close it when the device
-/// is unplugged. Both buttons and the box wait 0.5 s, so a Return typed into the VM
-/// does not answer it.
+/// is unplugged. Both buttons and the box wait 0.5 s (AskKeys), so a Return typed
+/// into the VM does not answer it. A plug-in is no click of the person's: AskKeys
+/// gives it the keys, and USBSession asks only with the VM or this app in front.
 @MainActor
 final class USBAlertAsker: NSObject, @preconcurrency USBAsker {
     /// QEMU's process: it gets the keys back after an answer.
@@ -15,7 +17,6 @@ final class USBAlertAsker: NSObject, @preconcurrency USBAsker {
     private var alert: NSAlert?
     private var answer: ((USBAnswer) -> Void)?
     private var notices: [NSAlert] = []
-    static let guardTime = 0.5
 
     func ask(_ q: USBQuestion, answer: @escaping (USBAnswer) -> Void) {
         close()
@@ -24,15 +25,12 @@ final class USBAlertAsker: NSObject, @preconcurrency USBAsker {
         a.buttons[0].action = #selector(connect)
         a.buttons[1].target = self
         a.buttons[1].action = #selector(keep)
-        // The box too: a Space typed into the VM must not check it.
-        let controls = a.buttons + [a.suppressionButton].compactMap { $0 }
-        controls.forEach { $0.isEnabled = false }
         alert = a
         self.answer = answer
         show(a.window)
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.guardTime) {
-            controls.forEach { $0.isEnabled = true }
-        }
+        // After show (taking the keys takes a moment). The box too: a Space
+        // typed into the VM must not check it.
+        AskKeys.hold(a)
     }
 
     /// The alert with the question's words (also drawn by RenderVMWindow).
@@ -97,10 +95,8 @@ final class USBAlertAsker: NSObject, @preconcurrency USBAsker {
     }
 
     private func show(_ w: NSWindow) {
-        w.level = .floating
-        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         w.center()
-        NSApp.activate()
+        AskKeys.take(w, overVM: qemuPID())
         w.makeKeyAndOrderFront(nil)
     }
 

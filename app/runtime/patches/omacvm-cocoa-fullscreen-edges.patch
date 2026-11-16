@@ -45,6 +45,11 @@ RC5 review: at the top edge the window test (NSPointInRect, top edge out)
 missed the guard's place and the guest got the held cursor's place, up to
 200 points off; the shown cursor (show-cursor=on) stood still in the zone;
 events queued before a let-go jumped back to the held place.
+3.4.4 (#788, reported by hadiskeini): the hold's first warp (off an outer
+edge) came before the detach, so a cursor pushed against the edge could
+move off the warp's target in between, and the cursor shown with macPointer
+stopped at the zone's border. Now the cursor is detached first, and the
+guard takes the cursor's real place as the warp's target when they differ.
 Known limit: a flick that lands on the corner in one event has reached it
 before the guard sees the event.
 
@@ -258,9 +263,6 @@ index 6b3270a..010a4e6 100644
 +
 +static void omacvm_guard_apply(const OmacVMGuardStep *st)
 +{
-+    if (st->warp) {
-+        CGWarpMouseCursorPosition(CGPointMake(st->wx, st->wy));
-+    }
 +    if (st->detach) {
 +        /* Without this the cursor stalls for a moment after a warp. */
 +        CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
@@ -268,7 +270,10 @@ index 6b3270a..010a4e6 100644
 +            CGEventSourceSetLocalEventsSuppressionInterval(src, 0);
 +            CFRelease(src);
 +        }
-+        CGAssociateMouseAndMouseCursorPosition(false);
++        CGAssociateMouseAndMouseCursorPosition(false);  /* before the warp (#788) */
++    }
++    if (st->warp) {
++        CGWarpMouseCursorPosition(CGPointMake(st->wx, st->wy));
 +    }
 +    if (st->attach) {
 +        CGAssociateMouseAndMouseCursorPosition(true);
