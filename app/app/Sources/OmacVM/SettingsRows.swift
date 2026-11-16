@@ -323,6 +323,25 @@ struct PointerPlaneRow: View {
     }
 }
 
+/// Partial present (Settings.partialPresent, on by default from 3.5.0):
+/// read by each start of the VM.
+struct PartialPresentRow: View {
+    var tick = 0
+    @State private var on = Settings.partialPresent
+
+    static let info = "Only the part of each frame that changed is copied into the window's picture; the rest of that picture is already right. The same pixels, less GPU work: a pointer, a blinking cursor, a clock or typing change a few small boxes. Pages that scroll, video and windows that move change most of the frame and are copied whole, as before. The VM has to say what changed: its boot screen and text consoles always do; its desktop does with HDR and 10-bit colour, Pointer on its own layer or Draw only what changed on (they load OmacVM's own graphics driver), and with Linux 7.4 or newer. A window or full screen that scales the VM's picture (not shown pixel for pixel, as Full screen including notch at some of Omarchy's scales) copies whole frames as before. Not yet with HDR: it is off for a start with HDR until it is checked on an HDR display. GPU safe mode turns it off. Off: whole frames, as before. Counts from the next start of the VM."
+
+    var body: some View {
+        SettingRow(title: "Copy only what changed",
+                   subtitle: Settings.gpuSafeMode ? "Off while GPU safe mode is on." : "Only the changed part of each frame is copied into the window. From the next start of the VM.",
+                   info: Self.info, probe: "partial-present") {
+            RowSwitch(title: "Copy only what changed", isOn: $on, enabled: !Settings.gpuSafeMode)
+        }
+        .onChange(of: on) { _, v in if v != Settings.partialPresent { Settings.partialPresent = v } }
+        .onChange(of: tick) { _, _ in on = Settings.partialPresent }
+    }
+}
+
 /// Draw only what changed (Settings.presentTiles, experimental, off by
 /// default): QEMU's tiled present, read by each start of the VM.
 struct PresentTilesRow: View {

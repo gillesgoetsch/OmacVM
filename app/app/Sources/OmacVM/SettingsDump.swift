@@ -28,6 +28,7 @@ enum SettingsDump {
             "pauseWhileHidden": Settings.pauseWhileHidden,
             "pointerPlane": Settings.pointerPlane,
             "presentTiles": Settings.presentTiles,
+            "partialPresent": Settings.partialPresent,
             "ghosttyGPU": Settings.ghosttyGPU,
             "mediaControls": Settings.mediaControls,
             "closeAction": Settings.closeAction.rawValue,

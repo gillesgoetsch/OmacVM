@@ -1,6 +1,7 @@
 // The VM window's settings across launches: src/tests/app-settings.sh.
 //   t dump                 the settings as the window reads them (SettingsDump)
 //   t start                what a start of a VM reads: Extra brightness and HDR for it
+//   t partial HDR          what a start reads for Partial present (HDR: 1 for an HDR start)
 //   t ghostty VENUS DRIVER what a start reads for Ghostty on the Mac's GPU, with or without Venus
 //                          (1/0) on that Vulkan driver (kosmickrisp, moltenvk, listed)
 //   t retire               what a launch does with retired switches (Settings.removeRetiredSwitches)
@@ -23,6 +24,11 @@ MainActor.assumeIsolated {
     if a[1] == "start" {   // what a start of a VM reads (Runner.start), printed; nothing is written
         let x = Settings.extraBrightnessStart(), h = Settings.hdrStart(), t = Settings.presentTilesStart()
         print("extra \(x.on) (\(x.why)), hdr \(h.on) (\(h.why)), tiles \(t.on) (\(t.why))")
+        exit(0)
+    }
+    if a[1] == "partial" {   // Partial present at a start (Runner.start); HDR start 1/0 as Settings.hdrStart says
+        let p = Settings.partialPresentStart(hdr: a.count > 2 && a[2] == "1")
+        print("partial \(p.on) (\(p.why))")
         exit(0)
     }
     if a[1] == "ghostty", a.count > 3 {   // Ghostty on the Mac's GPU at a start (Runner.arguments)
@@ -57,6 +63,7 @@ MainActor.assumeIsolated {
         case "pauseWhileHidden": Settings.pauseWhileHidden = value == "true"
         case "pointerPlane": Settings.pointerPlane = value == "true"
         case "presentTiles": Settings.presentTiles = value == "true"
+        case "partialPresent": Settings.partialPresent = value == "true"
         case "ghosttyGPU": Settings.ghosttyGPU = value == "true"
         case "mediaControls": Settings.mediaControls = value == "true"
         case "closeAction": Settings.closeAction = CloseAction.parse(value)

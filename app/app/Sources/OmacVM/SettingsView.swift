@@ -207,6 +207,7 @@ struct SettingsSections: View {
                 if preview?.extraBrightness ?? Mac.hasExtraBrightnessDisplay {
                     ExtraBrightnessRow(tick: state.tick)
                 }
+                PartialPresentRow(tick: state.tick)
                 PauseWhileHiddenRow(tick: state.tick)
                 PointerPlaneRow(tick: state.tick)
                 PresentTilesRow(tick: state.tick)
