@@ -40,13 +40,14 @@ recipes=${OMACVM_AQUAMARINE_RECIPES:-https://github.com/omacom/omarchy-pkgs.git}
 recipe_path=pkgbuilds/aquamarine
 # The build's own user id: no account, no other process runs as it.
 builder=64917
+own=(-o root -g root); [[ -z $P ]] || own=()
 budget=900   # seconds: the pacman hook holds the update for it
 work="" stage=""
 trap 'rm -rf ${work:+"$work"} ${stage:+"$stage"}' EXIT
 
 say() { echo "omacvm-aquamarine: $*"; }
 
-installed() { pacman -Q aquamarine 2>/dev/null | awk '{ print $2 }'; }
+installed() { pacman -Q aquamarine 2>/dev/null | awk '{ print $2 }' || true; }
 
 stamp_for() { echo "$(sha256sum < "$patch_file" 2>/dev/null | cut -d' ' -f1) $1"; }
 
@@ -161,10 +162,11 @@ build() {   # 0 = built or current; 1 = failed
   elif [[ $(symbols "$stage/lib") != *planePropsHotspot* ]]; then
     failed "$version" "the build does not send cursor hotspots"; rc=1
   # The stamp last: a library without its stamp is never loaded.
-  elif ! { install -d -o root -g root -m 0755 "$root/$version" &&
+  elif ! { install -d ${own[@]+"${own[@]}"} -m 0755 "$root/$version" &&
            rm -f "$root/$version/stamp" "$root/$version/error" "$root/$version"/libaquamarine.so.* &&
-           install -o root -g root -m 0755 "$stage/lib" "$root/$version/$ours" &&
-           stamp_for "$version" | install -o root -g root -m 0644 /dev/stdin "$root/$version/stamp"; }; then
+           install ${own[@]+"${own[@]}"} -m 0755 "$stage/lib" "$root/$version/$ours" &&
+           stamp_for "$version" > "$stage/stamp" &&
+           install ${own[@]+"${own[@]}"} -m 0644 "$stage/stamp" "$root/$version/stamp"; }; then
     failed "$version" "could not install it into $root/$version"; rc=1
   else
     say "$version: built (Hyprland loads it only in a start that asks for the Mac pointer)"
