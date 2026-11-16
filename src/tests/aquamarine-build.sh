@@ -10,8 +10,8 @@
 # library to the compositor only in a start that asks, and omacvm_app.lua puts
 # the pointer on the cursor plane only then. A made-up file system
 # (OMACVM_AQUAMARINE_TEST_ROOT), a made-up recipe repository and stand-ins for
-# pacman, chown, setpriv, timeout, objdump, nm and makepkg: no root, no
-# network, no compiler.
+# pacman, chown, nproc, setpriv, timeout, objdump, nm and makepkg: no root,
+# no network, no compiler.
 #   src/tests/aquamarine-build.sh
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -44,6 +44,7 @@ cat > "$T/bin/pacman" <<'EOF'
 echo "aquamarine $FAKE_VERSION"
 EOF
 printf '#!/bin/bash\necho "chown $*" >> "$CALLS"\n' > "$T/bin/chown"
+printf '#!/bin/bash\necho 4\n' > "$T/bin/nproc"
 # The build's fetch and makepkg never run as root's child here: timeout gives
 # what a build would (FAKE_BUILD: the library's text, "" = the network is down).
 cat > "$T/bin/timeout" <<'EOF'
