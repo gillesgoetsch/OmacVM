@@ -3,6 +3,29 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.7
+
+x86 apps switch on in 3 GB VMs, and HDR holds after a quick re-login and in Hyprland 0.57.2 screenshots.
+
+- **x86 Linux apps in small VMs**: switching them on failed in 3 GB VMs, and in 4 GB VMs with apps
+  open ("the build failed"): one file of box64 needed about 4.1 GB to compile, and the VM's kernel
+  killed the compiler. box64 now builds without debug info and with GCC freeing memory sooner
+  (about 1.2 GB), so a 3 GB VM gets through with the desktop open; a VM that has box64 keeps it.
+  With less than 1.5 GB free in the VM, switching it on stops at once and says so, and a compiler
+  killed anyway is named as the VM running out of memory (troubleshooting 65).
+- **HDR after a quick re-login**: after logging out and in within about 10 s (or after SDDM
+  restarted), pages looked 3-4 % darker with highlights cut until the next reboot. The VM's
+  display sync kept its record of what it had sent across the new login, so the new Hyprland never
+  got the rule that stops it tone-mapping windows. It now sends its rules again to a new Hyprland.
+  Update VM puts it in.
+- **HDR screenshots on Hyprland 0.57.2** (Omarchy's edge channel, Arch Linux ARM's own Hyprland):
+  screenshots, colour picks and screen shares of Chrome came out too bright again, because
+  OmacVM's capture fix (#579) had files for 0.56.2 and 0.57.0 only. It now has one for 0.57.2.
+  Update VM puts it in; Omarchy's stable 0.56.2 is unchanged.
+- **Docs**: troubleshooting 66 says why YouTube's Ambient mode makes the Mac work harder (about
+  0.9 W on a MacBook Air M2) and where to turn it off; a new entry says why a top hot corner can
+  still fire over the strip beside the notch (it is the Mac's menu-bar area, not the VM's).
+
 ## 3.4.6
 
 The app's questions get the keys, ISO keyboards type the right keys, and the move to 4.5 rides out SSH drops.

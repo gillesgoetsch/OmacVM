@@ -541,6 +541,11 @@ translator: [box64](https://github.com/ptitSeb/box64).
   program or AppImage starts like any other: `./Some-App-x86_64.AppImage`.
   box64 translates the app's own code and uses the VM's native libraries
   (glibc, GTK, X11, Wayland, OpenGL, SDL, FUSE) where it can.
+- **Memory:** the build needs about 1.5 GB of free memory in the VM for a
+  few minutes; every VM size OmacVM makes (4 GB and up) has that with the
+  desktop open. With less free (a big app running), switching it on stops
+  at once and says so, before anything is installed
+  ([troubleshooting 65](troubleshooting.md#65-x86-apps-the-vm-ran-out-of-memory-building-box64)).
 - **x86_64 programs go to box64 only.** Omarchy 4.5 has qemu-user
   (`qemu-user-static-binfmt`), whose x86_64 rule would take them first after
   a restart. While x86 apps is on, OmacVM holds that one rule back with a
