@@ -548,27 +548,46 @@ the VM's SSH on `127.0.0.1:<port>`.
   and frame rate at 60 Hz (8-bit and HDR) and 120 Hz (HDR).
 - Mac pointer for the VM (experimental, off, no switch in the window yet:
   `defaults write org.omacvm.app macPointer -bool true`, from the VM's
-  next start): Omarchy is asked to put its pointer on virtio-gpu's cursor
+  next start; ADR 0075): Omarchy puts its pointer on virtio-gpu's cursor
   plane (Hyprland's hardware cursor) and QEMU makes that image the Mac's
-  own cursor over the VM's windows, so the pointer would move with the
-  Mac's cursor instead of waiting for the next guest frame (about 25 ms at
-  60 Hz, see `docs/architecture/graphics.md`) and stay one cursor over the
-  VM, Omanotch's strip and every display. The app sets
-  `OMACVM_HW_CURSOR=1` for QEMU and the OEM string `omacvm.hwcursor=1`
-  (`/run/omacvm/host.env`; `omacvm_app.lua` turns `no_hardware_cursors`
-  off, notchcast stops hiding the guest's pointer at the strip). Not working
-  yet: Hyprland 0.56.2 keeps drawing a software cursor on OmacVM's
-  virtio-gpu (no cursor command reaches QEMU, also with `use_cpu_buffer`),
-  so today nothing changes. Why: since Linux 6.8 a virtual GPU's cursor
-  plane is hidden from atomic clients that do not ask for cursor hotspots
-  (DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT); the guest kernel has it (plane 36,
-  unused) but Hyprland's aquamarine only sees the primary plane. Next:
-  aquamarine with that cap, or its legacy (non-atomic) path for this
-  mode. Until the guest's first image after a reset and with a relative
-  pointer (games) QEMU keeps its own way anyway.
+  own cursor over the VM's windows, so the pointer moves with the Mac's
+  cursor instead of waiting for a guest frame or QEMU's pointer layer, and
+  stays one cursor over the VM, Omanotch's strip and every display. The
+  app sets `OMACVM_HW_CURSOR=1` for QEMU and the OEM string
+  `omacvm.hwcursor=1` (`/run/omacvm/host.env`). The cursor plane of a
+  virtual GPU shows only to a compositor that sends the pointer's hotspot
+  (Linux 6.8, DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT), and Omarchy's aquamarine
+  (0.15.1, 0.16.0) does not. So the VM builds that aquamarine again with one
+  patch (`src/app/guest/aquamarine/`: Omarchy's own recipe of the installed
+  version, `aquamarine-cursor-plane-hotspot.patch` on top, as a user id of
+  its own; 3 to 10 minutes), keeps only the library in
+  `/usr/local/lib/omacvm/aquamarine/<version>/`, and `omacvm-app-host` hands
+  it to Hyprland only in a start that asks (`/run/omacvm/mac-pointer.env`,
+  read by the compositor's unit; `omacvm_app.lua` then turns
+  `no_hardware_cursors` off). Omarchy's package stays as it is. To switch
+  it on: the setting, a start of the VM, Update VM (`omacvm apply` builds
+  the library in a start that asks; or `sudo omacvm-aquamarine-build` in the
+  VM before), and one more start. A pacman hook builds again after an
+  aquamarine update. Without a current build (not built yet, the build
+  failed, a version Omarchy's recipes do not have) the start runs Omarchy's
+  aquamarine and Hyprland draws the pointer itself, also with "Pointer on
+  its own layer" on: the two do not go together. `omacvm check` says which
+  ("Mac pointer"). Until the guest's first image after a reset and with a
+  relative pointer (games) QEMU keeps its own way anyway. Checked on a Mac
+  mini (a test VM, 5120x2880 at 2x, Omarchy 4.5, Hyprland 0.56.2, aquamarine
+  0.15.1-1.3): for ten shapes (arrow, text, hand, the resize arrows,
+  crosshair, grab, not allowed) the Mac's cursor is the guest's 64x64 image
+  with its hotspot, one guest pixel a Mac pixel, the same picture as the
+  pointer layer's within 1 of 255 a pixel and at the same place within one
+  pixel; it turns into an empty cursor while Hyprland hides its pointer and
+  comes back with the next move. While a window is dragged the pointer is
+  ahead of the window by the time the guest's frames take. Not measured on
+  screen there: the pointer's lag (no screen capture in that Mac session
+  shows the Mac's own cursor).
   `omacvm-cocoa-hw-cursor.patch`, rules in
   `omacvm-cocoa-hw-cursor-logic.patch` (unit test
-  `app/runtime/Tests/display/test-hw-cursor.sh`); in a VM:
+  `app/runtime/Tests/display/test-hw-cursor.sh`); the guest side:
+  `src/tests/aquamarine-build.sh`; in a VM:
   `src/tests/input-latency-vm.sh --hw-cursor`.
 
 ## Mac input methods (experimental, off by default)
