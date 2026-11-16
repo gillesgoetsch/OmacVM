@@ -109,7 +109,7 @@ index c87c412..e00b2fe 100644
      diff = now - s->timer_last;
      if (diff > audio_rt_period() * 3 / 2) {
 diff --git a/audio/audio-rt.c b/audio/audio-rt.c
-index ed20d6a..3001d78 100644
+index ed20d6a..3cedd21 100644
 --- a/audio/audio-rt.c
 +++ b/audio/audio-rt.c
 @@ -19,6 +19,14 @@
@@ -226,20 +226,21 @@ index ed20d6a..3001d78 100644
          int64_t t = get_clock();
          if (next < t - 20 * SCALE_MS) {
              /* Late by far more than a period (the Mac slept): start over. */
-@@ -195,6 +223,26 @@ static void *audio_rt_run(void *opaque)
+@@ -195,6 +223,27 @@ static void *audio_rt_run(void *opaque)
      return NULL;
  }
  
 +/*
 + * Under the audio lock: the period is the shortest any registered tick can
-+ * take (0: not known, the shortest of all), in 1-10 ms.
++ * take (0: not known, the shortest of all), in 1-10 ms. With no tick left
++ * it stays (the thread sleeps; the next stream sets it again).
 + */
 +static void audio_rt_update_period(void)
 +{
 +    int64_t p = AUDIO_RT_PERIOD_MAX;
 +    int i;
 +
-+    if (audio_rt_period_fixed) {
++    if (audio_rt_period_fixed || !audio_rt_nticks) {
 +        return;
 +    }
 +    for (i = 0; i < audio_rt_nticks; i++) {
@@ -253,7 +254,7 @@ index ed20d6a..3001d78 100644
  /* Under the audio lock. */
  static void audio_rt_kick(void)
  {
-@@ -216,14 +264,6 @@ void audio_rt_tick_add(AudioRtTick *t, void (*fn)(void *), void *opaque)
+@@ -216,14 +265,6 @@ void audio_rt_tick_add(AudioRtTick *t, void (*fn)(void *), void *opaque)
  {
      assert(audio_rt_enabled());
      qemu_rec_mutex_lock(&audio_rt_mutex);
@@ -268,7 +269,7 @@ index ed20d6a..3001d78 100644
      t->fn = fn;
      t->opaque = opaque;
      if (!t->registered) {
-@@ -233,6 +273,15 @@ void audio_rt_tick_add(AudioRtTick *t, void (*fn)(void *), void *opaque)
+@@ -233,6 +274,15 @@ void audio_rt_tick_add(AudioRtTick *t, void (*fn)(void *), void *opaque)
          }
          t->registered = true;
          audio_rt_ticks[audio_rt_nticks++] = t;
@@ -284,7 +285,7 @@ index ed20d6a..3001d78 100644
      }
      audio_rt_kick();
      qemu_rec_mutex_unlock(&audio_rt_mutex);
-@@ -254,6 +303,26 @@ void audio_rt_tick_del(AudioRtTick *t)
+@@ -254,6 +304,26 @@ void audio_rt_tick_del(AudioRtTick *t)
                  break;
              }
          }
