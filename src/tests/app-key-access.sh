@@ -20,6 +20,7 @@ let a = CommandLine.arguments
 switch a[1] {
 case "tap": print(KeyAccess.tapFailed(folder: URL(fileURLWithPath: a[2])) ? "refused" : "fine")
 case "record": print(KeyAccess.record)
+case "list": print(KeyAccess.listName)
 case "reset-args": print(KeyAccess.resetArguments(a[2], id: a[3]).joined(separator: " "))
 case "allow":   // a[2]: macOS's answer at each check in turn, such as refused,allowed (none: no answer)
     var answers: [Bool?] = a[2].split(separator: ",").map { $0 == "none" ? nil : $0 == "allowed" }
@@ -46,6 +47,13 @@ case $r in
   "keys: Input Monitoring "*" for OmacVM") echo "ok   qemu.log line: $r" ;;
   *) echo "FAIL qemu.log line: '$r'"; fail=1 ;;
 esac
+# The list in System Settings by the name this macOS shows it (macOS 27.2:
+# "Device Control and Data Access", before: "Accessibility").
+n=$("$T/key-access" list)
+case $n in
+  ""|ACCESSIBILITY) echo "FAIL the list's name: '$n'"; fail=1 ;;
+  *) echo "ok   the list's name on this macOS: $n" ;;
+esac
 # Allow… with an old entry (MacBook 2026-10-07: tccd "Failed to match existing
 # code requirement ... kTCCServicePostEvent", OmacVM on under Accessibility):
 # the app's own "control the computer" entry goes first, without a password.
@@ -67,6 +75,7 @@ has "Allow… asks for control the computer" '_ = CGRequestPostEventAccess()'
 has "... and opens Accessibility" 'Privacy_Accessibility'
 hasnt "... not Input Monitoring" 'CGRequestListenEventAccess'
 hasnt "... nor its pane" 'Privacy_ListenEvent'
+has "the steps name the list as this macOS does" 'Privacy & Security › \(listName).'
 has "the window checks control the computer" 'static var allowed: Bool { post }'
 has "... asked again in a new process (macOS keeps a process's first answer)" '"--key-access"'
 has "Allow… takes macOS's answer now, not this process's first one" 'allow(reset: reset, post: fresh,'
@@ -76,6 +85,7 @@ src=$R/app/app/Sources/OmacVM/main.swift
 has "the new process asks control the computer" 'print(CGPreflightPostEventAccess() ? "1" : "0")'
 hasnt "... not Input Monitoring there either" 'CGPreflightListenEventAccess() ? "1"'
 src=$R/app/app/Sources/OmacVM/SettingsRows.swift
+has "... and so does the (i) of an allowed row" 'Privacy & Security › \(KeyAccess.listName).'
 has "a red note clears an old entry once by itself" 'KeyAccess.clearOldEntryOnce'
 has "Allow… looks again when it is done" 'KeyAccess.request { refreshKeyNote() }'
 exit $fail

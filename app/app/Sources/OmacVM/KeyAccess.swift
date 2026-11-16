@@ -66,14 +66,22 @@ enum KeyAccess {
         lastLog(folder: folder)?.contains("Could not create event tap") == true
     }
 
-    /// The window's line: the one setting.
-    static let shortText = "Allow OmacVM under Accessibility"
+    /// The list in System Settings › Privacy & Security that holds "control
+    /// the computer", by the name this macOS shows: "Accessibility", and
+    /// "Device Control and Data Access" on macOS 27.2. System Settings' own
+    /// text, so the window names the row the user looks for there. English,
+    /// as the rest of the path: OmacVM has no other language, so macOS gives
+    /// it the pane's English strings.
+    static let listName: String = {
+        let pane = Bundle(path: "/System/Library/ExtensionKit/Extensions/SecurityPrivacyExtension.appex")
+        return pane?.localizedString(forKey: "ACCESSIBILITY", value: "Accessibility", table: nil) ?? "Accessibility"
+    }()
 
     /// Behind the (i): the steps.
     static var missingText: String {
         let app = (Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath
         let id = Bundle.main.bundleIdentifier ?? "org.omacvm.app"
-        return "Without it, ⌘ Tab, ⌘ Space and ⌘ ⇧ 4 go to macOS instead of Omarchy. Input Monitoring is not enough.\n\n1. Allow… clears what macOS kept for an older OmacVM build (OmacVM can show as on and still not count) and opens System Settings › Privacy & Security › Accessibility.\n2. Turn OmacVM on there. This note turns grey by itself.\n3. Quit the VM and start it again.\n\nStill red: select OmacVM there, remove it with −, add \(app) with + and turn it on. Or in Terminal: tccutil reset PostEvent \(id)"
+        return "Without it, ⌘ Tab, ⌘ Space and ⌘ ⇧ 4 go to macOS instead of Omarchy. Input Monitoring is not enough.\n\n1. Allow… clears what macOS kept for an older OmacVM build (OmacVM can show as on and still not count) and opens System Settings › Privacy & Security › \(listName).\n2. Turn OmacVM on there. This note turns grey by itself.\n3. Quit the VM and start it again.\n\nStill red: select OmacVM there, remove it with −, add \(app) with + and turn it on. Or in Terminal: tccutil reset PostEvent \(id)"
     }
 
     /// macOS keeps "control the computer" (kTCCServicePostEvent) as an entry
