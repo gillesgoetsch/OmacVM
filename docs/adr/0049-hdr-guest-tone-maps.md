@@ -55,7 +55,18 @@ BT.2100 PQ, and the layer asks for EDR. It stayed hidden because:
    below; a 2026-10-25 draft that loaded ours at every start was turned
    down in review: a tainted out-of-tree module for every user for no gain
    while both users of the fix are off, and no boot messages in the
-   initramfs.) `omacvm
+   initramfs. Amended again 2026-11-16, PROPOSED, held for the owner's go:
+   "Copy only what changed" (0051's partial present, on by default for SDR
+   starts from 3.5.0) asks for it too, so every default start on a kernel
+   before 7.4 loads ours at 8 bits. The first objection no longer holds:
+   the fix now has a default user. The others stand and are what the go
+   weighs: the module taints the kernel ("O" in a guest oops report); the
+   initramfs has no virtio_gpu on such a start (as on every HDR start
+   today), so a boot that stops there (an emergency shell, an fsck prompt,
+   an encrypted root's passphrase) shows only what the firmware framebuffer
+   shows; and it is a bridge: Linux 7.4 keeps the damage itself, and once
+   Arch Linux ARM ships it the loader keeps the stock driver. If 3.5.0
+   ships after that, this amendment is dropped.) `omacvm
    apply` builds it on every app VM (7 s; downloaded, patched and built as
    a user id of its own, root only installs it) into `/usr/local/lib/omacvm/virtio-gpu/K`,
    which depmod never sees; a modprobe `install` rule loads it only when

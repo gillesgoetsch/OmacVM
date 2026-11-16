@@ -12,6 +12,9 @@ in more words.
   to say what changed: its boot screen and text consoles always do, its desktop with Linux 7.4 or
   OmacVM's own graphics driver. A picture shown scaled (some of Omarchy's scales in Full screen
   including notch) is copied whole. Off for a start with HDR until it is checked on an HDR display.
+  With it on, a VM on a kernel before Linux 7.4 loads OmacVM's own build of its graphics driver
+  (the stock one plus Linux 7.4's damage fix), so the desktop says what changed; Update VM builds
+  it (needs internet once), and until then frames come whole.
   A switch in the VM window's Display section turns it off (whole frames, as before); qemu.log
   counts the frames once a minute and `omacvm check` has a "Copy only what changed" line. Its
   pixel check for tests now covers the compressed window surfaces too (ADR 0051).
