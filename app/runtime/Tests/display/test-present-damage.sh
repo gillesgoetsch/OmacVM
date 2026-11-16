@@ -69,7 +69,7 @@ checks() {
   chk "the frames after a full draw are all checked" has "$present" 'present_pd_check_burst = 4 * present_nsurf;'
   chk "the test fault is for the check mode only" has "$present" 'present_pd_fault = present_damage_on == 2 && fault && !strcmp(fault, "shrink");'
   chk "qemu.log gets the counts (frames in part, in full and why)" has "$present" 'present_pd_stats(w, h);'
-  chk "the counts know the reasons" has "$m" 'present_pd.last == OMACVM_PD_FULL_BIG ? PD_WHY_BIG : PD_WHY_CATCHUP;'
+  chk "the counts know the reasons" has "$present" 'present_pd.last == OMACVM_PD_FULL_BIG ? PD_WHY_BIG : PD_WHY_CATCHUP;'
 }
 if [[ ${1:-} == --self-test ]]; then
   old=${2:-}
