@@ -45,9 +45,11 @@ back through Core Image: 0 codes off, on an M1 Max, an M2 and an M4).
   more than video.
 - Nothing may read these surfaces back: not on the CPU, and not with `glReadPixels`,
   which crashes the process on them (M4, macOS 27). The partial present's check mode
-  (`OMACVM_GL_PRESENT_DAMAGE=check`, ADR 0051) reads the shown surface that way, so it
-  keeps the surfaces plain. test-present-lossless.sh checks both: no CPU read, and no
-  `glReadPixels` with a present surface attached outside the check mode.
+  (`OMACVM_GL_PRESENT_DAMAGE=check`, ADR 0051) kept the surfaces plain for that until
+  3.4.7; from 3.5.0 it has the GPU copy the shown surface into a plain texture and reads
+  that one (exact for '&BGA' and '&RhA', work/power-1116/rects/spike/lbread.m), so it
+  checks the lossless surfaces that are shown. test-present-lossless.sh checks both: no
+  CPU read, and no `glReadPixels` with a present surface attached anywhere.
 
 ## Update: half float (2026-10-26, PR #536)
 
