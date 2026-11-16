@@ -5,8 +5,9 @@
 #                                   the runtime build applies and checks it, the activity starts
 #                                   before the run loop, keeps idle sleep, has its switch and log lines
 #   src/tests/app-nap.sh --live PID a running OmacVM QEMU (its window out of sight: screen locked,
-#                                   another Space, minimized): every vCPU thread must run above
-#                                   background priority (napped: 4). Wait ~30 s after hiding it.
+#                                   another Space, minimized): every vCPU thread at priority 31 or
+#                                   above (napped: 4, clamped to Utility QoS: 20). Wait 2 minutes
+#                                   after hiding it.
 # Exit 0 when every check passes.
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -43,11 +44,11 @@ EOF
   cc -O2 -o "$tmp/prio" "$tmp/prio.c" || { echo "cc failed"; exit 1; }
   out=$("$tmp/prio" "$pid") || { echo "no such process: $pid"; exit 1; }
   vcpus=$(grep -c ' CPU [0-9]*/HVF$' <<<"$out")
-  napped=$(awk '/ CPU [0-9]+\/HVF$/ && $1 <= 4' <<<"$out" | wc -l | tr -d ' ')
-  echo "vCPU threads: $vcpus, at background priority (napped): $napped"
+  below=$(awk '/ CPU [0-9]+\/HVF$/ && $1 < 31 { n++ } END { print n + 0 }' <<<"$out")
+  echo "vCPU threads: $vcpus, below priority 31: $below"
   awk '/ CPU [0-9]+\/HVF$|qemu_main$/' <<<"$out" | sed 's/^/  prio /'
   check "QEMU has named vCPU threads" test "$vcpus" -gt 0
-  check "no vCPU thread at background priority" test "$napped" -eq 0
+  check "every vCPU thread at priority 31 or above (napped: 4, Utility QoS clamp: 20)" test "$below" -eq 0
   echo "$((N - FAIL))/$N passed"; exit $((FAIL > 0))
 fi
 
