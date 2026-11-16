@@ -89,6 +89,10 @@ def main():
     try:
         wait_listening(port, qemu)
         time.sleep(SETTLE)
+        # QEMU exits when its host forward cannot bind, such as when another
+        # process took the port after free_port() let it go.
+        if qemu.poll() is not None:
+            raise RuntimeError("QEMU exited %d" % qemu.returncode)
         lost = sum(burst(port) for _ in range(ROUNDS))
     finally:
         qemu.terminate()

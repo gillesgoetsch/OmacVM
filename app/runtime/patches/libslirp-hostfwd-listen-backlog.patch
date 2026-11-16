@@ -23,23 +23,16 @@ build runs it on a real QEMU with -netdev user and no guest. It opens 2
 connections at once to a host forward for 30 rounds.
 
 diff --git a/src/socket.c b/src/socket.c
-index 1451116..1141315 100644
+index 1451116..afb71aa 100644
 --- a/src/socket.c
 +++ b/src/socket.c
-@@ -925,12 +925,16 @@ struct socket *tcpx_listen(Slirp *slirp,
- 
-     sockaddr_copy(&so->lhost.sa, sizeof(so->lhost), laddr, laddrlen);
- 
-+    /*
-+     * With a backlog of 1, macOS resets one of two connections that arrive
-+     * at the same moment, before slirp accepts it.
-+     */
-     s = slirp_socket(haddr->sa_family, SOCK_STREAM, 0);
-     if ((not_valid_socket(s)) ||
+@@ -930,7 +930,9 @@ struct socket *tcpx_listen(Slirp *slirp,
          (haddr->sa_family == AF_INET6 && slirp_socket_set_v6only(s, (flags & SS_HOSTFWD_V6ONLY) != 0) < 0) ||
          (slirp_socket_set_fast_reuse(s) < 0) ||
          (bind(s, haddr, haddrlen) < 0) ||
 -        (listen(s, 1) < 0)) {
++        /* With a backlog of 1, macOS resets one of two connections that
++         * arrive at the same moment, before slirp accepts it. */
 +        (listen(s, SOMAXCONN) < 0)) {
          int tmperrno = errno; /* Don't clobber the real reason we failed */
          if (have_valid_socket(s)) {
