@@ -334,6 +334,62 @@ int main(void)
     }
 
     /*
+     * The window below the strip (MacBook Air, full screen via Omanotch:
+     * display 1470x956, window from y 33): along the bottom edge from the
+     * middle into both bottom corners, with the motion a mouse gives (5.964
+     * points along per event). The guard's place reaches each corner and maps
+     * to the window's bottom row: the window's origin is not in the maths
+     * for x. (The 3.4.6 rows stopped 34 px short there: their injector's
+     * events kept only the whole points of each delta, 5 of 5.964.)
+     */
+    {
+        static const OmacVMRect air = { 0, 0, 1470, 956 };
+        static const OmacVMRect below = { 0, 33, 1470, 923 };
+        double wx, wy;
+        int i;
+
+        for (int dir = -1; dir <= 1; dir += 2) {
+            memset(&g, 0, sizeof(g));
+            m = mac_at(&air, 1, &below, 1, 735, 656);
+            run_steps(&m, &g, 67, 0, 5.97, 0, "below the strip: down into the Dock zone");
+            run_steps(&m, &g, 140, dir * 5.964, 0.457, 0,
+                      "below the strip: along the bottom edge into a corner");
+            i = omacvm_guard_window_point(&m.s, g.x, g.y, &wx, &wy);
+            CHECK(g.held && g.x == (dir > 0 ? 1469 : 0) && g.y == 955,
+                  "below the strip (%+d): pointer %.1f,%.1f held %d, not the corner",
+                  dir, g.x, g.y, g.held);
+            CHECK(i == 0 && wx == (dir > 0 ? 1469 : 0) && wy == 1,
+                  "below the strip (%+d): window %d at %.1f,%.1f, not its bottom corner",
+                  dir, i, wx, wy);
+        }
+    }
+
+    /*
+     * Known limit (kept on purpose, see docs/troubleshooting.md): the strip
+     * is the Mac's menu-bar area, not our window. Moving up-left from the
+     * window, the guard lets go at the window's top edge, and the Mac's
+     * cursor goes on into the display's top-left corner, so a hot corner set
+     * there can fire. Guarding the strip's corners would need an event tap
+     * after ui/cocoa.m lets go of the pointer; if that is built, this check
+     * turns into the corner check above.
+     */
+    {
+        static const OmacVMRect air = { 0, 0, 1470, 956 };
+        static const OmacVMRect below = { 0, 33, 1470, 923 };
+
+        memset(&g, 0, sizeof(g));
+        m = mac_at(&air, 1, &below, 1, 300, 300);
+        for (int i = 0; i < 200; i++) {
+            Ev e = mac_motion(&m, -1.5, -2.5);
+
+            handle(&m, &g, &e, &gx, &gy);
+        }
+        CHECK(!g.held && m.attached && m.x == 0 && m.y == 0,
+              "strip corner (known limit): held %d attached %d, Mac cursor %.1f,%.1f",
+              g.held, m.attached, m.x, m.y);
+    }
+
+    /*
      * Events made while held but handled after the let-go (queued) are at the
      * held cursor's place: they move the pointer by their delta, no jump back
      * to that place (review of RC5: 1526 -> 1700 -> 1524 there).
