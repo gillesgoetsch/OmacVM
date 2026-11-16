@@ -620,11 +620,14 @@ media_line() {
 
 # The "Changed parts" line: whether the compositor's damage reaches QEMU (Linux
 # 7.4's fix: the kernel's own, or OmacVM's driver with it). Without it every
-# frame goes to the Mac whole and "Draw only what changed" (QEMU's tiles) has
-# nothing to work with. From the build's "damage" file (ours, kernel,
-# unknown; none = no build or left out), the loader's word and whether this
-# start asked for it (omacvm.damage=1: the switch on, not in GPU safe mode):
-# with the switch off a missing fix is no fault. "STATUS<TAB>DETAIL".
+# frame goes to the Mac whole and the Mac's "Copy only what changed" (partial
+# present, on by default) and "Draw only what changed" (tiles) have nothing to
+# work with. From the build's "damage" file (ours, kernel, unknown; none = no
+# build or left out), the loader's word and whether this start asked for it
+# (omacvm.damage=1: one of those switches on, not in GPU safe mode). Only a
+# build with the fix that did not load warns; no build yet (Update VM makes
+# it), a stamp out of date after a kernel update or a build without the fix
+# is a skip with the reason: whole frames, as before. "STATUS<TAB>DETAIL".
 # src/tests/damage-check.sh.
 damage_line() {   # BUILD-DAMAGE LOADER-WORD ASKED(1/0)
   local d=$1 st=$2 asked=${3:-0}
@@ -633,11 +636,13 @@ damage_line() {   # BUILD-DAMAGE LOADER-WORD ASKED(1/0)
   elif [[ $d == ours && $st == omacvm* && $st != *"without damage_clips"* ]]; then
     printf 'ok\t%s\n' "OmacVM's driver (Linux 7.4's damage fix) tells the Mac what changed in each frame"
   elif [[ $asked != 1 ]]; then
-    printf 'skip\t%s\n' "Draw only what changed is off: the stock driver of a kernel before 7.4 sends every frame whole"
+    printf 'skip\t%s\n' "not asked (Copy only what changed and Draw only what changed are off): the stock driver of a kernel before 7.4 sends every frame whole"
+  elif [[ $st == "stock not built for"* || $st == "stock stamp out of date"* ]]; then
+    printf 'skip\t%s\n' "OmacVM's driver is not built for this kernel yet (${st#stock }; Update VM builds it, needs internet once): every frame goes to the Mac whole until then"
   elif [[ $d == ours ]]; then
-    printf 'warn\t%s\n' "Draw only what changed is on, but the stock driver runs (${st:-no word from omacvm-virtio-gpu-load}): every frame goes to the Mac whole"
+    printf 'warn\t%s\n' "OmacVM's driver with the damage fix is built but did not load (${st:-no word from omacvm-virtio-gpu-load}; omacvm-virtio-gpu-build --status): every frame goes to the Mac whole"
   else
-    printf 'warn\t%s\n' "Draw only what changed is on, but OmacVM's driver for this kernel has no damage fix (${st:-no word from omacvm-virtio-gpu-load}; omacvm-virtio-gpu-build --status says why): every frame goes to the Mac whole"
+    printf 'skip\t%s\n' "OmacVM's driver for this kernel has no damage fix (${st:-no word from omacvm-virtio-gpu-load}; omacvm-virtio-gpu-build --status says why): every frame goes to the Mac whole"
   fi
 }
 # hdr_copy_note ANSWER: the HDR line's part about Hyprland's SDR copy of each frame for
@@ -1022,7 +1027,8 @@ app)
     esac
   fi
   # The compositor's damage reaches QEMU (OmacVM's driver when the start asks
-  # for it with "Draw only what changed", or the kernel's own fix).
+  # for it with "Copy only what changed" or "Draw only what changed", or the
+  # kernel's own fix).
   asked=0; grep -qx 'OMACVM_DAMAGE=1' /run/omacvm/host.env 2>/dev/null && asked=1
   IFS=$'\t' read -r ds dd < <(damage_line "$(cat "/usr/local/lib/omacvm/virtio-gpu/$(uname -r)/damage" 2>/dev/null)" \
     "$(cat /run/omacvm/virtio-gpu 2>/dev/null)" "$asked")
