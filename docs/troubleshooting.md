@@ -16,6 +16,11 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   their space at once; system files stay in the 2 update snapshots until
   newer ones replace them), or give the VM a larger disk: shut it down, then
   Disk › Change… in its window. The VM grows into it at its next start.
+- **A VM with a [home disk](routes/app.md#home-disk-off-by-default) stops at
+  boot in emergency mode**: it started without its `data.img`. Its `/home`
+  line in `/etc/fstab` has no `nofail`, so the boot waits for that disk. The
+  app refuses such a start ("Missing in …: data.img"), so this happens only
+  to a VM started another way; put `data.img` back into the VM's folder.
 - **The move to Omarchy 4.5 stops at its last step, or `omarchy update` says
   "OMARCHY_PATH does not match this Omarchy command."**: a line in your
   shell's startup files sets `OMARCHY_PATH`. See
