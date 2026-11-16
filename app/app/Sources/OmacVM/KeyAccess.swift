@@ -153,8 +153,16 @@ enum KeyAccess {
         guard !clearedOnce else { return }
         clearedOnce = true
         DispatchQueue.global(qos: .utility).async {
-            reset("PostEvent")
+            clearOldEntry(reset: reset, post: fresh)
             DispatchQueue.main.async { MainActor.assumeIsolated { done() } }
         }
+    }
+
+    /// The red note's reset: only on macOS's no now (`fresh`), as in Allow…;
+    /// the note is red also when the new process gave no answer, and then
+    /// nothing goes. The parts are passed in for the test.
+    static func clearOldEntry(reset: (String) -> Void, post: () -> Bool?) {
+        guard post() == false else { return }
+        reset("PostEvent")
     }
 }

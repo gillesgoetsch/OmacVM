@@ -28,6 +28,11 @@ case "allow":   // a[2]: macOS's answer at each check in turn, such as refused,a
     KeyAccess.allow(reset: { steps.append("reset \($0)") }, post: { steps.append("check"); return answers.removeFirst() },
                     ask: { steps.append("ask") })
     print(steps.joined(separator: ", "))
+case "clear":   // a[2]: macOS's answer now: refused, allowed, none (no answer)
+    var steps: [String] = []
+    KeyAccess.clearOldEntry(reset: { steps.append("reset \($0)") },
+                            post: { steps.append("check"); return a[2] == "none" ? nil : a[2] == "allowed" })
+    print(steps.joined(separator: ", "))
 default: exit(2)
 }
 SWIFT
@@ -66,6 +71,11 @@ expect "Allow…, no answer from macOS: no reset, no ask" "check" "$("$T/key-acc
 expect "Allow…, no answer after the old entry went: Accessibility stays" "check, reset PostEvent, check" "$("$T/key-access" allow refused,none)"
 expect "Allow…, Accessibility on: the old entry goes, nothing else" "check, reset PostEvent, check" "$("$T/key-access" allow refused,allowed)"
 expect "Allow…, still refused: both entries go, then macOS asks" "check, reset PostEvent, check, reset Accessibility, ask" "$("$T/key-access" allow refused,refused)"
+# The red note's own reset, once per app run, follows the same rule: the
+# note is red also when macOS gave no answer within 2 s.
+expect "Red note, refused now: the old entry goes by itself" "check, reset PostEvent" "$("$T/key-access" clear refused)"
+expect "Red note, no answer from macOS: no reset by itself" "check" "$("$T/key-access" clear none)"
+expect "Red note, allowed now: no reset by itself" "check" "$("$T/key-access" clear allowed)"
 # What the window asks for: what QEMU's active tap needs ("control the
 # computer", the Accessibility pane), not Input Monitoring.
 src=$R/app/app/Sources/OmacVM/KeyAccess.swift
@@ -79,6 +89,7 @@ has "the steps name the list as this macOS does" 'Privacy & Security › \(listN
 has "the window checks control the computer" 'static var allowed: Bool { post }'
 has "... asked again in a new process (macOS keeps a process's first answer)" '"--key-access"'
 has "Allow… takes macOS's answer now, not this process's first one" 'allow(reset: reset, post: fresh,'
+has "... and so does the red note's reset" 'clearOldEntry(reset: reset, post: fresh)'
 src=$R/app/app/Sources/OmacVM/Views.swift
 has "... and only that (not Input Monitoring)" 'KeyNote.decide(allowedNow: allowed || fresh() == true,'
 src=$R/app/app/Sources/OmacVM/main.swift
