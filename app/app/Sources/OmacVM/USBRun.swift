@@ -1,6 +1,7 @@
 import AppKit
 import OmacVMUpdate
 import OmacVMUSB
+import OmacVMWindow
 import SwiftUI
 
 /// USB devices while one VM runs with the switch on (docs/usb.md): the
@@ -113,7 +114,13 @@ final class USBRun: ObservableObject {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     let d = Self.fakeDevice
-                    if what == "plug" { self.watch.onPlug(d) } else if what == "unplug" { self.watch.onUnplug(d.location) }
+                    switch what {
+                    case "plug": self.watch.onPlug(d)
+                    case "unplug": self.watch.onUnplug(d.location)
+                    case "keep": self.session?.setPlan(.mac, for: d)   // no question at the next plug
+                    case "ask": self.session?.setPlan(.ask, for: d)
+                    default: break
+                    }
                 }
             }
         }
@@ -175,8 +182,6 @@ final class USBRun: ObservableObject {
             let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
             p.title = "USB Devices"
-            p.level = .floating
-            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             p.isReleasedWhenClosed = false
             p.contentViewController = NSHostingController(rootView: USBDeviceList(source: .running(self), vmName: config.name, showsTitle: false) { [weak self] in
                 self?.closeList()
@@ -185,7 +190,9 @@ final class USBRun: ObservableObject {
             panel = p
         }
         refreshRows()
-        NSApp.activate()
+        // The click was in QEMU's menu: this app only got a notification. A
+        // panel hides while its app is not active, so without this no list.
+        if let panel { AskKeys.take(panel, overVM: pid) }
         panel?.makeKeyAndOrderFront(nil)
     }
 

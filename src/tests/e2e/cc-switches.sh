@@ -48,10 +48,9 @@
 # Stop rules: each step has its own time limit; no retries.
 # Never on the person's own Mac session in use: refuses with a battery (the
 # MacBook) unless OMACVM_E2E_LAPTOP=1. Before the first row and between rows
-# (person.sh) it waits while someone is at the Mac: a remote session (Screen
-# Sharing, port 5900, Jump Desktop) or input that was not ours in the last 60
-# s (PERSON_IDLE_MIN); at most 30 min each time (PERSON_WAIT), then the rest
-# is BLOCKED.
+# (person.sh) it waits while someone is at the Mac: input that was not ours in
+# the last 60 s (PERSON_IDLE_MIN; a remote session with no input does not
+# count); at most 30 min each time (PERSON_WAIT), then the rest is BLOCKED.
 # Rows that ran while someone came and went get a "person" row (person.log has
 # the times). Never the person's own app, helpers or VM (fingerprinted before
 # and after).
@@ -133,8 +132,8 @@ plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist" 2>/dev
 if [[ ${OMACVM_E2E_LAPTOP:-} != 1 && $(ioreg -rc AppleSmartBattery 2>/dev/null) == *'"BatteryInstalled" = Yes'* ]]; then
   die "this Mac has a battery (a MacBook someone may work on): run it on the test Mac, or OMACVM_E2E_LAPTOP=1"
 fi
-# Nobody at the Mac: no input for 60 s, no remote session (Screen Sharing or Jump Desktop, also one
-# left alone: someone may be watching this screen). Else wait for it (person.sh).
+# Nobody at the Mac: no input for 60 s (an idle remote session is the owner from elsewhere and
+# does not count). Else wait for it (person.sh).
 person_gate start || die "$PERSON_WHY"
 LOCKS=()
 lock() {   # DIR: ours, or taken now (same owner counts: the caller may hold it)

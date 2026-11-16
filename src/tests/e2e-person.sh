@@ -38,7 +38,8 @@ same "verdict: idle 400 s, nobody" "" "$(person_verdict 400 "" 0 0 10000)"
 has "verdict: idle 20 s, never ours" "input 20 s ago, not ours" "$(person_verdict 20 "" 0 0 10000)"
 same "verdict: idle 3 s, ours until 2 s ago" "" "$(person_verdict 3 "" 9998 0 10000)"
 has "verdict: idle 3 s, ours until 60 s ago" "not ours" "$(person_verdict 3 "" 9940 0 10000)"
-has "verdict: a remote session, however long idle" "remote session: jump-desktop" "$(person_verdict 5000 jump-desktop 0 0 10000)"
+same "verdict: a remote session with no input (the owner from elsewhere): quiet" "" "$(person_verdict 5000 jump-desktop 0 0 10000)"
+has "verdict: input over a remote session: someone, named" "input 20 s ago, not ours (remote session: jump-desktop)" "$(person_verdict 20 jump-desktop 0 0 10000)"
 has "verdict: the watcher saw foreign input 30 s ago, ours after it" "not ours" "$(person_verdict 2 "" 9999 9970 10000)"
 same "verdict: foreign input 100 s ago is past the 60 s default, ours after it" "" "$(person_verdict 2 "" 9999 9900 10000)"
 same "verdict: the watcher's foreign input 400 s ago" "" "$(person_verdict 400 "" 0 9600 10000)"
@@ -111,16 +112,19 @@ echo $(( $(date +%s) - 100 )) > "$F/last-input"
 PERSON_WAIT=10 person_gate row-a > "$T/gate1.txt"; rc=$?
 same "gate: quiet again -> goes on" 0 "$rc"
 has "gate: the visit since the last gate goes to person_overlap" "row-a: HID input at" "$OVER"
-has "gate: ... the connect as well" "vnc-5900" "$OVER"
+same "gate: ... a remote connect alone is no visit" "" "$(grep -o 'vnc-5900' <<<"$OVER")"
 OVER=""; PERSON_WAIT=10 person_gate row-b > /dev/null
 same "gate: the same visit is not reported twice" "" "$OVER"
-# A Screen Sharing session opens: the gate pauses, and goes on when it ends.
+# A Screen Sharing session open with no input: the gate goes on at once.
 echo '   pid 412(screensharingd): [0x1] 00:00:01 PreventUserIdleDisplaySleep named: "Remote user is connected"' > "$F/pmset"
-( sleep 1.5; : > "$F/pmset" ) &
-t0=$(date +%s); PERSON_WAIT=20 person_gate row-c > "$T/gate2.txt"; rc=$?; t1=$(date +%s)
-same "gate: a remote session -> pause, then on when it ends" 0 "$rc"
-has "gate: ... PAUSE logged with the reason" "PAUSE before row-c: remote session: screen-sharing" "$(cat "$T/gate2.txt")"
-has "gate: ... RESUME logged" "RESUME before row-c" "$(cat "$T/gate2.txt")"
+PERSON_WAIT=20 person_gate row-c > "$T/gate2.txt"; rc=$?
+same "gate: an idle remote session -> goes on, no PAUSE" "0 0" "$rc $(grep -c PAUSE "$T/gate2.txt")"
+# Input comes over it: the gate pauses, names the session, and goes on when it is quiet again.
+date +%s > "$F/last-input"; ( sleep 1.5; echo $(( $(date +%s) - 100 )) > "$F/last-input"; : > "$F/pmset" ) &
+t0=$(date +%s); PERSON_WAIT=20 person_gate row-c2 > "$T/gate2b.txt"; rc=$?; t1=$(date +%s)
+same "gate: input over a remote session -> pause, then on when quiet" 0 "$rc"
+has "gate: ... PAUSE logged with the reason" "(remote session: screen-sharing)" "$(cat "$T/gate2b.txt")"
+has "gate: ... RESUME logged" "RESUME before row-c2" "$(cat "$T/gate2b.txt")"
 (( t1 - t0 >= 1 )) && ok "gate: ... it waited" || bad "gate: did not wait (${t1}-${t0})"
 # Someone types and stays: the gate gives up after PERSON_WAIT.
 ( for i in 1 2 3 4 5 6 7 8 9 10; do date +%s > "$F/last-input"; sleep 0.3; done ) & typing=$!

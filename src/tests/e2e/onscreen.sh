@@ -94,8 +94,8 @@ want() { [[ -z $ONLY || $ONLY == *" $1 "* ]]; }
 
 # --- the Mac and its user
 hid_idle() { person_hid_idle; }
-# Remote sessions (Screen Sharing, port 5900, Jump Desktop; also one left alone) and input that was
-# not ours (the watcher's view too): person.sh.
+# Input that was not ours (the watcher's view too) and remote sessions (Screen Sharing, port 5900,
+# Jump Desktop; named, but one with no input does not hold the rows): person.sh.
 remote() { local r; r=$(person_remote); echo "${r:-none}"; }
 locked() { person_locked && echo Yes || echo No; }
 away() { [[ $(locked) != Yes && -z $(person_check) ]]; }
@@ -564,11 +564,16 @@ usb_part() {
   else a+="no question in 5 s; "; fi
   [[ -z $a ]] && res "usb-$m-keep" ok "$m$fp: Escape kept it on the Mac, the VM in front again" || res "usb-$m-keep" FAIL "$m$fp: $a"
   onscreen_mid || { usb_fake unplug; res "usb-$m-list" BLOCKED "$MID"; return 1; }
-  # 3: QEMU's "USB Devices…" (the device still plugged in, kept on the Mac)
+  # 3: QEMU's "USB Devices…" by a real click (Accessibility's press is no user event: QEMU then has nothing
+  # to hand over and the list stays hidden). The device kept on the Mac from the start, so this part answers
+  # no question and does not hang on the two above.
   a=""
+  usb_fake unplug; usb_fake keep; usb_fake plug
+  waitfor 5 usb_question_gone >/dev/null; sleep 1
   "$T" front "$QP" >/dev/null; sleep 1; sp0=$("$T" space)
-  t0=$(now_s)
-  r=$("$T" menu "$QP" "USB Devices…") || a+="QEMU's item: $r; "
+  posted
+  r=$("$T" menu-click "$QP" "USB Devices…") || a+="QEMU's item: $r; "
+  t0=$(now_s)   # from the click on the item (the bar comes down first in full screen)
   for ((i = 0; i < 30; i++)); do usb_list_up && break; sleep 0.1; done   # 3 s, looked at every 0.1 s
   t1=$(now_s)
   usb_list_up || a+="no list; "
@@ -586,7 +591,7 @@ usb_part() {
     waitfor 3 usb_list_gone >/dev/null || a+="Return did not close the list; "
     waitfor 3 front_is "$QP" >/dev/null || a+="the VM was not in front after the list; "
   fi
-  usb_fake unplug
+  usb_fake unplug; usb_fake ask
   [[ -z $a ]] && res "usb-$m-list" ok "$m$fp: the list in $(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.2f", b - a }') s on the VM's Space, in front; Connect, Disconnect, Return closed it, the VM in front" ||
     { res "usb-$m-list" FAIL "$m$fp: $a"; "$T" texts "$LP" > "$OUT/shots/usb-$m-list.txt" 2>&1; usb_list_up && "$T" press "$LP" AXButton Done >/dev/null; }
   sleep 6

@@ -16,10 +16,10 @@ Test: app/runtime/Tests/display/test-pointer-guard.c.
 
 diff --git a/ui/omacvm-pointer-guard.h b/ui/omacvm-pointer-guard.h
 new file mode 100644
-index 0000000..c1e0963
+index 0000000..ff0313c
 --- /dev/null
 +++ b/ui/omacvm-pointer-guard.h
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,445 @@
 +/*
 + * OmacVM: the pointer maths of the full-screen guard (Dock and hot corners).
 + *
@@ -105,7 +105,7 @@ index 0000000..c1e0963
 +} OmacVMGuard;
 +
 +/*
-+ * What the caller does after one event, in this order: warp, then (de)tach.
++ * What the caller does after one event, in this order: detach, warp, attach.
 + * place: the guest gets (x, y) of the guard for this event, not the event's
 + * location (held, or just let go). let_go_out (for the caller's debug log):
 + * the warp in flight taken out of this motion had the let-go's in it;
@@ -342,6 +342,19 @@ index 0000000..c1e0963
 +    }
 +
 +    if (g->held) {
++        /*
++         * The cursor is not where the warp in flight put it: the hold's
++         * first warp (off an outer edge) landed while the cursor was still
++         * attached and the mouse moved it on (#788: pushed against an edge).
++         * A detached cursor moves only by our warps, so it stays there, and
++         * events made after the warp come there: that is the warp's target.
++         * Before, no event came at the old target again, the warp stayed in
++         * flight for the whole hold and the shown cursor stopped following.
++         */
++        if (g->warp_pending && (fabs(cur_x - g->cx) >= 0.5 || fabs(cur_y - g->cy) >= 0.5)) {
++            g->cx = cur_x;
++            g->cy = cur_y;
++        }
 +        /*
 +         * A motion made after the warp (it is at the warp's place) carries
 +         * its distance; a button does not (it has no motion).

@@ -688,6 +688,46 @@ park_gone() {
   done
 }
 
+# new_instance: what this script sent lives in Hyprland, and the files here
+# only say what it sent. A new Hyprland in the same runtime folder (log out and
+# in within about 10 s, or SDDM restarted: systemd keeps the user manager and
+# its folder that long) has none of it, but the files said it was sent, so the
+# tone-map rule never reached it (HDR pages 3-4 % darker, highlights cut). So
+# when the instance changes, the sent-state goes and everything is sent again;
+# same instance: nothing more. Kept: the .rule files (omacvm_app.lua's copy for
+# a reload; rewritten with the next rule), "held" (omacvm check) and the lock.
+# Which instance: as omacvm-displays' hypr_dir(): this process's, only while its
+# socket is there (a process of an ended session changes nothing), else the
+# newest folder with a socket.
+new_instance() {
+  local run=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr sig=${HYPRLAND_INSTANCE_SIGNATURE:-} d glob=0
+  if [[ -n $sig ]]; then
+    [[ -e $run/$sig/.socket.sock ]] || return 0
+  else
+    while IFS= read -r d; do
+      [[ -e $run/$d/.socket.sock ]] && { sig=$d; break; }
+    done < <(ls -t "$run" 2>/dev/null)
+    [[ -n $sig ]] || return 0
+  fi
+  [[ $(cat "$state_dir/instance" 2>/dev/null || true) != "$sig" ]] || return 0
+  shopt -q nullglob && glob=1
+  shopt -s nullglob
+  rm -f "$state_dir/tonemap" "$state_dir/tonemap.refused" "$state_dir"/Virtual-*.{sent,hdr,hold,history}
+  ((glob)) || shopt -u nullglob
+  printf '%s\n' "$sig" > "$state_dir/instance"
+}
+
+# take_state: one at a time (the watcher, the reload hook and omacvm-displays
+# all send rules), then forget an earlier Hyprland's state (new_instance). The
+# caller declares lock_fd local and closes it.
+take_state() {
+  mkdir -p "$state_dir"
+  if command -v flock >/dev/null && exec {lock_fd}>"$state_dir/lock"; then
+    flock -w 20 "$lock_fd" || true
+  fi
+  new_instance
+}
+
 apply_preferred_modes() {
   local connector
   local connector_name
@@ -727,12 +767,8 @@ apply_preferred_modes() {
     [[ -n $output ]] && placed[$output]=$position
   done < <(output_positions "$layout_file" "${sizes[@]}" 2>/dev/null || true)
 
-  # One at a time: the watcher, the reload hook and omacvm-displays all call this.
-  mkdir -p "$state_dir"
   local lock_fd
-  if command -v flock >/dev/null && exec {lock_fd}>"$state_dir/lock"; then
-    flock -w 20 "$lock_fd" || true
-  fi
+  take_state
   local shown
   shown=$(hyprctl -j monitors 2>/dev/null) || shown='[]'
 
