@@ -356,7 +356,7 @@ index bf5befe..033b9bf 100644
      cap = g_new0(SDLCapture, 1);
      qemu_mutex_init(&cap->lock);
 diff --git a/hw/audio/hda-codec.c b/hw/audio/hda-codec.c
-index 0b312f1..33ee44d 100644
+index 0b312f1..32066dc 100644
 --- a/hw/audio/hda-codec.c
 +++ b/hw/audio/hda-codec.c
 @@ -317,30 +317,69 @@ static void hda_audio_input_cb(void *opaque, int avail)
@@ -369,7 +369,7 @@ index 0b312f1..33ee44d 100644
 + * burst is a period plus the slack a late tick had at 1 ms, so a regular
 + * tick is never taken for a stall.
 + */
-+static int64_t hda_audio_pace_burst(int64_t bps)
++static int64_t hda_audio_pace_burst(HDAAudioStream *st, int64_t bps)
 +{
 +    int64_t extra = 0;
 +
@@ -409,7 +409,7 @@ index 0b312f1..33ee44d 100644
      if (!st->state->pace || bps <= 0) {
          return to_transfer;
      }
-+    burst = hda_audio_pace_burst(bps);
++    burst = hda_audio_pace_burst(st, bps);
      if (!st->primed) {
          if (now - st->run_ns < HDA_PACE_PRIME) {
              st->pace_ns = now;

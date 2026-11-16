@@ -66,6 +66,19 @@ for line in 'sound path: %s' 'sound: own audio thread, %s'; do
   check "own-thread patch logs '$line'" grep -qF "\"OmacVM: $line" "$TP"
 done
 check "the thread never takes the BQL: DMA to RAM only off the BQL" grep -qF 'bool rt = !bql_locked();' "$TP"
+# Its tick follows the streams (qemu-audio-tick-follows-stream.patch), not every 1 ms.
+FP=$R/app/runtime/patches/qemu-audio-tick-follows-stream.patch
+check "tick-follows-stream patch is pinned in SHA256SUMS" grep -q " qemu-audio-tick-follows-stream.patch$" "$R/app/runtime/patches/SHA256SUMS"
+follow_line=$(grep -n 'patches/qemu-audio-tick-follows-stream.patch"' "$R/app/runtime/build-qemu-gpu-runtime.sh" | cut -d: -f1)
+check "runtime build applies it right after the own thread" test -n "$follow_line" -a "${follow_line:-0}" -gt "${own_line:-0}" -a "${follow_line:-0}" -lt "${nap_line:-0}"
+check "tick-follows-stream patch logs 'sound: audio tick every'" grep -qF '"OmacVM: sound: audio tick every %' "$FP"
+check "the start line stays as check.sh reads it" grep -qF '"OmacVM: sound: own audio thread, %s, every %' "$FP"
+check "OMACVM_AUDIO_THREAD_PERIOD_US still fixes the period" grep -qF 'audio_rt_period_fixed = true;' "$FP"
+check "the period is clamped to 1-10 ms" grep -qE '^\+#define AUDIO_RT_PERIOD_MAX \(10 \* SCALE_MS\)' "$FP"
+check "a stream ticks at a quarter of its shortest DMA entry, at most B_SIZE/8" grep -qF 'bytes = MIN((int64_t)entry / 4, (int64_t)(B_SIZE / 8));' "$FP"
+check "the pacing burst grows with the period" grep -qF 'burst = hda_audio_pace_burst(st, bps);' "$FP"
+check "the mixer keeps two backend buffers out of its share" grep -qF 'ring <= 2 * (size_t)frames' "$FP"
+check "SDL says its open device's size" grep -qF 'qatomic_set(&sdl->hw.omacvm_frames, (int)sdl->open_frames);' "$FP"
 path_verdict() {   # PATH_LINE THREAD_LINE PACING_LINE -> the status check.sh prints
   local miclog TYPE=app out
   miclog=$(mktemp); printf 'OmacVM: %s\n' "$@" | grep -v 'OmacVM: $' > "$miclog"
