@@ -2043,3 +2043,43 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 - **Where:** `src/disk/guest/install.sh`,
   `src/disk/guest/61-omacvm-io-scheduler.rules`, `src/guest/check.sh` ("disk
   scheduler"); test `src/tests/disk-scheduler.sh`.
+
+## 65. x86 apps: the VM ran out of memory building box64
+
+- **Symptom:** switching x86 Linux apps on fails after a minute or two:
+  "x86 apps: the build failed (details in /var/log/omacvm-x86-apps.log)",
+  and the log has `cc: fatal error: Killed signal terminated program cc1`
+  (the kernel log: `Out of memory: Killed process ... (cc1)`). The switch
+  goes back to off. Small VMs: 3 GB test VMs failed every time; a 4 GB VM
+  (the smallest OmacVM makes, the default on 8 GB Macs) got through with an
+  idle desktop but only 0.6 GB to spare, so with apps open it fails too.
+  Up to 3.4.6.
+- **Cause:** one file of box64, `src/tools/gtkclass.c`, needs about 4.1 GB
+  to compile with debug info (`-g`, from CMake's RelWithDebInfo), which
+  OmacVM's package strips again anyway. Since 3.4.2 zram is capped at a
+  quarter of the memory on Omarchy 4.5 too (60), so a small VM with the
+  desktop open no longer gets through by swapping, and the kernel kills the
+  compiler. One build job fails as well; the job count is not the cause. A
+  new VM built with x86 apps on often got through: the zram cap applies
+  only after its first restart.
+- **Fix (3.4.7):** Update VM (`omacvm apply`), then switch x86 apps on again.
+  box64 now builds without `-g` and with GCC freeing its memory sooner:
+  that file needs about 1.24 GB, and the whole switch passes in a 3 GB VM
+  with the desktop open (145-233 s on a Mac mini M4, at least 900 MB
+  left free). The package is
+  the same box64 (same version), so a VM that has it keeps it and Update VM
+  builds nothing.
+- **Still too little:** with less than 1.5 GB free in the VM (free memory
+  plus free swap, for example while a big app runs), switching it on now
+  stops at once, before anything is installed: "box64's build needs about
+  1.5 GB of free memory in the VM, and only 1.2 GB is free: close apps in
+  the VM or give it more memory". If the compiler is killed anyway, the
+  reason says "the VM ran out of memory building box64 (it has N GB of
+  memory)". `omacvm apply`, `omacvm enable x86-apps` and the control centre
+  show these lines; then switch x86 apps on again.
+- **Before 3.4.7:** close apps in the VM, or give it more memory for the
+  switch (`omacvm resources --vm NAME --memory-gb 6`, restart, switch it on,
+  then back).
+- **Where:** `src/x86/guest/PKGBUILD` (`build()`), `src/x86/guest/install.sh`
+  (`mem_ok`, `build_failed`); test `src/tests/x86-apps.sh`;
+  [ADR 0040](adr/0040-x86-apps-box64.md) (amendment 3.4.7).

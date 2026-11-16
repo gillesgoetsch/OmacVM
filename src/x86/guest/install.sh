@@ -17,14 +17,20 @@
 # OmacVM holds that one rule back with a file of its own of the same name in
 # /etc/binfmt.d (it hides the /usr/lib one) and removes it when off; qemu-user's
 # other rules stay. A file of that name that is not OmacVM's is left alone.
-# Tests: OMACVM_X86_ROOT puts /proc/sys/fs/binfmt_misc, /etc/binfmt.d and the
-# test program under a scratch folder.
+# The build needs about 1.5 GB of free memory (box64's gtkclass.c peaks at
+# 1.24 GB): on stops before it installs anything when the VM has less, and
+# says so when the compiler is killed anyway. Those lines start with
+# "OmacVM: ", which omacvm apply shows as the reason.
+# Tests: OMACVM_X86_ROOT puts /proc/sys/fs/binfmt_misc, /proc/meminfo,
+# /etc/binfmt.d and the test program under a scratch folder.
 set -euo pipefail
 cd "$(dirname "$0")"
 VER=$(bash -c 'source ./PKGBUILD; echo "$pkgver-$pkgrel"')
 ROOT=${OMACVM_X86_ROOT:-}
 BINFMT=$ROOT/proc/sys/fs/binfmt_misc
 LOG=$ROOT/var/log/omacvm-x86-apps.log
+MEMINFO=$ROOT/proc/meminfo
+NEED_KB=1572864   # 1.5 GB free (RAM + swap) for the build
 PACKAGER="OmacVM <omacvm@users.noreply.github.com>"
 # Packages only through guest/pkg-add: never an update of one the VM has.
 PKG_ADD=${OMACVM_PKG_ADD:-$PWD/../../guest/pkg-add}
@@ -117,6 +123,23 @@ status() {
   else echo "off box64 not installed"; fi
 }
 
+# /proc/meminfo's value in kB, empty when it is not there.
+meminfo() { awk -v k="$1:" '$1 == k && $2 ~ /^[0-9]+$/ { print $2; exit }' "$MEMINFO" 2>/dev/null || true; }
+# The VM's memory in whole GB, as set in the app (MemTotal of a 4096 MB VM is about 3.85 GiB).
+vm_gb() { local t; t=$(meminfo MemTotal); if [[ -n $t ]]; then echo $(( (t + 524288) / 1048576 )); fi; }
+# Enough free memory for the build? No answer from meminfo: no check.
+mem_ok() {
+  local a s; a=$(meminfo MemAvailable); s=$(meminfo SwapFree)
+  [[ -z $a ]] && return 0
+  FREE_KB=$(( a + ${s:-0} ))
+  (( FREE_KB >= NEED_KB ))
+}
+# The build was killed for memory: gcc's own line, or the kernel's OOM killer since $1 (epoch seconds).
+out_of_memory() {
+  grep -q 'Killed signal terminated program' "$LOG" 2>/dev/null && return 0
+  [[ -n $(journalctl -k -q --no-pager --since "@$1" -g 'Out of memory: Killed process' 2>/dev/null) ]]
+}
+
 binfmt_reload() {
   # systemd's pacman hook does this on install; on removal it may not. Every
   # rule out, then the binfmt.d files: qemu-user's x86_64 rule goes or comes back.
@@ -169,6 +192,12 @@ if [[ ${s%% *} == broken ]]; then
   if registered; then echo "x86 apps: ${s#* }" >&2; exit 1; fi
 fi
 
+if ! mem_ok; then
+  # one decimal, rounded down: "only 1.4 GB" is never shown as 1.5
+  # (kept short: apply's reason, "x86 Linux apps was not set up: ...", is cut at 160 characters)
+  echo "OmacVM: box64's build needs about 1.5 GB of free memory in the VM, and only $(( FREE_KB * 10 / 1048576 / 10 )).$(( FREE_KB * 10 / 1048576 % 10 )) GB is free: close apps in the VM or give it more memory" >&2
+  exit 1
+fi
 echo "x86 apps: building box64 $VER (a few minutes, log $LOG)"
 deps=(base-devel)
 while IFS= read -r d; do deps+=("$d"); done < <(bash -c 'source ./PKGBUILD; printf "%s\n" "${makedepends[@]}"')
@@ -183,6 +212,14 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { echo "x86 apps: $1 (details in $LOG)" >&2; exit 1; }
+build_failed() {   # $1: when the build started
+  local gb
+  out_of_memory "$1" || fail "the build failed"
+  gb=$(vm_gb)
+  echo "OmacVM: the VM ran out of memory building box64${gb:+ (it has $gb GB of memory)}: close apps in the VM or give it more memory" >&2
+  echo "x86 apps: details in $LOG" >&2
+  exit 1
+}
 : > "$LOG"
 if [[ -n $missing ]]; then
   # shellcheck disable=SC2086 # one package per word
@@ -191,8 +228,9 @@ fi
 install -m644 PKGBUILD "$B/"
 chown -R nobody: "$B"
 # makepkg refuses root: build as nobody (it downloads and checks the sha256 itself).
+t0=$(date +%s)
 ( cd "$B" && runuser -u nobody -- env HOME="$B" PKGDEST="$B" BUILDDIR="$B/build" SRCDEST="$B" LOGDEST="$B" PACKAGER="$PACKAGER" \
-    makepkg --nodeps --noconfirm --noprogressbar ) >>"$LOG" 2>&1 || fail "the build failed"
+    makepkg --nodeps --noconfirm --noprogressbar ) >>"$LOG" 2>&1 || build_failed "$t0"
 pkg=""
 for f in "$B/$PKG-$VER"-aarch64.pkg.tar.*; do [[ -f $f ]] && pkg=$f; done
 [[ -n $pkg ]] || fail "the build made no package"
