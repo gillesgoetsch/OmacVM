@@ -19,8 +19,8 @@ q() { printf '2026-11-16T23:00:00.000000Z qemu-system-aarch64: %s\n' "$@"; }
 ON="OmacVM: partial present: on (only what the VM changed is drawn into the window's picture)"
 OFFHDR="OmacVM: partial present: off (HDR start: not checked on an HDR display yet)"
 OFFSW="OmacVM: partial present: off (switch off)"
-C1="info: cocoa: partial present, last 60 s: 3412 frames in part (812 with nothing to draw), 41 in full: new buffer 3, catching up after a change 38; frame 2940x1912, surfaces 2940x1912"
-C2="info: cocoa: partial present, last 61 s: 0 frames in part (0 with nothing to draw), 3600 in full: three quarters or more changed 3600; frame 2940x1912, surfaces 2940x1912"
+C1="info: cocoa: partial present, last 60 s: 3412 frames in part (812 with nothing to draw, the others 1144 px a box on average), 41 in full: new buffer 3, catching up after a change 38; frame 2940x1912, surfaces 2940x1912"
+C2="info: cocoa: partial present, last 61 s: 0 frames in part (0 with nothing to draw, the others 0 px a box on average), 3600 in full: three quarters or more changed 3600; frame 2940x1912, surfaces 2940x1912"
 OK0="info: cocoa: present check, so far: 0 of 400 checks bad"
 BAD="info: cocoa: present check, so far: 3 of 400 checks bad"
 # The lines must be what the app and the patch write.
@@ -31,7 +31,7 @@ for p in "$runner:OmacVM: partial present: \\(partial.on ? \"on\" : \"off\") (\\
          "$model:only what the VM changed is drawn into the window's picture" \
          "$model:HDR start: not checked on an HDR display yet" \
          "$patch:cocoa: partial present, last %\" PRId64 \" s: %\" PRIu64 \" frames in part" \
-         "$patch:(%\" PRIu64 \" with nothing to draw), %\" PRIu64 \" in full%s; frame %ux%u," \
+         "$patch:(%\" PRIu64 \" with nothing to draw, the others %\" PRIu64 \" px a box on average)," \
          "$patch:cocoa: present check, so far: %\" PRIu64 \" of %\" PRIu64 \" checks bad" \
          "$patch:\"three quarters or more changed\"" "$patch:\"new buffer\"" "$patch:\"catching up after a change\""; do
   f=${p%%:*}; s=${p#*:}

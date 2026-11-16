@@ -59,7 +59,7 @@ ADR 0051 lists what was run and what is owed.
  #include "hw/core/boards.h"
  #include "system/system.h"
  #include "system/runstate.h"
-@@ -7427,6 +7428,206 @@
+@@ -7427,6 +7428,209 @@
   */
  static bool present_deep_failed;
  static unsigned present_next;
@@ -119,6 +119,7 @@ ADR 0051 lists what was run and what is owed.
 +    "catching up after a change",
 +};
 +static uint64_t present_pd_n_part, present_pd_n_empty, present_pd_n_full[PD_WHY_N];
++static uint64_t present_pd_px_part;    /* pixels drawn in part (the boxes) */
 +static int64_t present_pd_stats_ns;
 +static uint64_t present_pd_stats_sig = UINT64_MAX;
 +
@@ -144,17 +145,19 @@ ADR 0051 lists what was run and what is owed.
 +        full += present_pd_n_full[k];
 +        present_pd_n_full[k] = 0;
 +    }
++    uint64_t drawn = present_pd_n_part - present_pd_n_empty;
 +    info_report("cocoa: partial present, last %" PRId64 " s: %" PRIu64 " frames in part"
-+                " (%" PRIu64 " with nothing to draw), %" PRIu64 " in full%s; frame %ux%u,"
-+                " surfaces %ux%u", (now - present_pd_stats_ns) / NANOSECONDS_PER_SECOND,
-+                present_pd_n_part, present_pd_n_empty, full, why->str, w, h,
-+                present_w, present_h);
++                " (%" PRIu64 " with nothing to draw, the others %" PRIu64 " px a box on average),"
++                " %" PRIu64 " in full%s; frame %ux%u, surfaces %ux%u",
++                (now - present_pd_stats_ns) / NANOSECONDS_PER_SECOND,
++                present_pd_n_part, present_pd_n_empty, drawn ? present_pd_px_part / drawn : 0,
++                full, why->str, w, h, present_w, present_h);
 +    if (present_damage_on == 2) {
 +        info_report("cocoa: present check, so far: %" PRIu64 " of %" PRIu64 " checks bad",
 +                    present_pd_bad, present_pd_checks);
 +    }
 +    g_string_free(why, true);
-+    present_pd_n_part = present_pd_n_empty = 0;
++    present_pd_n_part = present_pd_n_empty = present_pd_px_part = 0;
 +    present_pd_stats_ns = now;
 +}
 +
@@ -266,7 +269,7 @@ ADR 0051 lists what was run and what is owed.
  static dispatch_queue_t present_queue;
  static QEMUTimer *present_timer;
  static int64_t present_last_ns;
-@@ -7988,6 +8189,7 @@
+@@ -7988,6 +8192,7 @@
      present_deep = deep;
      present_linear = linear;
      present_next = 0;
@@ -274,7 +277,7 @@ ADR 0051 lists what was run and what is owed.
      return true;
  }
  
-@@ -8124,6 +8326,79 @@
+@@ -8124,6 +8329,80 @@
      unsigned n = (present_next + i) % present_nsurf;
      present_next = (n + 1) % present_nsurf;
  
@@ -334,6 +337,7 @@ ADR 0051 lists what was run and what is owed.
 +        if (part) {
 +            present_pd_n_part++;
 +            present_pd_n_empty += omacvm_pd_empty(pd);
++            present_pd_px_part += (uint64_t)pd.w * pd.h;
 +        } else {
 +            present_pd_n_full[why]++;
 +            /* =check: the partial frames right after this one are all checked */
@@ -354,7 +358,7 @@ ADR 0051 lists what was run and what is owed.
      glBindFramebuffer(GL_FRAMEBUFFER, present_fbo);
      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                             GL_TEXTURE_RECTANGLE, present_tex[n], 0);
-@@ -8132,8 +8407,18 @@
+@@ -8132,8 +8411,18 @@
      glDisable(GL_SCISSOR_TEST);
      /* The guest's alpha means nothing here: the window is opaque. */
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -375,7 +379,7 @@ ADR 0051 lists what was run and what is owed.
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
      glActiveTexture(GL_TEXTURE0);
      if (splash) {
-@@ -8151,6 +8436,11 @@
+@@ -8151,6 +8440,11 @@
          }
      }
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -387,7 +391,7 @@ ADR 0051 lists what was run and what is owed.
      glBindTexture(GL_TEXTURE_2D, 0);
      glBindFramebuffer(GL_FRAMEBUFFER, 0);
      GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-@@ -8855,6 +9145,8 @@
+@@ -8855,6 +9149,8 @@
                                       uint32_t x, uint32_t y,
                                       uint32_t w, uint32_t h)
  {
@@ -396,7 +400,7 @@ ADR 0051 lists what was run and what is owed.
      gl_scanout_id = backing_id;
      gl_scanout_borrow = backing_borrow;
      gl_scanout_x = x;
-@@ -8875,6 +9167,9 @@
+@@ -8875,6 +9171,9 @@
  {
      gl_dirty = true;
      omacvm_hold_dirty = true;
