@@ -144,6 +144,10 @@ has "a symbol of the installed library missing: not installed" "lacks symbols of
 guest
 out=$(FAKE_BUILD=$STOCK run)
 has "Omarchy's library again (the patch did nothing): not installed" "the build does not send cursor hotspots" "$out"
+guest
+out=$(FAKE_VERSION=1:0.16.0-1 FAKE_BUILD=$OURS run); expect "a version with an epoch (its colon would split LD_LIBRARY_PATH): exit 1" 1 $?
+has "a version with an epoch: no build, said" "not a package version: 1:0.16.0-1" "$out"
+out=$(FAKE_VERSION=1:0.16.0-1 run --lib); expect "a version with an epoch: --lib names nothing" "1:" "$?:$out"
 guest; rm "$T/bin/hyprwayland-scanner"
 out=$(FAKE_BUILD=$OURS run); expect "a build tool missing: exit 1" 1 $?
 has "a build tool missing: said, and omacvm apply adds it (never pacman -S by hand)" "build tools missing: hyprwayland-scanner (omacvm apply adds them)" "$out"

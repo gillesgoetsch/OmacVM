@@ -130,7 +130,9 @@ build() {   # 0 = built or current; 1 = failed
   local version left rc=0 v keep why missing sys ours
   version=$(installed)
   [[ -n $version ]] || { say "no aquamarine package in this VM"; return 1; }
-  [[ $version =~ ^[A-Za-z0-9._+:-]+$ && $version != .* ]] || { say "not a package version: $version"; return 1; }
+  # No ":" (an epoch): the folder's name goes into LD_LIBRARY_PATH, where a
+  # colon ends an entry and the rest would be a path relative to any folder.
+  [[ $version =~ ^[A-Za-z0-9._+-]+$ && $version != .* ]] || { say "not a package version: $version"; return 1; }
   if current "$version"; then say "$version: up to date"; return 0; fi
   [[ -f $patch_file ]] || { failed "$version" "no $patch_file"; return 1; }
   sys=$(readlink -f "$system_lib" 2>/dev/null) && [[ -f $sys ]] || { failed "$version" "no $system_lib"; return 1; }
@@ -150,7 +152,7 @@ build() {   # 0 = built or current; 1 = failed
   done
   timeout --kill-after=10 "$left" setpriv --reuid="$builder" --regid="$builder" --clear-groups --no-new-privs -- \
     env -i "${keep[@]}" "$self" --unprivileged "$version" "$work" \
-    > "$stage/lib" 2> "$stage/log" || rc=$?
+    > "$stage/lib" 2> "$stage/log" < /dev/null || rc=$?
   ours=$(soname "$stage/lib")
   if (( rc != 0 )); then
     tail -n 30 "$stage/log" >&2
