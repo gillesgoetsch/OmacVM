@@ -67,7 +67,7 @@ checks() {
     'glBindFramebuffer(GL_READ_FRAMEBUFFER, present_fbo);' 'glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);' \
     'glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, a);'
   chk "the frames after a full draw are all checked" has "$present" 'present_pd_check_burst = 4 * present_nsurf;'
-  chk "the test fault is for the check mode only" has "$present" 'present_pd_fault = present_damage_on == 2 && fault && !strcmp(fault, "shrink");'
+  chk "the test fault is for the check mode only" has "$present" 'present_pd_fault = present_damage_on != 2 || !fault ? 0 :'
   chk "qemu.log gets the counts (frames in part, in full and why)" has "$present" 'present_pd_stats(w, h);'
   chk "the counts know the reasons" has "$present" 'present_pd.last == OMACVM_PD_FULL_BIG ? PD_WHY_BIG : PD_WHY_CATCHUP;'
 }

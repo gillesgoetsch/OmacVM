@@ -22,9 +22,11 @@ its own, in the surfaces' format, and compares them pixel for pixel
 while after a full draw (new surfaces, buffers, colour paths), then every
 30th. It copies the shown surface on the GPU into a plain texture and reads
 that one, so lossless-compressed surfaces are checked too (glReadPixels on
-one crashes). OMACVM_TEST_PRESENT_DAMAGE_FAULT=shrink (with =check only)
-draws each box 1 px narrower, so a test can show the check finds wrong
-pixels. qemu.log says which at the first present, logs the first frame
+one crashes). OMACVM_TEST_PRESENT_DAMAGE_FAULT (with =check only; tests)
+breaks the partial draws on purpose, so a test can show the check finds
+wrong pixels: =half draws only the left half of each box, =skip draws
+nothing of it. (A box 1 px narrower was not enough: a compositor's damage
+covers about three frames, so a box's edge seldom changed.) qemu.log says which at the first present, logs the first frame
 drawn in part, and once a minute while frames come: how many went in part
 (and how many of those had nothing to draw), how many in full and why, the
 frame's and the surfaces' size.
@@ -59,7 +61,7 @@ ADR 0051 lists what was run and what is owed.
  #include "hw/core/boards.h"
  #include "system/system.h"
  #include "system/runstate.h"
-@@ -7427,6 +7428,209 @@
+@@ -7427,6 +7428,210 @@
   */
  static bool present_deep_failed;
  static unsigned present_next;
@@ -98,11 +100,12 @@ ADR 0051 lists what was run and what is owed.
 +/*
 + * =check: every partial frame is checked for a while after a full draw (new
 + * surfaces, buffers, colour paths: where a wrong box would show first), then
-+ * every 30th. OMACVM_TEST_PRESENT_DAMAGE_FAULT=shrink (=check only) draws each
-+ * box 1 px narrower, so a test can show that the check finds wrong pixels.
++ * every 30th. OMACVM_TEST_PRESENT_DAMAGE_FAULT (=check only) breaks the
++ * partial draws on purpose, so a test can show that the check finds wrong
++ * pixels: =half draws the left half of each box, =skip none of it.
 + */
 +static unsigned present_pd_check_burst;
-+static bool present_pd_fault;
++static int present_pd_fault;           /* 0 none, 1 half, 2 skip */
 +/*
 + * qemu.log once a minute while frames come (STANDARDS 3: which path the
 + * frames took): frames drawn in part (and how many of those had nothing to
@@ -269,7 +272,7 @@ ADR 0051 lists what was run and what is owed.
  static dispatch_queue_t present_queue;
  static QEMUTimer *present_timer;
  static int64_t present_last_ns;
-@@ -7988,6 +8192,7 @@
+@@ -7988,6 +8193,7 @@
      present_deep = deep;
      present_linear = linear;
      present_next = 0;
@@ -277,7 +280,7 @@ ADR 0051 lists what was run and what is owed.
      return true;
  }
  
-@@ -8124,6 +8329,80 @@
+@@ -8124,6 +8330,82 @@
      unsigned n = (present_next + i) % present_nsurf;
      present_next = (n + 1) % present_nsurf;
  
@@ -286,10 +289,12 @@ ADR 0051 lists what was run and what is owed.
 +        const char *e = getenv("OMACVM_GL_PRESENT_DAMAGE");
 +        const char *fault = getenv("OMACVM_TEST_PRESENT_DAMAGE_FAULT");
 +        present_damage_on = e && !strcmp(e, "1") ? 1 : e && !strcmp(e, "check") ? 2 : 0;
-+        present_pd_fault = present_damage_on == 2 && fault && !strcmp(fault, "shrink");
++        present_pd_fault = present_damage_on != 2 || !fault ? 0 :
++                           !strcmp(fault, "half") ? 1 : !strcmp(fault, "skip") ? 2 : 0;
 +        if (present_pd_fault) {
-+            warn_report("cocoa: present check: test fault on, boxes drawn 1 px narrower "
-+                        "(OMACVM_TEST_PRESENT_DAMAGE_FAULT=shrink)");
++            warn_report("cocoa: present check: test fault on, %s (OMACVM_TEST_PRESENT_DAMAGE_FAULT)",
++                        present_pd_fault == 1 ? "only the left half of each box drawn" :
++                                                "nothing of a box drawn");
 +        }
 +        info_report("cocoa: present: %s", !present_damage_on ?
 +                    "every frame in full (OMACVM_GL_PRESENT_DAMAGE=1: what changed only)" :
@@ -344,8 +349,8 @@ ADR 0051 lists what was run and what is owed.
 +            present_pd_check_burst = 4 * present_nsurf;
 +        }
 +        present_pd_stats(w, h);
-+        if (part && present_pd_fault && pd.w > 1) {
-+            pd.w--;
++        if (part && present_pd_fault) {
++            pd.w = present_pd_fault == 1 ? pd.w / 2 : 0;   /* tests: a wrong draw on purpose */
 +        }
 +    }
 +    present_pd_stats_sig = pd_sig;
@@ -358,7 +363,7 @@ ADR 0051 lists what was run and what is owed.
      glBindFramebuffer(GL_FRAMEBUFFER, present_fbo);
      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                             GL_TEXTURE_RECTANGLE, present_tex[n], 0);
-@@ -8132,8 +8411,18 @@
+@@ -8132,8 +8414,18 @@
      glDisable(GL_SCISSOR_TEST);
      /* The guest's alpha means nothing here: the window is opaque. */
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -379,7 +384,7 @@ ADR 0051 lists what was run and what is owed.
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
      glActiveTexture(GL_TEXTURE0);
      if (splash) {
-@@ -8151,6 +8440,11 @@
+@@ -8151,6 +8443,11 @@
          }
      }
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -391,7 +396,7 @@ ADR 0051 lists what was run and what is owed.
      glBindTexture(GL_TEXTURE_2D, 0);
      glBindFramebuffer(GL_FRAMEBUFFER, 0);
      GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-@@ -8855,6 +9149,8 @@
+@@ -8855,6 +9152,8 @@
                                       uint32_t x, uint32_t y,
                                       uint32_t w, uint32_t h)
  {
@@ -400,7 +405,7 @@ ADR 0051 lists what was run and what is owed.
      gl_scanout_id = backing_id;
      gl_scanout_borrow = backing_borrow;
      gl_scanout_x = x;
-@@ -8875,6 +9171,9 @@
+@@ -8875,6 +9174,9 @@
  {
      gl_dirty = true;
      omacvm_hold_dirty = true;
