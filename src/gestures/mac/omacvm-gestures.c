@@ -811,7 +811,7 @@ static void pauseInput(void) {
 // combo is the tap's, and it is the only way out of a full-screen VM on a Mac
 // with a keyboard alone. A watchdog off the main thread disables the tap when
 // the main thread (the tap's callback) has not answered for a second, so a
-// stall holds the Mac's input for a second at most, once per hold-off.
+// stalling tap holds the Mac's input once per hold-off at most.
 #define TAP_FORGET 600.0
 static double uptimeNow(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; }
 static double (*nowFn)(void) = uptimeNow;
