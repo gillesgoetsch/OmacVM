@@ -12,7 +12,9 @@ in more words.
   sync rounded QEMU's clock to it, which moved the refresh by up to 0.3 % (60.098 Hz in a 1080p
   window, 59.812 at 1280x720). It now rounds the clock up and widens the blanking so the VM's
   display stays at the Mac's rate or a hair above, never below. Measured on the Air (YouTube 1080p60
-  VP9, 90 s): 59-115 dropped frames before, 0-7 after. Update VM puts it in.
+  VP9, Chrome started after the mode was set): 58-165 dropped frames per 90-120 s before (9 rows),
+  0, 7 and 9 after in three rows and 141 in a fourth, so fewer drops, not none yet. Update VM puts
+  it in.
 
 ## 3.4.7
 

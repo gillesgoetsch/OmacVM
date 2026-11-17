@@ -36,7 +36,7 @@ def whole_mhz_timing(pixel_clock: int, htotal: int, vtotal: int) -> tuple[int, i
     kHz, so the mode gets a whole MHz. Rounding the clock alone moved the
     refresh by up to 0.3 %: 59.994 Hz on the MacBook Air's 60 Hz panel, 60.098
     in a 1080p window, 59.812 at 1280x720. At 59.994 Chrome dropped about 1 %
-    of a 60 fps VP9 video's frames (YouTube, any decoder); at 60.001 none. A
+    of a 60 fps VP9 video's frames (YouTube, any decoder); at 60.001 far fewer. A
     guest a little faster than the Mac's display costs one guest frame the Mac
     never shows every few minutes. So the clock is rounded up and the blanking
     (back porches) grows until the refresh is back at the Mac's, never below
