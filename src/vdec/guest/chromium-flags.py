@@ -6,6 +6,12 @@ chromium-flags.py on|off|check
       default in builds without VA-API (Arch Linux ARM's)
   --load-extension=/usr/local/lib/omacvm/chromium-no-av1   YouTube sends
       VP9 instead of AV1, which this Chromium decodes only on the CPU
+  --disable-features=OnBeginFrameThrottleVideo   the compositor's per-video
+      frame throttle hands the video its first guess of its frame length as
+      the screen's: YouTube's VP9 (1 ms timestamps) then often gets 16.75 ms
+      for a 16.67 ms screen, Chromium's video timing (cadence) gives up and
+      about 1 % of 60 fps frames are dropped in bursts (one frame shown twice,
+      the next skipped). Without it the video is timed to the real refresh
 
 The extension lives beside this script, not in /usr/local/share/omacvm: apply
 replaces that whole tree, and an apply of only some features (a repair, a
@@ -21,13 +27,14 @@ the user's file (several flags may share a line), or into a new line with
 ~/.local/state/omacvm remembers what was added, so "off" never removes what
 the user set. Files are replaced whole (a temporary file, then a rename), so
 Chromium never reads half a file; a linked file stays a link (its target is
-replaced). check: exit 0 when Chromium would get both and the extension is
-there."""
+replaced). check: exit 0 when Chromium would get all three and the extension
+is there."""
 import json, os, pwd, re, sys, tempfile
 
 NO_AV1 = "/usr/local/lib/omacvm/chromium-no-av1"
 ADD = {"--enable-features=": "AcceleratedVideoDecoder",
-       "--load-extension=": NO_AV1}
+       "--load-extension=": NO_AV1,
+       "--disable-features=": "OnBeginFrameThrottleVideo"}
 # What ADD had before (up to 3.1.4): "on" puts ADD's value in its place, "off"
 # takes either out.
 OLD = {"--load-extension=": "/usr/local/share/omacvm/chromium-no-av1"}

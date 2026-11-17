@@ -106,6 +106,32 @@ t("on, a line 3.1.4 added: the marker remembers the line as it is now",
 cf.off()
 t("off: that line goes", "--load-extension" not in user())
 
+# The video throttle (3.5.0): a line of its own when no file has
+# --disable-features, else in the last one (the user's, or /etc's list copied);
+# off gives back exactly what was there.
+THR = cf.ADD["--disable-features="]
+t("the throttle switch is OnBeginFrameThrottleVideo", THR == "OnBeginFrameThrottleVideo")
+setup(omarchy)
+cf.on()
+t("on, no --disable-features anywhere: a line of its own", f"\n--disable-features={THR}\n" in user())
+t("on: the marker remembers that line", mark().get("--disable-features=") == f"line --disable-features={THR}")
+cf.off()
+t("off: Omarchy's file as it was", user() == omarchy)
+setup(omarchy + "--disable-features=Foo,Bar\n")
+cf.on()
+t("on, the user's --disable-features: ours added to it", f"--disable-features=Foo,Bar,{THR}\n" in user()
+  and user().count("--disable-features") == 1)
+cf.off()
+t("off: the user's list as it was", user().endswith("--disable-features=Foo,Bar\n") and THR not in user())
+setup(omarchy, etc="--disable-features=Etc\n")
+cf.on()
+t("on, /etc's --disable-features only: its list plus ours", f"--disable-features=Etc,{THR}\n" in user())
+setup(omarchy + f"--disable-features={THR}\n")
+cf.on()
+t("on, the user has it already: not added again", user().count(THR) == 1)
+cf.off()
+t("off: the user's own switch stays", f"--disable-features={THR}\n" in user())
+
 # Commented lines are the user's: left alone.
 setup(f"# --load-extension={OLD}\n" + omarchy)
 cf.on()
