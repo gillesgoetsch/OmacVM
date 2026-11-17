@@ -567,6 +567,54 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     _ = ua.finished([vmA], now: t0 + 1)
     expect(!ua.unknown(now: t0 + 5, every: VMListCache.addressEvery).start, "address: not again within 10 s")
     expect(ua.unknown(now: t0 + 11, every: VMListCache.addressEvery).start, "address: 10 s after the last list")
+
+    // ---- graphics memory after a run that missed an app VM (3.5.0 gate, E40 switch-vulkan-off) ----
+    // A job ended, the run after it gave a list without the VM, and the next
+    // graphics memory read (fresh false, never waits) got a plain 409 "no such
+    // OmacVM.app VM": with the address pace it started no look for 10 s.
+    var um = VMListCache()
+    _ = um.unknown(now: t0, every: VMListCache.appEvery)
+    _ = um.finished([appVM], now: t0 + 1)
+    expect(um.jobEnded(vm: "app/Omarchy", version: nil), "gpu: a job ended: a run")
+    _ = um.finished([], now: t0 + 4)   // the run missed the VM
+    func lookFor(_ c: inout VMListCache, at s: Double, fresh: Bool, every: Double) -> (start: Bool, waitFor: Int?) {
+      let have = c.list.contains { $0.type == "app" && $0.name == "Omarchy" }
+      return c.look(key: "app/Omarchy", now: t0 + s, fresh: fresh, every: every, known: have,
+                    listed: appVMListed("Omarchy", c.list), ready: have)
+    }
+    var old = um
+    expect(!lookFor(&old, at: 6, fresh: false, every: max(VMListCache.appEvery, VMListCache.addressEvery)).start && !old.running,
+           "gpu, the address pace (before): no look, no run going: the plain 409")
+    var gm = lookFor(&um, at: 6, fresh: false, every: VMListCache.appEvery)
+    expect(gm.start && um.running && gm.waitFor == um.started, "gpu, the app's pace: a look starts (the answer says looking)")
+    gm = lookFor(&um, at: 6.5, fresh: false, every: VMListCache.appEvery)
+    expect(!gm.start, "gpu: one look at a time")
+    _ = um.finished([appVM], now: t0 + 8)
+    gm = lookFor(&um, at: 8.5, fresh: false, every: VMListCache.appEvery)
+    expect(!gm.start && gm.waitFor == nil, "gpu: the next read has the VM, from the list")
+    if case .success = vmForApp("Omarchy", um.list, ssh: false) { expect(true, "gpu: found") } else { expect(false, "gpu: found after the look") }
+    // Addresses keep 10 s also for graphics memory (any guest can add addresses).
+    var uma = VMListCache()
+    _ = uma.unknown(now: t0, every: VMListCache.addressEvery)
+    _ = uma.finished([], now: t0 + 1)
+    expect(!uma.look(key: "address 192.168.77.9", now: t0 + 5, fresh: false, every: VMListCache.addressEvery,
+                     known: false, listed: false, ready: false).start, "gpu, an address: not again within 10 s")
+    // A known VM: graphics memory never runs the list for its age; the others do once it is a minute old.
+    var umk = VMListCache()
+    _ = umk.unknown(now: t0, every: VMListCache.appEvery)
+    _ = umk.finished([appVM], now: t0 + 1)
+    expect(!umk.look(key: "app/Omarchy", now: t0 + 90, fresh: false, every: VMListCache.appEvery,
+                     known: true, listed: true, ready: true).start, "gpu, known: no run for the list's age")
+    expect(umk.look(key: "app/Omarchy", now: t0 + 90, fresh: true, every: VMListCache.appEvery,
+                    known: true, listed: true, ready: true).start, "status, known: a run once the list is a minute old")
+
+    // ---- a running app VM missing from a list: said in the log ----
+    let stoppedVM = VMEntry(name: "Omarchy", type: "app", state: "stopped", ip: "", omacvm: "", setup: true)
+    expect(appVMsDropped(old: [appVM, vmA], new: [vmA]) == ["Omarchy"], "dropped: ran before, not in the new list")
+    expect(appVMsDropped(old: [appVM], new: [stoppedVM]).isEmpty, "dropped: stopped is still there")
+    expect(appVMsDropped(old: [stoppedVM], new: []).isEmpty, "dropped: only one that ran")
+    expect(appVMsDropped(old: [vmA], new: []).isEmpty, "dropped: OmacVM.app's VMs only")
+
     // A VM the list has as running, but refused (not reachable): a run at
     // once, waited for; then 5 s, then backing off, however often it asks.
     var ur = VMListCache()

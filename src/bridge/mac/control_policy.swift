@@ -288,6 +288,15 @@ func mergeVMLists(all: [VMEntry]?, app: [VMEntry]?) -> [VMEntry]? {
   return all.filter { $0.type != "app" } + app.filter { $0.type == "app" }
 }
 
+/// OmacVM.app's VMs that ran in the list before (`old`) and are not in the
+/// new one at all, not even as stopped: a VM folder does not go while its VM
+/// runs, so that run did not see it. Logged (Control.refreshVMs) with which
+/// list it was, so the next time says why; the VM's next request looks again.
+func appVMsDropped(old: [VMEntry], new: [VMEntry]) -> [String] {
+  let have = Set(new.filter { $0.type == "app" }.map(\.name))
+  return old.filter { $0.type == "app" && $0.state == "running" && !have.contains($0.name) }.map(\.name)
+}
+
 // ---- an OmacVM.app VM's graphics memory (GET /omacvm/gpu-memory) ----
 // QEMU writes logs/gpu-memory in the VM's folder while it runs
 // (virgl-darwin-memory-pressure.patch): what the VM's GPU work uses of the
@@ -1081,6 +1090,30 @@ struct VMListCache {
     unknownAt = now
     start()
     return (true, started)
+  }
+
+  /// What a request does with the list (Control.vmList) for the VM it asks
+  /// about (`key`): `known`, the list has it as the request needs it (the
+  /// cache at once, and a run when the list is a minute old and `fresh`);
+  /// `listed`, the list has it as running but refused it (refused); else the
+  /// list does not have it (unknown). `ready`: as a request that needs SSH
+  /// takes it (its back-off starts over). `fresh` false (graphics memory,
+  /// asked every 2 s while the control centre is open): no run for the
+  /// list's age, and the caller never waits. A VM the list does not have
+  /// is looked for at the caller's pace either way (`every`: appEvery for
+  /// a VM OmacVM.app names, addressEvery for an address): a request that
+  /// does not wait still starts the look and is told "looking", and the
+  /// next one finds the VM. Graphics memory took the address pace before:
+  /// after a run that missed an app VM, it got a plain "no such OmacVM.app
+  /// VM" for up to 10 s while the VM's status was found again (3.5.0 gate).
+  mutating func look(key: String, now: Date, fresh: Bool, every: Double, known: Bool, listed: Bool, ready: Bool)
+      -> (start: Bool, waitFor: Int?) {
+    if known {
+      if ready { reached(key: key) }
+      return (fresh && shouldRefresh(known: true, now: now), nil)
+    }
+    if listed { return refused(key: key, now: now) }
+    return unknown(now: now, every: every)
   }
 
   /// A request about a VM the list has as running, but refused (the Mac
