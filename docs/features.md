@@ -245,6 +245,10 @@ trackpad gestures on: bind the custom event `omacvm-escape`, for example in
 hl.bind("SUPER + ALT + ESCAPE", hl.dsp.event("omacvm-escape"))
 ```
 
+Needs the updated OmacVM Gestures helper on the Mac, from the app update or
+`omacvm update`, and Update VM in the guest. Without the updated helper,
+the binding does nothing.
+
 **Swipe out to macOS** (off by default; OmacVM.app's setting or the control
 centre): swipe past your first or last workspace and
 the macOS Space beside the VM follows your fingers, as a macOS Space swipe
