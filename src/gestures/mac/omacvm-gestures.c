@@ -656,6 +656,9 @@ static void windowTitle(pid_t pid, char *out, size_t cap) {
   CFTypeRef win = NULL, title = NULL;
   if (AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute, &win) != kAXErrorSuccess || !win)
     if (AXUIElementCopyAttributeValue(app, kAXMainWindowAttribute, &win) != kAXErrorSuccess) win = NULL;
+  // The app's timeout is the app object's alone: the window read from it
+  // would wait macOS's default 6 s.
+  if (win) AXUIElementSetMessagingTimeout(win, 0.1f);
   if (win && AXUIElementCopyAttributeValue(win, kAXTitleAttribute, &title) == kAXErrorSuccess && title &&
       CFGetTypeID(title) == CFStringGetTypeID())
     CFStringGetCString(title, out, (CFIndex)cap, kCFStringEncodingUTF8);
