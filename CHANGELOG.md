@@ -3,6 +3,20 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.0 (unreleased)
+
+- **Smoother 60 fps video in Chromium**: Chromium could show one frame twice and skip the next,
+  every third frame for seconds at a time (on a MacBook Air up to 1-3 % of the frames of 60 fps
+  VP9 video, YouTube included, in bursts; measured in Google Chrome, which has the same compositor
+  code). Chromium's compositor timed each video to its first guess of the video's frame
+  length, and with YouTube's VP9 (timestamps in whole milliseconds) that guess was often 16.75 ms
+  on a 16.67 ms screen, which made Chromium give up its frame timing. OmacVM now switches that
+  per-video throttle off in Chromium's flags (`OnBeginFrameThrottleVideo` in
+  `~/.config/chromium-flags.conf`); videos follow the screen's real refresh again. Google Chrome
+  has the same behaviour; OmacVM does not manage its flags (add
+  `--disable-features=OnBeginFrameThrottleVideo` to its command line to get the same). From the
+  VM's next Update VM and a Chromium restart.
+
 ## 3.4.8
 
 The VM's Caps Lock follows the Mac's again after a new session, a restart in the VM or a start with it on.
