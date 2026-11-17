@@ -79,7 +79,9 @@ esac
 
 command -v openssl >/dev/null || { say "openssl is missing (pacman -S openssl)"; exit 1; }
 install -d -m 755 "$(dirname "$CRX")" "${DIRS[@]}"
-install -d -m 700 "$(dirname "$KEY")"
+# /var/lib/omacvm holds other features' state too: made if missing, its mode
+# left as it is (the key itself is root only).
+[[ -d $(dirname "$KEY") ]] || install -d -m 755 "$(dirname "$KEY")"
 if [[ ! -s $KEY ]]; then
   (umask 077; openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$KEY.new" 2>/dev/null)
   mv -f "$KEY.new" "$KEY"

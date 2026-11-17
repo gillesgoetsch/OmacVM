@@ -67,7 +67,7 @@ CH=$OMACVM_ROOT/usr/share/google-chrome/extensions CR=$OMACVM_ROOT/usr/share/chr
 CRX=$OMACVM_ROOT/usr/local/lib/omacvm/youtube-vp9.crx KEY=$OMACVM_ROOT/var/lib/omacvm/youtube-vp9.pem
 expect "status before: none" none "$("$G/install.sh" --status)"
 "$G/install.sh" off >/dev/null; expect "off with nothing there: exit 0, nothing made" "0 0" "$? $(find "$OMACVM_ROOT" -type f | wc -l | tr -d ' ')"
-mkdir -p "$CH"; printf '{"external_update_url": "https://clients2.google.com/service/update2/crx"}\n' > "$CH/aaaabbbbccccddddeeeeffffgggghhhh.json"
+mkdir -p "$CH" "$OMACVM_ROOT/var/lib/omacvm"; chmod 755 "$OMACVM_ROOT/var/lib/omacvm"; printf '{"external_update_url": "https://clients2.google.com/service/update2/crx"}\n' > "$CH/aaaabbbbccccddddeeeeffffgggghhhh.json"
 out=$("$G/install.sh" on); expect "on: exit 0" 0 $?
 expect "on: says the browsers add it at their next start" "  Prefer VP9 on YouTube: on (Chrome and Chromium add it at their next start)" "$out"
 st=$("$G/install.sh" --status); id=${st#ok }
@@ -77,7 +77,7 @@ want_json=$'{\n  "external_crx": "/usr/local/lib/omacvm/youtube-vp9.crx",\n  "ex
 expect "Chrome's file: the copy's path as the VM sees it, the version" "$want_json" "$(cat "$CH/$id.json" 2>/dev/null)"
 expect "Chromium's file: the same" "$want_json" "$(cat "$CR/$id.json" 2>/dev/null)"
 perm() { if stat -c %a "$1" >/dev/null 2>&1; then stat -c %a "$1"; else stat -f %Lp "$1"; fi; }
-expect "the key: root only (600), its folder 700" "600 700" "$(perm "$KEY") $(perm "$(dirname "$KEY")")"
+expect "the key: root only (600); /var/lib/omacvm keeps its mode (other features' state)" "600 755" "$(perm "$KEY") $(perm "$(dirname "$KEY")")"
 expect "the copy and the files: readable by all (644)" "644 644 644" "$(perm "$CRX") $(perm "$CH/$id.json") $(perm "$CR/$id.json")"
 cp "$CRX" "$T/before.crx"
 out=$("$G/install.sh" on)
