@@ -8,6 +8,14 @@ import ApplicationServices
 struct AXNotificationElement: NotificationElement {
   let ref: AXUIElement
 
+  /// A NotificationCenter that stops answering holds each call for 1 s, not
+  /// the system's default of about 6 s. macOS keeps a timeout per element, so
+  /// the application element and each element read from it get their own.
+  init(ref: AXUIElement) {
+    self.ref = ref
+    AXUIElementSetMessagingTimeout(ref, 1)
+  }
+
   var subrole: String? { value(kAXSubroleAttribute) as? String }
   var actions: [String] {
     var names: CFArray?

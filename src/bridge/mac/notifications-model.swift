@@ -14,12 +14,16 @@ enum MacNotifications {
   /// with its Close action, in macOS's order. macOS 27 gives each one a group
   /// with the subrole AXNotificationCenterBanner (a banner, which goes by
   /// itself after a few seconds) or AXNotificationCenterAlert (an alert, which
-  /// stays until it is closed). One without a Close action stays; a
-  /// notification's own parts (its texts) are not walked.
+  /// stays until it is closed). Every other element is walked into, also
+  /// another AXNotificationCenter group that holds them, such as a stack. One
+  /// without a Close action stays; a notification's own parts (its texts) are
+  /// not walked.
   static func closable<E: NotificationElement>(_ windows: [E], close: String) -> [(element: E, action: String)] {
     var found: [(element: E, action: String)] = []
     func walk(_ e: E) {
-      guard e.subrole?.hasPrefix("AXNotificationCenter") == true else { e.children.forEach(walk); return }
+      guard let subrole = e.subrole, ["AXNotificationCenterBanner", "AXNotificationCenterAlert"].contains(subrole) else {
+        e.children.forEach(walk); return
+      }
       if let action = e.actions.first(where: { closes($0, close) }) { found.append((e, action)) }
     }
     windows.forEach(walk)

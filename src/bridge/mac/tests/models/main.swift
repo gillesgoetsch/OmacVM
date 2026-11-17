@@ -613,6 +613,14 @@ check(MacNotifications.closable([nested], close: "Close").map(\.element.name) ==
       "notifications: one notification closes once, its parts are not walked")
 check(MacNotifications.closable([NCElement(subrole: "AXSystemDialog", name: "no notifications")], close: "Close").isEmpty,
       "notifications: none on screen: nothing to close")
+// A later macOS may hold its banners and alerts in another AXNotificationCenter
+// group, such as a stack: the walk goes into it.
+let stack = NCElement(subrole: "AXNotificationCenterStack", actions: ["AXPress"], children: [
+  ncNote("stacked banner", "AXNotificationCenterBanner", ["Close"]),
+  ncNote("stacked alert", "AXNotificationCenterAlert", ["Close"]),
+], name: "stack")
+check(MacNotifications.closable([stack], close: "Close").map(\.element.name) == ["stacked banner", "stacked alert"],
+      "notifications: inside another AXNotificationCenter group (a stack): each banner and alert closes")
 
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("models: all ok")
