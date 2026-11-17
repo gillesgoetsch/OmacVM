@@ -26,6 +26,7 @@ enum SettingsDump {
             "hdr": Settings.hdr,
             "extraBrightness": Settings.extraBrightness,
             "pauseWhileHidden": Settings.pauseWhileHidden,
+            "vcpuClockSaver": Settings.vcpuClockSaver,
             "pointerPlane": Settings.pointerPlane,
             "presentTiles": Settings.presentTiles,
             "partialPresent": Settings.partialPresent,

@@ -649,6 +649,22 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     "virgl runs with the BQL"*) ok "GPU lock" "virgl runs with QEMU's big lock (Graphics without QEMU's lock is off)" ;;
   esac
 fi
+# VM CPU clock saver this run (ADR 0073, vcpuClockSaver: experimental, off by
+# default). QEMU's last line says what the vCPUs did with the switch (it can
+# change while the VM runs); nothing when it is off or the runtime is older.
+if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
+  vcs=$(grep -o 'OmacVM: vCPU clock saver: .*' "$miclog" | tail -1); vcs=${vcs#OmacVM: vCPU clock saver: }
+  if [[ $vcs =~ ^on,\ ([0-9]+)\ of\ ([0-9]+)\ vCPUs ]]; then
+    if [[ ${BASH_REMATCH[1]} == "${BASH_REMATCH[2]}" && ${BASH_REMATCH[1]} != 0 ]]; then
+      ok "VM CPU clock saver" "on: the VM's CPUs run at the clock of their own work (experimental)"
+    else
+      warn "VM CPU clock saver" "on, but only ${BASH_REMATCH[1]} of ${BASH_REMATCH[2]} VM CPUs joined: the others run as before"
+    fi
+  elif [[ $vcs == "not available: "* ]]; then
+    vcs=${vcs#not available: }
+    warn "VM CPU clock saver" "on, but not available (${vcs% (*}): the VM's CPUs run as before"
+  fi
+fi
 # Vulkan windows without a copy this run (ADR 0047, vkWindowsNoCopy: on by default
 # after 3.1.25). virglrenderer says so once Venus made its device; nothing when
 # the switch is off. MoltenVK (macOS 15) always copies: that is no warning.

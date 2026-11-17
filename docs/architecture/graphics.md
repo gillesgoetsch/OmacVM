@@ -159,6 +159,7 @@ and no render server process on macOS (ADR 0012).
  +-------------------------------------------------------------------------+
  | vCPU threads (HVF) x N                                                  |
  |   guest runs; a queue kick is an MMIO exit -> takes the BQL             |
+ |   VM CPU clock saver on: a thread group of their own (ADR 0073)         |
  |                                                                         |
  | QEMU main loop  [BQL]                                                   |
  |   virtio-gpu ctrl + cursor queues, virglrenderer (vrend), all GL work,  |
@@ -197,6 +198,11 @@ Rules:
   inside `drawInCGLContext` holding the BQL.
 - Venus threads do not take the BQL; they talk to the main loop only
   through the proxy's fence fd and resource callbacks.
+- Only the vCPU threads ever join the VM CPU clock saver's work interval
+  (ADR 0073, experimental): macOS then sets their clock by their own load.
+  The main loop, vrend-sync, the present queue, the display link and the
+  sound thread stay in the app's thread group with their own QoS; they share
+  the performance cluster's clock, which is lower while the vCPUs are light.
 - Head windows (one per extra display) share the main view's GL context
   (`gl_view_ctx`); all their drawing happens under the same rules.
 

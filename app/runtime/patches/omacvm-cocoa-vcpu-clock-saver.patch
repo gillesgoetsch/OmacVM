@@ -1,0 +1,106 @@
+From: OmacVM
+Subject: [PATCH] cocoa: the app's VM CPU clock saver switch, watched live
+
+What: at start (omacvm_displays_init, with the BQL) QEMU reads the switch:
+OMACVM_VCPU_CLOCK_SAVER=1 or 0 when set (GPU safe mode, a QEMU not started
+as the app, tests), else the app's defaults key vcpuClockSaver when QEMU
+runs as the app, else off; and hands it to the vCPUs
+(omacvm_vcpu_clock_saver_set, qemu-hvf-vcpu-clock-saver.patch). As the app
+it watches the key with KVO, like "Pause drawing while hidden", and hands
+each change over with the BQL, so the switch works at once in a running VM.
+
+Why: OmacVM.app's "VM CPU clock saver" row (experimental, ADR 0073).
+
+Upstream: not sent (OmacVM.app's switch).
+Test: app/runtime/Tests/vcpu/test-vcpu-clock-saver.sh with the patched
+ui/cocoa.m (the runtime build). Applies after
+omacvm-cocoa-video-awake.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -68,6 +68,7 @@
+ #include "ui/omacvm-present-damage.h"
+ #include "ui/omacvm-present-volatile.h"
+ #include "ui/omacvm-guest-pause.h"
++#include "qemu/omacvm-vcpu-clock-saver.h"
+ #include "ui/omacvm-video-awake.h"
+ #include "hw/core/boards.h"
+ #include "system/system.h"
+@@ -15603,7 +15604,69 @@
+     if (omacvm_test_pointer) {
+         int ticks = atoi(test) * 4;
+         dispatch_async(dispatch_get_main_queue(), ^{ omacvm_test_motion(0, ticks); });
++    }
++}
++
++/*
++ * OmacVM: VM CPU clock saver (OmacVM.app's switch, experimental; ADR 0073,
++ * accel/hvf's omacvm_vcpu_clock_saver_set). The switch is the app's own
++ * defaults key vcpuClockSaver (QEMU runs as the app), watched with KVO so
++ * it works at once in a running VM; OMACVM_VCPU_CLOCK_SAVER=1 or 0 decides
++ * instead (GPU safe mode, a QEMU not started as the app, tests). Main thread.
++ */
++static int omacvm_vcs_switch = -1;      /* -1: not read yet */
++
++static void omacvm_vcs_read_switch(void)
++{
++    int e = omacvm_vcs_env();
++
++    if (e >= 0) {
++        omacvm_vcs_switch = e;
++    } else if (omacvm_bright_as_app()) {
++        CFPreferencesAppSynchronize((CFStringRef)[[NSBundle mainBundle] bundleIdentifier]);
++        omacvm_vcs_switch = [[NSUserDefaults standardUserDefaults] boolForKey:@"vcpuClockSaver"];
++    } else {
++        omacvm_vcs_switch = 0;
++    }
++}
++
++@interface OmacVMVcpuClockSaverWatch : NSObject
++@end
++
++@implementation OmacVMVcpuClockSaverWatch
++/* Any thread: the app's switch changed (this process or another). */
++- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
++                        change:(NSDictionary *)change context:(void *)context
++{
++    dispatch_async(dispatch_get_main_queue(), ^{
++        int was = omacvm_vcs_switch;
++        omacvm_vcs_read_switch();
++        if (was != omacvm_vcs_switch) {
++            bool on = omacvm_vcs_switch == 1;
++            with_bql(^{
++                omacvm_vcpu_clock_saver_set(on, "the switch");
++            });
++        }
++    });
++}
++@end
++
++/* Main thread, with the BQL (omacvm_displays_init): the switch at start, then watched. */
++static void omacvm_vcs_init(void)
++{
++    static OmacVMVcpuClockSaverWatch *watch;
++    bool env = omacvm_vcs_env() >= 0;
++
++    omacvm_vcs_read_switch();
++    if (omacvm_bright_as_app() && !env) {
++        watch = [[OmacVMVcpuClockSaverWatch alloc] init];
++        [[NSUserDefaults standardUserDefaults] addObserver:watch
++                                                forKeyPath:@"vcpuClockSaver"
++                                                   options:0
++                                                   context:NULL];
+     }
++    omacvm_vcpu_clock_saver_set(omacvm_vcs_switch == 1, env ? "OMACVM_VCPU_CLOCK_SAVER" :
++                                omacvm_bright_as_app() ? "the switch" : "not started as the app");
+ }
+ 
+ /* Main thread, with the BQL (from cocoa_display_init). */
+@@ -15627,6 +15690,7 @@
+     omacvm_ds_watch_lock();
+     omacvm_gp_update();     /* reads the switch and says it in qemu.log */
+     omacvm_va_init();       /* the Mac's display on for a video in the VM; says it in qemu.log */
++    omacvm_vcs_init();      /* VM CPU clock saver: the switch at start, in qemu.log */
+     /* Another Space: the detached cursor must move there (see omacvm_guard_corners). */
+     [[[NSWorkspace sharedWorkspace] notificationCenter]
+         addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification

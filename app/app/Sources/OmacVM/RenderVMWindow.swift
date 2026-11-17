@@ -285,6 +285,8 @@ enum RenderVMWindow {
         sheet("sheet-8-icon-looks") { AppIconPicker(selected: IconTheme.all[0]) { _ in } }
         // The (i) of Ghostty on the Mac's GPU, as its popover shows it (InfoButton).
         sheet("popover-3-ghostty-gpu") { InfoText(text: GhosttyGPURow.info) }
+        // The (i) of VM CPU clock saver: the measured watts and drops (ADR 0073).
+        sheet("popover-4-vcpu-clock-saver") { InfoText(text: VCPUClockSaverRow.info) }
 
         // The icon in every look, for the Dock.
         for t in IconTheme.all {

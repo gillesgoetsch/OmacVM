@@ -654,6 +654,16 @@ enum Settings {
         get { UserDefaults.standard.bool(forKey: "pauseWhileHidden") }
         set { UserDefaults.standard.set(newValue, forKey: "pauseWhileHidden") }
     }
+    /// VM CPU clock saver (experimental, off by default; ADR 0073): the VM's
+    /// vCPU threads in a thread group of their own, so macOS sets their clock
+    /// by their own work, not the clock it gives the app in front. QEMU reads
+    /// this key itself while the VM runs (it runs as the app), so a change
+    /// counts at once; GPU safe mode keeps it off. VCPUClockSaverRow or
+    /// defaults write org.omacvm.app vcpuClockSaver -bool true
+    static var vcpuClockSaver: Bool {
+        get { UserDefaults.standard.bool(forKey: "vcpuClockSaver") }
+        set { UserDefaults.standard.set(newValue, forKey: "vcpuClockSaver") }
+    }
     /// AirPods and media controls (docs/adr/0058): while something plays in
     /// the VM, the launcher is the Mac's Now Playing app, so AirPods, Control
     /// Center and the play keys go to the VM's player (MediaSession). On by

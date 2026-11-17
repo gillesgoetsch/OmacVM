@@ -184,6 +184,7 @@ struct SettingsSections: View {
             SectionTitle(text: "General", first: true)
             Card {
                 ResourcesRow(state: state)
+                VCPUClockSaverRow(tick: state.tick)
                 GraphicsRow(state: state)
                 GPUComputeRow(state: state)
                 if YouTubeVP9.shown(decodesAV1: preview?.decodesAV1 ?? Mac.decodesAV1, record: VMRecord.features(folder: state.config.folder),

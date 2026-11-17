@@ -61,6 +61,7 @@ MainActor.assumeIsolated {
         case "hdr": Settings.hdr = value == "true"
         case "extraBrightness": Settings.extraBrightness = value == "true"
         case "pauseWhileHidden": Settings.pauseWhileHidden = value == "true"
+        case "vcpuClockSaver": Settings.vcpuClockSaver = value == "true"
         case "pointerPlane": Settings.pointerPlane = value == "true"
         case "presentTiles": Settings.presentTiles = value == "true"
         case "partialPresent": Settings.partialPresent = value == "true"
