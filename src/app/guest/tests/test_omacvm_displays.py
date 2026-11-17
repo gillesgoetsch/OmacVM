@@ -2688,5 +2688,306 @@ class Scale(unittest.TestCase):
             self.assertEqual(od.set_scale("big"), 2)
 
 
+def client(ws, fs=2, address="0x1", **extra):
+    c = {"address": address, "workspace": {"id": ws}, "fullscreen": fs, "mapped": True, "hidden": False}
+    c.update(extra)
+    return c
+
+
+class FullScreenOn(unittest.TestCase):
+    """Which windows make Virtual-1 go PQ (HDR only in full screen)."""
+
+    MONS = [mon("Virtual-1", 0, 0, 3024, 1964, activeWorkspace={"id": 1}, specialWorkspace={"id": 0}),
+            mon("Virtual-2", 1512, 0, 3840, 2160, activeWorkspace={"id": 5}),
+            mon("NOTCH", 0, -33, 3024, 66, activeWorkspace={"id": 9})]
+
+    def test_full_screen_counts_maximised_does_not(self):
+        self.assertTrue(od.full_screen_on([client(1)], self.MONS))
+        self.assertTrue(od.full_screen_on([client(1, fs=3)], self.MONS))
+        self.assertFalse(od.full_screen_on([client(1, fs=1)], self.MONS))
+        self.assertFalse(od.full_screen_on([client(1, fs=0)], self.MONS))
+        self.assertFalse(od.full_screen_on([client(1, fs=True)], self.MONS))
+
+    def test_only_what_virtual_1_shows(self):
+        self.assertFalse(od.full_screen_on([client(5), client(9), client(2)], self.MONS))
+        mons = [dict(self.MONS[0], specialWorkspace={"id": -98})] + self.MONS[1:]
+        self.assertTrue(od.full_screen_on([client(-98)], mons))
+
+    def test_hidden_or_unmapped_does_not_count(self):
+        self.assertFalse(od.full_screen_on([client(1, hidden=True), client(1, mapped=False)], self.MONS))
+
+    def test_no_answer(self):
+        self.assertIsNone(od.full_screen_on(None, self.MONS))
+        self.assertIsNone(od.full_screen_on([client(1)], {"error": 1}))
+        self.assertFalse(od.full_screen_on(["x", {"workspace": "1"}], self.MONS))
+
+
+class HdrAsked(unittest.TestCase):
+    def layout(self, **v1):
+        return {"layout": [{"output": "Virtual-2"}, dict({"output": "Virtual-1"}, **v1)]}
+
+    def test_asked(self):
+        self.assertTrue(od.hdr_asked(self.layout(edr=4.2, hdr_follow=True)))
+        self.assertTrue(od.hdr_asked(self.layout(edr=1, hdr_follow=True)))
+
+    def test_not_asked(self):
+        for v1 in ({"edr": 4}, {"edr": 4, "hdr_follow": False}, {"edr": 4, "hdr_follow": 1},
+                   {"edr": 0, "hdr_follow": True}, {"edr": True, "hdr_follow": True},
+                   {"edr": "4", "hdr_follow": True}, {"hdr_follow": True}):
+            self.assertFalse(od.hdr_asked(self.layout(**v1)), v1)
+        self.assertFalse(od.hdr_asked({"layout": "x"}))
+        self.assertFalse(od.hdr_asked({}))
+
+
+class HdrDecline(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.lua = self.tmp / "monitors.lua"
+        self.lua.write_text('hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 2 })\n')
+
+    def test_stock_omarchy_is_fine(self):
+        self.assertIsNone(od.hdr_decline(lambda n: 0, self.lua))
+        self.assertIsNone(od.hdr_decline(lambda n: None, self.lua))     # an option Hyprland lacks
+        self.assertIsNone(od.hdr_decline(lambda n: 0, self.tmp / "none.lua"))
+
+    def test_reasons(self):
+        for name in ("render:cm_auto_hdr", "render:direct_scanout", "quirks:prefer_hdr"):
+            why = od.hdr_decline(lambda n, name=name: 2 if n == name else 0, self.lua)
+            self.assertIn(name, why)
+        self.lua.write_text('hl.monitor({ output = "Virtual-1", bitdepth = 10 })\n')
+        self.assertIn("own rule", od.hdr_decline(lambda n: 0, self.lua))
+
+
+class FakeRun:
+    """A started omacvm-display-sync --hdr: done when the test says so."""
+
+    def __init__(self, test):
+        self.test = test
+        self.code = None
+        self.killed = False
+
+    def poll(self):
+        return self.code
+
+    def kill(self):
+        self.killed = True
+        self.code = -9
+
+    def wait(self, timeout=None):
+        return self.code
+
+
+class HdrFollowTest(unittest.TestCase):
+    """HDR only in full screen: the agent's side (the state written, the runs)."""
+
+    ASK = {"layout": [{"output": "Virtual-1", "edr": 4, "hdr_follow": True}]}
+    OFF = {"layout": [{"output": "Virtual-1", "edr": 4}]}
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.path = self.tmp / "display-sync/hdr-follow"
+        self.now = [100.0]
+        self.full = False
+        self.looks = 0
+        self.why = None
+        self.runs = []
+        self.written = []
+
+        def look():
+            self.looks += 1
+            return self.full
+
+        def start():
+            r = FakeRun(self)
+            self.runs.append(r)
+            return r
+        self.f = od.HdrFollow(path=self.path, look=look, decline=lambda: self.why, start=start,
+                              clock=lambda: self.now[0])
+        orig = self.f.write
+        def write(state):
+            self.written.append((round(self.now[0] - 100.0, 2), state))
+            orig(state)
+        self.f.write = write
+
+    def finish(self, code=0):
+        for r in self.runs:
+            if r.code is None:
+                r.code = code
+
+    def run_for(self, seconds, step=0.05, finish=True):
+        end = self.now[0] + seconds
+        while self.now[0] < end - 1e-9:
+            self.now[0] += step
+            if finish:
+                self.finish()
+            self.f.tick()
+
+    def event(self, data=b"fullscreen>>1\n"):
+        self.f.events(data)
+        self.f.tick()
+
+    def states(self):
+        return [s for _, s in self.written]
+
+    def test_not_asked_writes_nothing(self):
+        self.f.layout(self.OFF)
+        self.event()
+        self.run_for(10)
+        self.assertEqual(self.written, [])
+        self.assertEqual(self.runs, [])
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.looks, 0)
+
+    def test_sdr_until_full_screen(self):
+        self.f.layout(self.ASK)
+        self.f.tick()
+        self.assertEqual(self.states(), ["sdr"])
+        self.assertEqual(self.path.read_text(), "sdr\n")
+        self.assertEqual(len(self.runs), 1)
+        self.run_for(2)
+        self.full = True
+        self.event()
+        self.assertEqual(self.states(), ["sdr", "pq"])           # at once
+        self.full = False
+        self.event(b"fullscreen>>0\n")
+        self.run_for(1.9)
+        self.assertEqual(self.states(), ["sdr", "pq"])           # not before 2 s
+        self.run_for(0.2)
+        self.assertEqual(self.states(), ["sdr", "pq", "sdr"])
+        self.assertEqual(len(self.runs), 3)
+
+    def test_back_in_full_screen_before_the_exit(self):
+        self.f.layout(self.ASK)
+        self.f.tick()
+        self.run_for(2)
+        self.full = True
+        self.event()
+        self.full = False
+        self.event(b"fullscreen>>0\n")
+        self.run_for(1)
+        self.full = True                                       # a workspace switch through it
+        self.event(b"workspace>>3\n")
+        self.run_for(5)
+        self.assertEqual(self.states(), ["sdr", "pq"])
+
+    def test_never_two_switches_within_the_gap(self):
+        self.f.layout(self.ASK)
+        self.f.tick()                                          # sdr at 0
+        self.finish()
+        self.full = True
+        self.event()                                           # wants pq at once
+        self.assertEqual(self.states(), ["sdr"])
+        self.assertAlmostEqual(self.f.due_at(), 100.0 + od.HDR_GAP)
+        self.run_for(od.HDR_GAP + 0.1)
+        self.assertEqual(self.written[-1][1], "pq")
+        self.assertAlmostEqual(self.written[-1][0], od.HDR_GAP, delta=0.06)
+
+    def test_ping_pong_is_paced(self):
+        self.f.layout(self.ASK)
+        self.f.tick()
+        for i in range(100):                                   # in and out every 0.1 s for 10 s
+            self.full = i % 2 == 0
+            self.f.events(b"fullscreen>>%d\n" % self.full)
+            self.run_for(0.1)
+        times = [t for t, _ in self.written]
+        self.assertTrue(all(b - a >= od.HDR_GAP - 1e-6 for a, b in zip(times, times[1:])), times)
+        self.assertLessEqual(len(times), 10 / od.HDR_GAP + 2)
+
+    def test_one_run_at_a_time_the_newest_state_last(self):
+        self.f.layout(self.ASK)
+        self.f.tick()
+        self.run_for(2, finish=False)                          # the first run hangs a while
+        self.full = True
+        self.event()
+        self.assertEqual(len(self.runs), 1)                    # waits for it
+        self.assertEqual(self.path.read_text(), "pq\n")        # the newest state is in the file
+        self.finish()
+        self.f.tick()
+        self.assertEqual(len(self.runs), 2)                    # then one more run reads it
+
+    def test_a_hung_run_is_stopped(self):
+        self.f.layout(self.ASK)
+        self.f.tick()
+        self.run_for(od.HDR_RUN + 1, step=0.5, finish=False)
+        self.assertTrue(self.runs[0].killed)
+        self.assertIsNone(self.f.run)
+
+    def test_refused_8_bit_rule_declines(self):
+        self.f.layout(self.ASK)
+        self.f.tick()
+        self.finish(3)
+        self.run_for(2)                                        # (the gap: QEMU's one depth a second)
+        self.assertEqual(self.states(), ["sdr", "declined: Hyprland refused the 8-bit rule"])
+        self.assertEqual(len(self.runs), 2)                    # the PQ rule back
+        self.full = True
+        self.event()
+        self.run_for(5)
+        self.assertEqual(len(self.written), 2)
+
+    def test_declined_by_options_never_looks(self):
+        self.why = "Hyprland's render:cm_auto_hdr is on"
+        self.f.layout(self.ASK)
+        self.f.tick()
+        self.event()
+        self.run_for(3)
+        self.assertEqual(self.states(), ["declined: Hyprland's render:cm_auto_hdr is on"])
+        self.assertEqual(self.looks, 0)
+        # a config reload that sets it back: looked at again
+        self.why = None
+        self.event(b"configreloaded>>\n")
+        self.run_for(2)
+        self.assertEqual(self.states()[-1], "sdr")
+
+    def test_switch_off_goes_back(self):
+        self.f.layout(self.ASK)
+        self.f.tick()
+        self.run_for(2)
+        self.f.layout(self.OFF)
+        self.f.tick()
+        self.assertEqual(self.states(), ["sdr", "off"])
+        self.assertEqual(len(self.runs), 2)
+        self.event()
+        self.run_for(5)
+        self.assertEqual(len(self.runs), 2)
+
+    def test_idle_has_nothing_due(self):
+        self.assertIsNone(self.f.due_at())
+        self.f.layout(self.ASK)
+        self.f.tick()
+        self.run_for(3)
+        self.assertIsNone(self.f.due_at())                     # no wake-up on an idle desktop
+        self.f.events(b"activewindow>>a,b\n")                  # not one of its events
+        self.assertIsNone(self.f.due_at())
+        self.f.events(b"fullscreen>>1\n")
+        self.assertEqual(self.f.due_at(), self.now[0])
+
+    def test_unknown_full_screen_changes_nothing(self):
+        self.full = None
+        self.f.layout(self.ASK)
+        self.f.tick()
+        self.assertEqual(self.written, [])
+
+
+class AgentHdr(unittest.TestCase):
+    """The agent hands the layout and Hyprland's events to the follower."""
+
+    def test_layout_and_events_reach_it(self):
+        a = od.Agent.__new__(od.Agent)
+        a.hdr = mock.Mock()
+        a.pause = mock.Mock()
+        a.pause.busy.return_value = False
+        a.layout_changed = mock.Mock()
+        a.soon = mock.Mock()
+        a.watch_shell = mock.Mock()
+        msg = {"layout": [{"output": "Virtual-1", "edr": 4, "hdr_follow": True}]}
+        with mock.patch.object(od, "write_state"), mock.patch.object(od, "run_sync"):
+            a.on_line(json.dumps(msg).encode())
+        a.hdr.layout.assert_called_once_with(msg)
+        a.on_events(b"fullscreen>>1\n")
+        a.hdr.events.assert_called_once_with(b"fullscreen>>1\n")
+
+
 if __name__ == "__main__":
     unittest.main()

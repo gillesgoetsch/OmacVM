@@ -1283,6 +1283,19 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-vcpu-clock-sa
 vcs_users="$(cd "$source_dir" && { grep -rl --include='*.c' --include='*.m' --include='*.h' 'qemu/omacvm-vcpu-clock-saver.h' . || true; } | sed 's|^\./||' | sort | tr '\n' ' ')"
 [ "$vcs_users" = "accel/hvf/hvf-accel-ops.c ui/cocoa.m " ] || \
   die "only accel/hvf/hvf-accel-ops.c and ui/cocoa.m may include qemu/omacvm-vcpu-clock-saver.h (found: $vcs_users)"
+# OmacVM: no frame shown in surfaces of the other colour (PQ in 8-bit sRGB
+# ones or sRGB in PQ ones: held until the right ones are made), and HDR only
+# in full screen (experimental, ADR 0074): the app's switch, the layout's
+# "hdr_follow" for the guest, the headroom it is told while SDR. Its rules'
+# test, a check that the wiring checks fail on the code before, the wiring.
+# Before no-app-nap.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hdr-follow-logic.patch"
+"$native_dir/Tests/display/test-hdr-follow.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: an HDR-follow wiring check passes without the patches (test-hdr-follow.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-depth-hold.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hdr-follow.patch"
+"$native_dir/Tests/display/test-hdr-follow.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the depth hold or HDR only in full screen is not wired as tested (test-hdr-follow.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"

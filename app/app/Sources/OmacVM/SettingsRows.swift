@@ -264,6 +264,33 @@ struct HDRRow: View {
     }
 }
 
+/// HDR only in full screen (Settings.hdrFullScreenOnly, experimental, off by
+/// default, ADR 0074): only with a display that can show HDR, under HDRRow.
+/// QEMU reads the key itself, so a running VM follows the switch at once.
+/// Works only while HDR is on (and not in GPU safe mode).
+struct HDRFullScreenOnlyRow: View {
+    var tick = 0
+    @State private var on = Settings.hdrFullScreenOnly
+
+    static let info = "With HDR and 10-bit colour on: while no window is in full screen, the VM's main display runs as with HDR off: 8-bit colour, no HDR work in the VM's apps and desktop, and the Mac's display stays in its normal brightness range. When a window goes full screen there (a video's full-screen button, F11, a player, Super+F), that display switches to HDR as before, and back to SDR about 2 seconds after the last full-screen window is gone. The cost: HDR in a window shows as SDR (Chrome tone-maps it, as on a display without HDR); go full screen to see it in HDR. Any full-screen window turns HDR on, also a terminal, and then costs what HDR costs today. Only the main window's display. On Hyprland 0.56 (Omarchy 4.5), Hyprland's own auto HDR switches only for a full-screen app that already draws HDR, which Chrome never does on an SDR desktop. 0.57 offers HDR to the full-screen app, but switches the display one frame late. So OmacVM switches the display itself on both, and Hyprland's auto HDR stays off. If your Hyprland config turns on render:cm_auto_hdr, render:direct_scanout or quirks:prefer_hdr, or has its own rule for the main display, the VM keeps HDR all the time and omacvm check says why. Works at once in a running VM; the VM gets its part with Update VM. Off: HDR exactly as before. Experimental."
+
+    var body: some View {
+        SettingRow(title: "HDR only in full screen", badge: "experimental",
+                   subtitle: Self.subtitle(hdr: Settings.hdr, safeMode: Settings.gpuSafeMode),
+                   info: Self.info, probe: "hdr-full-screen-only") {
+            RowSwitch(title: "HDR only in full screen", isOn: $on, enabled: Settings.hdr && !Settings.gpuSafeMode)
+        }
+        .onChange(of: on) { _, v in if v != Settings.hdrFullScreenOnly { Settings.hdrFullScreenOnly = v } }
+        .onChange(of: tick) { _, _ in on = Settings.hdrFullScreenOnly }
+    }
+
+    static func subtitle(hdr: Bool, safeMode: Bool) -> String {
+        if safeMode { return "Off while GPU safe mode is on." }
+        if !hdr { return "Needs HDR and 10-bit colour." }
+        return "SDR on the desktop, HDR when a window goes full screen."
+    }
+}
+
 /// Extra brightness (Settings.extraBrightness, experimental, ADR 0050): only
 /// with a display that has the headroom (Mac.hasExtraBrightnessDisplay).
 /// QEMU reads the key itself, so a running VM follows the switch at once.

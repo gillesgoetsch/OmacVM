@@ -55,6 +55,16 @@ in more words.
   MacBook Air (M2) saves only 0.1-0.2 W; other Macs are not measured yet.
   It works at once in a running VM; GPU safe mode keeps it off.
   `omacvm check` shows it while it is on. ADR 0073.
+- **HDR only in full screen (experimental, off by default).** A new switch
+  under HDR and 10-bit colour in the VM window's settings (Display). While
+  no window is in full screen, the VM's main display runs as with HDR off;
+  a window going full screen switches it to HDR, and it goes back about 2 s
+  after. HDR in a window shows as SDR. Works the same on Omarchy 4.5 and
+  newer, at once in a running VM; the VM's part comes with Update VM.
+  `omacvm check` says which state it is in. ADR 0074.
+- **HDR**: a frame is no longer shown in the wrong colours when the VM's
+  display changes between 10-bit and 8-bit twice within half a second; the
+  window keeps the last frame until the right one can be shown.
 
 ## 3.4.8
 
