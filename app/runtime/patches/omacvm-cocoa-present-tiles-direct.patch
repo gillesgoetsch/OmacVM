@@ -27,7 +27,7 @@ OMACVM_GL_PRESENT_DAMAGE=check, and the half-box fault
 (work/power-1117/tiles-rects).
 
 diff --git a/ui/cocoa.m b/ui/cocoa.m
-index f71f10d..9c1c54b 100644
+index f71f10d..bce4e94 100644
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
 @@ -306,6 +306,7 @@ static void cocoa_gl_switch(DisplayChangeListener *dcl,
@@ -38,7 +38,17 @@ index f71f10d..9c1c54b 100644
  /* GL frames are shown as IOSurfaces (the view's layer is a plain CALayer). */
  static bool cocoa_gl_present_on(void);
  
-@@ -9137,16 +9138,16 @@ static bool cocoa_gl_present_init(void)
+@@ -8938,6 +8939,9 @@ static void omacvm_present_seen_again(void)
+ 
+ static void cocoa_gl_present_bh(void *opaque);
+ static void cocoa_gl_present_queue_frame(PresentFrame f);
++/* OmacVM, tiles shown when drawn (cocoa_gl_present_tiles): defined with the vsync queue below. */
++static void present_frame_show(PresentFrame *f);
++static void present_frame_put(PresentFrame *f);
+ static void cocoa_gl_present_request(void);
+ 
+ /*
+@@ -9137,16 +9141,16 @@ static bool cocoa_gl_present_init(void)
      const char *tr = getenv("OMACVM_GL_TRIM");
      present_trim_quarter = present_vsync && tr && !strcmp(tr, "quarter");
      present_nsurf = present_vsync ? PRESENT_SURFACES : 3;
@@ -65,7 +75,7 @@ index f71f10d..9c1c54b 100644
      /* Extra brightness redraws in either mode (same context, same reason). */
      omacvm_bright_bh = aio_bh_new(iohandler_get_aio_context(),
                                    omacvm_bright_redraw, NULL);
-@@ -9315,10 +9316,8 @@ static bool present_tiles_wanted(void)
+@@ -9315,10 +9319,8 @@ static bool present_tiles_wanted(void)
          const char *e = getenv("OMACVM_GL_PRESENT_TILES");
          int on = e && !strcmp(e, "1") ? 1 : e && !strcmp(e, "check") ? 2 : 0;
          char why[512] = "";
@@ -78,7 +88,7 @@ index f71f10d..9c1c54b 100644
              present_tiles_on = 0;
              info_report("cocoa: tiled present: off (the tile shader does not build: %s)", why);
          } else {
-@@ -10058,9 +10057,11 @@ static int cocoa_gl_present_tiles(GLuint src, bool flip)
+@@ -10058,9 +10060,11 @@ static int cocoa_gl_present_tiles(GLuint src, bool flip)
          pt->up[pt->n++] = (OmacvmPTUpdate){ tl[k], (void *)s };
      }
      double flushed = CACurrentMediaTime();
@@ -93,7 +103,7 @@ index f71f10d..9c1c54b 100644
      dispatch_async(present_queue, ^{
          CGLSetCurrentContext(present_wait_ctx);
          if (sync) {
-@@ -10073,9 +10074,23 @@ static int cocoa_gl_present_tiles(GLuint src, bool flip)
+@@ -10073,9 +10077,23 @@ static int cocoa_gl_present_tiles(GLuint src, bool flip)
              glDeleteSync(sync);
          }
          CGLSetCurrentContext(NULL);
@@ -118,7 +128,7 @@ index f71f10d..9c1c54b 100644
          });
      });
      present_last_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-@@ -10437,6 +10452,7 @@ static bool cocoa_gl_present(void)
+@@ -10437,6 +10455,7 @@ static bool cocoa_gl_present(void)
              omacvm_present_gravity(layer, surf);
              [layer setContents:(id)surf];
              qatomic_set(&present_shown, surf);
@@ -126,7 +136,7 @@ index f71f10d..9c1c54b 100644
              [CATransaction commit];
              omacvm_park_frame_shown(flushed);
              IOSurfaceDecrementUseCount(surf);
-@@ -10739,6 +10755,23 @@ static void cocoa_gl_present_show_tiles(PresentFrame *f)
+@@ -10739,6 +10758,23 @@ static void cocoa_gl_present_show_tiles(PresentFrame *f)
      }
  }
  
@@ -150,7 +160,7 @@ index f71f10d..9c1c54b 100644
  /* Any thread: put a finished frame on the layer. */
  static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushed,
                                    bool linear)
-@@ -10754,15 +10787,7 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
+@@ -10754,15 +10790,7 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
      omacvm_present_gravity(layer, surf);
      [layer setContents:(id)surf];
      qatomic_set(&present_shown, surf);
