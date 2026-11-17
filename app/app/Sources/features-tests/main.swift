@@ -379,5 +379,27 @@ expect(YouTubeVP9.info.hasPrefix("Experimental.") && YouTubeVP9.info.contains("1
        YouTubeVP9.info.contains("frames") && YouTubeVP9.info.contains("chrome://extensions"),
        "youtube-vp9 (i): experimental, the watts, VP9 instead of AV1, the dropped frames, how to remove it")
 
+// Fewer animations (fewer-animations): experimental, off by default, Omarchy 4.5's
+// own toggle; greyed out with the reason below 4.5 unless it is on.
+expect(!FewerAnimations.isOn(features: nil) && FewerAnimations.isOn(features: "bridge=on fewer-animations=on"),
+       "fewer-animations: off without the record's word")
+expect(FewerAnimations.row(record: nil, pending: nil, omarchy: "4.0.3rc4 omarchy-mac rc", running: true, busy: false, cli: true)
+       == MacIME.Row(on: false, enabled: false, note: FewerAnimations.needs45), "fewer-animations row on Omarchy 4.0: off, greyed, why")
+expect(FewerAnimations.row(record: "fewer-animations=on", pending: nil, omarchy: "4.0.3rc4 omarchy-mac rc", running: false, busy: false, cli: true)
+       == MacIME.Row(on: true, enabled: true, note: nil), "fewer-animations row on 4.0 while on: can go off")
+expect(FewerAnimations.row(record: nil, pending: nil, omarchy: "4.5.0 aarch64 stable", running: false, busy: false, cli: false)
+       == MacIME.Row(on: false, enabled: true, note: nil), "fewer-animations row on 4.5, stopped: switched for the next start")
+expect(FewerAnimations.row(record: "fewer-animations=off", pending: "on\n", omarchy: nil, running: true, busy: false, cli: true)
+       == MacIME.Row(on: true, enabled: true, note: "Being set up in the VM for this start."), "fewer-animations row: a pending choice wins and says so")
+expect(!FewerAnimations.row(record: nil, pending: nil, omarchy: nil, running: true, busy: true, cli: true).enabled &&
+       !FewerAnimations.row(record: nil, pending: nil, omarchy: nil, running: true, busy: false, cli: false).enabled,
+       "fewer-animations row: busy or no CLI: not switchable")
+expect(FewerAnimations.switchState.pendingFile == "fewer-animations-pending" &&
+       FewerAnimations.switchState.applyArguments(vm: "V", on: true) == ["apply", "--vm", "V", "--vm-type", "app", "--feature", "fewer-animations=on", "--yes", "--transaction"],
+       "fewer-animations at the start: apply's switch of it alone")
+expect(FewerAnimations.info.hasPrefix("Experimental.") && FewerAnimations.info.contains("0.46 W") &&
+       FewerAnimations.info.contains("blur or shadows") && FewerAnimations.info.contains("Omarchy's menu") &&
+       FewerAnimations.info.contains("Omarchy 4.5"), "fewer-animations (i): experimental, the watts, what goes, the same as Omarchy's menu, 4.5")
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

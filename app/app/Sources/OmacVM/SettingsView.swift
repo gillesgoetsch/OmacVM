@@ -215,6 +215,7 @@ struct SettingsSections: View {
                 }
                 PartialPresentRow(tick: state.tick)
                 PauseWhileHiddenRow(tick: state.tick)
+                FewerAnimationsRow(state: state)
                 PointerPlaneRow(tick: state.tick)
                 PresentTilesRow(tick: state.tick)
                 EscapeRow(tick: state.tick)
