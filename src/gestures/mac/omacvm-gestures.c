@@ -806,43 +806,36 @@ static void pauseInput(void) {
 // until its callback answers. macOS disables a tap that did not answer in
 // time; enabling it again (as before) could bring the hold back over and
 // over. Now a disabled tap is removed, never enabled again; a new one comes
-// after a hold-off: 2 s, then 30 s for each further one within 10 minutes.
-// It always comes back, however often macOS disables it: the escape combo is
-// the tap's, and it is the only way out of a full-screen VM on a Mac with a
-// keyboard alone. A watchdog off the main thread disables the tap when the
-// main thread (the tap's callback) has not answered for a second, so a stall
-// holds the Mac's input for a second at most, once per hold-off.
+// after a hold-off: 2 s, or 30 s when one was disabled in the 10 minutes
+// before. It always comes back, however often macOS disables it: the escape
+// combo is the tap's, and it is the only way out of a full-screen VM on a Mac
+// with a keyboard alone. A watchdog off the main thread disables the tap when
+// the main thread (the tap's callback) has not answered for a second, so a
+// stall holds the Mac's input for a second at most, once per hold-off.
 #define TAP_FORGET 600.0
-static const double tapHoldOff[] = { 2, 30 };   // the last one for every further strike
-#define TAP_STRIKES ((int)(sizeof tapHoldOff / sizeof *tapHoldOff))
 static double uptimeNow(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; }
 static double (*nowFn)(void) = uptimeNow;
-static double tapStrikes[TAP_STRIKES];   // main thread: when taps were disabled (the last 10 minutes)
-static int nStrikes;
-static double tapUntil;               // main thread: no new tap before this
+static double lastStrike = -TAP_FORGET;   // main thread: when a tap was disabled last
+static double tapUntil;                   // main thread: no new tap before this
 static int tapMayCreate(void) { return nowFn() >= tapUntil; }
 static void rearmTap(const char *why);
-static void tapBack(void) { if (!tapPort && tapMayCreate()) rearmTap("hold-off over after macOS disabled it"); }
 // A strike at `now`; returns the hold-off in s.
 static double tapStrike(double now) {
-  int k = 0;
-  for (int i = 0; i < nStrikes; i++) if (now - tapStrikes[i] < TAP_FORGET) tapStrikes[k++] = tapStrikes[i];
-  if (k == TAP_STRIKES) { memmove(tapStrikes, tapStrikes + 1, (TAP_STRIKES - 1) * sizeof *tapStrikes); k--; }
-  tapStrikes[k++] = now;
-  nStrikes = k;
-  tapUntil = now + tapHoldOff[k - 1];
-  return tapHoldOff[k - 1];
+  double h = now - lastStrike < TAP_FORGET ? 30 : 2;
+  lastStrike = now;
+  tapUntil = now + h;
+  return h;
 }
-// Main thread: the tap was disabled (by macOS or the watchdog).
+// Main thread: the tap was disabled (by macOS or the watchdog). The next one
+// comes from checkPermissions once the hold-off is over.
 static void tapDisabled(const char *by) {
   if (!tapPort) return;
   double h = tapStrike(nowFn());
   removeTap();
   logf_("event tap disabled (%s): removed (never enabled again), a new one in %.0f s", by, h);
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(h * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ tapBack(); });
 }
 // macOS's Accessibility list changed: a fresh start (main thread).
-static void tapPolicyReset(void) { nStrikes = 0; tapUntil = 0; }
+static void tapPolicyReset(void) { lastStrike = -TAP_FORGET; tapUntil = 0; }
 
 // The watchdog's step every 0.25 s: 1 = ask the main thread to answer,
 // 2 = it has not answered for longer than a second.
@@ -874,19 +867,27 @@ static void *tapWatchdog(void *u) {
   return NULL;
 }
 
+// Every second (permissionTimer) and whenever macOS says a permission may
+// have changed. Without a tap and with its permissions, a new one is made as
+// soon as no hold-off keeps it away, and tried again each second until one
+// is made: no single failed step leaves a VM in front without one.
 static void checkPermissions(void) {
-  if (tapPort && !inputPaused) {
-    int perm = permFn();
-    if (permitted(perm)) return;
-    pauseInput();
-    permissionsSeen(perm);
-    logf_("permission taken away: event tap removed, trackpads let go (macOS has the keyboard, clicks and "
-          "gestures); waiting for Accessibility");
-  } else if (inputPaused && installTap()) {
+  if (inputPaused) {
+    if (!installTap()) return;
     inputPaused = 0;
     permissionsSeen(tapPerm);
     if (trackpad) startTrackpads();
     logf_("event tap and trackpads on again");
+    return;
+  }
+  int perm = permFn();
+  if (!permitted(perm)) {
+    pauseInput();
+    permissionsSeen(perm);
+    logf_("permission taken away: event tap removed, trackpads let go (macOS has the keyboard, clicks and "
+          "gestures); waiting for Accessibility");
+  } else if (!tapPort && tapMayCreate()) {
+    rearmTap("hold-off over after macOS disabled it");
   }
 }
 
@@ -929,18 +930,22 @@ static void accessibilityChanged(CFNotificationCenterRef c, void *o, CFNotificat
 }
 
 // Main thread only. A failed re-creation keeps the old tap while the
-// permissions are there (logged once until one works again), never without.
+// permissions are there, never without; with none, checkPermissions tries
+// again (logged once until one works again).
 static void rearmTap(const char *why) {
   static int failedLogged;
   if (inputPaused) return;   // checkPermissions brings it back
-  if (!tapMayCreate()) return;   // after macOS disabled one: tapBack, or the Accessibility list
+  if (!tapMayCreate()) return;   // after macOS disabled one: checkPermissions, after the hold-off
+  // A disabled one is counted first (frontChanged's look at it): replaced at
+  // once, a stall could come back with no hold-off.
+  if (tapPort && CFMachPortIsValid(tapPort) && !CGEventTapIsEnabled(tapPort)) return;
   if (installTap()) {
     logf_("event tap created again (%s)", why);
     failedLogged = 0;
   } else if (!permitted(permFn())) {
     checkPermissions();   // the old one goes too
   } else if (!failedLogged) {
-    logf_("cannot create the event tap again (%s); keeping the old one", why);
+    logf_("cannot create the event tap again (%s); %s", why, tapPort ? "keeping the old one" : "trying again every second");
     failedLogged = 1;
   }
 }
