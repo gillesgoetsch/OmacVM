@@ -178,10 +178,12 @@ window's own 1320x740, frames shown when drawn; work/power-1116/rects/t1):
   driver and OmacVM's at 8 bits (drmdump, 0 lines differ).
 
 Owed: the check mode on screen on the vsync composited path (the Air, and
-120 Hz on an XDR Mac); tiles and this both on in the check mode (tiles need
-the vsync present); a real second display; the desktop restart after a lost
+120 Hz on an XDR Mac); a real second display; the desktop restart after a lost
 GPU context (0038); Mac sleep and wake and a display change on screen;
 moving the window between displays; the guest's lock screen and SDDM with
 autologin off; a client buffer scanned out directly (`direct_scanout`);
 the GPU copy's readback on an M2; the Air's watts.
 
+Tiles and this both on in the check mode: done 2026-11-17, see
+[0055](0055-tiled-present.md)'s addendum of that day (hidden on the mini
+with frames shown when drawn, on screen on the Air).

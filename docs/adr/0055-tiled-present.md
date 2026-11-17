@@ -176,3 +176,60 @@ before the display went, with none of its windows on another display in
 496 samples.
 Not covered: WindowServer's composite, 120 Hz pacing, the hold for a
 window nobody sees (present-unseen), the look on a real panel.
+
+## Addendum (2026-11-17): with "Copy only what changed", and when frames are shown when drawn
+
+**Both on together.** With partial present on by default for SDR starts
+([0051](0051-partial-present.md), #814) and the VM's driver sending its
+damage on default starts (#815), tiles now sit on top of the partial
+present. They compose by design: each whole surface keeps one box of all
+that changed since its own last draw, a frame in tiles leaves surface n
+untouched (it is drawn later with its whole box, the tile frames' rects
+included), and a skipped whole frame handed to a tile frame as its base is
+a surface drawn right for its own frame. One cost: whole frames are rare
+under tiles, and the surface they take has collected every rect since its
+own last draw, so most whole frames are full draws (pointer row on the
+Air: 1255 partial and 3582 full whole frames a minute pair beside 2344 in
+tiles, against 3505 partial and 3693 full without tiles).
+
+**Frames shown when drawn.** Tiles needed the vsync present ("off (needs
+the vsync present)"). A hidden test window never ticks its display link,
+so tiles could only be checked on a display: the release row's virtual
+display (present-locked.sh) or a person's screen, and neither is allowed
+on the Mac mini (its only display is virtual; no virtual-display rows
+there since its panic of 2026-11-01). `omacvm-cocoa-present-tiles-direct.patch`:
+with `OMACVM_GL_VSYNC=0` a tile frame goes on the layers on the main
+queue, as the whole frames there do, so both reach the layers in the order
+they were drawn; a whole frame there hides the tiles and measures the fit
+through the same helper as the vsync present's whole frames
+(`present_tiles_whole_shown`); `present_bh` is made in both modes. The
+vsync present (the default) does what it did. Test:
+`test-present-tiles-direct.sh` (+ `--self-test`, CI and the runtime
+build).
+
+Rows (test apps org.omacvm.app.test; work/power-1117/tiles-rects):
+- Mac mini, hidden clone (Omarchy 4.5, Linux 7.2.11, OmacVM's driver at
+  8 bits, 1320x740), frames shown when drawn, both switches on, both in
+  check mode: pointer, light desktop, typing, workspaces, Chrome scroll
+  with blur, TTY, lock, a mode change and back, 120 Hz, a guest reboot:
+  tiles check 0 of 606 differed, partial present check 0 of 56 bad.
+  The tiles took 1336-2692 frames a minute in the light rows; the 56
+  partial checks all came from the 120 Hz segment. At 1320x740 (a grid of
+  6 x 3) a box of more than 12 tiles is three quarters of the frame or
+  more, so whole frames under tiles are full draws there and the half-box
+  fault row drew nothing in part (0 checks): that row proves nothing on
+  so small a frame, the Air's below does.
+- MacBook Air M2, on screen in full screen (2940x1912, 59.994 Hz, the
+  vsync present), both switches on, both in check mode (#815's code,
+  046213cb): static, chat dots, typing, pointer, scroll, AV1 clip,
+  workspaces x5, VT 1 -> 5 -> 1: tiles check 0 of 152 differed, partial
+  present check 0 of 837 bad. With the half-box fault: 829 of 829 partial
+  checks bad, tiles 0 of 152 (the fault is in the partial draw only).
+- Watts, the same Air, whole machine (SystemLoad), one block B C C B
+  (B = Copy only what changed, C = B + tiles), 120 s windows, 8 of 8
+  valid: chat typing dots 3077 -> 2868 mW (**-209 mW**; the two pairs
+  -244 and -174), WindowServer GPU 113 -> 26 ms/s; pointer moving 3600 ->
+  3505 mW (-95; pairs -45 and -145, not settled), WindowServer GPU 116 ->
+  90 ms/s (in the four-window desktop focus follows the pointer, so two
+  thirds of its frames are big boxes and stay whole). Frames shown
+  60.2-60.7 a second in every window, both arms.
