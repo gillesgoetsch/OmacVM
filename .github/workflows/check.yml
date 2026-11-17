@@ -846,8 +846,11 @@ jobs:
   # centre runs in the VM too, so its tests run here, not on the Macs' runners.
   guest:
     runs-on: ubuntu-24.04-arm
-    # The guest steps take 6-10 min, the control centre's tests about 5.5 more.
-    timeout-minutes: 20
+    # Green runs take 19.5-19.8 min (2026-11-17): the control centre's tests about
+    # 5.5, the HDR capture shader variants about 7.5, the rest 6-7. With a 20-min
+    # limit one slow minute on GitHub's runner cancelled it (#765, #811, #814, #817,
+    # #824). 35 leaves room; a step that hangs still ends the job.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
