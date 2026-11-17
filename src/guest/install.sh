@@ -9,7 +9,7 @@
 # Features: the list in ../features.tsv (bridge, wallpaper, gestures, scroll-momentum,
 # omanotch, mac-clock, camera, no-idle-lock, autologin, thp-kernel, battery, external-brightness,
 # control-centre, fast-network, chromium-video, youtube-vp9, gpu-compute, vulkan, x86-apps, touch-id, mac-ime,
-# drag-drop, mission-control) with its defaults; a feature
+# drag-drop, mission-control, fewer-animations) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
 # so a later run without --feature keeps them.
 # --vm-type: app (OmacVM.app), the only one; anything else stops (exit 2):
@@ -516,6 +516,17 @@ if want mission-control; then
     [[ -z $ONLY ]] || "$R/missioncontrol/guest/install.sh" "$U" --repair || not_set_up mission-control "Mission Control (repair)"
   else
     "$R/missioncontrol/guest/install.sh" "$U" off || not_set_up mission-control "Mission Control (off)"
+  fi
+fi
+# Fewer animations (experimental, Omarchy 4.5): Omarchy's own no-animations
+# toggle. Off takes the toggle away on every apply; the Mac's probe reads the
+# toggle first, so one switched in Omarchy's menu is kept (the record follows).
+if want fewer-animations; then
+  if [[ ${F[fewer-animations]} == on ]]; then
+    log "Fewer animations (experimental: Omarchy's no-animations toggle)"
+    "$R/animations/guest/install.sh" "$U" on || not_set_up fewer-animations "Fewer animations"
+  else
+    "$R/animations/guest/install.sh" "$U" off || not_set_up fewer-animations "Fewer animations (off)"
   fi
 fi
 if ! want battery; then

@@ -591,6 +591,18 @@ case ${mc%% *} in
   *) [[ ${OMACVM_FEATURE_mission_control:-off} == on ]] && bad "Mission Control" "its check did not answer: omacvm apply" ||
        skip "Mission Control" "off (omacvm enable mission-control)" ;;
 esac
+# Fewer animations (fewer-animations, experimental): Omarchy's no-animations
+# toggle in place exactly while the feature is on (animations/guest/install.sh).
+FEATURE=fewer-animations
+fa=$(/usr/local/share/omacvm/animations/guest/install.sh "$U" --status 2>/dev/null | tail -n 1)
+case ${OMACVM_FEATURE_fewer_animations:-off}/$fa in
+  on/on) ok "Fewer animations" "Omarchy's no-animations toggle: no animations, blur or shadows (experimental)" ;;
+  on/off) bad "Fewer animations" "on, but Omarchy's animations are on: omacvm apply" ;;
+  on/none) bad "Fewer animations" "needs Omarchy 4.5 (this Omarchy has no animations toggle): Move to Omarchy 4.5 in OmacVM.app" ;;
+  off/on) bad "Fewer animations" "off, but Omarchy's no-animations toggle is on: omacvm apply" ;;
+  off/none) skip "Fewer animations" "needs Omarchy 4.5" ;;
+  *) skip "Fewer animations" "off (experimental: omacvm enable fewer-animations)" ;;
+esac
 FEATURE=""
 if [[ $GESTURES == on ]]; then
   check "Cmd as Super" "OmacVM keyboard (Mac shortcuts)" ev_device "OmacVM keyboard (Mac shortcuts)"

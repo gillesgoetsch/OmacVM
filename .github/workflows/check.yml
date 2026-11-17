@@ -749,6 +749,9 @@ jobs:
       - name: Prefer VP9 on YouTube (experimental) packs the no-AV1 extension for Chrome and Chromium, on/off/status, offered only without AV1 decoding
         run: src/tests/youtube-vp9.sh
 
+      - name: Fewer animations (experimental) is Omarchy 4.5's no-animations toggle, on/off/status, 4.0 refused, the record follows Omarchy's menu
+        run: src/tests/fewer-animations.sh
+
       - name: Chrome's WebRTC encoder flags survive Update VM and come back at a start
         run: src/tests/video-encode-flags.sh
 
@@ -909,6 +912,9 @@ jobs:
 
       - name: Prefer VP9 on YouTube on Linux (OpenSSL and GNU tools, as in the VM)
         run: src/tests/youtube-vp9.sh
+
+      - name: Fewer animations on Linux (GNU tools, as in the VM)
+        run: src/tests/fewer-animations.sh
 
       - name: Update VM installs Omanotch again only when its files changed (Python's compiled files left out; GNU tools, as in the VM)
         run: src/tests/omanotch-stamp.sh

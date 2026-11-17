@@ -56,6 +56,10 @@ vm_probe() {
         awk "/^[[:space:]]*\\[/ { s = (\$0 ~ /^[[:space:]]*\\[Autologin\\]/) } s && /^[[:space:]]*User[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, \"\"); sub(/[[:space:]]+\$/, \"\"); u = \$0 } END { print u }")
       [ -n "$u" ] && echo OMACVM_REAL_autologin=on || echo OMACVM_REAL_autologin=off
     fi
+    # Fewer animations is Omarchy 4.5'"'"'s no-animations toggle, also switched in Omarchy'"'"'s menu (animations/guest/install.sh).
+    if [ -f /usr/share/omarchy/default/hypr/toggles/no-animations.lua ]; then
+      [ -f "$H/.local/state/omarchy/toggles/hypr/no-animations.lua" ] && echo OMACVM_REAL_fewer_animations=on || echo OMACVM_REAL_fewer_animations=off
+    fi
     true' < /dev/null 2>"${OMA_PROBE_ERR:-/dev/null}"
 }
 
