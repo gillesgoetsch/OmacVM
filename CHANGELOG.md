@@ -3,6 +3,21 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.0 (unreleased)
+
+- **Prefer VP9 on YouTube (experimental, off by default).** A new switch in
+  the VM window's settings (General), shown only on Macs whose media engine
+  has no AV1 decoder (M1, M2). YouTube sends Google Chrome AV1, which those
+  Macs decode on the VM's CPUs; with this on, Chrome and Chromium in the VM
+  tell YouTube they cannot play AV1, and YouTube streams VP9, which the
+  Mac's media engine decodes. On a MacBook Air (M2) a 1080p60 YouTube video
+  took about 1.2 W less for the whole Mac. The trade-offs: videos only in
+  AV1 are not offered, and for now the media engine drops about 1-3 % of the
+  frames at 1080p60. It is OmacVM's no-AV1 extension, added as Chrome's own
+  kind of external extension (no policy, no "Managed by your organization");
+  remove it in chrome://extensions at any time. Also `omacvm enable
+  youtube-vp9` and the control centre.
+
 ## 3.4.7
 
 x86 apps switch on in 3 GB VMs, and HDR holds after a quick re-login and in Hyprland 0.57.2 screenshots.
