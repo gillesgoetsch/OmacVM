@@ -358,5 +358,26 @@ expect(!MissionControl.subtitle.lowercased().contains("xperimental") && MissionC
        ![MissionControl.needs45, MissionControl.needsGestures, MissionControl.onNote].contains(MissionControl.subtitle),
        "mission-control row text beside the picture: short, not experimental, none of the notes")
 
+// Prefer VP9 on YouTube (youtube-vp9): experimental, off by default, shown
+// only on a Mac without AV1 decoding, or while it is on (to switch it off).
+expect(!YouTubeVP9.isOn(features: nil) && !YouTubeVP9.isOn(features: "bridge=on") &&
+       YouTubeVP9.isOn(features: "bridge=on youtube-vp9=on"), "youtube-vp9: off without the record's word")
+expect(YouTubeVP9.shown(decodesAV1: false, record: nil, pending: nil), "youtube-vp9 row: shown on a Mac without AV1 decoding")
+expect(!YouTubeVP9.shown(decodesAV1: true, record: "youtube-vp9=off", pending: nil), "youtube-vp9 row: hidden on a Mac that decodes AV1")
+expect(YouTubeVP9.shown(decodesAV1: true, record: "youtube-vp9=on", pending: nil) &&
+       YouTubeVP9.shown(decodesAV1: true, record: nil, pending: "on\n"), "youtube-vp9 row: shown while on, also on an AV1 Mac, so it can go off")
+expect(YouTubeVP9.row(record: nil, pending: nil, running: false, busy: false, cli: false) == MacIME.Row(on: false, enabled: true, note: nil),
+       "youtube-vp9 row stopped: switched for the next start")
+expect(YouTubeVP9.row(record: "youtube-vp9=off", pending: "on\n", running: true, busy: false, cli: true)
+       == MacIME.Row(on: true, enabled: true, note: "Being set up in the VM for this start."), "youtube-vp9 row: a pending choice wins and says so")
+expect(!YouTubeVP9.row(record: nil, pending: nil, running: true, busy: true, cli: true).enabled &&
+       !YouTubeVP9.row(record: nil, pending: nil, running: true, busy: false, cli: false).enabled, "youtube-vp9 row: busy or no CLI: not switchable")
+expect(YouTubeVP9.switchState.pendingFile == "youtube-vp9-pending" &&
+       YouTubeVP9.switchState.applyArguments(vm: "V", on: false) == ["apply", "--vm", "V", "--vm-type", "app", "--feature", "youtube-vp9=off", "--yes", "--transaction"],
+       "youtube-vp9 at the start: apply's switch of it alone")
+expect(YouTubeVP9.info.hasPrefix("Experimental.") && YouTubeVP9.info.contains("1.2 W") && YouTubeVP9.info.contains("VP9 instead") &&
+       YouTubeVP9.info.contains("frames") && YouTubeVP9.info.contains("chrome://extensions"),
+       "youtube-vp9 (i): experimental, the watts, VP9 instead of AV1, the dropped frames, how to remove it")
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

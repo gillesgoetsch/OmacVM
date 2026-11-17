@@ -739,6 +739,9 @@ jobs:
       - name: Chromium's no-AV1 extension survives an apply of other features (its place, 3.1.4's path moved, check)
         run: src/tests/chromium-no-av1.sh
 
+      - name: Prefer VP9 on YouTube (experimental) packs the no-AV1 extension for Chrome and Chromium, on/off/status, offered only without AV1 decoding
+        run: src/tests/youtube-vp9.sh
+
       - name: Chrome's WebRTC encoder flags survive Update VM and come back at a start
         run: src/tests/video-encode-flags.sh
 
@@ -896,6 +899,9 @@ jobs:
 
       - name: A feature switch on Linux (GNU sed, glide off path)
         run: src/tests/feature-switch.sh
+
+      - name: Prefer VP9 on YouTube on Linux (OpenSSL and GNU tools, as in the VM)
+        run: src/tests/youtube-vp9.sh
 
       - name: Update VM installs Omanotch again only when its files changed (Python's compiled files left out; GNU tools, as in the VM)
         run: src/tests/omanotch-stamp.sh

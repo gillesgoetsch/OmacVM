@@ -615,6 +615,11 @@ enum VMRecord {
         let text = (try? String(contentsOf: folder.appendingPathComponent("features"), encoding: .utf8)) ?? ""
         return text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).contains { $0 == "\(feature)=off" }
     }
+    /// The VM folder's file NAME (the features record, a pending switch); nil when there is none.
+    static func text(_ name: String, folder: URL) -> String? {
+        try? String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8)
+    }
+    static func features(folder: URL) -> String? { text("features", folder: folder) }
 }
 
 // MARK: Sharing & Devices

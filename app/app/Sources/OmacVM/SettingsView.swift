@@ -186,6 +186,10 @@ struct SettingsSections: View {
                 ResourcesRow(state: state)
                 GraphicsRow(state: state)
                 GPUComputeRow(state: state)
+                if YouTubeVP9.shown(decodesAV1: preview?.decodesAV1 ?? Mac.decodesAV1, record: VMRecord.features(folder: state.config.folder),
+                                    pending: VMRecord.text(YouTubeVP9.switchState.pendingFile, folder: state.config.folder)) {
+                    YouTubeVP9Row(state: state)
+                }
                 GPUOffMainLoopRow(tick: state.tick)
                 VKWindowsNoCopyRow(tick: state.tick)
                 GhosttyGPURow(tick: state.tick, folder: state.config.folder, running: running)

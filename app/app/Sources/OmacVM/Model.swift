@@ -6,6 +6,7 @@ import OmacVMFeatures
 import OmacVMAudio
 import OmacVMMedia
 import OmacVMWindow
+import VideoToolbox
 
 enum HelperError: LocalizedError, Equatable {
     case io(String)
@@ -888,6 +889,15 @@ extension Mac {
         return MacNotch.of(live: off ? nil : notchGeometry, builtinOff: off,
                            remembered: notchKey.flatMap { NotchHousing.remembered(stored, mac: $0) })
     }
+
+    /// This Mac's media engine decodes AV1 (M3 and newer), asked at run time
+    /// with the call virgl's VideoToolbox decoder makes; src/youtube-vp9/mac-av1.swift
+    /// asks the same for the command. Prefer VP9 on YouTube is offered only
+    /// where it does not. Test builds: OMACVM_TEST_AV1=hw|no decides instead.
+    static let decodesAV1: Bool = {
+        if let t = TestHooks.value("OMACVM_TEST_AV1", bundleID: Bundle.main.bundleIdentifier) { return t == "hw" }
+        return VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+    }()
 
     /// A display that can show HDR (EDR headroom above SDR white: the XDR
     /// panel of a MacBook Pro, a Pro Display XDR, an HDR external). Macs

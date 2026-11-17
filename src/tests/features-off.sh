@@ -28,6 +28,7 @@ camera:camera/guest/install.sh off on every apply; OmacVM.app does not serve the
 battery:battery/guest/install.sh off on every apply; OmacVM.app does not serve the battery port
 external-brightness:install.sh removes OmacVM's ddcutil on every apply; apply sets the Bridge's external_brightness false, so no DDC (src/tests/external-brightness.sh)
 chromium-video:vdec/guest/install.sh off on every apply of an app VM; never on the other routes; nothing of it talks to the Mac
+youtube-vp9:youtube-vp9/guest/install.sh off on every apply of an app VM removes the packed extension, its key and its files in Chrome's and Chromium's extensions folders (the browsers drop it at their next start); nothing of it runs or talks to the Mac (src/tests/youtube-vp9.sh)
 control-centre:control/guest/install.sh off removes omacvm, its check socket, menu row and bar item (install.sh runs it while any of them is there); nothing left in the VM asks the Mac
 no-idle-lock:nothing of it talks to the Mac; off is Omarchy's own screensaver and lock
 autologin:nothing of it talks to the Mac
