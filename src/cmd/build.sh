@@ -12,6 +12,8 @@
 #   --vm-type app (the only one)   --vm-name NAME   --hostname NAME
 #   --resources low|balanced|high|best   --cpus N   --memory-gb N   --disk-gb N
 #   --user NAME   --full-name "NAME"
+#   --home-gb N: a second disk of N GB for /home, on xfs (needs --build; the
+#   questions ask for it under Custom)
 #   --feature NAME=on|off, or --FEATURE / --no-FEATURE (omacvm features lists
 #   them: bridge wallpaper gestures scroll-momentum omanotch mac-clock camera battery external-brightness no-idle-lock autologin thp-kernel
 #   x86-apps; idle-lock, its name before 3.0.1, the other way round)
@@ -44,7 +46,7 @@ linux_name() {
   n=${n#"${n%%[a-z_]*}"}
   printf '%s' "${n:0:32}"
 }
-TYPE=app; VM="Omarchy"; RES=""; CPUS=""; MEM_GB=""; DISK_GB=""; U=$(linux_name "$(id -un)"); FULL=""; HOST="omarchy"
+TYPE=app; VM="Omarchy"; RES=""; CPUS=""; MEM_GB=""; DISK_GB=""; HOME_GB=""; U=$(linux_name "$(id -un)"); FULL=""; HOST="omarchy"
 [[ -n $U ]] || U=omarchy
 BRIDGE=1; WALLPAPER=1; GESTURES=1; GLIDE=1; OMANOTCH=""; MAC_CLOCK=1; CAMERA=1; BATTERY=""; EXT_BRIGHTNESS=1; CHROMIUM_VIDEO=1; GPU_COMPUTE=1; NO_IDLE_LOCK=0; AUTOLOGIN=0; THP=0; CONTROL=1; X86=0
 YES=0; DRY=0; PLAN=0; JSON=0; IMAGE=0; SOURCE=""
@@ -83,7 +85,7 @@ feature_flag() {   # NAME on|off
 while (( $# )); do
   # A missing value is a usage error, not a set -u abort.
   case $1 in
-    --vm-type|--vm-name|--resources|--cpus|--memory-gb|--disk-gb|--user|--full-name|--hostname|--feature)
+    --vm-type|--vm-name|--resources|--cpus|--memory-gb|--disk-gb|--home-gb|--user|--full-name|--hostname|--feature)
       [[ $# -ge 2 ]] || usage "$1 needs a value" ;;
   esac
   case $1 in
@@ -96,6 +98,7 @@ while (( $# )); do
     --cpus) CPUS=$2; shift 2 ;;
     --memory-gb) MEM_GB=$2; shift 2 ;;
     --disk-gb) DISK_GB=$2; shift 2 ;;
+    --home-gb) HOME_GB=$2; shift 2 ;;
     --user) U=$2; shift 2 ;;
     --full-name) FULL=$2; shift 2 ;;
     --hostname) HOST=$2; shift 2 ;;
@@ -108,7 +111,7 @@ while (( $# )); do
     --dry-run) DRY=1; shift ;;
     --plan) PLAN=1; DRY=1; shift ;;
     --json) JSON=1; shift ;;
-    -h|--help) sed -n '2,22s/^# \{0,1\}//p' "$0"; DONE=1; exit 0 ;;
+    -h|--help) sed -n '2,24s/^# \{0,1\}//p' "$0"; DONE=1; exit 0 ;;
     --no-*) feature_flag "${1#--no-}" off; shift ;;
     --*) feature_flag "${1#--}" on; shift ;;
     *) usage "unknown option $1 (see --help)" ;;
@@ -118,6 +121,13 @@ done
 macos=$(sw_vers -productVersion 2>/dev/null)
 (( ${macos%%.*} >= 15 )) || { printf '\033[1;31mneeds you:\033[0m OmacVM.app needs macOS 15 (Sequoia) or newer; this Mac runs %s\n' "$macos" >&2; exit 3; }
 (( JSON )) && ! (( PLAN )) && usage "--json goes with --plan"
+# A home disk (docs/adr/0073) is made by the build: a prebuilt VM's first boot
+# makes the user's home on its system disk.
+if [[ -n $HOME_GB ]]; then
+  [[ $HOME_GB =~ ^[1-9][0-9]{0,4}$ ]] || usage "--home-gb: the home disk's size in GB"
+  [[ $SOURCE != prebuilt ]] || usage "--home-gb needs --build: a prebuilt VM has its home on its system disk"
+  SOURCE=build
+fi
 (( PLAN && JSON )) && YES=1   # a plan for an agent never asks
 (( YES )) || { : < "$TTY"; } 2>/dev/null || usage "the setup questions need a terminal (or pass --yes and the answers as options, see --help)"
 onoff() { (( $1 )) && echo on || echo off; }
@@ -232,7 +242,7 @@ if (( ! YES )) && [[ -z $CPUS && -z $MEM_GB && -z $RES ]]; then
   say "    GPU a buffer of $(( mac_mem_gb / 4 > 8 ? mac_mem_gb / 4 : 8 )) GB."
   opts=()
   for t in 0 1 2 3; do tier_values "$t"; rec=""; (( t == 1 )) && rec="  (recommended)"; opts+=("${TIERS[$t]}|$T_CPUS CPUs, $T_MEM GB memory$rec"); done
-  opts+=("Custom|choose CPUs, memory and the disk size")
+  opts+=("Custom|choose CPUs, memory$([[ $SOURCE == build ]] && echo ", the disk size and a home disk" || echo " and the disk size")")
   ui_select tier "How much of this Mac ($mac_cores CPUs, $mac_mem_gb GB) should the VM get?" 1 "${opts[@]}"
   (( tier == 4 )) && { custom=1; tier=1; }
 fi
@@ -243,10 +253,18 @@ if (( ${custom:-0} )); then
   CPUS=$(ask_value "CPUs (1-$CAP_CPUS)" "$CPUS" '^[0-9]+$')
   MEM_GB=$(ask_value "memory in GB (4-$CAP_MEM_GB)" "$MEM_GB" '^[0-9]+$')
   DISK_GB=$(ask_value "disk size limit in GB (64 or more; it only takes what it holds)" "$DISK_GB" '^[0-9]+$')
+  # Only for a VM built here: a prebuilt VM's home is on its system disk.
+  if [[ $SOURCE == build ]]; then
+    HOME_GB=$(ask_value "home disk in GB (0: none; your home on a disk of its own, on xfs: it can grow, not shrink)" "${HOME_GB:-0}" '^(0|[1-9][0-9]{0,4})$')
+    [[ $HOME_GB != 0 ]] || HOME_GB=""
+  fi
 fi
 [[ $CPUS =~ ^[0-9]+$ ]] && (( CPUS >= 1 && CPUS <= CAP_CPUS )) || usage "--cpus: 1 to $CAP_CPUS"
 [[ $MEM_GB =~ ^[0-9]+$ ]] && (( MEM_GB >= 4 && MEM_GB <= CAP_MEM_GB )) || usage "--memory-gb: 4 to $CAP_MEM_GB GB"
 [[ $DISK_GB =~ ^[0-9]+$ ]] && (( DISK_GB >= 64 )) || usage "--disk-gb: at least 64"
+if [[ -n $HOME_GB && -n ${APP:-} ]] && ! grep -q HOME_GB "$APP/Contents/Resources/scripts/vm-common.sh" 2>/dev/null; then
+  needs_person "OmacVM.app $(app_version "$APP") makes no home disk (--home-gb): omacvm update updates it"
+fi
 
 # ---------- where the VM goes ----------
 # OmacVM.app's VMs folder (set in the app).
@@ -368,12 +386,12 @@ human_steps() {
   echo "OmacVM.app: put the VM in full screen (gestures and Cmd shortcuts need it)."
 }
 if (( PLAN && JSON )); then
-  cmd="OMACVM_PASSWORD=… omacvm build --yes --$SOURCE --vm-type $TYPE --vm-name $(printf %q "$VM") --cpus $CPUS --memory-gb $MEM_GB --disk-gb $DISK_GB --user $U --full-name $(printf %q "$FULL") --hostname $(printf %q "$HOST")"
+  cmd="OMACVM_PASSWORD=… omacvm build --yes --$SOURCE --vm-type $TYPE --vm-name $(printf %q "$VM") --cpus $CPUS --memory-gb $MEM_GB --disk-gb $DISK_GB${HOME_GB:+ --home-gb $HOME_GB} --user $U --full-name $(printf %q "$FULL") --hostname $(printf %q "$HOST")"
   printf '{\n  "omacvm": %s,\n' "$(json_str "$(cat "$R/src/VERSION")")"
-  printf '  "vm": {"name": %s, "type": "%s", "app_version": %s, "cpus": %s, "memory_gb": %s, "disk_gb": %s, "hostname": %s, "dir": %s},\n' \
+  printf '  "vm": {"name": %s, "type": "%s", "app_version": %s, "cpus": %s, "memory_gb": %s, "disk_gb": %s%s, "hostname": %s, "dir": %s},\n' \
     "$(json_str "$VM")" "$TYPE" "$(json_str "$(if [[ -n $APP ]]; then echo "OmacVM.app $(app_version "$APP") ($APP)"
       else echo "OmacVM.app $(cat "$R/src/VERSION") (not installed: downloaded by the build)"; fi)")" \
-    "$CPUS" "$MEM_GB" "$DISK_GB" "$(json_str "$HOST")" "$(json_str "$VM_DIR")"
+    "$CPUS" "$MEM_GB" "$DISK_GB" "${HOME_GB:+, \"home_gb\": $HOME_GB}" "$(json_str "$HOST")" "$(json_str "$VM_DIR")"
   printf '  "limits": {"cpus": %s, "memory_gb": %s},\n' "$CAP_CPUS" "$CAP_MEM_GB"
   printf '  "resource_tiers": {'   # what --resources gives on this Mac
   for t in 0 1 2 3; do
@@ -411,7 +429,7 @@ fi
 APP_LINE="OmacVM.app $( [[ -n $APP ]] && app_version "$APP" || echo "$(cat "$R/src/VERSION"), downloaded first") ($(sed "s|^$HOME|~|" <<<"$VM_DIR/$VM"))"
 box=("OmacVM will build this VM" ""
      "VM         $VM, in $APP_LINE"
-     "resources  $CPUS of $mac_cores CPUs, $MEM_GB of $mac_mem_gb GB memory, $DISK_GB GB disk (expanding)"
+     "resources  $CPUS of $mac_cores CPUs, $MEM_GB of $mac_mem_gb GB memory, $DISK_GB GB disk (expanding)${HOME_GB:+, $HOME_GB GB home disk}"
      "user       $U ($FULL), hostname $HOST"
      "keyboard   $KB_SHOWN"
      "timezone   $TZ_MAC, language $LANG_VM"
@@ -475,7 +493,7 @@ port=$(app_free_port) || die "no free port for the VM's SSH (52222-52421)"
 fv=""
 for ((k = 0; k < ${#FEATS[@]}; k += 2)); do fv+=" ${FEATS[$k]}=$(onoff "${FEATS[k+1]}")"; done
 # --no-mac: the app's own build leaves the Mac's helpers alone too.
-printf '%s\n' "$PW" | OMACVM_CREATE_NO_MAC=${NO_MAC:-0} app_create ${pb_arg[@]+"${pb_arg[@]}"} "$VM_DIR/$VM" NAME="$VM" CPUS="$CPUS" MEM_MB=$((MEM_GB * 1024)) DISK_GB="$DISK_GB" \
+printf '%s\n' "$PW" | OMACVM_CREATE_NO_MAC=${NO_MAC:-0} app_create ${pb_arg[@]+"${pb_arg[@]}"} "$VM_DIR/$VM" NAME="$VM" CPUS="$CPUS" MEM_MB=$((MEM_GB * 1024)) DISK_GB="$DISK_GB" ${HOME_GB:+HOME_GB=$HOME_GB} \
   SSH_PORT="$port" VM_USER="$U" VM_FULLNAME="$FULL" VM_HOSTNAME="$HOST" VM_TZ="$TZ_MAC" VM_LANG="$LANG_VM" \
   KEYBOARD="$KB" FEATURES="${fv# }" 2>&1 |
   sed -l -e $'s/.*\r//' -e '/^#.*%$/d' -e '/^READY /d' -e '/^{"omacvm_progress"/d' -e '/^| /d' -e 's|^STEP \([0-9]*/[0-9]*\) |==> \1 |' |

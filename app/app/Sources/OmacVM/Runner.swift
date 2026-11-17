@@ -232,6 +232,10 @@ final class Runner {
         let share = MacFolder.plan(c)
         macFolder = share.record
         a += share.arguments
+        // The home disk (HOME_GB in vm.env only; docs/adr/0073): after the
+        // devices above, so a VM that gets one later keeps them where they
+        // were (the VM finds its home by the file system's label).
+        a += HomeDisk.arguments(path: c.homeDisk.map { q($0.path) })
         // Drag and drop (drag-drop on only; docs/drag-and-drop.md): its port
         // and the read-only drop share after everything, the Mac folder too,
         // so turning it on or off moves no other device (DropPlan.finish).

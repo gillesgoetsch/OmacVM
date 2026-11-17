@@ -48,6 +48,8 @@ enum RenderVMWindow {
         var move: OmarchyMoveCard.Preview? = OmarchyMoveCard.Preview(card: .hidden)
         /// The backup row under Storage & Updates (nil: not shown).
         var moveBackup: (bytes: Int64, exact: Bool)? = nil
+        /// The setup: what its lookup for a ready made VM said (nil: the Mac's own lookup).
+        var prebuilt: PrebuiltImage.Lookup? = nil
     }
 
     static func allowed(bundleID: String?) -> Bool {
@@ -168,6 +170,21 @@ enum RenderVMWindow {
         disk.disk = (DiskSize.Need(allocated: 13 * DiskSize.gib, used: 9 * DiskSize.gib, rootStart: 2 * DiskSize.gib), 128)
         window("window-8-disk-larger", state, disk)
 
+        // A VM with a home disk (docs/adr/0073): its row under the disk's.
+        // The pictures after it are of a VM without one again.
+        let env = folder.appendingPathComponent("vm.env")
+        let envBefore = try? Data(contentsOf: env)
+        let homeDisk = folder.appendingPathComponent(HomeDisk.file)
+        FileManager.default.createFile(atPath: homeDisk.path, contents: Data(count: 8 << 20))
+        _ = truncate(homeDisk.path, 200 << 30)
+        try? config.writeEnv(["HOME_GB": "200"])
+        state.config = VMConfig.load(from: folder) ?? config
+        disk.disk = nil
+        window("window-8-home-disk", state, disk)
+        try? FileManager.default.removeItem(at: homeDisk)
+        try? envBefore?.write(to: env)
+        state.config = config
+
         // An update is ready: the banner (and its What's New from the new
         // app's own CHANGELOG), stopped and while the VM runs.
         let staged = makeStagedApp(tmp, version: "3.1.1")
@@ -248,6 +265,15 @@ enum RenderVMWindow {
             state.screen = .setup
             window("setup-1", state, p)
             page("setup-2-page", state, p)
+            // A home disk chosen (docs/adr/0073); and with a ready made VM
+            // to download, where the row is off and says why.
+            state.config.homeGB = 128
+            p.prebuilt = PrebuiltImage.Lookup.none
+            page("setup-3-home-disk-page", state, p)
+            p.prebuilt = .found(PrebuiltImage(release: "prebuilt-3.4.5", bytes: 4_600_000_000, omarchy: "4.5.0"))
+            page("setup-4-home-disk-download-page", state, p)
+            // The Home disk row's (i), as its popover shows it (InfoButton).
+            sheet("popover-4-home-disk") { InfoText(text: HomeDisk.setupHelp) }
             state.screen = .ready
             state.config = config
             state.storage.shownRoot = tmp

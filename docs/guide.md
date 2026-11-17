@@ -24,7 +24,11 @@ confirm):
    what is in the images and how they are made: [prebuilt.md](prebuilt.md).
    OmacVM.app's own setup offers the same choice.
 2. **How much of the Mac the VM gets**: Low, Balanced, High or Best, shown as
-   CPUs and memory, or Custom. Best leaves macOS and the GPU a buffer of a
+   CPUs and memory, or Custom: CPUs, memory, the disk's size and, for a VM
+   built here, a home disk (off by default; `--home-gb N`, or Home disk in
+   the app's setup): your home folder on a disk of its own, on xfs, for
+   databases, build trees and VM images
+   ([Home disk](routes/app.md#home-disk-off-by-default)). Best leaves macOS and the GPU a buffer of a
    quarter of the memory, at least 8 GB. More is allowed (OmacVM.app and
    `omacvm resources` warn): the VM's graphics come on top of its memory
    ([graphics memory](routes/app.md#graphics-memory-and-vm-memory)). The VM

@@ -343,7 +343,7 @@ struct RootView: View {
     var body: some View {
         switch state.screen {
         case .install: InstallView(onDone: { state.installDone() })
-        case .setup: SetupView(state: state)
+        case .setup: SetupView(state: state, lookup: preview?.prebuilt)
         case .building: BuildView(state: state, creator: state.creator)
         case .ready: ReadyView(state: state, preview: preview)
         case .driveMissing: DriveMissingView(state: state)
@@ -355,6 +355,8 @@ struct RootView: View {
 /// A new VM: the same window as the settings, with the setup's sections.
 struct SetupView: View {
     @ObservedObject var state: AppState
+    /// The window pictures: what the lookup for a ready made VM said (no lookup).
+    var lookup: PrebuiltImage.Lookup? = nil
     @State private var password = ""
     @State private var password2 = ""
     @State private var tier = 1
@@ -393,6 +395,12 @@ struct SetupView: View {
         return VMPick.freeName(state.config.name, root: Paths.vmsRoot, taken: VMConfig.all().map(\.name)) != state.config.name
     }
 
+    /// Download is chosen: the VM comes ready made (prebuilt-vm.sh).
+    private var download: Bool {
+        if case .found = prebuilt { return usePrebuilt }
+        return false
+    }
+
     private var nameError: String? {
         if !state.config.name.isEmpty && !VMConfig.validName(state.config.name) { return "Letters, digits, spaces, . _ and - only (64 at most)." }
         if nameTaken { return "A VM named \(state.config.name) is there already: pick another name." }
@@ -423,6 +431,7 @@ struct SetupView: View {
             sections
         }
         .task {
+            if let lookup { prebuilt = lookup; return }
             if let pb = await PrebuiltImage.lookup() { prebuilt = .found(pb) } else { prebuilt = .none }
         }
     }
@@ -482,6 +491,18 @@ struct SetupView: View {
                     }
                     .labelsHidden()
                     .fixedSize()
+                }
+                SettingRow(title: "Home disk", subtitle: HomeDisk.setupNote(download: download), info: HomeDisk.setupHelp,
+                           probe: "home-disk") {
+                    Picker("Home disk", selection: Binding(get: { download ? nil : state.config.homeGB },
+                                                           set: { state.config.homeGB = $0 })) {
+                        Text("Off").tag(Int?.none)
+                        ForEach(HomeDisk.setupGB, id: \.self) { Text("\($0) GB").tag(Int?.some($0)) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    // Not while the lookup runs: Download may be chosen once it is done.
+                    .disabled(download || prebuilt == .checking)
                 }
             }
         }
@@ -567,8 +588,8 @@ struct SetupView: View {
         state.config.location = nil
         state.config.location = state.config.folder
         state.screen = .building
-        var download = false
-        if case .found = prebuilt { download = usePrebuilt }
+        // A ready made VM has no home disk (the row is off then).
+        if download { state.config.homeGB = nil }
         state.creator.start(config: state.config, password: password, prebuilt: download, graphics: graphics)
         password = ""; password2 = ""
     }

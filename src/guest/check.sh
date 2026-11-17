@@ -747,6 +747,24 @@ disk_sched_line() {
   if [[ -n $later ]]; then printf 'warn\t%s\n' "$s on $d, set by a rule read after OmacVM's:$later"
   else printf 'warn\t%s\n' "$s on $d, not none: restart the VM, or run omacvm apply"; fi
 }
+# home_disk_line DISK SOURCE FSTYPE OPTIONS READS FREE SIZE: the "home disk" line, "status<TAB>detail",
+# for a VM with one (OmacVM.app's data.img: the disk with the serial omacvm-home, docs/adr/0073).
+# DISK is that disk (e.g. /dev/nvme1n1); SOURCE, FSTYPE and OPTIONS are what is mounted at /home
+# (findmnt), READS is 1 when /home lists (xfs that stopped after an error still shows as mounted and
+# answers every read with an error), FREE and SIZE are df's bytes. src/vm/base-install.sh makes
+# the file system and its fstab line; discard gives what is deleted back to the Mac at once.
+home_disk_line() {
+  local d=${1#/dev/} src=$2 fs=$3 opt=$4 reads=$5 free=$6 size=$7
+  if [[ $src != "/dev/$d" || $fs != xfs ]]; then
+    printf 'fail\t%s\n' "the home disk ($d) is attached, but /home is on ${src:-nothing}${fs:+ ($fs)}: the steps are in docs/routes/app.md, \"A home disk for a VM you have\""
+  elif [[ $reads != 1 ]]; then
+    printf 'fail\t%s\n' "/home on $d does not read: xfs stopped after an error (journalctl -k -g XFS)"
+  elif [[ ,$opt, != *,discard,* ]]; then
+    printf 'warn\t%s\n' "/home on xfs on $d, mounted without discard: what is deleted there keeps its space on the Mac until the weekly trim"
+  else
+    printf 'ok\t%s\n' "/home on xfs on $d (data.img), $(awk -v f="$free" -v s="$size" 'BEGIN { printf "%.1f of %.1f GiB free", f / 1073741824, s / 1073741824 }'); discard"
+  fi
+}
 # zram_line SIZE_BYTES MEMTOTAL_KB DECIDER OURS: the "zram swap" line, "status<TAB>detail".
 # OmacVM's cap is memory/guest/90-omacvm-zram.conf's min(ram / 4, 8192) MiB; up to 10 % over is
 # fine (MemTotal moves a little with the kernel). Over it, the line says who decides (DECIDER,
@@ -1221,6 +1239,18 @@ case ${r%%$'\t'*} in
   warn) warn "disk scheduler" "${r#*$'\t'}" ;;
   *) skip "disk scheduler" "${r#*$'\t'}" ;;
 esac
+# The home disk of a VM built with one (omacvm build --home-gb); no line without it.
+hd=$(lsblk -dnpo NAME,SERIAL 2>/dev/null | awk '$2 == "omacvm-home" { print $1; exit }')
+if [[ -n $hd ]]; then
+  read -r hsrc hfs hopt < <(findmnt -no SOURCE,FSTYPE,OPTIONS /home 2>/dev/null)
+  read -r hf hs < <(df --output=avail,size --block-size=1 /home 2>/dev/null | tail -n 1)
+  r=$(home_disk_line "$hd" "$hsrc" "$hfs" "$hopt" "$(ls /home >/dev/null 2>&1 && echo 1)" "${hf:-0}" "${hs:-0}")
+  case ${r%%$'\t'*} in
+    ok) ok "home disk" "${r#*$'\t'}" ;;
+    warn) warn "home disk" "${r#*$'\t'}" ;;
+    *) bad "home disk" "${r#*$'\t'}" ;;
+  esac
+fi
 if command -v grub-mkconfig >/dev/null; then
   if ! command -v snapper >/dev/null; then bad "bootable snapshots" "snapper is not installed (pacman -S snapper)"
   elif ! systemctl is-active -q grub-btrfsd; then bad "bootable snapshots" "grub-btrfsd is not running"
@@ -1243,7 +1273,9 @@ avail=$(df --output=avail --block-size=1 / 2>/dev/null | tail -n 1 | tr -d ' ')
 if [[ $avail =~ ^[0-9]+$ ]]; then
   gib=$(awk -v b="$avail" 'BEGIN { printf "%.1f", b / 1073741824 }')
   if (( avail < FREE_MIN )); then
-    warn "free space" "$gib GiB free on /, Omarchy's update needs 10 GiB: delete files in your home you no longer need, or give the VM a larger disk (VM window, Disk › Change… with the VM shut down)" human
+    # A home on its own disk (hd, the "home disk" line) holds none of this space.
+    [[ -n ${hd:-} ]] && tip="" || tip="delete files in your home you no longer need, or "
+    warn "free space" "$gib GiB free on /, Omarchy's update needs 10 GiB: ${tip}give the VM a larger disk (VM window, Disk › Change… with the VM shut down)" human
   else ok "free space" "$gib GiB free on /"; fi
 fi
 # The desktop user's runtime folder (/run/user/UID), a tmpfs of 10 % of the

@@ -250,6 +250,7 @@ struct SettingsSections: View {
             SectionTitle(text: "Storage & Updates")
             Card {
                 DiskRow(state: state, preview: preview?.disk)
+                if state.config.homeDisk != nil { DiskRow(state: state, home: true) }
                 StorageRows(storage: state.storage, selected: state.config.location == nil ? nil : state.config.folder,
                             open: { state.openExisting() }, delete: delete)
                 MoveBackupRow(state: state, running: running, preview: preview?.moveBackup)

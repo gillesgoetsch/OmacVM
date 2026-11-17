@@ -52,6 +52,9 @@ VM runs, and goes back by itself when a new version does not start
   [disk options](../adr/0039-system-disk-options.md)). Files deleted
   outside your home folder stay while an update snapshot still holds them:
   OmacVM keeps the last 2 (omarchy-mac 4.0 kept 5).
+- A disk of its own for your home folder, on xfs, for a VM built with one
+  (the setup's Home disk row, `omacvm build --home-gb N`):
+  [Home disk](#home-disk-off-by-default).
 - Where things are: the app in `~/Applications`, the VMs in
   `~/OmacVM/<VM name>/`; moves, other drives, sizes and downloads:
   [where things are](#where-things-are).
@@ -304,7 +307,8 @@ VM runs, and goes back by itself when a new version does not start
 - **The VMs**: `~/OmacVM/<VM name>/`, one folder per VM: `vm.env` (the
   settings), `disk.img` (the disk; sparse: it takes what it holds, not its
   full size; what Omarchy deletes goes back to the Mac within about two
-  minutes), `efi-vars.fd`, `logs/`
+  minutes), `data.img` (the [home disk](#home-disk-off-by-default) of a VM
+  built with one, sparse too), `efi-vars.fd`, `logs/`
   ([disk options](../adr/0039-system-disk-options.md)),
   `ssh-key` (the VM's own SSH key: `omacvm apply` puts it into the VM beside
   the Mac's `~/.ssh/omacvm`, so the VM is reached on any Mac its folder goes to).
@@ -1106,6 +1110,84 @@ user can write there; without a share it does nothing (18 ms) and leaves no
 - It changes only at the VM's next start.
 - QEMU cannot save a VM's state while the folder is mounted (9p blocks it):
   matters once instant resume comes.
+
+## Home disk (off by default)
+
+Omarchy's disk is btrfs, which its update snapshots need. btrfs copies a
+block before it changes it and compresses what it writes, and that costs
+most where files change in place: databases, build trees, container and VM
+images. A VM built with a home disk keeps the system on btrfs and has
+`/home` on a second disk, on xfs: in our tests about 2.7 times the synced
+writes a second, 1.5 to 2.2 times the transactions of a PostgreSQL benchmark, and a
+file rewritten at random stays in 2 pieces instead of 885,849
+([ADR 0073](../adr/0073-home-on-its-own-disk.md) has the numbers). Work
+that waits on the CPU (git clone, a compile) is the same on both.
+
+In the app's setup: **Home disk** under Disk, Off or a size. From the
+command line:
+
+```bash
+omacvm build --home-gb 200     # with the other options of omacvm build
+```
+
+`omacvm build`'s questions ask for it under Custom, after the disk's size
+(0: none).
+
+- The build makes `data.img` beside `disk.img` in the VM's folder, sparse
+  like it: it takes what your home holds, not its size. What you delete in
+  your home goes back to the Mac at once (xfs `discard`).
+- Only for a VM built here. A prebuilt VM has its home on its system disk:
+  `--home-gb` with `--prebuilt` is refused, and the setup's row is off
+  while Download is chosen.
+- It is chosen once, for a new VM: no switch turns it off later.
+- Larger: Home disk › Change… in the VM window, with the VM shut down.
+  Omarchy grows into it at the next start. xfs cannot shrink, so the home
+  disk never gets smaller: start with what you need and grow.
+- Update snapshots never held your home (snapper's only config is `root`),
+  so nothing is lost there. `omacvm check` has a "home disk" line.
+- The VM does not start without `data.img`: the app says which file is
+  missing. Copy or move the VM as before, the folder as a whole.
+
+### A home disk for a VM you have
+
+OmacVM does not move a home by itself. By hand, on an Omarchy 4.5 VM (a
+copy of the VM's folder first is a good idea; the VM shut down for steps 1
+and 5):
+
+1. On the Mac, in the VM's folder: `mkfile -n 200g data.img`, and add the
+   line `HOME_GB=200` to `vm.env`.
+2. Start the VM, log out of Omarchy's desktop, and go in as root from the
+   Mac (`ssh -i ~/.ssh/omacvm -p PORT root@127.0.0.1`, the port is
+   `SSH_PORT` in `vm.env`).
+3. Make the file system and copy your home:
+
+   ```bash
+   /usr/local/share/omacvm/guest/pkg-add xfsprogs
+   d=$(lsblk -dnpo NAME,SERIAL | awk '$2 == "omacvm-home" { print $1 }')
+   mkfs.xfs -L omacvm-home "$d"
+   mount -o noatime,discard "$d" /mnt
+   cp -a /home/. /mnt/
+   umount /mnt
+   ```
+
+4. In `/etc/fstab`, put a `#` before the line of `/home` and add
+   `LABEL=omacvm-home /home xfs noatime,discard,x-systemd.growfs 0 0`.
+   Linux numbers two disks anew at each start, so GRUB's entry without an
+   initramfs ("with Linux Image") must name the root by PARTUUID:
+
+   ```bash
+   echo GRUB_DISABLE_LINUX_PARTUUID=false >> /etc/default/grub
+   grub-mkconfig -o /boot/grub/grub.cfg
+   ```
+
+5. Restart the VM. `omacvm check` says where `/home` is. The old home stays
+   in the system disk's `@home` until you empty it
+   (`mount -o subvol=@home /dev/disk/by-label/omarchy /mnt`).
+
+To go back while `@home` still has the old home: in `/etc/fstab` take the
+new line out and the `#` away, shut the VM down, and take `HOME_GB` out of
+`vm.env`. The VM is then as it was at step 3; what changed in the home
+since is on `data.img` only.
 
 ## Every Mac display
 

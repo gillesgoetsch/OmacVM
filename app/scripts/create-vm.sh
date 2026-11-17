@@ -8,6 +8,7 @@
 #
 # VM_DIR/vm.env must exist (the app writes it): NAME CPUS MEM_MB DISK_GB SSH_PORT
 #   VM_USER VM_FULLNAME VM_HOSTNAME VM_TZ VM_LANG KEYBOARD [FEATURES="bridge=on ..."]
+#   [HOME_GB: a second disk of that size, data.img, for /home on xfs (docs/adr/0073)]
 # The password comes on stdin (one line). Progress lines start with "==>",
 # steps with "STEP n/N". Exit 0 = the VM is ready and powered off.
 #
@@ -40,6 +41,8 @@ LIVE_IMG=$VM_DIR/live.img
 cp -c "$LIVE_ROOTFS" "$LIVE_IMG" 2>/dev/null || cp "$LIVE_ROOTFS" "$LIVE_IMG"
 truncate_file "$LIVE_IMG" $((16 * 1024 * 1024 * 1024))   # the live system grows into it
 [[ -f $VM_DIR/disk.img ]] || truncate_file "$VM_DIR/disk.img" $((DISK_GB * 1024 * 1024 * 1024))
+# The home disk at the size asked for, also over one a build that stopped left (it is made new below).
+[[ -z $HOME_GB ]] || truncate_file "$VM_DIR/data.img" $((10#$HOME_GB * 1024 * 1024 * 1024))
 efi_vars_create
 proxy_setup                        # the Mac's proxy, if it has one (#122)
 

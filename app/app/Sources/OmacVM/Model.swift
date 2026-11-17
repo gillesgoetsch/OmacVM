@@ -170,6 +170,10 @@ struct VMConfig: Equatable {
     var cpus = 4
     var memoryMB = 8192
     var diskGB = 64
+    /// The home disk's size (vm.env's HOME_GB, from the setup's Home disk row
+    /// or `omacvm build --home-gb`);
+    /// nil: /home is on disk.img, as in every VM without it (docs/adr/0073).
+    var homeGB: Int?
     var sshPort = 52222
     var user = ""
     var fullName = ""
@@ -211,13 +215,14 @@ struct VMConfig: Equatable {
         guard fm.fileExists(atPath: folder.path) else {
             return "\(name)'s folder is gone: \(Storage.short(folder)). Put it back there, or into the VMs folder."
         }
-        let missing = ["vm.env", "disk.img", "efi-vars.fd"].filter {
+        let missing = (["vm.env", "disk.img", "efi-vars.fd"] + (homeGB == nil ? [] : [HomeDisk.file])).filter {
             !fm.fileExists(atPath: folder.appendingPathComponent($0).path)
         }
         guard isReady, !missing.isEmpty else { return nil }
         return "Missing in \(Storage.short(folder)): \(missing.joined(separator: ", ")). Put the files back, then start again."
     }
     var disk: URL { folder.appendingPathComponent("disk.img") }
+    var homeDisk: URL? { homeGB == nil ? nil : folder.appendingPathComponent(HomeDisk.file) }
     var efiVars: URL { folder.appendingPathComponent("efi-vars.fd") }
     var readyMarker: URL { folder.appendingPathComponent("ready") }
     var isReady: Bool { FileManager.default.fileExists(atPath: readyMarker.path) }
@@ -270,7 +275,7 @@ struct VMConfig: Equatable {
         CPUS=\(cpus)
         MEM_MB=\(memoryMB)
         DISK_GB=\(diskGB)
-        SSH_PORT=\(sshPort)
+        \(HomeDisk.envLine(gb: homeGB))SSH_PORT=\(sshPort)
         VM_USER=\(q(user))
         VM_FULLNAME=\(q(fullName))
         VM_HOSTNAME=\(q(hostname))
@@ -321,6 +326,7 @@ struct VMConfig: Equatable {
         c.cpus = Int(values["CPUS"] ?? "") ?? c.cpus
         c.memoryMB = Int(values["MEM_MB"] ?? "") ?? c.memoryMB
         c.diskGB = Int(values["DISK_GB"] ?? "") ?? c.diskGB
+        c.homeGB = Int(values["HOME_GB"] ?? "")
         c.sshPort = Int(values["SSH_PORT"] ?? "") ?? c.sshPort
         c.user = values["VM_USER"] ?? ""
         c.fullName = values["VM_FULLNAME"] ?? ""
