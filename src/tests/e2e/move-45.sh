@@ -82,7 +82,9 @@ src/tests/e2e/move-45.sh src/tests/e2e/move-45-result.py"
 usage() { sed -n '2,40s/^# \{0,1\}//p' "$0"; exit 2; }
 # On screen (MACS-1030d): nobody at the Mac for 60 s and the screen unlocked.
 hid_idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'; }
-screen_locked() { [[ $(ioreg -n Root -d1 -a | plutil -extract IOConsoleUsers.0.CGSSessionScreenIsLocked raw - 2>/dev/null) == true ]]; }
+lock_flag() { [[ $(ioreg -n Root -d1 -a | plutil -extract IOConsoleUsers.0.CGSSessionScreenIsLocked raw - 2>/dev/null) == true ]]; }
+# The flag alone is no lock screen (a sleeping display sets it): wake the display, read again (person.sh).
+screen_locked() { lock_flag || return 1; caffeinate -u -t 2; sleep 3; lock_flag; }
 onscreen_ok() { (( $(hid_idle) > 60 )) && ! screen_locked; }
 # The app's own decision (Updater.swift): "install V deferred: why" when it waits; "handing over to
 # update-swap.sh, quitting" when it goes ahead and only the swap's process check could stop it.
