@@ -3,68 +3,35 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.5.0 (unreleased)
+## 3.5.0
 
-- **Copy only what changed** (on by default): QEMU now copies only the part of each frame the VM
-  changed into the window's picture, not the whole frame; the rest of that picture is already
-  right. The same pixels, less GPU work where little changes (a pointer, typing, a clock); pages
-  that scroll and video change most of the frame and are copied whole as before. It needs the VM
-  to say what changed: its boot screen and text consoles always do, its desktop with Linux 7.4 or
-  OmacVM's own graphics driver. A picture shown scaled (some of Omarchy's scales in Full screen
-  including notch) is copied whole. Off for a start with HDR until it is checked on an HDR display.
-  With it on, a VM on a kernel before Linux 7.4 loads OmacVM's own build of its graphics driver
-  (the stock one plus Linux 7.4's damage fix), so the desktop says what changed; Update VM builds
-  it (needs internet once), and until then frames come whole.
-  A switch in the VM window's Display section turns it off (whole frames, as before); qemu.log
-  counts the frames once a minute and `omacvm check` has a "Copy only what changed" line. Its
-  pixel check for tests now covers the compressed window surfaces too (ADR 0051).
-- **Sound wakes the Mac less often.** While anything plays (or a stream is
-  open in silence), the VM's sound thread woke 1000 times a second. It now
-  ticks with the stream: every 5.3 ms with the usual buffers, shorter when a
-  guest app or the Mac's output (AirPods) needs it. Same delay, no new
-  breaks in the tests. MacBook Air M2, a video with sound in the browser:
-  about 0.1 W less for the whole Mac.
-- **Video frames dropped at 60 Hz**: on a MacBook Air (and other Macs whose window size rounded
-  the same way) Google Chrome dropped about 1 % of the frames of 60 fps VP9 videos, YouTube's VP9
-  included, with any decoder (the Mac's media engine or the VM's CPU). The VM's display ran at
-  59.994 Hz instead of the Mac's 60: Hyprland takes a whole-MHz pixel clock, and the display
-  sync rounded QEMU's clock to it, which moved the refresh by up to 0.3 % (60.098 Hz in a 1080p
-  window, 59.812 at 1280x720). It now rounds the clock up and widens the blanking so the VM's
-  display stays at the Mac's rate or a hair above, never below. Measured on the Air (YouTube 1080p60
-  VP9, Chrome started after the mode was set): 58-165 dropped frames per 90-120 s before (9 rows),
-  0, 7 and 9 after in three rows and 141 in a fourth, so fewer drops, not none yet. Update VM puts
-  it in.
-- **Prefer VP9 on YouTube (experimental, off by default).** A new switch in
-  the VM window's settings (General), shown only on Macs whose media engine
-  has no AV1 decoder (M1, M2). YouTube sends Google Chrome AV1, which those
-  Macs decode on the VM's CPUs; with this on, Chrome and Chromium in the VM
-  tell YouTube they cannot play AV1, and YouTube streams VP9, which the
-  Mac's media engine decodes. On a MacBook Air (M2) a 1080p60 YouTube video
-  took about 1.2 W less for the whole Mac. The trade-offs: videos only in
-  AV1 are not offered, and for now the media engine drops about 1-3 % of the
-  frames at 1080p60. It is OmacVM's no-AV1 extension, added as Chrome's own
-  kind of external extension (no policy, no "Managed by your organization");
-  remove it in chrome://extensions at any time. Also `omacvm enable
-  youtube-vp9` and the control centre.
-- **VM CPU clock saver (experimental, off by default).** A new switch in the
-  VM window's settings (General). macOS runs every thread of the app in
-  front at a high CPU clock, and the VM's CPUs got that too, even for a
-  video. With this on, the VM's CPUs get the clock their own work needs. On
-  an M1 Max playing a 1080p video the whole Mac took 14.7-15.4 W instead of
-  17.7 W; the trade-off is 1 to 3 dropped video frames in 12,000-15,000. A
-  MacBook Air (M2) saves only 0.1-0.2 W; other Macs are not measured yet.
-  It works at once in a running VM; GPU safe mode keeps it off.
-  `omacvm check` shows it while it is on. ADR 0073.
-- **HDR only in full screen (experimental, off by default).** A new switch
-  under HDR and 10-bit colour in the VM window's settings (Display). While
-  no window is in full screen, the VM's main display runs as with HDR off;
-  a window going full screen switches it to HDR, and it goes back about 2 s
-  after. HDR in a window shows as SDR. Works the same on Omarchy 4.5 and
-  newer, at once in a running VM; the VM's part comes with Update VM.
-  `omacvm check` says which state it is in. ADR 0074.
-- **HDR**: a frame is no longer shown in the wrong colours when the VM's
-  display changes between 10-bit and 8-bit twice within half a second; the
-  window keeps the last frame until the right one can be shown.
+The power release: the VM copies only what changed on screen, its sound wakes the Mac less, and three savers to try.
+Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured yet.
+
+- **Copy only what changed** (on by default, not for HDR starts yet): the VM now tells QEMU which
+  part of the screen changed, and QEMU copies only that part into the window. Same pixels, less GPU
+  work. MacBook Air M2: about 0.22 W less with a chat's typing dots, 0.08 W moving the pointer,
+  0.1 W scrolling, 0.17 W with a 1080p60 video. On a VM kernel before Linux 7.4 this uses OmacVM's
+  own build of the graphics driver, which Update VM builds (internet needed once). A switch in the
+  VM window's Display section turns it off.
+- **Sound wakes the Mac less**: the VM's sound thread ticked 1000 times a second while anything
+  played; it now ticks with the stream (about every 5 ms). Same delay. MacBook Air M2, a video with
+  sound: about 0.1 W less.
+- **Fewer dropped video frames at 60 Hz**: the VM's display ran a hair below the Mac's rate
+  (59.994 Hz on a MacBook Air), and Chrome dropped about 1 % of the frames of 60 fps videos. It now
+  stays at the Mac's rate. Fewer drops, not none yet. Update VM puts it in.
+- **Prefer VP9 on YouTube** (experimental, off by default, Macs without AV1 decoding: M1, M2):
+  YouTube then sends VP9, which the Mac's media engine decodes, instead of AV1 on the VM's CPUs.
+  MacBook Air M2, a 1080p60 video: about 1.2 W less. Videos only in AV1 are not offered, and for
+  now about 1-3 % of frames drop at 1080p60. Remove it in chrome://extensions at any time.
+- **VM CPU clock saver** (experimental, off by default): the VM's CPUs get the clock their own work
+  needs, not the high clock macOS gives the app in front. MacBook Air M2, a 1080p60 video: about
+  0.5 W less; now and then a dropped video frame. Works at once in a running VM.
+- **HDR only in full screen** (experimental, off by default): the VM's main display runs as with
+  HDR off until a window goes full screen. HDR in a window shows as SDR. Not measured on an HDR Mac
+  yet. The VM's part comes with Update VM.
+- **HDR**: a frame is no longer shown in the wrong colours when the VM's display switches between
+  10-bit and 8-bit twice within half a second.
 
 ## 3.4.8
 
