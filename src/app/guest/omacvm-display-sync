@@ -31,6 +31,38 @@ if (
 ):
     raise SystemExit(1)
 
+def whole_mhz_timing(pixel_clock: int, htotal: int, vtotal: int) -> tuple[int, int, int]:
+    """Hyprland 0.56 truncates a fractional MHz clock before converting it to
+    kHz, so the mode gets a whole MHz. Rounding the clock alone moved the
+    refresh by up to 0.3 %: 59.994 Hz on the MacBook Air's 60 Hz panel, 60.098
+    in a 1080p window, 59.812 at 1280x720. At 59.994 Chrome dropped about 1 %
+    of a 60 fps VP9 video's frames (YouTube, any decoder); at 60.001 none. A
+    guest a little faster than the Mac's display costs one guest frame the Mac
+    never shows every few minutes. So the clock is rounded up and the blanking
+    (back porches) grows until the refresh is back at the Mac's, never below
+    it: QEMU writes the clock in 10 kHz steps, rounded down, so the asked rate
+    is under the next step, which is the floor. Active size and sync widths
+    stay exact; the clock is at most 8 MHz above the EDID's."""
+    area = htotal * vtotal
+    floor_num = pixel_clock + 9_999          # Hz * area: the refresh may not go under floor_num / area
+    best = None
+    first = -(-floor_num // 1_000_000)        # whole MHz at the floor with the EDID's totals
+    for clock_mhz in range(first, first + 8):
+        clock = clock_mhz * 1_000_000
+        for vt in range(vtotal, min(vtotal + 256, 65535) + 1):
+            # the longest line that keeps clock / (ht * vt) at or above the floor
+            ht = clock * area // (floor_num * vt)
+            if ht < htotal or ht > 65535:
+                continue
+            # how far above the floor, in parts per 10^12 (exact integers)
+            over = (clock * area - floor_num * ht * vt) * 10**12 // (floor_num * ht * vt)
+            if best is None or (over, clock_mhz, vt) < best[0]:
+                best = ((over, clock_mhz, vt), clock_mhz, ht, vt)
+    if best is None:
+        return max(1, (pixel_clock + 500_000) // 1_000_000), htotal, vtotal
+    return best[1], best[2], best[3]
+
+
 def modeline(
     pixel_clock: int,
     width: int,
@@ -59,16 +91,13 @@ def modeline(
     ):
         return None
 
-    # Hyprland 0.56 truncates a fractional MHz clock before converting it to
-    # kHz. Supplying the nearest integral MHz preserves the intended refresh
-    # as closely as that parser permits, while the active pixel size is exact.
-    clock_mhz = max(1, (pixel_clock + 500_000) // 1_000_000)
     hsync_start = width + hfront
     hsync_end = hsync_start + hsync
     htotal = width + hblank
     vsync_start = height + vfront
     vsync_end = vsync_start + vsync
     vtotal = height + vblank
+    clock_mhz, htotal, vtotal = whole_mhz_timing(pixel_clock, htotal, vtotal)
     hflag = "+hsync" if hsync_positive else "-hsync"
     vflag = "+vsync" if vsync_positive else "-vsync"
     return (
