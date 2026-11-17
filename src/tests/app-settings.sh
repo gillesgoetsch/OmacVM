@@ -99,6 +99,7 @@ for i in 0 1; do
   expect "fresh $n: Mac input off" false "$(val vms.$i.macIME)"
   expect "fresh $n: drag and drop off" false "$(val vms.$i.dragDrop)"
   expect "fresh $n: Mission Control off" false "$(val vms.$i.missionControl)"
+  expect "fresh $n: Prefer VP9 on YouTube off" false "$(val vms.$i.youtubeVP9)"
   expect "fresh $n: resources as built" "4 8 64" "$(val vms.$i.cpus) $(val vms.$i.memoryGB) $(val vms.$i.diskGB)"
 done
 # The ways back while both graphics switches are on by default: GPU safe mode turns both off,

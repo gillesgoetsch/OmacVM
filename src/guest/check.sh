@@ -1084,6 +1084,17 @@ app)
     elif ! as_user /usr/local/lib/omacvm/chromium-flags.py check; then bad "video decoding in Chromium" "Chromium's flags or its no-AV1 extension missing: omacvm apply"
     else ok "video decoding in Chromium" "V4L2 -> the Mac's media engine: $s$pend"; fi
   fi
+  # Prefer VP9 on YouTube (youtube-vp9, experimental): the no-AV1 extension as
+  # an external extension of Chrome and Chromium (youtube-vp9/guest/install.sh).
+  FEATURE=youtube-vp9
+  y=$(/usr/local/share/omacvm/youtube-vp9/guest/install.sh --status 2>/dev/null || echo "bad its status did not run")
+  if [[ ${OMACVM_FEATURE_youtube_vp9:-off} == on ]]; then
+    if [[ ${y%% *} == ok ]]; then
+      ok "Prefer VP9 on YouTube" "Chrome and Chromium get the no-AV1 extension (${y#ok }) at their next start: YouTube sends VP9"
+    elif [[ $y == none ]]; then bad "Prefer VP9 on YouTube" "on, but not set up: omacvm apply"
+    else bad "Prefer VP9 on YouTube" "${y#bad }: omacvm apply"; fi
+  elif [[ $y != none ]]; then bad "Prefer VP9 on YouTube" "off, but its extension is still named for Chrome or Chromium: omacvm apply"
+  else skip "Prefer VP9 on YouTube" "off (experimental: omacvm enable youtube-vp9)"; fi
   FEATURE=""
   if [[ $drv == omacvm ]] && command -v firefox >/dev/null; then
     check "video decoding in Firefox" "the driver shim is on ld.so's path (Firefox's sandbox)" \

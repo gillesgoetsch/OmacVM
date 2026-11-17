@@ -8,8 +8,8 @@
 #                    [--graphics opengl|vulkan] [--kernel-new build|keep]
 # Features: the list in ../features.tsv (bridge, wallpaper, gestures, scroll-momentum,
 # omanotch, mac-clock, camera, no-idle-lock, autologin, thp-kernel, battery, external-brightness,
-# control-centre, fast-network, chromium-video, gpu-compute, vulkan, x86-apps, touch-id, mac-ime, drag-drop,
-# mission-control) with its defaults; a feature
+# control-centre, fast-network, chromium-video, youtube-vp9, gpu-compute, vulkan, x86-apps, touch-id, mac-ime,
+# drag-drop, mission-control) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
 # so a later run without --feature keeps them.
 # --vm-type: app (OmacVM.app), the only one; anything else stops (exit 2):
@@ -441,6 +441,17 @@ if want chromium-video && [[ $TYPE == app ]]; then
     "$R/vdec/guest/install.sh" "$U" on || not_set_up chromium-video "Chromium video"
   else
     "$R/vdec/guest/install.sh" "$U" off || not_set_up chromium-video "Chromium video (off)"
+  fi
+fi
+# Prefer VP9 on YouTube (experimental): OmacVM's no-AV1 extension as an
+# external extension of Google Chrome and Chromium. Off removes it on every
+# apply; nothing of it runs or talks to the Mac.
+if want youtube-vp9 && [[ $TYPE == app ]]; then
+  if [[ ${F[youtube-vp9]} == on ]]; then
+    log "Prefer VP9 on YouTube (experimental)"
+    "$R/youtube-vp9/guest/install.sh" on || not_set_up youtube-vp9 "Prefer VP9 on YouTube"
+  else
+    "$R/youtube-vp9/guest/install.sh" off || not_set_up youtube-vp9 "Prefer VP9 on YouTube (off)"
   fi
 fi
 # Vulkan (Venus): OmacVM's Mesa for it, built once in the VM. Its own step,

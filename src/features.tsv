@@ -6,6 +6,7 @@
 # laptop (needs a Mac with a battery), app-only (OmacVM.app's VMs only; every VM is one since 3.4.0),
 # omarchy-45 (needs Omarchy 4.5 or newer in the VM: the VM folder's omarchy record on the Mac, `pacman -Q omarchy`
 # in the VM; no record yet: the VM decides).
+# no-av1 (offered only on a Mac whose media engine has no AV1 decoder, asked at run time: M1 and M2 Macs).
 bridge	on	mac,vm	-	-	OmacVM Bridge	the Mac's Wi-Fi, Bluetooth, audio, Night Shift and media keys in Omarchy's bar
 wallpaper	on	vm	-	bridge	Wallpaper on the Mac	Omarchy's wallpaper becomes the Mac's, following the theme
 gestures	on	mac,vm	-	-	Trackpad gestures	3/4-finger swipes and pinch in Omarchy while it is full screen (⌃⌥ Esc takes you back to macOS and into the VM again), and Cmd shortcuts as Super
@@ -17,6 +18,7 @@ camera	on	mac,vm	-	-	The Mac's camera	Linux apps and video calls in the browser 
 battery	laptop	mac,vm	laptop	-	The Mac's battery	its charge and charging state in Omarchy's bar, as on a laptop
 external-brightness	on	mac,vm	-	bridge	External display brightness	the brightness keys set the external display the VM is in front on, over DDC/CI (a Studio Display or Pro Display XDR as macOS does), and so do Omarchy's own brightness keys and monitor panel, whose brightness slider also sets the Mac's built-in display, in full screen and in a window
 chromium-video	on	vm	app-only	-	Chromium video on the Mac	Arch Linux ARM's Chromium decodes H.264 and VP9 on the Mac's media engine, like Chrome and Brave do on their own (OmacVM.app)
+youtube-vp9	off	vm	experimental,app-only,no-av1	-	Prefer VP9 on YouTube	Google Chrome and Chromium tell YouTube they cannot play AV1, so it sends VP9, which the Mac's media engine decodes instead of the VM's CPUs (about 1.2 W less on a MacBook Air M2); videos only in AV1 and YouTube's AV1-only quality steps are not offered, and the media engine drops about 1-3 % of frames at 1080p60 for now; Macs without an AV1 decoder only (M1, M2)
 no-idle-lock	off	vm	-	-	Screensaver and lock disabled	Omarchy's own screensaver and lock after idle stay off in the VM, the Mac's lock protects it (called idle-lock before 3.0.1, with on and off the other way round)
 autologin	off	vm	-	-	Autologin	straight into Omarchy, without its login screen
 thp-kernel	off	vm	slow	-	Memory-optimized kernel	Arch Linux ARM's kernel with transparent huge pages and MGLRU, for memory-heavy work (a kernel build in the VM to switch it on: about 10 minutes with 16 CPUs, over an hour with 4; a newer Arch Linux ARM kernel only when you say so)
