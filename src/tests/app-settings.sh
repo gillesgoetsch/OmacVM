@@ -349,8 +349,8 @@ grep -q 'partial = Settings.partialPresentStart(hdr: hdr.on)' "$RUNNER" &&
   grep -q 'OmacVM: partial present: \\(partial.on ? "on" : "off") (\\(partial.why))' "$RUNNER" &&
   echo "ok   Runner: OMACVM_GL_PRESENT_DAMAGE=1 from this start's answer (HDR from the same start), the qemu.log line" ||
   { echo "FAIL Runner: OMACVM_GL_PRESENT_DAMAGE not from Settings.partialPresentStart(hdr:), or no qemu.log line"; fail=1; }
-expect "Runner: QEMU's tiles and the guest's omacvm.damage=1 from the same start answer" "2" \
-  "$(grep -c 'if tiles.on {' "$RUNNER")"
+expect "Runner: QEMU's tiles from the start answer, the guest's omacvm.damage=1 from it or partial present's" "1 1" \
+  "$(grep -c 'if tiles.on {' "$RUNNER") $(grep -c 'if tiles.on || partial.on {' "$RUNNER")"
 grep -q 'a += \["-smbios", "type=11,value=omacvm.damage=1"\]' "$RUNNER" && grep -q 'env\["OMACVM_GL_PRESENT_TILES"\] = env\["OMACVM_GL_PRESENT_TILES"\] == "check" ? "check" : "1"' "$RUNNER" &&
   ! grep -q 'Settings.presentTiles && ' "$RUNNER" && echo "ok   Runner: both under tiles.on, not the bare switch" ||
   { echo "FAIL Runner: omacvm.damage=1 / OMACVM_GL_PRESENT_TILES not from Settings.presentTilesStart()"; fail=1; }

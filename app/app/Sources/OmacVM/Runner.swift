@@ -164,11 +164,14 @@ final class Runner {
         if ghosttyGPU.on {
             a += ["-smbios", "type=11,value=\(GhosttyGPU.smbios)"]
         }
-        // Draw only what changed (Settings.presentTilesStart, experimental): the
-        // guest loads OmacVM's virtio-gpu driver for its Linux 7.4 damage fix,
-        // so QEMU gets what changed in each frame (omacvm-virtio-gpu-load).
-        // Off, or in GPU safe mode: nothing sent, the stock driver as before.
-        if tiles.on {
+        // Copy only what changed (Settings.partialPresentStart, on by default
+        // for SDR starts) and Draw only what changed (Settings.presentTilesStart,
+        // experimental): the guest loads OmacVM's virtio-gpu driver for its
+        // Linux 7.4 damage fix, so QEMU gets what changed in each frame
+        // (omacvm-virtio-gpu-load; a 7.4 kernel keeps its stock driver, which
+        // has the fix). Both off, or GPU safe mode: nothing sent, the stock
+        // driver as before (ADR 0049's amendment of 2026-11-16).
+        if tiles.on || partial.on {
             a += ["-smbios", "type=11,value=omacvm.damage=1"]
         }
         let console = c.folder.appendingPathComponent("logs/console.log").path
