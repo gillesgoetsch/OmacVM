@@ -24,6 +24,16 @@ in more words.
   guest app or the Mac's output (AirPods) needs it. Same delay, no new
   breaks in the tests. MacBook Air M2, a video with sound in the browser:
   about 0.1 W less for the whole Mac.
+- **Video frames dropped at 60 Hz**: on a MacBook Air (and other Macs whose window size rounded
+  the same way) Google Chrome dropped about 1 % of the frames of 60 fps VP9 videos, YouTube's VP9
+  included, with any decoder (the Mac's media engine or the VM's CPU). The VM's display ran at
+  59.994 Hz instead of the Mac's 60: Hyprland takes a whole-MHz pixel clock, and the display
+  sync rounded QEMU's clock to it, which moved the refresh by up to 0.3 % (60.098 Hz in a 1080p
+  window, 59.812 at 1280x720). It now rounds the clock up and widens the blanking so the VM's
+  display stays at the Mac's rate or a hair above, never below. Measured on the Air (YouTube 1080p60
+  VP9, Chrome started after the mode was set): 58-165 dropped frames per 90-120 s before (9 rows),
+  0, 7 and 9 after in three rows and 141 in a fourth, so fewer drops, not none yet. Update VM puts
+  it in.
 
 ## 3.4.8
 

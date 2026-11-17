@@ -38,12 +38,16 @@ def guest_bash() -> str | None:
 BASH = guest_bash()
 
 
-def displayid_edid(width: int, height: int, hz: float = 60.0, size: bool = True) -> bytes:
+def displayid_edid(width: int, height: int, hz: float = 60.0, size: bool = True,
+                   timing_10khz: tuple | None = None) -> bytes:
     """A base EDID plus a DisplayID 1.3 type I timing, as QEMU makes them
-    (size=False: no physical size, so the scale is Hyprland's "auto")."""
+    (size=False: no physical size, so the scale is Hyprland's "auto").
+    timing_10khz: (clock in 10 kHz, hblank, hfront, hsync, vblank, vfront, vsync)."""
     hblank, hfront, hsync = 160, 48, 32
     vblank, vfront, vsync = 60, 3, 5
     clock = round((width + hblank) * (height + vblank) * hz / 10_000)  # 10 kHz units
+    if timing_10khz:
+        clock, hblank, hfront, hsync, vblank, vfront, vsync = timing_10khz
     base = bytearray(128)
     base[0:8] = b"\x00\xff\xff\xff\xff\xff\xff\x00"
     # QEMU's density: 110 points per inch at 2x (the patch rounds to cm).
@@ -77,6 +81,34 @@ def displayid_edid(width: int, height: int, hz: float = 60.0, size: bool = True)
     ext[end] = (-sum(ext[1:end])) % 256
     ext[127] = (-sum(ext[:127])) % 256
     return bytes(base) + bytes(ext)
+
+
+def qemu_edid(width: int, height: int, mhz: int) -> bytes:
+    """A base EDID with one detailed timing as QEMU's edid-generate.c makes it:
+    its blanking from the size and the clock in 10 kHz, rounded down, from the
+    rate in mHz (OmacVM's cocoa.m: the Mac display's own, rounded down)."""
+    xfront, xsync, xblank = width * 25 // 100, width * 3 // 100, width * 35 // 100
+    yfront, ysync, yblank = height * 5 // 1000, height * 5 // 1000, height * 35 // 1000
+    clock = mhz * (width + xblank) * (height + yblank) // 10_000_000
+    if clock >= 65536 or width >= 4096 or height >= 4096:    # QEMU's DisplayID form
+        return displayid_edid(width, height, timing_10khz=(clock, xblank, xfront, xsync, yblank, yfront, ysync))
+    base = bytearray(128)
+    base[0:8] = b"\x00\xff\xff\xff\xff\xff\xff\x00"
+    base[21] = min(255, max(1, round(width / 2 * 2.54 / 110)))
+    base[22] = min(255, max(1, round(height / 2 * 2.54 / 110)))
+    d = bytearray(18)
+    d[0:2] = clock.to_bytes(2, "little")
+    d[2], d[3], d[4] = width & 0xFF, xblank & 0xFF, ((width >> 8) << 4) | (xblank >> 8)
+    d[5], d[6], d[7] = height & 0xFF, yblank & 0xFF, ((height >> 8) << 4) | (yblank >> 8)
+    d[8], d[9] = xfront & 0xFF, xsync & 0xFF
+    d[10] = ((yfront & 0x0F) << 4) | (ysync & 0x0F)
+    d[11] = ((xfront >> 8) << 6) | ((xsync >> 8) << 4) | ((yfront >> 4) << 2) | (ysync >> 4)
+    w_mm, h_mm = base[21] * 10, base[22] * 10
+    d[12], d[13], d[14] = w_mm & 0xFF, h_mm & 0xFF, ((w_mm >> 8) << 4) | (h_mm >> 8)
+    d[17] = 0x18 | 0x02 | 0x04                         # digital separate sync, both positive
+    base[54:72] = d
+    base[127] = (-sum(base[:127])) % 256
+    return bytes(base)
 
 
 # Hyprland, as far as the display sync sees it: j/monitors, and eval of an
@@ -212,6 +244,42 @@ class SyncCase(unittest.TestCase):
         for m in data:
             m.update(width=width, height=height, refreshRate=60.0)
         (self.hypr / "monitors.json").write_text(json.dumps(data))
+
+
+class Refresh(SyncCase):
+    def test_mode_keeps_the_macs_refresh(self):
+        # Hyprland takes a whole-MHz clock. Rounding QEMU's clock to it gave
+        # 59.9948 Hz for the MacBook Air's 60 Hz panel (2940x1912), where Chrome
+        # dropped about 1 % of a 60 fps VP9 video's frames, and 60.098 / 59.812
+        # in 1080p / 720p windows. The mode now stays at the Mac's rate or a
+        # hair above (never below), with the size exact.
+        for width, height, mhz in ((2940, 1912, 60000), (1920, 1080, 60000), (1280, 720, 60000),
+                                   (1470, 956, 60000), (3024, 1964, 120000), (2240, 1240, 120000),
+                                   (2560, 1440, 59940), (640, 480, 60000)):
+            with self.subTest(mode=f"{width}x{height}@{mhz / 1000}"):
+                self.setUp()
+                c = self.drm / "card0-Virtual-1"
+                c.mkdir()
+                (c / "status").write_text("connected\n")
+                (c / "edid").write_bytes(qemu_edid(width, height, mhz))
+                r = self.run_sync()
+                self.assertEqual(r.returncode, 0, r.stderr)
+                m = self.shown()
+                self.assertEqual((m["width"], m["height"]), (width, height))
+                self.assertGreaterEqual(m["refreshRate"], mhz / 1000)
+                # at most the EDID's last 10 kHz step above (300 ppm at 640x480, 20 at the Air's)
+                self.assertLess(m["refreshRate"], mhz / 1000 * (1 + 3e-4))
+                if (width, height) == (2940, 1912):
+                    self.assertLess(m["refreshRate"], 60.0013)
+                rule = self.evals()[-1]
+                f = re.search(r'modeline (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+)', rule).groups()
+                clock, w, hss, hse, ht, h, vss, vse, vt = map(int, f)
+                # sync pulses where QEMU put them; only the back porches grew
+                self.assertEqual((hss - w, hse - hss), (width * 25 // 100, width * 3 // 100))
+                self.assertEqual((vss - h, vse - vss), (height * 5 // 1000, height * 5 // 1000))
+                self.assertGreaterEqual(ht, width + width * 35 // 100)
+                self.assertGreaterEqual(vt, height + height * 35 // 1000)
+                self.tearDown()
 
 
 class ModeAndScale(SyncCase):
