@@ -242,9 +242,10 @@ fi
 
 # The session and memory watched every second: unlocked -> the app killed first, then the display
 # (the display tool does the same by itself); memory critical -> the app and its VM killed.
+# The flag alone here (no display wake every second): no flag is always unlocked.
 watch_loop() {
   while kill -0 $$ 2>/dev/null; do
-    if ! person_locked; then
+    if ! person_lock_flag; then
       echo "$(date +%H:%M:%S) unlocked (IORegistry)" >> "$OUT/watch.txt"; kill_app; kill "$VD_PID" 2>/dev/null; break
     fi
     if (( $(press) >= 4 )); then

@@ -148,11 +148,29 @@ same "guard: hidden start + tiles check: exit 2" 2 "$rc"
 (export OMACVM_COCOA_HIDDEN=0 OMACVM_GL_PRESENT_TILES=check; e2e_present_guard 2>/dev/null); same "guard: OMACVM_COCOA_HIDDEN=0 passes" 0 "$?"
 # person.sh's lock read (made-up IORegistry lines).
 (source "$R/src/tests/e2e/person.sh"
+ export PERSON_LOCKSEEN=$T/lock-seen-0; _person_wake() { :; }
  _person_lock_raw() { echo '  | "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"CGSSessionScreenIsLocked"=Yes,"kCGSSessionUserNameKey"="u"})'; }
  person_locked) && ok "person_locked: locked" || bad "person_locked: locked console not seen"
 (source "$R/src/tests/e2e/person.sh"
+ export PERSON_LOCKSEEN=$T/lock-seen-0; _person_wake() { :; }
  _person_lock_raw() { echo '  | "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"kCGSSessionUserNameKey"="u"})'; }
  person_locked) && bad "person_locked: an unlocked console taken as locked" || ok "person_locked: unlocked"
+# The flag alone is no lock: a sleeping display sets it too. person_locked wakes the display
+# (_person_wake) and looks again; a lock seen that way is not woken again for PERSON_REWAKE s.
+(source "$R/src/tests/e2e/person.sh"
+ export PERSON_LOCKSEEN=$T/lock-seen; rm -f "$PERSON_LOCKSEEN"; echo asleep > "$T/disp"; : > "$T/wakes"
+ _person_lock_raw() { [[ $(cat "$T/disp") == on ]] && echo '({"kCGSSessionUserNameKey"="u"})' || echo '({"CGSSessionScreenIsLocked"=Yes,"kCGSSessionUserNameKey"="u"})'; }
+ _person_wake() { echo w >> "$T/wakes"; [[ $(cat "$T/disp") == asleep ]] && echo on > "$T/disp"; return 0; }
+ person_lock_flag && ok "person_lock_flag: set while the display sleeps" || bad "person_lock_flag: flag not seen"
+ person_locked && bad "person_locked: a sleeping display taken as locked" || ok "person_locked: sleeping display woken, not locked"
+ same "person_locked: one wake" 1 "$(grep -c . "$T/wakes")"
+ echo locked > "$T/disp"; : > "$T/wakes"
+ person_locked && ok "person_locked: flag still set after the wake: locked" || bad "person_locked: lock after a wake not seen"
+ person_locked && ok "person_locked: still locked" || bad "person_locked: lock lost"
+ same "person_locked: no second wake within PERSON_REWAKE" 1 "$(grep -c . "$T/wakes")"
+ echo on > "$T/disp"
+ person_locked && bad "person_locked: unlocked after the lock, still taken as locked" || ok "person_locked: unlocked again"
+ [[ -e $PERSON_LOCKSEEN ]] && bad "person_locked: the seen lock was not forgotten" || ok "person_locked: the seen lock forgotten once unlocked")
 
 # The display tool: --while-locked, never with a display here (--dry-run, or refused before one).
 VD=$T/virtual-display
