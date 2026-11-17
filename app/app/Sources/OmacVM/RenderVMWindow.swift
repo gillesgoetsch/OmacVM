@@ -36,6 +36,8 @@ enum RenderVMWindow {
         var hdr: Bool? = false
         /// A display with headroom above 2x (the extra brightness row).
         var extraBrightness: Bool? = false
+        /// The media engine decodes AV1 (true: no Prefer VP9 on YouTube row).
+        var decodesAV1: Bool? = true
         /// macOS keeps the menu bar in full screen (#356).
         var menuBar: Bool? = false
         /// Disk › Change… open: what Omarchy needs, the size chosen.

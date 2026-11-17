@@ -62,6 +62,8 @@ enum SettingsDump {
             "macIME": MacIME.pending(pending) ?? MacIME.isOn(features: record),
             "dragDrop": DragDrop.switchState.pending(
                 try? String(contentsOf: f.appendingPathComponent(DragDrop.switchState.pendingFile), encoding: .utf8)) ?? DragDrop.isOn(features: record),
+            "youtubeVP9": YouTubeVP9.switchState.pending(
+                try? String(contentsOf: f.appendingPathComponent(YouTubeVP9.switchState.pendingFile), encoding: .utf8)) ?? YouTubeVP9.isOn(features: record),
             "missionControl": MissionControl.switchState.pending(
                 try? String(contentsOf: f.appendingPathComponent(MissionControl.switchState.pendingFile), encoding: .utf8)) ?? MissionControl.isOn(features: record),
             "gpuCompute": GPUCompute.switchState.pending(
