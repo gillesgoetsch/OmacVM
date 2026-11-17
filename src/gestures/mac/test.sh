@@ -18,8 +18,8 @@
 #    (or Input Monitoring) taken away: the tap and its run-loop source go and
 #    the trackpads are let go at once, nothing enables or creates a tap again
 #    until it is back (issue #192). A tap macOS (or the watchdog) disabled is
-#    removed, never enabled again; a new one after 2 s, then 30 s; the third
-#    in 10 minutes parks it until the Accessibility list changes (#290).
+#    removed, never enabled again; a new one after 2 s, then 30 s for each
+#    further one in 10 minutes, however often: never given up (#290).
 #    OmacVM.app's hidden shareKeyboard puts it at the end of the chain (#350)
 #    (test-tap.c).
 # 5. Ctrl+Option+Esc (and the old Ctrl+Option+Cmd+Esc, exact modifiers only): in the VM the display under the pointer moves out

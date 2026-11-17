@@ -5,6 +5,11 @@ in more words.
 
 ## Unreleased
 
+- **The escape combo always comes back.** When OmacVM Gestures' event tap kept stalling (three
+  times in 10 minutes, as when other VMs start on a Mac whose memory is full), Gestures gave the tap
+  up until the Accessibility list changed. Ctrl+Option+Esc then went to the VM, and a Mac without a
+  trackpad had no way out of the full-screen VM until Gestures was restarted. Now each new stall
+  waits 30 s at most, and the tap and the combo come back by themselves.
 - **Dismiss all notifications also closes the Mac's.** In full screen macOS shows its banners and
   alerts (such as *App Background Activity*) over the VM, where nothing in the VM reaches them.
   Omarchy's own Super+Shift+, now also closes the ones on the Mac's screen, through the Bridge
