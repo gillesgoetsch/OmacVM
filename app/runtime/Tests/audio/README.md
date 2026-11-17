@@ -76,15 +76,18 @@ hidden test VM (4 vCPUs, Omarchy 4.5, ALSA period 1024, buffer 32768),
 the tone for 3 minutes per case, sdlprobe with loopback and mute
 (work/power-1116/snd/kit):
 
-| Case | 1 ms | follows |
+| Case (3 pairs) | 1 ms | follows |
 |---|---|---|
-| tone (pacat), idle | 0 / 0 | 0 / 0 |
-| tone + stress-ng in the user's app.slice | 0 / 0 | 0 / 0 |
-| tone + glmark2 | 10 / 13 (xruns 0/5) | 6 / 16 (xruns 1/1) |
-| round trip (jack_iodelay) | 211.7, 212.0 ms | 208.8, 208.9 ms |
+| tone (pacat), idle | 0 / 0, 0 / 0, 0 / 1 | 0 / 0, 0 / 2, 0 / 0 |
+| tone + stress-ng in the user's app.slice | 0 / 0, 0 / 0, 0 / 0 | 0 / 0, 4 / 4, 0 / 0 |
+| tone + glmark2 | 10 / 13, 4 / 4, 8 / 8 | 6 / 16, 6 / 6, 0 / 0 |
+| guest xruns (sink/app), all cases | 2/8 | 2/2 |
+| round trip (jack_iodelay), median of 6 | 211.7 ms | 208.9 ms |
 
-Breaks are QEMU's mixer / what SDL got. The pacing's forgive and sync-step
-traces counted the same in both (367 / 412-415 per boot).
+Breaks are QEMU's mixer / what SDL got. The second pair's extra breaks
+(follows) came with the audio thread 66 ms late twice (the Mac stalled;
+other work ran on the mini), which empties the 32 ms ring with either
+tick; with the order reversed the third pair was clean.
 
 ## Results (MacBook Pro M4 Max, 8 vCPUs, 10 minutes each, bench lock held)
 

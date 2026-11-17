@@ -111,9 +111,11 @@ tick), so `AudioDelay.qemuThreadMs` stays. `OMACVM_AUDIO_THREAD_PERIOD_US`
 still fixes the period (1000 = before).
 
 Measured (same build, 1 ms fixed vs following): Mac mini M4, hidden test
-VM, a tone through PipeWire for 3 minutes per case: idle and busy vCPUs
-0 breaks both ways; glmark2 6 / 16 breaks (QEMU's mixer / what SDL got) vs
-10 / 13; round trip 208.8-208.9 vs 211.7-212.0 ms. MacBook Air M2, on
+VM, a tone through PipeWire for 3 minutes per case (idle, busy vCPUs,
+glmark2), three pairs: 22 / 26 breaks (QEMU's mixer / what SDL got) and
+2/8 xruns with 1 ms, 16 / 28 and 2/2 following; the extra breaks of one
+pair came with the Mac stalling the thread for 66 ms, which empties the
+ring with either tick. Round trip median 211.7 ms vs 208.9 ms. MacBook Air M2, on
 screen, the browser blend (an AV1 video with sound, a chat page, typing),
 6 + 6 windows: 5.26 -> 5.15 W (-0.11 +- 0.07 W), QEMU's wakeups
 4113 -> 3397 a second; frames shown 60.4-60.5/s both ways, dropped video
