@@ -3,7 +3,9 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.4.8 (unreleased)
+## 3.4.8
+
+The VM's Caps Lock follows the Mac's again after a new session, a restart in the VM or a start with it on.
 
 - **Caps Lock** (#784, reported by @epicoun): after a new desktop session, a restart inside the VM
   or a VM start with the Mac's Caps Lock on, the VM's Caps Lock could come back the other way round:
