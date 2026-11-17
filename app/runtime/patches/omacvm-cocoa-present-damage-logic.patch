@@ -20,7 +20,7 @@ diff --git a/ui/omacvm-present-damage.h b/ui/omacvm-present-damage.h
 new file mode 100644
 --- /dev/null
 +++ b/ui/omacvm-present-damage.h
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,148 @@
 +/*
 + * OmacVM: which part of a present surface needs drawing (partial present).
 + *
@@ -50,6 +50,14 @@ new file mode 100644
 +
 +#define OMACVM_PD_SURFACES 8
 +
++/* What the last omacvm_pd_take gave (for qemu.log's counts). */
++enum {
++    OMACVM_PD_PART,                 /* the box only (maybe empty) */
++    OMACVM_PD_FULL_ASKED,           /* full: new surfaces, another size, a request */
++    OMACVM_PD_FULL_BIG,             /* full: the box is three quarters of the frame or more */
++    OMACVM_PD_FULL_PAST,            /* full: a surface past the count */
++};
++
 +typedef struct OmacvmPDRect {
 +    uint32_t x, y, w, h;            /* w == 0 or h == 0: nothing */
 +} OmacvmPDRect;
@@ -59,6 +67,7 @@ new file mode 100644
 +    uint32_t fw, fh;                /* the frame size the rects are for */
 +    bool full[OMACVM_PD_SURFACES];  /* the next draw of surface i is a full one */
 +    OmacvmPDRect box[OMACVM_PD_SURFACES]; /* else: what changed since its last draw */
++    int last;                       /* OMACVM_PD_*: what the last take gave */
 +} OmacvmPresentDamage;
 +
 +static inline bool omacvm_pd_empty(OmacvmPDRect r)
@@ -140,14 +149,17 @@ new file mode 100644
 +{
 +    *out = (OmacvmPDRect){ 0, 0, d->fw, d->fh };
 +    if (i >= d->n) {
++        d->last = OMACVM_PD_FULL_PAST;
 +        return false;
 +    }
 +    bool partial = !d->full[i];
++    d->last = partial ? OMACVM_PD_PART : OMACVM_PD_FULL_ASKED;
 +    if (partial) {
 +        *out = d->box[i];
 +        /* Most of the frame changed: a full draw costs the same. */
 +        if ((uint64_t)out->w * out->h * 4 >= (uint64_t)d->fw * d->fh * 3) {
 +            partial = false;
++            d->last = OMACVM_PD_FULL_BIG;
 +            *out = (OmacvmPDRect){ 0, 0, d->fw, d->fh };
 +        }
 +    }

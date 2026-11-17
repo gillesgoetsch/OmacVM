@@ -97,7 +97,7 @@ on CGL, not on ANGLE.
 | GPU safe mode (the old fence and frame path) | built: `gpu-native`, hidden | `gpuSafeMode` default |
 | Present on each flush | built: `gpu-native` | `qemu-cocoa-gl-present-on-flush.patch` |
 | IOSurface present | built: `gpu-native` | `qemu-cocoa-gl-present-iosurface.patch` |
-| Partial present (only the box the guest changed; needs Linux 7.4 or OmacVM's driver for real rects) | built: `frame-path`, off by default (`OMACVM_GL_PRESENT_DAMAGE=1`) | `omacvm-cocoa-present-damage*.patch`, ADR 0051 |
+| Partial present (only the box the guest changed; needs Linux 7.4 or OmacVM's driver for real rects) | on by default for SDR starts from 3.5.0 (switch "Copy only what changed", `partialPresent`; QEMU env `OMACVM_GL_PRESENT_DAMAGE=1`); off for HDR starts until checked on an HDR display; qemu.log counts once a minute; `omacvm check` "Copy only what changed" | `omacvm-cocoa-present-damage*.patch`, ADR 0051 |
 | Tiled present (a frame that changed little goes to WindowServer as a few tile layers over the last whole frame; the same guest rects) | built: `window-draw`, off by default (experimental switch "Draw only what changed", `presentTiles`, which also has the VM load OmacVM's driver for its damage fix, SMBIOS `omacvm.damage=1`; `OMACVM_GL_PRESENT_TILES=1`; Linux 7.4 has the fix itself) | `omacvm-cocoa-present-tiles*.patch`, ADR 0055 |
 | Blob alignment for 16 KiB pages | built: `gpu-native`, `gpu-venus` | `qemu-virtio-gpu-blob-alignment.patch` |
 | Venus on MoltenVK | built: `gpu-venus`, merged into `gpu-native`, hidden switch | see section 6 |
@@ -1139,8 +1139,8 @@ bench lock and are indications only):
   plain; `OMACVM_GL_LOSSLESS=0` keeps them all plain; macOS 27 and newer only,
   where it is checked). Nothing reads them back
   (no CPU read, no `glReadPixels`: it crashes on them); the partial present's
-  check mode (`OMACVM_GL_PRESENT_DAMAGE=check`) keeps them plain and compares in
-  the shown surface's kind.
+  check mode (`OMACVM_GL_PRESENT_DAMAGE=check`) reads a plain copy the GPU makes
+  of the shown surface and compares in its kind (lossless ones too, from 3.5.0).
 - **Colour**: surfaces are tagged; Core Animation converts sRGB (or PQ) to
   the display. HDR and 10-bit colour is the app's experimental switch
   (`hdr`, shown only while a display can show HDR; ADR 0049): a start with

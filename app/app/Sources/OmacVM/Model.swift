@@ -750,6 +750,37 @@ enum Settings {
         }
         return (true, "the VM's driver says what changed, QEMU shows it in tiles")
     }
+    /// Partial present (ADR 0051; on by default from 3.5.0): QEMU draws only
+    /// the part of each frame the VM changed into the window's picture
+    /// (OMACVM_GL_PRESENT_DAMAGE=1), the rest of that picture is already the
+    /// frame. The same pixels, less GPU work. It needs the VM's real rects:
+    /// the boot console and TTYs always send them, a desktop with Linux 7.4
+    /// or OmacVM's virtio-gpu driver (HDR, the pointer layer, Draw only what
+    /// changed); a desktop on the stock driver of Linux 7.3 or older sends
+    /// whole frames, which stay whole draws. The VM window's switch
+    /// (PartialPresentRow) or defaults write org.omacvm.app partialPresent
+    /// -bool false. Read at each start (partialPresentStart).
+    static var partialPresent: Bool {
+        get { UserDefaults.standard.object(forKey: "partialPresent") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "partialPresent") }
+    }
+    /// Partial present for one start of the VM: the switch, QEMU's IOSurface
+    /// present (GPU safe mode's CAOpenGLLayer, or OMACVM_GL_PRESENT=layer,
+    /// draws whole frames), an inherited OMACVM_GL_PRESENT_DAMAGE=0, and not
+    /// for an HDR start (hdr: Settings.hdrStart's answer) until it has passed
+    /// its check on an HDR display (ADR 0051). Runner takes QEMU's
+    /// environment and the qemu.log line from this one answer; why says why not.
+    static func partialPresentStart(hdr: Bool) -> (on: Bool, why: String) {
+        if !partialPresent { return (false, "switch off") }
+        if gpuSafeMode { return (false, "GPU safe mode") }
+        let env = ProcessInfo.processInfo.environment
+        if env["OMACVM_GL_PRESENT"] == "layer" {
+            return (false, "OMACVM_GL_PRESENT=layer: frames in a CAOpenGLLayer")
+        }
+        if env["OMACVM_GL_PRESENT_DAMAGE"] == "0" { return (false, "OMACVM_GL_PRESENT_DAMAGE=0") }
+        if hdr { return (false, "HDR start: not checked on an HDR display yet") }
+        return (true, "only what the VM changed is drawn into the window's picture")
+    }
     /// Ghostty on the Mac's GPU (experimental, off by default; ADR 0064's
     /// amendment): a start with Vulkan on KosmicKrisp tells the VM (SMBIOS
     /// omacvm.glzink=1) and its EGL vendor library starts Ghostty on Zink

@@ -130,7 +130,7 @@ idle (macOS against macOS, two sets).
 
 | Change | Release | Default | Measured (whole Mac) |
 |---|---|---|---|
-| Partial present: QEMU draws only the box the guest flushed ([0051](../adr/0051-partial-present.md), #519) | 3.2.1 | off (`OMACVM_GL_PRESENT_DAMAGE=1` for tests) | bench only: -0.13 W at 60 frames/s, -0.45 W at 120 with a 64x64 box changing (Air) |
+| Partial present: QEMU draws only the box the guest flushed ([0051](../adr/0051-partial-present.md), #519) | 3.2.1 | off (`OMACVM_GL_PRESENT_DAMAGE=1` for tests); 3.5.0: on for SDR starts ("Copy only what changed") | bench only: -0.13 W at 60 frames/s, -0.45 W at 120 with a 64x64 box changing (Air) |
 | Window surfaces in the Mac's lossless-compressed format, 8-bit ([0052](../adr/0052-lossless-window-surfaces.md), #531) | 3.2.1 | on (macOS 27) | Air scrolling -0.20 W (-4 %) at 60 Hz, -0.37 W (-6 %) at 120 Hz; video about the same; same pixels |
 | Hyprland's SDR copy of each HDR frame only while something captures (#533) | 3.2.2 | on (Update VM) | QEMU GPU -10-19 % per frame; M1 Max HDR 120 Hz: clip -0.29 W (-1.5 %), scrolling -0.55 W (-4.6 %), app mix -1.16 W (-4.7 %); same frame rates |
 | Pointer on its own layer ([0054](../adr/0054-pointer-on-its-own-layer.md), #534) | 3.2.2 | experimental, off | Air pointer moving -0.26 W (-7 %); M1 Max HDR 120 Hz pointer moving -1.31 W (-6.3 %), scrolling -0.1 W |

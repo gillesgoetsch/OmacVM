@@ -55,10 +55,13 @@ int main(void)
     /* The whole plane (kernels before 7.4 on every flip), or most of it: full. */
     omacvm_pd_add(&d, 0, 0, 2940, 1840);
     take_expect(&d, 0, 0, 0, 0, 2940, 1840, "the whole plane");
+    CHECK(d.last == OMACVM_PD_FULL_BIG, "the whole plane: why %d, want big", d.last);
     omacvm_pd_add(&d, 0, 0, 2940, 1400);
     take_expect(&d, 0, 0, 0, 0, 2940, 1840, "three quarters or more");
+    CHECK(d.last == OMACVM_PD_FULL_BIG, "three quarters: why %d, want big", d.last);
     omacvm_pd_add(&d, 0, 0, 2940, 1370);
     take_expect(&d, 0, 1, 0, 0, 2940, 1370, "under three quarters: still in part");
+    CHECK(d.last == OMACVM_PD_PART, "under three quarters: why %d, want part", d.last);
 
     /* Another frame size: full, and old rects count no more. */
     omacvm_pd_reset(&d, 3, 2940, 1840);
@@ -78,10 +81,12 @@ int main(void)
     omacvm_pd_all_full(&d);
     for (unsigned i = 0; i < 3; i++) {
         take_expect(&d, i, 0, 0, 0, 3024, 1964, "all full");
+        CHECK(d.last == OMACVM_PD_FULL_ASKED, "all full %u: why %d, want asked", i, d.last);
     }
 
     /* A surface number past the ones in use: full; a count past the array: capped. */
     take_expect(&d, 3, 0, 0, 0, 3024, 1964, "surface past the count");
+    CHECK(d.last == OMACVM_PD_FULL_PAST, "past the count: why %d, want past", d.last);
     omacvm_pd_reset(&d, 100, 64, 64);
     CHECK(d.n == OMACVM_PD_SURFACES, "count capped at %d, got %u", OMACVM_PD_SURFACES, d.n);
 

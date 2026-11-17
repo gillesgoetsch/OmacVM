@@ -3,6 +3,19 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.0 (unreleased)
+
+- **Copy only what changed** (on by default): QEMU now copies only the part of each frame the VM
+  changed into the window's picture, not the whole frame; the rest of that picture is already
+  right. The same pixels, less GPU work where little changes (a pointer, typing, a clock); pages
+  that scroll and video change most of the frame and are copied whole as before. It needs the VM
+  to say what changed: its boot screen and text consoles always do, its desktop with Linux 7.4 or
+  OmacVM's own graphics driver. A picture shown scaled (some of Omarchy's scales in Full screen
+  including notch) is copied whole. Off for a start with HDR until it is checked on an HDR display.
+  A switch in the VM window's Display section turns it off (whole frames, as before); qemu.log
+  counts the frames once a minute and `omacvm check` has a "Copy only what changed" line. Its
+  pixel check for tests now covers the compressed window surfaces too (ADR 0051).
+
 ## 3.4.8
 
 The VM's Caps Lock follows the Mac's again after a new session, a restart in the VM or a start with it on.

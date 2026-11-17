@@ -77,6 +77,7 @@ expect "fresh: Extra brightness off" false "$(val app.extraBrightness)"
 expect "fresh: Pause drawing while hidden off" false "$(val app.pauseWhileHidden)"
 expect "fresh: Pointer on its own layer off" false "$(val app.pointerPlane)"
 expect "fresh: Draw only what changed off" false "$(val app.presentTiles)"
+expect "fresh: Copy only what changed on (partialPresent)" true "$(val app.partialPresent)"
 expect "fresh: Ghostty on the Mac's GPU off" false "$(val app.ghosttyGPU)"
 expect "fresh: AirPods and media controls on" true "$(val app.mediaControls)"
 expect "  on for the app (org.omacvm.app)" true "$(run mediadefault org.omacvm.app)"
@@ -111,7 +112,7 @@ done
 
 # (b) Changes as the window makes them, read by the next launches; (c) per VM.
 mkdir -p "$H/Shared"
-for kv in "startFullScreen false" "keepDockAway false" "audioThread false" "gpuOffMainLoop false" "shareKeyboard true" "vkWindowsNoCopy false" "hdr true" "extraBrightness true" "pauseWhileHidden true" "pointerPlane true" "presentTiles true" "ghosttyGPU true" "mediaControls false" "closeAction ask" "appIconTheme flexoki-light" \
+for kv in "startFullScreen false" "keepDockAway false" "audioThread false" "gpuOffMainLoop false" "shareKeyboard true" "vkWindowsNoCopy false" "hdr true" "extraBrightness true" "pauseWhileHidden true" "pointerPlane true" "presentTiles true" "partialPresent false" "ghosttyGPU true" "mediaControls false" "closeAction ask" "appIconTheme flexoki-light" \
           "escapeSwipe all" "mouseSwipeFingers 3" "swipeOut true" "updateChecks false"; do
   run set $kv || { echo "FAIL set $kv"; fail=1; }
 done
@@ -132,6 +133,7 @@ for launch in 1 2; do
   expect "launch $launch: Pause drawing while hidden on" true "$(val app.pauseWhileHidden)"
   expect "launch $launch: Pointer on its own layer on" true "$(val app.pointerPlane)"
   expect "launch $launch: Draw only what changed on" true "$(val app.presentTiles)"
+  expect "launch $launch: Copy only what changed off" false "$(val app.partialPresent)"
   expect "launch $launch: Ghostty on the Mac's GPU on" true "$(val app.ghosttyGPU)"
   expect "launch $launch: AirPods and media controls off" false "$(val app.mediaControls)"
   expect "launch $launch: Closing the window asks" ask "$(val app.closeAction)"
@@ -283,6 +285,37 @@ for want in false true; do
     expect "Draw only what changed $want, $step: the switch still $want" $want "$(val app.presentTiles)"
   done
 done
+# (g2) Copy only what changed (partial present): a start asks QEMU for it (OMACVM_GL_PRESENT_DAMAGE=1)
+# only with the switch on, GPU safe mode off, the IOSurface present, no inherited =0, and not for an HDR
+# start (owed: its check on an HDR display); GPU safe mode leaves the switch as set.
+for want in false true; do
+  run set partialPresent $want || { echo "FAIL set partialPresent $want"; fail=1; }
+  for step in "plain" "GPU safe mode on" "GPU safe mode off" "layer present" "inherited =0" "inherited =check" "HDR start"; do
+    case $step in
+      "GPU safe mode on") defaults write "$D" gpuSafeMode -bool true ;;
+      "GPU safe mode off") defaults delete "$D" gpuSafeMode ;;
+    esac
+    case $step in
+      "layer present") s=$(OMACVM_GL_PRESENT=layer run partial 0) ;;
+      "inherited =0") s=$(OMACVM_GL_PRESENT_DAMAGE=0 run partial 0) ;;
+      "inherited =check") s=$(OMACVM_GL_PRESENT_DAMAGE=check run partial 0) ;;
+      "HDR start") s=$(run partial 1) ;;
+      *) s=$(run partial 0) ;;
+    esac
+    case $want/$step in
+      false/*) w="partial false (switch off)" ;;
+      true/"GPU safe mode on") w="partial false (GPU safe mode)" ;;
+      true/"layer present") w="partial false (OMACVM_GL_PRESENT=layer: frames in a CAOpenGLLayer)" ;;
+      true/"inherited =0") w="partial false (OMACVM_GL_PRESENT_DAMAGE=0)" ;;
+      true/"HDR start") w="partial false (HDR start: not checked on an HDR display yet)" ;;
+      true/*) w="partial true (only what the VM changed is drawn into the window's picture)" ;;
+    esac
+    expect "Copy only what changed $want, $step: the start's answer" "$w" "$s"
+    dump
+    expect "Copy only what changed $want, $step: the switch still $want" $want "$(val app.partialPresent)"
+  done
+done
+defaults delete "$D" partialPresent
 # (h) Ghostty on the Mac's GPU: a start tells the VM (SMBIOS omacvm.glzink=1) only with the switch
 # on, GPU safe mode off, Venus at that start and KosmicKrisp as its Vulkan driver; GPU safe mode
 # leaves the switch as set.
@@ -311,6 +344,11 @@ grep -q 'ghosttyGPU = Settings.ghosttyGPUStart(venus: g.venus, driver: Runner.vu
   grep -A1 -F 'if Settings.ghosttyGPU {' "$RUNNER" | grep -q 'GhosttyGPU.record(ghosttyGPU)' &&
   ! grep -q 'Settings.ghosttyGPU &&' "$RUNNER" && echo "ok   Runner: omacvm.glzink=1 from this start's answer (Venus, the driver), the qemu.log line while the switch is on" ||
   { echo "FAIL Runner: omacvm.glzink=1 not from Settings.ghosttyGPUStart(venus:driver:) or no qemu.log line"; fail=1; }
+grep -q 'partial = Settings.partialPresentStart(hdr: hdr.on)' "$RUNNER" &&
+  grep -A1 -F 'if partial.on {' "$RUNNER" | grep -q 'env\["OMACVM_GL_PRESENT_DAMAGE"\] = env\["OMACVM_GL_PRESENT_DAMAGE"\] == "check" ? "check" : "1"' &&
+  grep -q 'OmacVM: partial present: \\(partial.on ? "on" : "off") (\\(partial.why))' "$RUNNER" &&
+  echo "ok   Runner: OMACVM_GL_PRESENT_DAMAGE=1 from this start's answer (HDR from the same start), the qemu.log line" ||
+  { echo "FAIL Runner: OMACVM_GL_PRESENT_DAMAGE not from Settings.partialPresentStart(hdr:), or no qemu.log line"; fail=1; }
 expect "Runner: QEMU's tiles and the guest's omacvm.damage=1 from the same start answer" "2" \
   "$(grep -c 'if tiles.on {' "$RUNNER")"
 grep -q 'a += \["-smbios", "type=11,value=omacvm.damage=1"\]' "$RUNNER" && grep -q 'env\["OMACVM_GL_PRESENT_TILES"\] = env\["OMACVM_GL_PRESENT_TILES"\] == "check" ? "check" : "1"' "$RUNNER" &&

@@ -471,6 +471,8 @@ final class Runner {
         extraBright = Settings.extraBrightnessStart()
         // Draw only what changed: one answer for the guest, QEMU and qemu.log.
         tiles = Settings.presentTilesStart()
+        // Partial present: one answer for QEMU and qemu.log (not for HDR starts yet).
+        partial = Settings.partialPresentStart(hdr: hdr.on)
         // Drag and drop: this app's side listens before QEMU starts (QEMU
         // connects at its start). Cannot listen: off for this start, said why.
         dropRecord = DropPlan.record(on: false)
@@ -646,6 +648,14 @@ final class Runner {
         if tiles.on {
             env["OMACVM_GL_PRESENT_TILES"] = env["OMACVM_GL_PRESENT_TILES"] == "check" ? "check" : "1"
         }
+        // Partial present (Settings.partialPresentStart, on by default for SDR
+        // starts; ADR 0051): QEMU draws only what the VM changed into the
+        // window's picture and says once a minute how the frames went. An
+        // inherited =check (tests: partial frames compared with full draws)
+        // stays; off, QEMU draws every frame in full as before.
+        if partial.on {
+            env["OMACVM_GL_PRESENT_DAMAGE"] = env["OMACVM_GL_PRESENT_DAMAGE"] == "check" ? "check" : "1"
+        }
         if Settings.gpuSafeMode {
             env["OMACVM_VIRGL_POLL_FENCES"] = "1"
             env["OMACVM_GL_PRESENT"] = "layer"
@@ -700,6 +710,7 @@ final class Runner {
             log.write(Data("\(GhosttyGPU.record(ghosttyGPU))\n".utf8))
         }
         // Draw only what changed, while the switch is on (QEMU's minute lines say how often).
+        log.write(Data("OmacVM: partial present: \(partial.on ? "on" : "off") (\(partial.why))\n".utf8))
         if Settings.presentTiles {
             log.write(Data("OmacVM: tiled present: \(tiles.on ? "on" : "off") (\(tiles.why))\n".utf8))
         }
@@ -889,6 +900,8 @@ final class Runner {
     private(set) var hdr: (on: Bool, why: String) = (false, "switch off")
     /// Draw only what changed at this start (Settings.presentTilesStart), set in start().
     private(set) var tiles: (on: Bool, why: String) = (false, "switch off")
+    /// Partial present at this start (Settings.partialPresentStart), set in start().
+    private(set) var partial: (on: Bool, why: String) = (false, "switch off")
     /// Ghostty on the Mac's GPU at this start (Settings.ghosttyGPUStart), set in arguments().
     private(set) var ghosttyGPU: (on: Bool, why: String) = (false, "switch off")
     /// Extra brightness at this start (Settings.extraBrightnessStart), set in start().
