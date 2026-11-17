@@ -86,3 +86,38 @@ says which ("sound timing").
   while the VM runs reopens it with 512 frames (the app's size file), and
   a refused start tries 512, then 1024, at once, each only while QEMU's
   ring holds twice that (`qemu-sdl-audio-out-size*.patch`).
+
+## 3.5.0: the tick follows the streams
+
+The thread ticked every 1 ms whatever the streams needed: about 1000
+real-time wakeups a second while any stream was open, silence too. Each
+tick now says the longest period it can take and the thread runs at the
+shortest, 1-10 ms (`qemu-audio-tick-follows-stream.patch`):
+
+- an HDA stream: a quarter of the guest's shortest DMA entry (the guest
+  sees its position move once a tick), at most an eighth of the codec's
+  8 KiB buffer;
+- the mixer: a quarter of QEMU's ring after two of CoreAudio's buffers
+  (one for the next callback, one in flight), read every tick, so the
+  AirPods sizes of #548 shorten it at once.
+
+PipeWire in a VM (1024-frame periods, 4096-byte entries) and the 6 x 256
+ring both give 5.33 ms; a refused start with 1024-frame buffers keeps
+1 ms. A plain longer tick was not safe: the pacing (ADR 0036) forgave
+anything above a 5.33 ms burst as a stall, so its burst now grows with the
+period and a late tick keeps the 4.3 ms of slack it had at 1 ms. The
+queued audio does not grow (the codec buffer is held at half whatever the
+tick), so `AudioDelay.qemuThreadMs` stays. `OMACVM_AUDIO_THREAD_PERIOD_US`
+still fixes the period (1000 = before).
+
+Measured (same build, 1 ms fixed vs following): Mac mini M4, hidden test
+VM, a tone through PipeWire for 3 minutes per case (idle, busy vCPUs,
+glmark2), three pairs: 22 / 26 breaks (QEMU's mixer / what SDL got) and
+2/8 xruns with 1 ms, 16 / 28 and 2/2 following; the extra breaks of one
+pair came with the Mac stalling the thread for 66 ms, which empties the
+ring with either tick. Round trip median 211.7 ms vs 208.9 ms. MacBook Air M2, on
+screen, the browser blend (an AV1 video with sound, a chat page, typing),
+6 + 6 windows: 5.26 -> 5.15 W (-0.11 +- 0.07 W), QEMU's wakeups
+4113 -> 3397 a second; frames shown 60.4-60.5/s both ways, dropped video
+frames within the run-to-run spread (3-89 vs 37-189 per 2 minutes; earlier
+1 ms rows 106-222).

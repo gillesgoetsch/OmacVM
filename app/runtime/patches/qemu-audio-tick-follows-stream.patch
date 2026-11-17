@@ -1,0 +1,566 @@
+From: OmacVM
+Subject: [PATCH] audio: the sound thread's tick follows the streams
+
+What: on the sound's own thread (qemu-audio-own-thread.patch,
+OMACVM_AUDIO_THREAD=1) each tick says the longest period it can take, and
+the thread runs at the shortest of them, 1-10 ms, instead of every 1 ms:
+- an HDA stream: a quarter of the guest's shortest DMA entry (the guest's
+  periods; it sees its position move once a tick), at most an eighth of the
+  codec's 8 KiB buffer, which one tick fills or drains;
+- the mixer: a quarter of QEMU's ring minus two of the backend's buffers
+  (one for CoreAudio's next callback, one in flight), read every tick, so a
+  reopen with bigger buffers (AirPods, #548) shortens the tick at once. The
+  SDL backend says its open device's size (HWVoiceOut/In.omacvm_frames).
+A tick that does not know counts as 1 ms. The guest's usual 1024-frame
+periods and the own thread's 256-frame CoreAudio buffers give 5.33 ms:
+about 190 wakeups a second instead of 1000. The HDA pacing burst grows with
+the period (a period plus the 4.3 ms of slack a late tick had at 1 ms), so
+a regular tick is never taken for a stall. The thread re-sets its
+time-constraint policy for a new period and logs "OmacVM: sound: audio tick
+every <N> us"; the start line ("own audio thread, <policy>, every <N> us")
+is unchanged. OMACVM_AUDIO_THREAD_PERIOD_US still fixes the period (250-10000;
+1000 = before this patch).
+
+Why: a real-time thread waking 1000 times a second keeps the Mac's cores out
+of idle while any stream is open, silence too. MacBook Air M2, a browser
+blend with a video playing: the sound path 0.32 W, a fixed 4 ms tick -0.09 W
+(work/power-1116/attrib.md). A fixed longer tick is not safe: at 5.33 ms the
+pacing's 5.33 ms burst forgave every tick as a stall (the guest's clock ran
+slow), and with AirPods' 1024-frame buffers QEMU's 32 ms ring has no room
+for it. Following the streams keeps every buffer's margin where it is tight
+and the queued audio (latency) as before.
+
+Applies after qemu-audio-own-thread.patch and the SDL audio patches.
+Upstream: not sent (OmacVM only, like the own thread).
+Test: src/tests/audio-timing.sh checks the wiring; app/runtime/Tests/audio
+(glitches.py, sdlprobe loopback round trip) and work/power-1116/snd have the
+runs (glitches, round trip, the Air's whole-machine A/B).
+
+diff --git a/audio/audio-mixeng-be.c b/audio/audio-mixeng-be.c
+index c87c412..e00b2fe 100644
+--- a/audio/audio-mixeng-be.c
++++ b/audio/audio-mixeng-be.c
+@@ -588,11 +588,58 @@ static int audio_is_timer_needed(AudioMixengBackend *s)
+ 
+ static void audio_rt_timer(void *opaque);
+ 
++/*
++ * OmacVM (qemu-audio-tick-follows-stream.patch): the longest tick a voice's
++ * ring can take. The ring keeps one backend buffer for the next callback and
++ * one in flight; the tick may use a quarter of the rest, so a late tick still
++ * has three quarters. 0: not known, or the ring is tight already (1 ms).
++ */
++static int64_t audio_rt_ring_period(size_t ring, int frames, int freq)
++{
++    if (frames <= 0 || freq <= 0 || ring <= 2 * (size_t)frames) {
++        return 0;
++    }
++    return muldiv64((ring - 2 * (size_t)frames) / 4, NANOSECONDS_PER_SECOND,
++                    freq);
++}
++
++/* The shortest of the enabled voices (audio lock held). */
++static int64_t audio_rt_mixer_period(AudioMixengBackend *s)
++{
++    HWVoiceOut *hwo;
++    HWVoiceIn *hwi;
++    int64_t p, m = -1;
++
++    QLIST_FOREACH(hwo, &s->hw_head_out, entries) {
++        if (hwo->enabled) {
++            p = audio_rt_ring_period(hwo->samples,
++                                     qatomic_read(&hwo->omacvm_frames),
++                                     hwo->info.freq);
++            m = m < 0 ? p : MIN(m, p);
++        }
++    }
++    QLIST_FOREACH(hwi, &s->hw_head_in, entries) {
++        if (hwi->enabled) {
++            p = audio_rt_ring_period(hwi->samples,
++                                     qatomic_read(&hwi->omacvm_frames),
++                                     hwi->info.freq);
++            m = m < 0 ? p : MIN(m, p);
++        }
++    }
++    return m < 0 ? 0 : m;
++}
++
+ static void audio_reset_timer(AudioMixengBackend *s)
+ {
+     if (audio_is_timer_needed(s)) {
+         if (audio_rt_enabled()) {
+-            /* OmacVM: on the sound's own thread, every audio_rt_period(). */
++            /*
++             * OmacVM: on the sound's own thread, every audio_rt_period().
++             * Each tick comes here: a reopened Mac output (AirPods: bigger
++             * buffers) counts at once.
++             */
++            audio_rt_tick_set_max_period(&s->rt_tick,
++                                         audio_rt_mixer_period(s));
+             audio_rt_tick_add(&s->rt_tick, audio_rt_timer, s);
+         } else {
+             timer_mod_anticipate_ns(s->ts,
+@@ -635,6 +682,7 @@ static void audio_rt_timer(void *opaque)
+     int64_t now, diff;
+     AudioMixengBackend *s = opaque;
+ 
++
+     now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+     diff = now - s->timer_last;
+     if (diff > audio_rt_period() * 3 / 2) {
+diff --git a/audio/audio-rt.c b/audio/audio-rt.c
+index ed20d6a..3cedd21 100644
+--- a/audio/audio-rt.c
++++ b/audio/audio-rt.c
+@@ -19,6 +19,14 @@
+  *
+  * The thread sleeps while no tick is registered or the VM is stopped.
+  *
++ * Its period follows the streams (qemu-audio-tick-follows-stream.patch):
++ * each tick says the longest period it can take (the guest's DMA entries,
++ * the codec's buffer, the Mac's output buffer), the thread runs at the
++ * shortest of them, 1-10 ms; 1 ms when a tick does not know. The guest's
++ * usual 1024-frame periods and CoreAudio's 256-frame buffers give 5.33 ms:
++ * about 190 wakeups a second instead of 1000, with the same audio queued.
++ * OMACVM_AUDIO_THREAD_PERIOD_US fixes the period instead (measurements).
++ *
+  * SPDX-License-Identifier: MIT
+  */
+ 
+@@ -37,13 +45,17 @@
+ #endif
+ 
+ #define AUDIO_RT_MAX_TICKS 16
++#define AUDIO_RT_PERIOD_MIN (1 * SCALE_MS)
++#define AUDIO_RT_PERIOD_MAX (10 * SCALE_MS)
+ 
+ static QemuRecMutex audio_rt_mutex;
+ static QemuSemaphore audio_rt_wake;
+ static QemuThread audio_rt_thread;
+ static bool audio_rt_started;
+ static bool audio_rt_vm_running;
+-static int64_t audio_rt_period_ns = 1 * SCALE_MS;
++static int64_t audio_rt_period_ns = AUDIO_RT_PERIOD_MIN;
++/* OMACVM_AUDIO_THREAD_PERIOD_US was given: the period does not follow. */
++static bool audio_rt_period_fixed;
+ /* Under the audio lock. */
+ static AudioRtTick *audio_rt_ticks[AUDIO_RT_MAX_TICKS];
+ static int audio_rt_nticks;
+@@ -76,6 +88,7 @@ bool audio_rt_enabled(void)
+             int64_t us = g_ascii_strtoll(p, NULL, 10);
+             if (us >= 250 && us <= 10000) {
+                 audio_rt_period_ns = us * SCALE_US;
++                audio_rt_period_fixed = true;
+             }
+         }
+         audio_rt_init_once();
+@@ -103,7 +116,8 @@ bool audio_rt_on_thread(void)
+ }
+ 
+ #ifdef __APPLE__
+-static const char *audio_rt_set_priority(void)
++/* On the thread itself, again whenever its period changes. */
++static const char *audio_rt_set_priority(int64_t period_ns)
+ {
+     mach_timebase_info_data_t tb;
+     struct thread_time_constraint_policy pol;
+@@ -112,11 +126,13 @@ static const char *audio_rt_set_priority(void)
+     mach_timebase_info(&tb);
+     ns_to_abs = (double)tb.denom / tb.numer;
+     /* Every period; done in a quarter of it, at the latest by its end. */
+-    pol.period = (uint32_t)(audio_rt_period_ns * ns_to_abs);
+-    pol.computation = (uint32_t)(audio_rt_period_ns / 4 * ns_to_abs);
+-    pol.constraint = (uint32_t)(audio_rt_period_ns * ns_to_abs);
++    pol.period = (uint32_t)(period_ns * ns_to_abs);
++    pol.computation = (uint32_t)(period_ns / 4 * ns_to_abs);
++    pol.constraint = (uint32_t)(period_ns * ns_to_abs);
+     pol.preemptible = 1;
+-    if (thread_policy_set(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY,
++    /* pthread_mach_thread_np: no new port right per call (mach_thread_self). */
++    if (thread_policy_set(pthread_mach_thread_np(pthread_self()),
++                          THREAD_TIME_CONSTRAINT_POLICY,
+                           (thread_policy_t)&pol,
+                           THREAD_TIME_CONSTRAINT_POLICY_COUNT) == KERN_SUCCESS) {
+         return "time-constraint";
+@@ -141,7 +157,7 @@ static void audio_rt_sleep_until(int64_t deadline_ns)
+     }
+ }
+ #else
+-static const char *audio_rt_set_priority(void)
++static const char *audio_rt_set_priority(int64_t period_ns)
+ {
+     return "default priority";
+ }
+@@ -159,10 +175,14 @@ static void *audio_rt_run(void *opaque)
+ {
+     AudioRtTick *now_ticks[AUDIO_RT_MAX_TICKS];
+     int64_t next = get_clock();
++    int64_t period, policy_ns;
+ 
+     rcu_register_thread();
++    qemu_rec_mutex_lock(&audio_rt_mutex);
++    policy_ns = audio_rt_period_ns;
++    qemu_rec_mutex_unlock(&audio_rt_mutex);
+     info_report("OmacVM: sound: own audio thread, %s, every %" PRId64 " us",
+-                audio_rt_set_priority(), audio_rt_period_ns / SCALE_US);
++                audio_rt_set_priority(policy_ns), policy_ns / SCALE_US);
+     for (;;) {
+         int n, i;
+ 
+@@ -182,9 +202,17 @@ static void *audio_rt_run(void *opaque)
+                 now_ticks[i]->fn(now_ticks[i]->opaque);
+             }
+         }
++        period = audio_rt_period_ns;
+         qemu_rec_mutex_unlock(&audio_rt_mutex);
+ 
+-        next += audio_rt_period_ns;
++        if (period != policy_ns) {
++            /* A stream came or went, or the Mac's output buffer changed. */
++            policy_ns = period;
++            audio_rt_set_priority(period);
++            info_report("OmacVM: sound: audio tick every %" PRId64 " us",
++                        period / SCALE_US);
++        }
++        next += period;
+         int64_t t = get_clock();
+         if (next < t - 20 * SCALE_MS) {
+             /* Late by far more than a period (the Mac slept): start over. */
+@@ -195,6 +223,27 @@ static void *audio_rt_run(void *opaque)
+     return NULL;
+ }
+ 
++/*
++ * Under the audio lock: the period is the shortest any registered tick can
++ * take (0: not known, the shortest of all), in 1-10 ms. With no tick left
++ * it stays (the thread sleeps; the next stream sets it again).
++ */
++static void audio_rt_update_period(void)
++{
++    int64_t p = AUDIO_RT_PERIOD_MAX;
++    int i;
++
++    if (audio_rt_period_fixed || !audio_rt_nticks) {
++        return;
++    }
++    for (i = 0; i < audio_rt_nticks; i++) {
++        int64_t m = audio_rt_ticks[i]->max_period_ns;
++
++        p = MIN(p, m > 0 ? m : AUDIO_RT_PERIOD_MIN);
++    }
++    audio_rt_period_ns = MAX(p, AUDIO_RT_PERIOD_MIN);
++}
++
+ /* Under the audio lock. */
+ static void audio_rt_kick(void)
+ {
+@@ -216,14 +265,6 @@ void audio_rt_tick_add(AudioRtTick *t, void (*fn)(void *), void *opaque)
+ {
+     assert(audio_rt_enabled());
+     qemu_rec_mutex_lock(&audio_rt_mutex);
+-    if (!audio_rt_started) {
+-        audio_rt_started = true;
+-        audio_rt_vm_running = runstate_is_running();
+-        audio_rt_sleeping = true;
+-        qemu_add_vm_change_state_handler(audio_rt_vm_state, NULL);
+-        qemu_thread_create(&audio_rt_thread, "omacvm-audio", audio_rt_run,
+-                           NULL, QEMU_THREAD_DETACHED);
+-    }
+     t->fn = fn;
+     t->opaque = opaque;
+     if (!t->registered) {
+@@ -233,6 +274,15 @@ void audio_rt_tick_add(AudioRtTick *t, void (*fn)(void *), void *opaque)
+         }
+         t->registered = true;
+         audio_rt_ticks[audio_rt_nticks++] = t;
++        audio_rt_update_period();
++    }
++    if (!audio_rt_started) {
++        audio_rt_started = true;
++        audio_rt_vm_running = runstate_is_running();
++        audio_rt_sleeping = true;
++        qemu_add_vm_change_state_handler(audio_rt_vm_state, NULL);
++        qemu_thread_create(&audio_rt_thread, "omacvm-audio", audio_rt_run,
++                           NULL, QEMU_THREAD_DETACHED);
+     }
+     audio_rt_kick();
+     qemu_rec_mutex_unlock(&audio_rt_mutex);
+@@ -254,6 +304,26 @@ void audio_rt_tick_del(AudioRtTick *t)
+                 break;
+             }
+         }
++        audio_rt_update_period();
++    }
++    qemu_rec_mutex_unlock(&audio_rt_mutex);
++}
++
++/*
++ * The longest period this tick can take (0: not known). Any thread; also
++ * from a tick itself (the audio lock is recursive).
++ */
++void audio_rt_tick_set_max_period(AudioRtTick *t, int64_t ns)
++{
++    if (!audio_rt_enabled()) {
++        return;
++    }
++    qemu_rec_mutex_lock(&audio_rt_mutex);
++    if (t->max_period_ns != ns) {
++        t->max_period_ns = ns;
++        if (t->registered) {
++            audio_rt_update_period();
++        }
+     }
+     qemu_rec_mutex_unlock(&audio_rt_mutex);
+ }
+diff --git a/audio/audio_int.h b/audio/audio_int.h
+index bb3517e..dd2c309 100644
+--- a/audio/audio_int.h
++++ b/audio/audio_int.h
+@@ -69,6 +69,8 @@ typedef struct HWVoiceOut {
+     size_t pos_emul, pending_emul, size_emul;
+ 
+     size_t samples;
++    /* OmacVM: frames per backend callback (0: not known); qatomic */
++    int omacvm_frames;
+     QLIST_HEAD (sw_out_listhead, SWVoiceOut) sw_head;
+     QLIST_HEAD (sw_cap_listhead, SWVoiceCap) cap_head;
+     QLIST_ENTRY (HWVoiceOut) entries;
+@@ -89,6 +91,8 @@ typedef struct HWVoiceIn {
+     size_t pos_emul, pending_emul, size_emul;
+ 
+     size_t samples;
++    /* OmacVM: frames per backend callback (0: not known); qatomic */
++    int omacvm_frames;
+     QLIST_HEAD (sw_in_listhead, SWVoiceIn) sw_head;
+     QLIST_ENTRY (HWVoiceIn) entries;
+ } HWVoiceIn;
+diff --git a/audio/sdlaudio.c b/audio/sdlaudio.c
+index bf5befe..033b9bf 100644
+--- a/audio/sdlaudio.c
++++ b/audio/sdlaudio.c
+@@ -740,6 +740,8 @@ static void sdl_out_poll(SDLVoiceOut *sdl)
+         info_report("OmacVM: sound: the Mac's audio device works again");
+     }
+     sdl->open_frames = op->spec.samples;
++    /* OmacVM: the sound's own thread ticks at a share of the ring left. */
++    qatomic_set(&sdl->hw.omacvm_frames, (int)sdl->open_frames);
+     if (sdl->open_frames != sdl->out_logged) {
+         sdl->out_logged = sdl->open_frames;
+         if (op->refused) {
+@@ -1302,6 +1304,8 @@ static int sdl_init_in(HWVoiceIn *hw, audsettings *as)
+     hw->size_emul = hw->samples * hw->info.bytes_per_frame;
+     hw->buf_emul = g_malloc(hw->size_emul);
+     hw->pos_emul = hw->pending_emul = 0;
++    /* OmacVM: the capture device opens with exactly req (allowed_changes 0). */
++    qatomic_set(&hw->omacvm_frames, (int)req.samples);
+ 
+     cap = g_new0(SDLCapture, 1);
+     qemu_mutex_init(&cap->lock);
+diff --git a/hw/audio/hda-codec.c b/hw/audio/hda-codec.c
+index 0b312f1..32066dc 100644
+--- a/hw/audio/hda-codec.c
++++ b/hw/audio/hda-codec.c
+@@ -317,30 +317,69 @@ static void hda_audio_input_cb(void *opaque, int avail)
+ #define HDA_PACE_BURST (B_SIZE / 8)
+ #define HDA_PACE_PRIME (250 * SCALE_MS)
+ 
++/*
++ * OmacVM (qemu-audio-tick-follows-stream.patch): on the sound's own thread a
++ * tick moves the guest's audio of a whole period (1-10 ms), not of 1 ms. The
++ * burst is a period plus the slack a late tick had at 1 ms, so a regular
++ * tick is never taken for a stall.
++ */
++static int64_t hda_audio_pace_burst(HDAAudioStream *st, int64_t bps)
++{
++    int64_t extra = 0;
++
++    if (audio_rt_enabled() && audio_rt_period() > HDA_TIMER_TICKS) {
++        extra = muldiv64(audio_rt_period() - HDA_TIMER_TICKS, bps,
++                         NANOSECONDS_PER_SECOND) & -4;
++    }
++    return HDA_PACE_BURST + extra;
++}
++
++/*
++ * OmacVM: the longest tick this stream can take: a quarter of the guest's
++ * shortest DMA entry (its periods; the guest sees its position move once a
++ * tick) and at most an eighth of the codec's buffer, which a tick fills or
++ * drains. 0 (not known): the thread's shortest period.
++ */
++static int64_t hda_audio_max_period(HDAAudioStream *st)
++{
++    int64_t bps = hda_bytes_per_second(st);
++    uint32_t entry = hda_codec_min_entry(&st->state->hda, st->stream,
++                                         st->output);
++    int64_t bytes;
++
++    if (bps <= 0 || entry < 16) {
++        return 0;
++    }
++    bytes = MIN((int64_t)entry / 4, (int64_t)(B_SIZE / 8));
++    return muldiv64(bytes, NANOSECONDS_PER_SECOND, bps);
++}
++
+ static int64_t hda_audio_output_pace(HDAAudioStream *st, int64_t now,
+                                      int64_t wanted, int64_t to_transfer)
+ {
+     int64_t bps = hda_bytes_per_second(st);
++    int64_t burst;
+ 
+     if (!st->state->pace || bps <= 0) {
+         return to_transfer;
+     }
++    burst = hda_audio_pace_burst(st, bps);
+     if (!st->primed) {
+         if (now - st->run_ns < HDA_PACE_PRIME) {
+             st->pace_ns = now;
+             return to_transfer;
+         }
+         st->primed = true;
+-        st->budget = HDA_PACE_BURST;
++        st->budget = burst;
+     }
+     if (st->pace_ns && now > st->pace_ns) {
+         st->budget += muldiv64(now - st->pace_ns, bps + bps / 32,
+                                NANOSECONDS_PER_SECOND);
+     }
+     st->pace_ns = now;
+-    st->budget = MIN(st->budget, (int64_t)HDA_PACE_BURST);
+-    if (wanted - st->wpos > (int64_t)HDA_PACE_BURST) {
+-        int64_t excess = wanted - st->wpos - HDA_PACE_BURST;
++    st->budget = MIN(st->budget, burst);
++    if (wanted - st->wpos > burst) {
++        int64_t excess = wanted - st->wpos - burst;
+ 
+         st->buft_start += muldiv64(excess, NANOSECONDS_PER_SECOND, bps);
+         trace_hda_audio_pace_forgive(st->node->name, excess);
+@@ -451,6 +490,8 @@ static void hda_audio_set_running(HDAAudioStream *st, bool running)
+         st->budget = 0;
+         if (audio_rt_enabled()) {
+             /* OmacVM: the guest's DMA moves on the sound's own thread. */
++            audio_rt_tick_set_max_period(&st->rt_tick,
++                                         hda_audio_max_period(st));
+             audio_rt_tick_add(&st->rt_tick, st->output ? hda_audio_output_timer
+                                                        : hda_audio_input_timer,
+                               st);
+diff --git a/hw/audio/intel-hda.c b/hw/audio/intel-hda.c
+index 8c6cee4..effadbc 100644
+--- a/hw/audio/intel-hda.c
++++ b/hw/audio/intel-hda.c
+@@ -115,6 +115,16 @@ bool hda_codec_xfer(HDACodecDevice *dev, uint32_t stnr, bool output,
+     return bus->xfer(dev, stnr, output, buf, len);
+ }
+ 
++/*
++ * OmacVM: the shortest DMA entry, in bytes, of the stream the guest runs as
++ * stnr (0: none, or not known). The codec ticks at a fraction of it.
++ */
++uint32_t hda_codec_min_entry(HDACodecDevice *dev, uint32_t stnr, bool output)
++{
++    HDACodecBus *bus = HDA_BUS(dev->qdev.parent_bus);
++    return bus->min_entry ? bus->min_entry(dev, stnr, output) : 0;
++}
++
+ /* --------------------------------------------------------------------- */
+ /* intel hda emulation                                                   */
+ 
+@@ -536,6 +546,35 @@ static bool intel_hda_xfer(HDACodecDevice *dev, uint32_t stnr, bool output,
+     return true;
+ }
+ 
++/*
++ * OmacVM: the shortest entry of the stream's buffer list as parsed when the
++ * guest started it (guest values: only their minimum is used, 0 = not known),
++ * at most the stream's cyclic buffer. Under the audio lock (MMIO takes it).
++ */
++static uint32_t intel_hda_min_entry(HDACodecDevice *dev, uint32_t stnr,
++                                    bool output)
++{
++    HDACodecBus *bus = HDA_BUS(dev->qdev.parent_bus);
++    IntelHDAState *d = container_of(bus, IntelHDAState, codecs);
++    IntelHDAStream *st = output ? d->st + 4 : d->st;
++    uint32_t s, i, len;
++
++    for (s = 0; s < 4; s++) {
++        if (stnr == ((st[s].ctl >> 20) & 0x0f)) {
++            break;
++        }
++    }
++    if (s == 4 || st[s].bpl == NULL || !st[s].bentries) {
++        return 0;
++    }
++    st += s;
++    len = st->cbl;
++    for (i = 0; i < st->bentries; i++) {
++        len = MIN(len, st->bpl[i].len);
++    }
++    return len;
++}
++
+ static void intel_hda_parse_bdl(IntelHDAState *d, IntelHDAStream *st)
+ {
+     const MemTxAttrs attrs = { .memory = true };
+@@ -1213,6 +1252,7 @@ static void intel_hda_realize(PCIDevice *pci, Error **errp)
+ 
+     hda_codec_bus_init(DEVICE(pci), &d->codecs, sizeof(d->codecs),
+                        intel_hda_response, intel_hda_xfer);
++    d->codecs.min_entry = intel_hda_min_entry;
+     d->irq_bh = qemu_bh_new_guarded(intel_hda_irq_bh, d,
+                                     &DEVICE(d)->mem_reentrancy_guard);
+ }
+diff --git a/hw/audio/intel-hda.h b/hw/audio/intel-hda.h
+index 174cf69..af3a5da 100644
+--- a/hw/audio/intel-hda.h
++++ b/hw/audio/intel-hda.h
+@@ -20,12 +20,16 @@ typedef void (*hda_codec_response_func)(HDACodecDevice *dev,
+ typedef bool (*hda_codec_xfer_func)(HDACodecDevice *dev,
+                                     uint32_t stnr, bool output,
+                                     uint8_t *buf, uint32_t len);
++typedef uint32_t (*hda_codec_min_entry_func)(HDACodecDevice *dev,
++                                             uint32_t stnr, bool output);
+ 
+ struct HDACodecBus {
+     BusState qbus;
+     uint32_t next_cad;
+     hda_codec_response_func response;
+     hda_codec_xfer_func xfer;
++    /* OmacVM: the shortest DMA entry of a stream (may be NULL) */
++    hda_codec_min_entry_func min_entry;
+ };
+ 
+ struct HDACodecDeviceClass {
+@@ -50,6 +54,7 @@ HDACodecDevice *hda_codec_find(HDACodecBus *bus, uint32_t cad);
+ void hda_codec_response(HDACodecDevice *dev, bool solicited, uint32_t response);
+ bool hda_codec_xfer(HDACodecDevice *dev, uint32_t stnr, bool output,
+                     uint8_t *buf, uint32_t len);
++uint32_t hda_codec_min_entry(HDACodecDevice *dev, uint32_t stnr, bool output);
+ 
+ /* --------------------------------------------------------------------- */
+ 
+diff --git a/include/qemu/audio.h b/include/qemu/audio.h
+index eaa3993..7301dd9 100644
+--- a/include/qemu/audio.h
++++ b/include/qemu/audio.h
+@@ -244,11 +244,14 @@ OBJECT_DECLARE_TYPE(AudioBackend, AudioBackendClass, AUDIO_BACKEND)
+  * OmacVM: the sound's own real-time thread (audio/audio-rt.c), on with
+  * OMACVM_AUDIO_THREAD=1. A tick runs every period on that thread with the
+  * audio lock held; the lock guards the mixer and the sound devices' state.
++ * The period is the shortest max_period_ns of the registered ticks (0: not
++ * known, 1 ms), clamped to 1-10 ms.
+  */
+ typedef struct AudioRtTick {
+     void (*fn)(void *opaque);
+     void *opaque;
+     bool registered;
++    int64_t max_period_ns;
+ } AudioRtTick;
+ 
+ bool audio_rt_enabled(void);
+@@ -257,6 +260,7 @@ void audio_rt_unlock(void);
+ bool audio_rt_on_thread(void);
+ void audio_rt_tick_add(AudioRtTick *t, void (*fn)(void *), void *opaque);
+ void audio_rt_tick_del(AudioRtTick *t);
++void audio_rt_tick_set_max_period(AudioRtTick *t, int64_t ns);
+ int64_t audio_rt_period(void);
+ 
+ #endif /* QEMU_AUDIO_H */
