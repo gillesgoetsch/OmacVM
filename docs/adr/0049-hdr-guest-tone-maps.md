@@ -66,7 +66,12 @@ BT.2100 PQ, and the layer asks for EDR. It stayed hidden because:
    an encrypted root's passphrase) shows only what the firmware framebuffer
    shows; and it is a bridge: Linux 7.4 keeps the damage itself, and once
    Arch Linux ARM ships it the loader keeps the stock driver. If 3.5.0
-   ships after that, this amendment is dropped.) `omacvm
+   ships after that, this amendment is dropped. Checked on the mini: at 8
+   bits the KMS planes, formats, modifiers and properties are the stock
+   driver's (0 lines differ). The build starts from the deep-colour patch:
+   if that one stops applying there is no build, and the start loads the
+   stock driver, as today. The initramfs console row is owed: a stop in a
+   systemd initramfs was not reached on the test image.) `omacvm
    apply` builds it on every app VM (7 s; downloaded, patched and built as
    a user id of its own, root only installs it) into `/usr/local/lib/omacvm/virtio-gpu/K`,
    which depmod never sees; a modprobe `install` rule loads it only when
