@@ -3,9 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.1 (unreleased)
+
+- **Fewer animations** (experimental, off by default, Omarchy 4.5): turns on Omarchy's own "no
+  animations" setting (no animations, blur or shadows), the same switch as Omarchy's menu. A
+  window's border then changes colour at once on a focus change instead of fading, which made
+  Hyprland redraw both windows. MacBook Air M2, the pointer moving across windows: about 0.46 W
+  less. It changes Omarchy's look. In the VM window's Display section.
+
 ## 3.5.0
 
-The power release: the VM copies only what changed on screen, its sound wakes the Mac less, and four savers to try.
+The power release: the VM copies only what changed on screen, its sound wakes the Mac less, and three savers to try.
 Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured yet.
 
 - **Copy only what changed** (on by default, not for HDR starts yet): the VM now tells QEMU which
@@ -24,11 +32,6 @@ Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured 
   YouTube then sends VP9, which the Mac's media engine decodes, instead of AV1 on the VM's CPUs.
   MacBook Air M2, a 1080p60 video: about 1.2 W less. Videos only in AV1 are not offered, and for
   now about 1-3 % of frames drop at 1080p60. Remove it in chrome://extensions at any time.
-- **Fewer animations** (experimental, off by default, Omarchy 4.5): turns on Omarchy's own "no
-  animations" setting (no animations, blur or shadows), the same switch as Omarchy's menu. A
-  window's border then changes colour at once on a focus change instead of fading, which made
-  Hyprland redraw both windows. MacBook Air M2, the pointer moving across windows: about 0.46 W
-  less. It changes Omarchy's look. In the VM window's Display section.
 - **VM CPU clock saver** (experimental, off by default): the VM's CPUs get the clock their own work
   needs, not the high clock macOS gives the app in front. MacBook Air M2, a 1080p60 video: about
   0.5 W less; now and then a dropped video frame. Works at once in a running VM.
