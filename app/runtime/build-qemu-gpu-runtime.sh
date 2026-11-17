@@ -1234,6 +1234,14 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volat
 # skip must still be wired as present-unseen's test reads it.
 "$native_dir/Tests/display/test-present-unseen.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: frames are drawn for a window out of sight after the volatile patch (test-present-unseen.sh)"
+# OmacVM: the tiled present also when frames are shown when drawn (OMACVM_GL_VSYNC=0;
+# ADR 0055's addendum of 2026-11-17): hidden test windows, whose display link never
+# ticks, run tiles + partial present in check mode. The vsync present is unchanged.
+"$native_dir/Tests/display/test-present-tiles-direct.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a tiles-when-drawn wiring check passes without the patch (test-present-tiles-direct.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-tiles-direct.patch"
+"$native_dir/Tests/display/test-present-tiles-direct.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the tiled present when drawn is not wired as tested (test-present-tiles-direct.sh)"
 # OmacVM: drag and drop of files into the VM (drag-drop, ADR 0069): with
 # OMACVM_DROP_SOCKET the VM's windows take files and hand them, open, to the
 # app. Its rules' test, a check that the wiring checks fail on the code

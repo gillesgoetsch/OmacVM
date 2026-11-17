@@ -1,0 +1,169 @@
+OmacVM Cocoa: the tiled present also when frames are shown when drawn
+
+What: "Draw only what changed" (OMACVM_GL_PRESENT_TILES, ADR 0055) ran only
+with the vsync present; with OMACVM_GL_VSYNC=0 (frames shown as soon as the
+GPU is done) it said "off (needs the vsync present)". Now a tile frame shown
+when drawn goes on the layers on the main queue, as the whole frames there
+do, so both kinds reach the layers in the order they were drawn; a whole
+frame shown when drawn hides the tiles and measures whether later frames may
+go in tiles, through the same helper as the vsync present's whole frames
+(present_tiles_whole_shown). present_bh is made in both modes: it asks for
+a whole frame after the tiles hid and draws the newest frame when the window
+is seen again. The vsync present (the default) does exactly what it did.
+
+Why: a hidden test window (OMACVM_COCOA_HIDDEN) is never ordered in, so its
+display link never ticks and the vsync present shows its first frames and
+then none: no tiles check could run there, and the tiles + partial present
+check needed a window on a display (present-locked.sh's virtual display, or
+a person's screen). Frames shown when drawn need no tick, so tiles and the
+partial present (ADR 0051) run together in check mode on a hidden window,
+also on a Mac where no row may make a virtual display.
+
+Upstream: OmacVM only (the tiled present is ours).
+Tests: app/runtime/Tests/display/test-present-tiles-direct.sh (wiring, and
+--self-test: every check fails without this patch); rows: hidden mini rows
+with OMACVM_GL_VSYNC=0, OMACVM_GL_PRESENT_TILES=check and
+OMACVM_GL_PRESENT_DAMAGE=check, and the half-box fault
+(work/power-1117/tiles-rects).
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index f71f10d..9c1c54b 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -306,6 +306,7 @@ static void cocoa_gl_switch(DisplayChangeListener *dcl,
+ /* OmacVM boot splash: the main view's size in pixels (BQL). */
+ static void omacvm_splash_view_size(uint32_t w, uint32_t h);
+ static void present_tiles_hide(void);
++static void present_tiles_whole_shown(CALayer *layer, IOSurfaceRef surf);
+ /* GL frames are shown as IOSurfaces (the view's layer is a plain CALayer). */
+ static bool cocoa_gl_present_on(void);
+ 
+@@ -9137,16 +9138,16 @@ static bool cocoa_gl_present_init(void)
+     const char *tr = getenv("OMACVM_GL_TRIM");
+     present_trim_quarter = present_vsync && tr && !strcmp(tr, "quarter");
+     present_nsurf = present_vsync ? PRESENT_SURFACES : 3;
+-    if (present_vsync) {
+-        /*
+-         * OmacVM: on the iohandler context, which only the main loop thread
+-         * runs. qemu_bh_new's context is also run by a vCPU waiting in
+-         * AIO_WAIT_WHILE (a block drain), and this BH draws with GL and reads
+-         * virgl's textures: one thread for virgl, as virtio-gpu's own BHs.
+-         */
+-        present_bh = aio_bh_new(iohandler_get_aio_context(),
+-                                cocoa_gl_present_bh, NULL);
+-    }
++    /*
++     * OmacVM: on the iohandler context, which only the main loop thread
++     * runs. qemu_bh_new's context is also run by a vCPU waiting in
++     * AIO_WAIT_WHILE (a block drain), and this BH draws with GL and reads
++     * virgl's textures: one thread for virgl, as virtio-gpu's own BHs. In
++     * both modes: frames shown when drawn need it too once the tiles hid
++     * (a whole frame then) or the window is seen again (its newest frame).
++     */
++    present_bh = aio_bh_new(iohandler_get_aio_context(),
++                            cocoa_gl_present_bh, NULL);
+     /* Extra brightness redraws in either mode (same context, same reason). */
+     omacvm_bright_bh = aio_bh_new(iohandler_get_aio_context(),
+                                   omacvm_bright_redraw, NULL);
+@@ -9315,10 +9316,8 @@ static bool present_tiles_wanted(void)
+         const char *e = getenv("OMACVM_GL_PRESENT_TILES");
+         int on = e && !strcmp(e, "1") ? 1 : e && !strcmp(e, "check") ? 2 : 0;
+         char why[512] = "";
+-        if (on && !present_vsync) {
+-            present_tiles_on = 0;
+-            info_report("cocoa: tiled present: off (needs the vsync present)");
+-        } else if (on && !present_tile_program(why, sizeof(why))) {
++        /* both present modes: frames shown when drawn (OMACVM_GL_VSYNC=0) go on the layers on the main queue */
++        if (on && !present_tile_program(why, sizeof(why))) {
+             present_tiles_on = 0;
+             info_report("cocoa: tiled present: off (the tile shader does not build: %s)", why);
+         } else {
+@@ -10058,9 +10057,11 @@ static int cocoa_gl_present_tiles(GLuint src, bool flip)
+         pt->up[pt->n++] = (OmacvmPTUpdate){ tl[k], (void *)s };
+     }
+     double flushed = CACurrentMediaTime();
+-    os_unfair_lock_lock(&present_lock);
+-    present_sync.inflight++;
+-    os_unfair_lock_unlock(&present_lock);
++    if (present_vsync) {
++        os_unfair_lock_lock(&present_lock);
++        present_sync.inflight++;
++        os_unfair_lock_unlock(&present_lock);
++    }
+     dispatch_async(present_queue, ^{
+         CGLSetCurrentContext(present_wait_ctx);
+         if (sync) {
+@@ -10073,9 +10074,23 @@ static int cocoa_gl_present_tiles(GLuint src, bool flip)
+             glDeleteSync(sync);
+         }
+         CGLSetCurrentContext(NULL);
+-        cocoa_gl_present_queue_frame((PresentFrame){
++        PresentFrame tf = {
+             .surf = NULL, .filter = GL_NEAREST, .flushed = flushed,
+             .linear = false, .pt = pt,
++        };
++        if (present_vsync) {
++            cocoa_gl_present_queue_frame(tf);
++            return;
++        }
++        /*
++         * Shown when drawn: on the main queue, as the whole frames are,
++         * so tile frames and whole frames reach the layers in the order
++         * they were drawn.
++         */
++        dispatch_async(dispatch_get_main_queue(), ^{
++            PresentFrame f = tf;
++            present_frame_show(&f);
++            present_frame_put(&f);
+         });
+     });
+     present_last_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+@@ -10437,6 +10452,7 @@ static bool cocoa_gl_present(void)
+             omacvm_present_gravity(layer, surf);
+             [layer setContents:(id)surf];
+             qatomic_set(&present_shown, surf);
++            present_tiles_whole_shown(layer, surf);
+             [CATransaction commit];
+             omacvm_park_frame_shown(flushed);
+             IOSurfaceDecrementUseCount(surf);
+@@ -10739,6 +10755,23 @@ static void cocoa_gl_present_show_tiles(PresentFrame *f)
+     }
+ }
+ 
++/*
++ * Any thread, in the transaction that shows the whole frame SURF on LAYER
++ * (both present modes): the tiles over it go; can later frames go in tiles?
++ */
++static void present_tiles_whole_shown(CALayer *layer, IOSurfaceRef surf)
++{
++    if (present_tiles_on <= 0) {
++        return;
++    }
++    uint32_t fw = IOSurfaceGetWidth(surf), fh = IOSurfaceGetHeight(surf);
++    qatomic_set(&present_tiles_fit, present_tiles_fits(layer, fw, fh) ?
++                                    (uint64_t)fw << 32 | fh : 0);
++    os_unfair_lock_lock(&present_tile_lock);
++    present_tiles_hide_locked();
++    os_unfair_lock_unlock(&present_tile_lock);
++}
++
+ /* Any thread: put a finished frame on the layer. */
+ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushed,
+                                   bool linear)
+@@ -10754,15 +10787,7 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
+     omacvm_present_gravity(layer, surf);
+     [layer setContents:(id)surf];
+     qatomic_set(&present_shown, surf);
+-    if (present_tiles_on > 0) {
+-        /* a whole frame: the tiles over it go; can later frames go in tiles? */
+-        uint32_t fw = IOSurfaceGetWidth(surf), fh = IOSurfaceGetHeight(surf);
+-        qatomic_set(&present_tiles_fit, present_tiles_fits(layer, fw, fh) ?
+-                                        (uint64_t)fw << 32 | fh : 0);
+-        os_unfair_lock_lock(&present_tile_lock);
+-        present_tiles_hide_locked();
+-        os_unfair_lock_unlock(&present_tile_lock);
+-    }
++    present_tiles_whole_shown(layer, surf);
+     [CATransaction commit];
+     if (qatomic_read(&omacvm_park_hold_on)) {
+         dispatch_async(dispatch_get_main_queue(), ^{
