@@ -9,7 +9,7 @@
 # (the Mac's probe reads it: OMACVM_REAL_fewer_animations). Why: Hyprland
 # redraws the whole of both windows while their border colours fade after a
 # focus change, so moving the pointer across windows makes whole-screen frames
-# (about 0.46 W on a MacBook Air M2). As root in the VM:
+# (about 0.45 W on a MacBook Air M2). As root in the VM:
 #   install.sh USER on|off
 #   install.sh USER --status     on, off, or none (no such toggle in this
 #                                Omarchy: below 4.5)

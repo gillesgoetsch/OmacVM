@@ -397,7 +397,7 @@ expect(!FewerAnimations.row(record: nil, pending: nil, omarchy: nil, running: tr
 expect(FewerAnimations.switchState.pendingFile == "fewer-animations-pending" &&
        FewerAnimations.switchState.applyArguments(vm: "V", on: true) == ["apply", "--vm", "V", "--vm-type", "app", "--feature", "fewer-animations=on", "--yes", "--transaction"],
        "fewer-animations at the start: apply's switch of it alone")
-expect(FewerAnimations.info.hasPrefix("Experimental.") && FewerAnimations.info.contains("0.46 W") &&
+expect(FewerAnimations.info.hasPrefix("Experimental.") && FewerAnimations.info.contains("0.45 W") &&
        FewerAnimations.info.contains("blur or shadows") && FewerAnimations.info.contains("Omarchy's menu") &&
        FewerAnimations.info.contains("Omarchy 4.5"), "fewer-animations (i): experimental, the watts, what goes, the same as Omarchy's menu, 4.5")
 

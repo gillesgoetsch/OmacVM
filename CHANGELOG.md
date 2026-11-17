@@ -8,7 +8,7 @@ in more words.
 - **Fewer animations** (experimental, off by default, Omarchy 4.5): turns on Omarchy's own "no
   animations" setting (no animations, blur or shadows), the same switch as Omarchy's menu. A
   window's border then changes colour at once on a focus change instead of fading, which made
-  Hyprland redraw both windows. MacBook Air M2, the pointer moving across windows: about 0.46 W
+  Hyprland redraw both windows. MacBook Air M2, the pointer moving across windows: about 0.45 W
   less. It changes Omarchy's look. In the VM window's Display section.
 
 ## 3.5.0
