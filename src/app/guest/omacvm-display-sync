@@ -952,7 +952,8 @@ reload_on_display_change() {
 
 # hdr_only: Virtual-1's last rule again with only its HDR fields new (HDR
 # only in full screen: omacvm-displays changed $state_dir/hdr-follow). Under
-# the same lock as a whole run, which reads the rule file again inside it;
+# the same lock as a whole run (take_state: a new Hyprland's sent-state goes
+# first, so the tone map is sent to it again), which reads the rule file again inside it;
 # not for an output with the user's own rule; without a rule sent yet the
 # next whole run does it. No follow_check: a full-screen flip is no layout
 # change, so flips never count towards (or wait for) its hold. The tone map
@@ -962,10 +963,7 @@ reload_on_display_change() {
 # declines and puts the PQ rule back).
 hdr_only() {
   local lock_fd rule old base hdr digest response
-  mkdir -p "$state_dir"
-  if command -v flock >/dev/null && exec {lock_fd}>"$state_dir/lock"; then
-    flock -w 20 "$lock_fd" || true
-  fi
+  take_state
   old=$(cat "$state_dir/Virtual-1.rule" 2>/dev/null) || old=""
   if [[ -z $old ]] || user_rule Virtual-1; then
     return 0

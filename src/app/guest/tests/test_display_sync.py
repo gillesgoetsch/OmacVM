@@ -1040,6 +1040,26 @@ class HDRFullScreenOnly(HDRCase):
         self.assertEqual(r.returncode, 0)
         self.assertEqual(self.evals(), [])
 
+    hyprland, log_in_again = HDR.hyprland, HDR.log_in_again
+
+    def test_flip_after_a_new_login_sends_the_tone_map_again(self):
+        # A quick re-login: the new Hyprland has no clamp rule, but the files
+        # still say it was sent. A flip goes through take_state like a whole
+        # run, so the clamp reaches the new Hyprland before its PQ rule.
+        self.layout(4, True)
+        self.log_in_again("aaa_1")
+        self.follow("pq")
+        self.run_sync()
+        self.assertEqual(self.window_rules(), [self.CLAMP])
+        self.log_in_again("bbb_2")
+        self.layout(2, True)                             # the headroom moved: a new PQ rule
+        r = self.run_sync("--hdr")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.state / "instance").read_text(), "bbb_2\n")
+        self.assertEqual(self.window_rules(), [self.CLAMP, self.CLAMP])
+        self.assertEqual(self.calls()[-2], self.CLAMP)
+        self.assertIn('cm = "hdr"', self.calls()[-1])
+
     def test_refused_flip_says_so(self):
         self.layout(4, True)
         self.run_sync()
