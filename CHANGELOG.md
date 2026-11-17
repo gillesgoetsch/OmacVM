@@ -9,8 +9,8 @@ in more words.
   10 minutes (seen while other VMs started next to a full-screen one), Gestures gave the tap up
   until the Accessibility list changed. Ctrl+Option+Esc then went to the VM, and a Mac without a
   trackpad had no way out of the full-screen VM until Gestures was restarted. Now each further
-  stall waits 30 s, and the tap and the combo come back by themselves. Gestures also no longer
-  waits up to 6 s for a busy VM app's window title, which could stall the tap in the first place.
+  stall waits 30 s, and the tap and the combo come back by themselves. Gestures also gives a busy
+  VM app 0.1 s, not macOS's default, to name its window, a wait that could stall the tap.
 - **Dismiss all notifications also closes the Mac's.** In full screen macOS shows its banners and
   alerts (such as *App Background Activity*) over the VM, where nothing in the VM reaches them.
   Omarchy's own Super+Shift+, now also closes the ones on the Mac's screen, through the Bridge
