@@ -210,6 +210,7 @@ struct BatterySaverTopRow: View {
 /// writes as the switch (BatterySaverModel), then the group's state as JSON.
 /// The VM runs (its QEMU or an omacvm job uses its folder): its features
 /// through one `omacvm enable|disable`; stopped: its record and pending files.
+/// What it switched goes to stderr, so stdout is only the JSON.
 @MainActor
 enum BatterySaverCLI {
     nonisolated static let flag = "--battery-saver"
@@ -233,7 +234,7 @@ enum BatterySaverCLI {
             let switches = BatterySaverModel.vmSwitches(changes)
             err = running ? FeatureSwitch.runCLI(switches, on: on, config: c)
                           : BatterySaverModel.writeStopped(switches, folder: c.folder, on: on)
-            print("battery saver \(action): \(changes.map(\.rawValue).joined(separator: " ")) (\(running ? "running" : "stopped"))")
+            FileHandle.standardError.write(Data("battery saver \(action): \(changes.map(\.rawValue).joined(separator: " ")) (\(running ? "running" : "stopped"))\n".utf8))
         }
         let items = BatterySaverModel.items(folder: c.folder, running: running)
         let out: [String: Any] = [
