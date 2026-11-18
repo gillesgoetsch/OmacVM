@@ -185,3 +185,37 @@ moving the window between displays; the guest's lock screen and SDDM with
 autologin off; a client buffer scanned out directly (`direct_scanout`);
 the GPU copy's readback on an M2; the Air's watts.
 
+
+## Addendum (2026-11-18): the check counts levels, not bytes
+
+3.5.0's M1 Max rows (full screen including the notch at scale 2, 3024x1964
+drawn 1:1, the pointer over windows) found 508-1775 bad checks a start,
+in 1-pixel columns and rows at the edges of the pointer's old places and
+of window borders. The same rows in a window, at scale 1.6 and on the mini
+had none. It was not a wrong box, and nothing could be seen:
+
+- Every differing pixel was 1 level off in one channel: 140249 pixels in
+  1801 checks in one start, 97540 in 1604 in the next, none 2 levels or
+  more (a test build that measured every pixel of every bad check). A
+  stale pointer pixel is 30-200 levels off.
+- No flush since the surface's last draw touched the pixels that differed
+  (the same build logged the guest's rects since each surface's last
+  draw): the rules drew what the guest said had changed.
+- The pixels follow the guest's buffer: Hyprland's three swapchain buffers
+  held, for example, 1b1c29 in one and 1b1b28 in the other two along a
+  window border, white as ffffff in one and fefefe in another, in places
+  it no longer damaged. A full draw shows each buffer's own level in turn
+  (a 1-level flicker), a partial draw keeps the level of the buffer it
+  copied there last. Neither is wrong.
+- Blur off changed nothing (617 bad of 3878). Whether Hyprland's animations
+  leave the last level without damage is noted in work/release-3.5.0/ptr.
+  Timing decides how often it shows: a window, the hidden window, and full
+  screen with a kit's 119.93 Hz modeline had none; vsync off had some.
+
+So the check (`omacvm_pd_cmp` in the logic header) counts a pixel as
+wrong only when a colour channel is more than 2 levels off, the levels a
+guest's own rounding moves; a box that misses a change leaves the old
+picture, far more off. Checks with level differences only are counted
+apart ("N with level differences only" in the minute line, the first one
+logged with its place). The half-box fault stays caught. The partial
+present itself did not change.

@@ -27,12 +27,13 @@ order() {
     END {exit !(x && y && (c == "" || z))}' <<<"$1"
 }
 checks() {
-  local m=$1 present flush alloc tex pdcheck part
+  local m=$1 present flush alloc tex pdcheck stats part
   present=$(body "$m" 'static bool cocoa_gl_present(void)')
   flush=$(body "$m" 'static void cocoa_gl_scanout_flush(DisplayChangeListener *dcl,')
   alloc=$(body "$m" 'static bool cocoa_gl_present_alloc(')
   tex=$(body "$m" 'static void cocoa_gl_scanout_texture(DisplayChangeListener *dcl,')
   pdcheck=$(body "$m" 'static void cocoa_gl_present_pd_check(')
+  stats=$(body "$m" 'static void present_pd_stats(')
   # The statement that decides a partial draw, on one line, spaces squeezed.
   part=$(awk '/bool part = /{on=1} on {printf "%s ", $0} on && /;/ {exit}' <<<"$present" | tr -s ' \t' ' ')
   chk "the rules are included" grep -q '#include "ui/omacvm-present-damage.h"' "$m"
@@ -67,6 +68,12 @@ checks() {
     'glBindFramebuffer(GL_READ_FRAMEBUFFER, present_fbo);' 'glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);' \
     'glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, a);'
   chk "the frames after a full draw are all checked" has "$present" 'present_pd_check_burst = 4 * present_nsurf;'
+  # A pixel more than 2 levels off is wrong; the guest's buffers disagree by a level where it reports no change
+  # (ADR 0051, 2026-11-18): those checks are counted apart, not as bad.
+  chk "the check compares with the level rule" has "$pdcheck" 'OmacvmPDCmp c = omacvm_pd_cmp(a, b, w, h);'
+  chk "a check is bad only for pixels more than the levels off" order "$pdcheck" 'if (c.wrong) {' 'present_pd_bad++;'
+  chk "level differences are counted apart" has "$pdcheck" '++present_pd_level == 1'
+  chk "the minute line says how many checks had level differences only" has "$stats" 'present_pd_level);'
   chk "the test fault is for the check mode only" has "$present" 'present_pd_fault = present_damage_on != 2 || !fault ? 0 :'
   chk "qemu.log gets the counts (frames in part, in full and why)" has "$present" 'present_pd_stats(w, h);'
   chk "the counts know the reasons" has "$present" 'present_pd.last == OMACVM_PD_FULL_BIG ? PD_WHY_BIG : PD_WHY_CATCHUP;'
