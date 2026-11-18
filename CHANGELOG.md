@@ -32,6 +32,11 @@ Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured 
   yet. The VM's part comes with Update VM.
 - **HDR**: a frame is no longer shown in the wrong colours when the VM's display switches between
   10-bit and 8-bit twice within half a second.
+- **Dismiss all notifications also closes the Mac's** (#795, by @rubas). In full screen macOS shows
+  its banners and alerts (such as *App Background Activity*) over the VM, where nothing in the VM
+  reaches them. Omarchy's own Super+Shift+, now also closes the ones on the Mac's screen, through
+  the Bridge (its Accessibility permission), while the VM is in front. Omarchy's other notification
+  keys stay the VM's. It comes with Update VM.
 
 ## 3.4.8
 

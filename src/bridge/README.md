@@ -31,7 +31,7 @@ private `IOBluetoothPreferenceSetControllerPowerState` and
 | Permission | For | Grant / revoke |
 |---|---|---|
 | Location Services | macOS only shows Wi-Fi names to apps with it; no location is read | prompt on first start; System Settings › Privacy & Security › Location Services |
-| Accessibility | the event tap that takes the media keys while a VM is in front (logged as `permissions: ...`, shown by `omacvm check`) | prompt on first start; Privacy & Security › Accessibility, or `tccutil reset Accessibility org.omacvm.bridge` |
+| Accessibility | the event tap that takes the media keys while a VM is in front (logged as `permissions: ...`, shown by `omacvm check`), and closing the Mac's notifications on screen (Notifications, below) | prompt on first start; Privacy & Security › Accessibility, or `tccutil reset Accessibility org.omacvm.bridge` |
 | Input Monitoring | the brightness keys read from the keyboard while an OmacVM.app VM is in front (`mac/hid-keys.swift`; on macOS 27 they reach no event tap) | Privacy & Security › Input Monitoring |
 | Bluetooth | connecting, disconnecting, forgetting and switching from the VM (without it the devices are listed read-only, from macOS's system report) | prompt on first start; Privacy & Security › Bluetooth |
 | Keychain (per request) | the Wi-Fi password for QR sharing | macOS asks for an administrator's approval every time |
@@ -57,6 +57,7 @@ omacvm-bridge brightness -5 | night-shift toggle | night-shift strength 70 | tru
 omacvm-bridge external | external-brightness [--output Virtual-N] [+5 | -5 | 40]
 omacvm-bridge password [ssid]
 omacvm-bridge bluetooth power toggle | connect AA:BB:CC:DD:EE:FF | disconnect … | forget … | settings
+omacvm-bridge notifications dismiss
 ```
 
 ```bash
@@ -240,6 +241,25 @@ is closed, so each one sees what it saw before (the stream ends, it reconnects
 after 3 s). Without the socket (an older install, the service failing)
 `omacvm-bridge events` goes straight to the Mac. Log: `journalctl --user -u
 omacvm-bridge-events`.
+
+### Notifications
+
+`POST /notifications/dismiss` closes the Mac's banners and alerts on screen,
+as their own close button does, and answers `{"closed": N}`; only while an
+OmacVM.app VM is in front (`409` otherwise), where they cover the VM and
+nothing in it reaches them. Omarchy's "Dismiss all notifications"
+(Super+Shift+comma) asks for it: `../guest/omacvm_vm.lua` adds a second bind
+on those keys (Hyprland runs every bind of a key, so Omarchy's still clears
+the VM's own) that runs `omacvm-bridge notifications dismiss`.
+
+`notifications.swift` closes each element of NotificationCenter's
+Accessibility tree with the subrole `AXNotificationCenterBanner` or
+`AXNotificationCenterAlert` by its Close action. macOS titles that action in
+NotificationCenter's language (`Name:Close`, `Name:Schließen`) and gives it no
+other name, so the Bridge reads the word from NotificationCenter's own bundle
+in the Mac's languages (macOS 15.4 and newer; before, only `Close`). Which
+elements, which action: `notifications-model.swift`, tested by
+`mac/test-models.sh`.
 
 ### The retired routes' addresses
 
