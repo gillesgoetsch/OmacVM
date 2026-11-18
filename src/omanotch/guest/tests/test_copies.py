@@ -55,6 +55,7 @@ class Copies(unittest.TestCase):
         self.restarts = 0
         self.refuse = {}     # what the stand-in shell refuses to load: copy name -> error
         self.locked = False
+        self.clone_fails = ""
         self.shell("bar", MAC)
         self.shell("background", MAC)
 
@@ -75,8 +76,10 @@ class Copies(unittest.TestCase):
                 return m.LATER
             return {c.name: self.refuse[c.name] for c in copies if c.name in self.refuse}
 
-        def run(cmd, timeout=30):
+        def run(cmd, timeout=30, errors=False):
             if cmd[:1] == ["omarchy-plugin-clone"]:
+                if self.clone_fails:   # as omarchy-plugin-clone's fail(): stdout empty, the reason on stderr
+                    return 1, self.clone_fails if errors else ""
                 return self.clone(cmd[1]), ""
             return 1, ""
         m.print = lambda *a, **k: None   # its one line per copy
@@ -581,7 +584,7 @@ class Copies(unittest.TestCase):
         pings, clock = [], [0.0]
         stand_in = self.m.run
 
-        def run(cmd, timeout=30):
+        def run(cmd, timeout=30, errors=False):
             if cmd == ["omarchy-shell", "shell", "ping"]:
                 pings.append(clock[0])
                 return (1 if len(pings) <= looks else 0), ""
@@ -589,7 +592,7 @@ class Copies(unittest.TestCase):
                 return 0, "4242"
             if cmd == ["omarchy-shell", "lock", "status"]:
                 return 0, status(False)
-            return stand_in(cmd, timeout)
+            return stand_in(cmd, timeout, errors)
         self.m.run = run
         self.m.session_locked = self.real_session_locked
         for name, fake in (("monotonic", lambda: clock[0]), ("sleep", lambda s: clock.__setitem__(0, clock[0] + s))):
@@ -625,6 +628,17 @@ class Copies(unittest.TestCase):
         self.assertEqual(self.follow(install=True), 0)
         self.assertEqual(self.check()["bar copy"][0], "ok")
 
+
+    def test_a_clone_that_fails_says_why(self):
+        """#829's report: "made no copy ()": omarchy-plugin-clone's reason is on stderr."""
+        self.clone_fails = "omarchy-plugin-clone: cloned plugin 'u.bar' was not discovered"
+        self.follow(install=True)
+        st, d = self.check()["bar copy"]
+        self.assertEqual(st, "warn")
+        self.assertIn("made no copy (omarchy-plugin-clone: cloned plugin 'u.bar' was not discovered)", d)
+        self.clone_fails = ""
+        self.assertEqual(self.follow(install=True), 0)
+        self.assertEqual(self.check()["bar copy"][0], "ok")
 
     def test_what_counts_as_not_loading(self):
         """The shell's log as Quickshell writes it: errors naming the copy
