@@ -7,6 +7,7 @@
 //   t retire               what a launch does with retired switches (Settings.removeRetiredSwitches)
 //   t mediadefault ID      AirPods and media controls' default for that bundle id
 //   t set KEY VALUE [VM]   one change, made with the call the window's row makes
+//   t battery on|off VM    Battery saver's top switch for a stopped VM (BatterySaverModel)
 import AppKit
 import Foundation
 import OmacVMUSB
@@ -40,6 +41,16 @@ MainActor.assumeIsolated {
     if a[1] == "retire" { Settings.removeRetiredSwitches(); exit(0) }
     if a[1] == "mediadefault" {   // the switch's default for a bundle id (TestIdentity)
         print(Settings.mediaControlsDefault(bundleID: a.count > 2 ? a[2] : nil))
+        exit(0)
+    }
+    if a[1] == "battery", a.count > 3, let vm = VMConfig.named(a[3]) {   // Battery saver's top switch, the VM stopped
+        let on = a[2] == "on"
+        let changes = BatterySaver.changes(BatterySaverModel.items(folder: vm.folder, running: false), to: on)
+        BatterySaverModel.writeAppKeys(changes, on: on)
+        if let err = BatterySaverModel.writeStopped(BatterySaverModel.vmSwitches(changes), folder: vm.folder, on: on) {
+            FileHandle.standardError.write(Data("battery: \(err)\n".utf8)); exit(1)
+        }
+        print(changes.map(\.rawValue).joined(separator: " "))
         exit(0)
     }
     guard a[1] == "set", a.count > 3 else { exit(2) }

@@ -452,6 +452,8 @@ final class Runner {
         let vp9Pending = YouTubeVP9.switchState.prepareStart(folder: c.folder)
         // Mission Control switched in the window while it was stopped: the same way.
         let missionControlPending = MissionControl.switchState.prepareStart(folder: c.folder)
+        // Fewer animations switched in the window while it was stopped: the same way.
+        let animationsPending = FewerAnimations.switchState.prepareStart(folder: c.folder)
         // What of the Mac this start may use (its features), read once.
         links = MacLinks.load(folder: c.folder)
         // The strip beside the notch (NotchArea, #339): FullPanel only with the
@@ -857,6 +859,12 @@ final class Runner {
             }
             if let on = missionControlPending {
                 FeatureStart.run(config: c, switch: MissionControl.switchState, what: "Mission Control", on: on, agentPath: agentPath,
+                                 until: agentDeadline, running: { kill(pid, 0) == 0 }) { [weak self] line in
+                    Task { @MainActor in self?.appendLog(line) }
+                }
+            }
+            if let on = animationsPending {
+                FeatureStart.run(config: c, switch: FewerAnimations.switchState, what: "Fewer animations", on: on, agentPath: agentPath,
                                  until: agentDeadline, running: { kill(pid, 0) == 0 }) { [weak self] line in
                     Task { @MainActor in self?.appendLog(line) }
                 }

@@ -24,4 +24,5 @@ x86-apps	x86/**
 mac-ime	ime/**
 drag-drop	drop/**
 mission-control	missioncontrol/**
+fewer-animations	animations/**
 core	**

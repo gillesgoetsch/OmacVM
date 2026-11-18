@@ -77,6 +77,7 @@ feature_flag() {   # NAME on|off
     drag-drop) [[ $2 == off ]] || usage "drag and drop goes on after the build: omacvm enable drag-drop --vm NAME" ;;
     youtube-vp9) [[ $2 == off ]] || usage "Prefer VP9 on YouTube goes on after the build: omacvm enable youtube-vp9 --vm NAME" ;;
     mission-control) [[ $2 == off ]] || usage "Mission Control goes on after the build: omacvm enable mission-control --vm NAME" ;;
+    fewer-animations) [[ $2 == off ]] || usage "Fewer animations goes on after the build: omacvm enable fewer-animations --vm NAME" ;;
     *) usage "unknown feature '$1' (omacvm features lists them)" ;;
   esac
   [[ $2 == on || $2 == off ]] || usage "--feature $1=$2: on or off"

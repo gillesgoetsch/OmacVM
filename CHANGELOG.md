@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.1 (unreleased)
+
+- **Fewer animations** (experimental, off by default): a window's border takes its new colour at
+  once when the focus moves, instead of fading. While a border fades, the VM redraws both windows
+  in every frame. MacBook Air M2, the pointer moving across windows: about 0.43 W less. Every other
+  animation, blur and shadows stay as they are; Omarchy's own "no animations" switch stays
+  Omarchy's. Omarchy 4.0 and 4.5.
+- **Battery saver** (experimental): the VM window's switches that save battery are now together in
+  one card after Display, instead of spread over General and Display. Each still works alone; the
+  switch at the top turns on or off all those this Mac can use, and says how many are on. It never
+  turns HDR on for HDR only in full screen.
+
 ## 3.5.0
 
 The power release: the VM copies only what changed on screen, its sound wakes the Mac less, and three savers to try.

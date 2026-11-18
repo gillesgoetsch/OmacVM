@@ -591,6 +591,18 @@ case ${mc%% *} in
   *) [[ ${OMACVM_FEATURE_mission_control:-off} == on ]] && bad "Mission Control" "its check did not answer: omacvm apply" ||
        skip "Mission Control" "off (omacvm enable mission-control)" ;;
 esac
+# Fewer animations (fewer-animations, experimental): OmacVM's own Hyprland
+# file and the line that requires it, exactly while the feature is on
+# (animations/guest/install.sh).
+FEATURE=fewer-animations
+fa=$(/usr/local/share/omacvm/animations/guest/install.sh "$U" --status 2>/dev/null | tail -n 1)
+case ${OMACVM_FEATURE_fewer_animations:-off}/$fa in
+  on/on) ok "Fewer animations" "borders change colour at once (experimental)" ;;
+  on/none) bad "Fewer animations" "on, but this VM has no Hyprland Lua config (~/.config/hypr/hyprland.lua)" ;;
+  on/*) bad "Fewer animations" "on, but OmacVM's border setting is not in place: omacvm apply" ;;
+  off/on|off/partial) bad "Fewer animations" "off, but OmacVM's border setting is still there: omacvm apply" ;;
+  *) skip "Fewer animations" "off (experimental: omacvm enable fewer-animations)" ;;
+esac
 FEATURE=""
 if [[ $GESTURES == on ]]; then
   check "Cmd as Super" "OmacVM keyboard (Mac shortcuts)" ev_device "OmacVM keyboard (Mac shortcuts)"

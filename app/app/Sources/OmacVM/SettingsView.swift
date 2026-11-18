@@ -170,8 +170,8 @@ extension EnvironmentValues {
     @Entry var spyStart: String? = nil
 }
 
-/// The six sections: General, Display, Input, Output (the sound), Sharing & Devices,
-/// Storage & Updates.
+/// The six sections: General, Display (with the Battery saver group after
+/// it), Input, Output (the sound), Sharing & Devices, Storage & Updates.
 struct SettingsSections: View {
     @ObservedObject var state: AppState
     var preview: RenderVMWindow.Preview?
@@ -184,13 +184,8 @@ struct SettingsSections: View {
             SectionTitle(text: "General", first: true)
             Card {
                 ResourcesRow(state: state)
-                VCPUClockSaverRow(tick: state.tick)
                 GraphicsRow(state: state)
                 GPUComputeRow(state: state)
-                if YouTubeVP9.shown(decodesAV1: preview?.decodesAV1 ?? Mac.decodesAV1, record: VMRecord.features(folder: state.config.folder),
-                                    pending: VMRecord.text(YouTubeVP9.switchState.pendingFile, folder: state.config.folder)) {
-                    YouTubeVP9Row(state: state)
-                }
                 GPUOffMainLoopRow(tick: state.tick)
                 VKWindowsNoCopyRow(tick: state.tick)
                 GhosttyGPURow(tick: state.tick, folder: state.config.folder, running: running)
@@ -208,20 +203,21 @@ struct SettingsSections: View {
                 KeepDockAwayRow(tick: state.tick)
                 if preview?.hdr ?? Mac.hasHDRDisplay {
                     HDRRow(tick: state.tick, folder: state.config.folder, running: running)
-                    HDRFullScreenOnlyRow(tick: state.tick)
                 }
                 if preview?.extraBrightness ?? Mac.hasExtraBrightnessDisplay {
                     ExtraBrightnessRow(tick: state.tick)
                 }
                 PartialPresentRow(tick: state.tick)
-                PauseWhileHiddenRow(tick: state.tick)
-                PointerPlaneRow(tick: state.tick)
-                PresentTilesRow(tick: state.tick)
                 EscapeRow(tick: state.tick)
                 if preview?.magicMouse ?? mouse.connected {
                     MagicMouseRow(tick: state.tick, gesturesOff: VMRecord.isOff("gestures", folder: state.config.folder))
                 }
             }
+            // The experimental switches that save battery, packed in one
+            // group (docs/design/battery-saver.md). Under Display's sidebar
+            // item: no section of its own in the sidebar.
+            SectionTitle(text: "Battery")
+            BatterySaverGroup(state: state, preview: preview, running: running)
         }
         .spySection("display")
         VStack(alignment: .leading, spacing: 0) {

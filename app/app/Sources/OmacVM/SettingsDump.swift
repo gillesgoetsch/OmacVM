@@ -69,6 +69,8 @@ enum SettingsDump {
                 try? String(contentsOf: f.appendingPathComponent(YouTubeVP9.switchState.pendingFile), encoding: .utf8)) ?? YouTubeVP9.isOn(features: record),
             "missionControl": MissionControl.switchState.pending(
                 try? String(contentsOf: f.appendingPathComponent(MissionControl.switchState.pendingFile), encoding: .utf8)) ?? MissionControl.isOn(features: record),
+            "fewerAnimations": FewerAnimations.switchState.pending(
+                try? String(contentsOf: f.appendingPathComponent(FewerAnimations.switchState.pendingFile), encoding: .utf8)) ?? FewerAnimations.isOn(features: record),
             "gpuCompute": GPUCompute.switchState.pending(
                 try? String(contentsOf: f.appendingPathComponent(GPUCompute.pendingFile), encoding: .utf8)) ?? GPUCompute.isOn(features: record),
         ]

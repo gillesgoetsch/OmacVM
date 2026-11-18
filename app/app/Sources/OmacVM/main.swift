@@ -1037,6 +1037,12 @@ if CommandLine.arguments.dropFirst().first == SettingsDump.flag {
     MainActor.assumeIsolated { SettingsDump.main() }
 }
 
+// `OmacVM --battery-saver on|off|status --vm NAME`: the Battery saver group's
+// top switch without a window (BatterySaverGroup.swift), for the e2e rows.
+if CommandLine.arguments.dropFirst().first == BatterySaverCLI.flag {
+    MainActor.assumeIsolated { BatterySaverCLI.main(Array(CommandLine.arguments.dropFirst(2))) }
+}
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()
