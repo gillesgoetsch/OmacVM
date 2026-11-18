@@ -1922,6 +1922,12 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-refusal-text
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-cache-data.patch"
 grep -q 'info.pInitialData = NULL;' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_pipeline.c: the guest's pipeline cache data reaches the driver (cache-data patch)"
+# minMemoryMapAlignment as the guest's own mapping gives it (at most 4096): the guest kernel
+# places every Venus mapping on a guest page, KosmicKrisp says 16384 (#786: llama.cpp).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-map-alignment.patch"
+[[ $(grep -c 'minMemoryMapAlignment > VKR_GUEST_MAP_ALIGNMENT' "$virgl_source/src/venus/vkr_physical_device.c") == 2 ]] && \
+  grep -qx '#define VKR_GUEST_MAP_ALIGNMENT 4096' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_physical_device.c: the guest is told the host driver's minMemoryMapAlignment (map-alignment patch)"
 # A device the Mac's driver lost holds new Venus devices back for a while, so a VM app that is
 # started again and again after a lost device does not go straight back to the driver. Its
 # rules on their own first; made against the fully patched tree, so it comes last.
