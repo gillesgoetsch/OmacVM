@@ -39,6 +39,9 @@ and sends, after "X on 2":
 or, after "X on" (Mac helpers 3.1.0-3.1.5):
   X <left|right>                    a swipe went past the first or last workspace: out to the
                                     macOS Space on that side
+and at any time:
+  L                                 Hyprland's custom event omacvm-escape (a binding of the
+                                    user's): out to macOS, as the escape combo goes
 
 Without macOS-native scroll momentum (the scroll-momentum feature; "Glide"
 in the code, after the glide that follows a flick) the helper sends 3+-finger frames and 2-finger pinches; pointer,
@@ -1248,6 +1251,25 @@ class SwipeOut:
 SWIPE = SwipeOut()
 
 
+def watch_escape():
+    """Hyprland's custom event omacvm-escape, which a binding of the user's
+    emits (hl.dsp.event("omacvm-escape")): "L" to the Mac, which leaves the
+    full-screen VM as ⌃⌥ Esc does. For good: Hyprland may start, stop and
+    start again."""
+    while True:
+        try:
+            sock = hypr_socket()
+            if sock:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as ev:
+                    ev.connect(os.path.join(os.path.dirname(sock), ".socket2.sock"))
+                    for line in ev.makefile("rb"):
+                        if line == b"custom>>omacvm-escape\n" and SWIPE.send:
+                            SWIPE.send(b"L\n")
+        except OSError:
+            pass
+        time.sleep(1)
+
+
 def bridge_token():
     """The Bridge's token in the desktop user's home. This daemon is root:
     only the user's own plain file counts (opened without following a link,
@@ -1460,6 +1482,7 @@ def main():
     glide = Glide(pad)
     print(f"omacvm-gestures: virtual touchpad {ui.device.path}"
           f"{', macOS-native scroll momentum on' if GLIDE_ON else ''}", flush=True)
+    threading.Thread(target=watch_escape, daemon=True).start()
     serve(pad, keys, glide)
 
 
