@@ -215,6 +215,39 @@ check(stuck == 0, "stress: the keyboard light followed every Shift press and rep
 check(ladder.contains(light), "stress: the light ends on one of its steps (\(light))")
 b.onKey = { got.append($0); gotMods.append($1) }
 
+// ---- a keyboard reader that cannot open (#813): one manager, tries spaced out ----
+var r = HIDOpenRetry()
+var waits: [Double] = []
+for i in 0..<10 { waits.append(r.failed(at: Double(i))) }
+check(waits == [2, 4, 8, 16, 32, 64, 128, 256, 300, 300], "retry waits: 2 s doubling to 5 min (\(waits))")
+check(!r.due(at: 9 + 299) && r.due(at: 9 + 300), "retry: due only when its wait is over")
+r.opened()
+check(r.due(at: 0) && r.failed(at: 0) == 2, "retry: an open that worked starts again from 2 s")
+
+let k = BrightnessKeys()
+var made = 0, opens = 0, managers = Set<ObjectIdentifier>()
+var answer: IOReturn = IOReturn(bitPattern: 0xe000_02c5)   // kIOReturnExclusiveAccess: Karabiner holds a keyboard
+var access = kIOHIDAccessTypeGranted
+k.access = { access }
+k.makeManager = { _ in made += 1; return IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone)) }
+k.open = { opens += 1; managers.insert(ObjectIdentifier($0)); return answer }
+var t = 0.0
+while t < 3600 { k.ensure(at: t); t += 2 }   // MediaKeys.check: every 2 s for an hour
+check(made == 1 && managers.count == 1, "open fails for an hour: one manager made, opened again (\(made) made)")
+check(opens <= 20, "open fails for an hour, asked every 2 s: \(opens) tries, not 1800")
+answer = kIOReturnSuccess
+while t < 3600 + 301 { k.ensure(at: t); t += 2 }
+let afterOpen = opens
+while t < 7200 { k.ensure(at: t); t += 2 }
+check(opens == afterOpen && made == 1, "open works at its next try, then no more tries (\(opens - afterOpen) after)")
+let d = BrightnessKeys()
+var dOpens = 0, dMade = 0
+d.access = { kIOHIDAccessTypeDenied }
+d.makeManager = { _ in dMade += 1; return IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone)) }
+d.open = { _ in dOpens += 1; return kIOReturnSuccess }
+for i in 0..<100 { d.ensure(at: Double(i) * 2) }
+check(dOpens == 0 && dMade == 0, "Input Monitoring off: no manager, no open")
+
 // ---- this Mac's keyboards, read only ----
 let m = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
 IOHIDManagerSetDeviceMatching(m, [kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop, kIOHIDDeviceUsageKey: kHIDUsage_GD_Keyboard] as CFDictionary)

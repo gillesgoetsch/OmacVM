@@ -234,7 +234,12 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 - **Brightness keys do nothing with the VM in front**: OmacVM Bridge reads
   them from the keyboard and needs Input Monitoring (System Settings › Privacy
   & Security › Input Monitoring › OmacVM Bridge). Its log says
-  "brightness keys: reading them from the keyboard" when it can.
+  "brightness keys: reading them from the keyboard" when it can. "cannot
+  read the keyboard (IOHIDManagerOpen: 0xe00002c5)" means another app holds
+  a keyboard for itself (Karabiner-Elements does with its own rules); the
+  Bridge tries again after 2 s, then waits twice as long each time, up to
+  5 minutes (before 3.5.0 it tried every 2 s, and each try kept about
+  0.4 MB, #813).
 - **A mouse scrolls on after the wheel stops, or jumps**: scroll momentum is
   for trackpads only and passes every mouse's scrolling one to one; this was
   a smooth-scrolling mouse (Logitech MX and co.) taken as a trackpad before
