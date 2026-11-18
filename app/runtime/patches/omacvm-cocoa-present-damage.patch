@@ -18,7 +18,11 @@ QEMU draws every frame in full unless OMACVM_GL_PRESENT_DAMAGE=1 (the
 app's "Partial present" setting sets it for SDR starts, ADR 0051) or
 =check. =check (tests) also draws partial frames in full into a texture of
 its own, in the surfaces' format, and compares them pixel for pixel
-(qemu.log: "present check: N pixels differ ..."): every partial frame for a
+(qemu.log: "present check: N pixels differ ..."). A pixel is wrong when a
+colour channel is more than 2 levels off: the guest's own buffers disagree
+by a level where it reported no change (Hyprland on the M1 Max, ADR 0051's
+2026-11-18 addendum), and a partial draw keeps the level of the buffer it
+copied last; such checks are counted apart. It checks every partial frame for a
 while after a full draw (new surfaces, buffers, colour paths), then every
 30th. It copies the shown surface on the GPU into a plain texture and reads
 that one, so lossless-compressed surfaces are checked too (glReadPixels on
@@ -61,7 +65,7 @@ ADR 0051 lists what was run and what is owed.
  #include "hw/core/boards.h"
  #include "system/system.h"
  #include "system/runstate.h"
-@@ -7427,6 +7428,210 @@
+@@ -7427,6 +7428,212 @@
   */
  static bool present_deep_failed;
  static unsigned present_next;
@@ -97,6 +101,7 @@ ADR 0051 lists what was run and what is owed.
 +static uint32_t present_pd_check_w, present_pd_check_h;
 +static bool present_pd_check_half;
 +static uint64_t present_pd_checks, present_pd_bad, present_pd_frames_part;
++static uint64_t present_pd_level;      /* checks that differed by a level or two only */
 +/*
 + * =check: every partial frame is checked for a while after a full draw (new
 + * surfaces, buffers, colour paths: where a wrong box would show first), then
@@ -156,8 +161,8 @@ ADR 0051 lists what was run and what is owed.
 +                present_pd_n_part, present_pd_n_empty, drawn ? present_pd_px_part / drawn : 0,
 +                full, why->str, w, h, present_w, present_h);
 +    if (present_damage_on == 2) {
-+        info_report("cocoa: present check, so far: %" PRIu64 " of %" PRIu64 " checks bad",
-+                    present_pd_bad, present_pd_checks);
++        info_report("cocoa: present check, so far: %" PRIu64 " of %" PRIu64 " checks bad, %" PRIu64
++                    " with level differences only", present_pd_bad, present_pd_checks, present_pd_level);
 +    }
 +    g_string_free(why, true);
 +    present_pd_n_part = present_pd_n_empty = present_pd_px_part = 0;
@@ -242,31 +247,32 @@ ADR 0051 lists what was run and what is owed.
 +    glBindFramebuffer(GL_FRAMEBUFFER, present_pd_check_fbo);
 +    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
 +                           GL_TEXTURE_RECTANGLE, 0, 0);
-+    uint64_t diff = 0;
-+    uint32_t x0 = w, y0 = h, x1 = 0, y1 = 0;
-+    for (uint32_t y = 0; y < h; y++) {
-+        const uint8_t *pa = a + (size_t)y * w * 4, *pb = b + (size_t)y * w * 4;
-+        for (uint32_t x = 0; x < w; x++) {
-+            if (pa[4 * x] != pb[4 * x] || pa[4 * x + 1] != pb[4 * x + 1] ||
-+                pa[4 * x + 2] != pb[4 * x + 2]) {
-+                diff++;
-+                x0 = MIN(x0, x); y0 = MIN(y0, y);
-+                x1 = MAX(x1, x); y1 = MAX(y1, y);
-+            }
-+        }
-+    }
++    /*
++     * A pixel is wrong only when a colour channel is off by more than
++     * OMACVM_PD_CHECK_LEVELS (omacvm_pd_cmp): the guest's own buffers can
++     * disagree by a level where it reported no change, and a partial draw
++     * keeps the level of the buffer it copied last. Nobody sees that; a box
++     * that missed a change leaves the old picture, far more than 2 levels
++     * off. Checks with level differences only are counted apart.
++     */
++    OmacvmPDCmp c = omacvm_pd_cmp(a, b, w, h);
 +    g_free(a);
 +    g_free(b);
 +    present_pd_checks++;
-+    if (diff) {
++    if (c.wrong) {
 +        present_pd_bad++;
-+        warn_report("cocoa: present check: %" PRIu64 " pixels differ in %ux%u+%u+%u "
++        warn_report("cocoa: present check: %" PRIu64 " pixels differ in %ux%u+%u+%u, by up to %u levels "
 +                    "(drawn: %ux%u+%u+%u; %" PRIu64 " of %" PRIu64 " checks bad)",
-+                    diff, x1 - x0 + 1, y1 - y0 + 1, x0, y0, box.w, box.h, box.x, box.y,
++                    c.wrong, c.box.w, c.box.h, c.box.x, c.box.y, c.max, box.w, box.h, box.x, box.y,
 +                    present_pd_bad, present_pd_checks);
++    } else if (c.differ && ++present_pd_level == 1) {
++        info_report("cocoa: present check: the guest's buffers disagree by up to %u level%s in "
++                    "%ux%u+%u+%u where it reported no change (%" PRIu64 " pixels): not a wrong box, "
++                    "counted apart", c.max, c.max == 1 ? "" : "s", c.box.w, c.box.h, c.box.x, c.box.y,
++                    c.differ);
 +    } else if (present_pd_checks % 100 == 0) {
-+        info_report("cocoa: present check: %" PRIu64 " of %" PRIu64 " checks bad",
-+                    present_pd_bad, present_pd_checks);
++        info_report("cocoa: present check: %" PRIu64 " of %" PRIu64 " checks bad, %" PRIu64
++                    " with level differences only", present_pd_bad, present_pd_checks, present_pd_level);
 +    }
 +}
  static dispatch_queue_t present_queue;
