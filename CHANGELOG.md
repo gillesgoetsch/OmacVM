@@ -3,21 +3,10 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.5.1 (unreleased)
-
-- **Fewer animations** (experimental, off by default): a window's border takes its new colour at
-  once when the focus moves, instead of fading. While a border fades, the VM redraws both windows
-  in every frame. MacBook Air M2, the pointer moving across windows: about 0.43 W less. Every other
-  animation, blur and shadows stay as they are; Omarchy's own "no animations" switch stays
-  Omarchy's. Omarchy 4.0 and 4.5.
-- **Battery saver** (experimental): the VM window's switches that save battery are now together in
-  one card after Display, instead of spread over General and Display. Each still works alone; the
-  switch at the top turns on or off all those this Mac can use, and says how many are on. It never
-  turns HDR on for HDR only in full screen.
-
 ## 3.5.0
 
-The power release: the VM copies only what changed on screen, its sound wakes the Mac less, and three savers to try.
+The power release: the VM copies only what changed on screen, its sound wakes the Mac less, and new
+experimental savers sit together in one Battery saver group.
 Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured yet.
 
 - **Copy only what changed** (on by default, not for HDR starts yet): the VM now tells QEMU which
@@ -46,13 +35,30 @@ Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured 
   MacBook Air M2, a 1080p60 video: about 1.2 W less. Videos only in AV1 are not offered, and for
   now about 1-3 % of frames drop at 1080p60. Remove it in chrome://extensions at any time.
 - **VM CPU clock saver** (experimental, off by default): the VM's CPUs get the clock their own work
-  needs, not the high clock macOS gives the app in front. MacBook Air M2, a 1080p60 video: about
-  0.5 W less; now and then a dropped video frame. Works at once in a running VM.
+  needs, not the high clock macOS gives the app in front. MacBook Air M2: about 0.5 W less with a
+  1080p60 video the VM decodes itself (AV1), nothing for scrolling or at idle; now and then a
+  dropped video frame. Works at once in a running VM.
 - **HDR only in full screen** (experimental, off by default): the VM's main display runs as with
   HDR off until a window goes full screen. HDR in a window shows as SDR. Not measured on an HDR Mac
   yet. The VM's part comes with Update VM.
 - **HDR**: a frame is no longer shown in the wrong colours when the VM's display switches between
   10-bit and 8-bit twice within half a second.
+- **Fewer animations** (experimental, off by default): a window's border takes its new colour at
+  once when the focus moves, instead of fading. While a border fades, the VM redraws both windows
+  in every frame. MacBook Air M2, the pointer moving across windows: about 0.43 W less. Every other
+  animation, blur and shadows stay as they are; Omarchy's own "no animations" switch stays
+  Omarchy's. Omarchy 4.0 and 4.5.
+- **Battery saver**: the VM window's switches that save battery are now together in one card after
+  Display, instead of spread over General and Display. Each still works alone; the switch at the
+  top turns on or off all those this Mac can use, and says how many are on. It never turns HDR on
+  for HDR only in full screen.
+- **VM driver status after a kernel update**: when an Omarchy update replaced the running kernel,
+  Update VM said the graphics driver was "not built" and had "no kernel headers", though the VM ran
+  with it. It now says the driver is built for the kernel of the next start, and that this start's
+  kernel was replaced.
+- **Graphics memory in the control centre**: right after a job ended, the control centre could
+  lose the VM's graphics memory figures for up to 10 s. The Bridge now looks for the VM again at
+  once.
 - **Dismiss all notifications also closes the Mac's** (#795, by @rubas). In full screen macOS shows
   its banners and alerts (such as *App Background Activity*) over the VM, where nothing in the VM
   reaches them. Omarchy's own Super+Shift+, now also closes the ones on the Mac's screen, through
