@@ -43,6 +43,21 @@ Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured 
   without a trackpad had no way out of the full-screen VM until Gestures was restarted. Now each
   further stall waits 30 s, and the tap and the combo come back by themselves. Gestures also gives a
   busy VM app 0.1 s, not macOS's default, to name its window, a wait that could stall the tap.
+- **Two ssh connections at once** (#807, by @rubas): with the VM's SSH on the user network, one of two
+  connections that came at the same moment was reset. QEMU's network library listened with a queue
+  of 1 on macOS; it now takes as many as macOS allows. Needs the app update.
+- **Allow… keeps keyboard access** (#806, by @rubas): Allow…, clicked while the row was still red
+  right after switching OmacVM on in System Settings, took the permission away again, so ⌘ Tab and
+  ⌘ Space went to macOS at the next VM start. It now resets only on a definite no from macOS, and
+  the help names the list as this macOS does ("Device Control and Data Access" on macOS 27).
+- **A hidden VM keeps its speed on macOS 27** (#808, by @rubas): about 30 s after its window went
+  out of sight (another app in front, the screen locked), macOS 27 slowed the whole VM down despite
+  OmacVM's App Nap setting; timers in the VM woke 100-150 ms late. QEMU now opts out of App Nap
+  completely. Needs the app update.
+- **A Hyprland binding can leave the full-screen VM** (#797, by @rubas): Hyprland's custom event
+  `omacvm-escape` (for example `hl.bind("SUPER + ALT + ESCAPE", hl.dsp.event("omacvm-escape"))` in
+  your own config) leaves the full-screen VM as Ctrl+Option+Esc does. OmacVM binds no key itself.
+  Needs the app update (OmacVM Gestures) and Update VM; trackpad gestures on.
 
 ## 3.4.8
 
