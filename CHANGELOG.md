@@ -37,6 +37,12 @@ Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured 
   reaches them. Omarchy's own Super+Shift+, now also closes the ones on the Mac's screen, through
   the Bridge (its Accessibility permission), while the VM is in front. Omarchy's other notification
   keys stay the VM's. It comes with Update VM.
+- **The escape combo always comes back** (#826, by @rubas). When OmacVM Gestures' event tap stalled
+  three times in 10 minutes (seen while other VMs started next to a full-screen one), Gestures gave
+  the tap up until the Accessibility list changed. Ctrl+Option+Esc then went to the VM, and a Mac
+  without a trackpad had no way out of the full-screen VM until Gestures was restarted. Now each
+  further stall waits 30 s, and the tap and the combo come back by themselves. Gestures also gives a
+  busy VM app 0.1 s, not macOS's default, to name its window, a wait that could stall the tap.
 
 ## 3.4.8
 

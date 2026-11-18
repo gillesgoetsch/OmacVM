@@ -18,8 +18,8 @@
 #    (or Input Monitoring) taken away: the tap and its run-loop source go and
 #    the trackpads are let go at once, nothing enables or creates a tap again
 #    until it is back (issue #192). A tap macOS (or the watchdog) disabled is
-#    removed, never enabled again; a new one after 2 s, then 30 s; the third
-#    in 10 minutes parks it until the Accessibility list changes (#290).
+#    removed, never enabled again; a new one after 2 s, then 30 s for each
+#    further one in 10 minutes, however often: never given up (#290).
 #    OmacVM.app's hidden shareKeyboard puts it at the end of the chain (#350)
 #    (test-tap.c).
 # 5. Ctrl+Option+Esc (and the old Ctrl+Option+Cmd+Esc, exact modifiers only): in the VM the display under the pointer moves out
@@ -316,8 +316,10 @@ clang -O1 -Wall -Wno-unused-function "-DSHARE_KEYBOARD_DOMAIN=CFSTR(\"$SHARE_DOM
   -framework CoreFoundation -framework AppKit -framework IOKit
 "$T/test-tap" > "$T/tap" 2>&1 || fail=1
 grep -E '^(ok|FAIL) ' "$T/tap"
-n=$(grep -c "cannot create the event tap again" "$T/tap" || true)
+n=$(grep -c "cannot create the event tap again.*keeping the old one" "$T/tap" || true)
 if [[ $n == 1 ]]; then echo "ok   a failed re-creation is logged once (two tries)"; else echo "FAIL logged $n times" >&2; fail=1; fi
+n=$(grep -c "cannot create the event tap again.*trying again every second" "$T/tap" || true)
+if [[ $n == 1 ]]; then echo "ok   ... also with no tap left (two tries)"; else echo "FAIL logged $n times with no tap" >&2; fail=1; fi
 # 5. The escape combo's way out and back.
 clang -O1 -Wall -Wno-unused-function -o "$T/test-escape" "$HERE/test-escape.c" "$HERE/scroll_ns.m" \
   -F/System/Library/PrivateFrameworks -framework MultitouchSupport -framework ApplicationServices -framework Carbon \

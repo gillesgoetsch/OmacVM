@@ -47,13 +47,19 @@ extension MacNotifications {
       localizations: Locale.preferredLanguages.map(Locale.Language.init(identifier:))) ?? "Close"
   }
 
-  /// Closes every banner and alert on this Mac user's screen: how many were
-  /// there, and how many closed. Without Accessibility it finds none.
-  static func closeOnScreen() -> (found: Int, closed: Int) {
+  /// The banners and alerts on this Mac user's screen, each with its Close
+  /// action (also for test-notifications.sh). Without Accessibility: none.
+  static func onScreen() -> [(element: AXNotificationElement, action: String)] {
     let windows = NSRunningApplication.runningApplications(withBundleIdentifier: notificationCenter).flatMap {
       AXNotificationElement(ref: AXUIElementCreateApplication($0.processIdentifier)).windows
     }
-    let found = closable(windows, close: closeTitle())
+    return closable(windows, close: closeTitle())
+  }
+
+  /// Closes every banner and alert on this Mac user's screen: how many were
+  /// there, and how many closed. Without Accessibility it finds none.
+  static func closeOnScreen() -> (found: Int, closed: Int) {
+    let found = onScreen()
     let closed = found.filter { AXUIElementPerformAction($0.element.ref, $0.action as CFString) == .success }
     return (found.count, closed.count)
   }
