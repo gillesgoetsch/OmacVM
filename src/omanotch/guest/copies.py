@@ -432,12 +432,19 @@ def raw_tree(c):
 
 # ---- the shell ----
 
-def run(cmd, timeout=30):
+def run(cmd, timeout=30, errors=False):
+    """(exit code, stdout); with errors=True stderr follows stdout (a
+    command that says why it failed says it there)."""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.returncode, r.stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        return 1, ""
+        out = r.stdout.strip()
+        if errors and r.stderr.strip():
+            out = f"{out}\n{r.stderr.strip()}".strip()
+        return r.returncode, out
+    except subprocess.TimeoutExpired:
+        return 1, f"no answer in {timeout} s" if errors else ""
+    except OSError as e:
+        return 1, str(e) if errors else ""
 
 
 def shell_up():
@@ -604,9 +611,10 @@ def plan(c, install):
     if not os.path.isfile(os.path.join(c.dir, c.entry)):
         if not install:
             raise Stop("missing", f"{show(c.dir)} is gone: Omarchy's own {c.name} is in use (repair Omanotch to make it again)")
-        out = run(["omarchy-plugin-clone", c.source], 60)[1]
+        out = run(["omarchy-plugin-clone", c.source], 60, errors=True)[1]
         if not os.path.isfile(os.path.join(c.dir, c.entry)):
-            raise Stop("missing", f"omarchy plugin clone {c.source} made no copy ({out[:120]})")
+            # Its reason is on stderr (omarchy-plugin-clone's fail()), the last line.
+            raise Stop("missing", f"omarchy plugin clone {c.source} made no copy ({last_line(out)[:160]})")
         s, fresh = None, True   # a new copy: anything kept was about another one
     if s and s.get("result") == "current" and (s.get("stock"), s.get("patch")) == (stock_sum, patch_sum):
         return None
