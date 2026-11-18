@@ -43,6 +43,12 @@ Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured 
   yet. The VM's part comes with Update VM.
 - **HDR**: a frame is no longer shown in the wrong colours when the VM's display switches between
   10-bit and 8-bit twice within half a second.
+- **Vulkan in the VM: pipeline caches** start empty on the Mac's side. An app that saves its
+  pipeline cache (Zink, some games) builds its pipelines again at each start; macOS's own shader
+  cache keeps that short.
+- **Vulkan in the VM: lost devices**: when the Mac's driver loses a VM app's Vulkan device, new
+  Vulkan devices in that VM wait 10 s, longer (up to 10 min) when it keeps happening within
+  30 min. Apps already running go on.
 - **Fewer animations** (experimental, off by default): a window's border takes its new colour at
   once when the focus moves, instead of fading. While a border fades, the VM redraws both windows
   in every frame. MacBook Air M2, the pointer moving across windows: about 0.43 W less. Every other
