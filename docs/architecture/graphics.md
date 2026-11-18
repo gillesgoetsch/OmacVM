@@ -901,7 +901,7 @@ falls back and logs once.
 | `OMACVM_VIRGL_CONST_UBO` | uniform buffers, vertex window + index | `1`: a range bound per draw in every stage; `0`: shader constants as uniforms again | built (`webgl-lever-d1`) |
 | `OMACVM_GL_PRESENT_ON_TICK=1` | off | redraw on QEMU's 30 ms tick again | built |
 | `OMACVM_GL_PRESENT=layer` | iosurface | CAOpenGLLayer path; also taken by itself if the IOSurface contexts fail | built |
-| `OMACVM_GL_VSYNC=0` | on | show frames when drawn instead of on the display's refresh | built (`pacing-hdr`) |
+| `OMACVM_GL_VSYNC=0` | on | show frames when drawn instead of on the display's refresh (tiles work there too: hidden test windows, ADR 0055's addendum of 2026-11-17) | built (`pacing-hdr`) |
 | `OMACVM_GL_LEAD_MS` | 3 | how long before the vsync a frame goes on the layer | built (`pacing-hdr`) |
 | `OMACVM_GL_REFRESH=fixed` | follows the guest | display link at the screen's full rate while frames come | built (`pacing-hdr`) |
 | `OMACVM_IDLE_REFRESH=0` | on | QEMU's refresh tick stays at the display's rate; by default it slows to 2 s while it has nothing to do | built (`idle-power`) |
