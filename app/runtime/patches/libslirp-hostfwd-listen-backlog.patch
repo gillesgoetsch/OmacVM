@@ -1,0 +1,39 @@
+From: OmacVM
+Subject: [PATCH] socket: listen on hostfwd with SOMAXCONN, not 1
+
+What: listen on a hostfwd socket with a backlog of SOMAXCONN instead
+of 1.
+
+Why: with a backlog of 1, macOS resets one of two connections that
+reach the forwarded port at once, before libslirp accepts it. The guest
+never sees the lost connection. Two ssh connections at once to a VM on
+the user network lost one with "Connection reset by peer" in about 3
+rounds of 4. A single connection never failed. With SOMAXCONN,
+`netstat -Lan -p tcp` shows the queue as 0/0/128 instead of 0/0/1, and
+the forward loses no connections.
+
+Upstream: not merged upstream yet. libslirp master has
+SlirpConfig.hostfwd_listen_backlog in unreleased config version 7, but
+its default is still 1, and QEMU 11.1 passes version 6. This patch
+applies to libslirp 4.9.4 after the other four libslirp patches and
+does not depend on them.
+
+Test: app/runtime/Tests/net/test-slirp-hostfwd-burst.sh. The runtime
+build runs it on a real QEMU with -netdev user and no guest. It opens 2
+connections at once to a host forward for 30 rounds.
+
+diff --git a/src/socket.c b/src/socket.c
+index 1451116..afb71aa 100644
+--- a/src/socket.c
++++ b/src/socket.c
+@@ -930,7 +930,9 @@ struct socket *tcpx_listen(Slirp *slirp,
+         (haddr->sa_family == AF_INET6 && slirp_socket_set_v6only(s, (flags & SS_HOSTFWD_V6ONLY) != 0) < 0) ||
+         (slirp_socket_set_fast_reuse(s) < 0) ||
+         (bind(s, haddr, haddrlen) < 0) ||
+-        (listen(s, 1) < 0)) {
++        /* With a backlog of 1, macOS resets one of two connections that
++         * arrive at the same moment, before slirp accepts it. */
++        (listen(s, SOMAXCONN) < 0)) {
+         int tmperrno = errno; /* Don't clobber the real reason we failed */
+         if (have_valid_socket(s)) {
+             closesocket(s);

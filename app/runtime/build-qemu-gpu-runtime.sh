@@ -582,6 +582,9 @@ patch -d "$source_parent/$slirp_source_root" -p1 -f -i "$native_dir/patches/omac
 # Non-blocking UDP/ICMP sockets: a send the Mac cannot take at once is dropped
 # instead of freezing the VM (Tests/net/test-slirp-udp-stall.sh).
 patch -d "$source_parent/$slirp_source_root" -p1 -f -i "$native_dir/patches/libslirp-nonblocking-datagram-sockets.patch"
+# Host forwards listen with SOMAXCONN: with 1, macOS resets one of two
+# connections that come at once (Tests/net/test-slirp-hostfwd-burst.sh).
+patch -d "$source_parent/$slirp_source_root" -p1 -f -i "$native_dir/patches/libslirp-hostfwd-listen-backlog.patch"
 tar -xzf "$qemu_archive" -C "$source_parent"
 tar -xzf "$virgl_archive" -C "$source_parent"
 tar -xzf "$virgl_tap_archive" -C "$source_parent"
@@ -2154,6 +2157,12 @@ log "Relocating, capability-gating, signing, and publishing the runtime"
 "$native_dir/Tests/net/test-slirp-udp-stall.sh" \
   "$native_dir/.build/qemu-gpu-runtime/bin/qemu-system-aarch64" || \
   die "the slirp UDP stall test failed"
+
+# Two connections at once to a host forward (an ssh port without a window)
+# must both work (an idle QEMU without guest, a few seconds).
+"$native_dir/Tests/net/test-slirp-hostfwd-burst.sh" \
+  "$native_dir/.build/qemu-gpu-runtime/bin/qemu-system-aarch64" || \
+  die "the slirp host forward burst test failed"
 
 # A guest's Vulkan calls never reach the Mac's driver with what Metal ends QEMU on, and what
 # ended QEMU's process in vkr now ends only the app's context (ADR 0065): each case through
