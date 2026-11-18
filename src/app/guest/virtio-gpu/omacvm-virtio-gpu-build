@@ -24,7 +24,9 @@
 #   omacvm-virtio-gpu-build --hook      every installed kernel with headers;
 #                                       drops the builds of removed kernels
 #   omacvm-virtio-gpu-build --status    one line: built for the running kernel
-#                                       or why not (exit 1), and this start's driver
+#                                       or why not (exit 1), and this start's driver;
+#                                       after a kernel update the VM has not
+#                                       restarted for: the installed kernel(s)
 #   omacvm-virtio-gpu-build --remove    the builds and the modprobe rule go
 # A kernel without headers is skipped; a build whose stamp (the patches'
 # sha256 and the kernel) is current is not built again. Deep colour is the
@@ -274,20 +276,44 @@ refresh_initramfs() {
     say "mkinitcpio -P failed (log: /var/log/omacvm-virtio-gpu-mkinitcpio.log); the stock driver loads at boot until the next one"
 }
 
-status() {
-  local k now why
-  k=$(uname -r)
-  now=$(cat "$P/run/omacvm/virtio-gpu" 2>/dev/null) || now="stock, loaded without omacvm-virtio-gpu-load"
+kernel_state() {   # KERNEL: "built for K ..." (0), or "not built for K: why" / "out of date for K ..." (1)
+  local k=$1 why
   if current "$k"; then
     why=$(paste -sd';' "$root/$k/without" 2>/dev/null) || true
-    echo "built for $k${why:+ without ${why//;/; without }} (this start: $now)"; return 0
+    echo "built for $k${why:+ without ${why//;/; without }}"; return 0
   fi
-  if [[ ! -d $mods/$k/build ]]; then why="no kernel headers"
+  if [[ ! -d $mods/$k/build ]]; then
+    # A build from other patches, which the loader no longer takes: there,
+    # but not built again (no headers), which is not "not built".
+    if [[ -f $root/$k/virtio-gpu.ko ]]; then echo "out of date for $k (another patch), and no kernel headers to build it again"; return 1; fi
+    why="no kernel headers"
   elif [[ -s $root/$k/error ]]; then why="build failed: $(head -n1 "$root/$k/error")"
   elif [[ -f $root/$k/virtio-gpu.ko ]]; then why="out of date (another patch)"
   else why="not built yet"; fi
-  echo "not built for $k: $why (this start: $now)"
+  echo "not built for $k: $why"
   return 1
+}
+
+status() {
+  local k now d n line="" rc=0 next=()
+  k=$(uname -r)
+  now=$(cat "$P/run/omacvm/virtio-gpu" 2>/dev/null) || now="stock, loaded without omacvm-virtio-gpu-load"
+  # A kernel update while the VM runs: pacman removes the running kernel's
+  # modules (and headers), --hook drops its build and builds for the new
+  # one. This start keeps the driver it loaded; the next start runs the
+  # installed kernel(s), so that is what the line is about.
+  if [[ ! -d $mods/$k/kernel ]]; then
+    for d in "$mods"/*/; do [[ -d $d/kernel ]] && next+=("$(basename "$d")"); done
+  fi
+  if (( ${#next[@]} )); then
+    for n in "${next[@]}"; do d=$(kernel_state "$n") || rc=1; line+="${line:+; }$d"; done
+    (( ${#next[@]} == 1 )) && line+=", the next start's kernel (" || line+=" (the next start's kernels; "
+    echo "${line}this start: $now, on $k, which a kernel update replaced)"
+    return $rc
+  fi
+  line=$(kernel_state "$k") || rc=1
+  echo "$line (this start: $now)"
+  return $rc
 }
 
 case ${1:-} in
