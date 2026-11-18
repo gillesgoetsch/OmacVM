@@ -600,7 +600,7 @@ struct KeyboardRow: View {
     var preview: KeyNote?
     @State private var keyNote = KeyNote.none
 
-    static let allowedInfo = "Without this permission, ⌘ Tab, ⌘ Space and ⌘ ⇧ 4 go to macOS instead of Omarchy. macOS keeps it under Privacy & Security › Accessibility."
+    static let allowedInfo = "Without this permission, ⌘ Tab, ⌘ Space and ⌘ ⇧ 4 go to macOS instead of Omarchy. macOS keeps it under Privacy & Security › \(KeyAccess.listName)."
 
     var body: some View {
         SettingRow(title: "Keyboard access", subtitle: "Lets Mac shortcuts like ⌘Tab reach the VM.",

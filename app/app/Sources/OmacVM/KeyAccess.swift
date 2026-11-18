@@ -22,6 +22,29 @@ enum KeyAccess {
     /// What QEMU's tap needs, and all the window checks.
     static var allowed: Bool { post }
 
+    /// macOS's answer now: this process keeps its first answer (a grant
+    /// given in System Settings while OmacVM runs did not show until OmacVM
+    /// was quit), a new process gets the current one. About 50 ms, at most
+    /// 2 s; nil when the new process gave no answer.
+    static func fresh() -> Bool? {
+        guard let exe = Bundle.main.executablePath else { return nil }
+        let p = Process(), out = Pipe()
+        p.executableURL = URL(fileURLWithPath: exe)
+        p.arguments = ["--key-access"]
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return nil }
+        let deadline = Date().addingTimeInterval(2)
+        while p.isRunning && Date() < deadline { usleep(10_000) }
+        if p.isRunning { p.terminate(); return nil }
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        switch text.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "1": return true
+        case "0": return false
+        default: return nil
+        }
+    }
+
     /// One line for qemu.log (KeyNote and omacvm check read it). Input
     /// Monitoring only for the record.
     static var record: String {
@@ -43,14 +66,22 @@ enum KeyAccess {
         lastLog(folder: folder)?.contains("Could not create event tap") == true
     }
 
-    /// The window's line: the one setting.
-    static let shortText = "Allow OmacVM under Accessibility"
+    /// The list in System Settings › Privacy & Security that holds "control
+    /// the computer", by the name this macOS shows: "Accessibility", and
+    /// "Device Control and Data Access" on macOS 27.2. System Settings' own
+    /// text, so the window names the row the user looks for there. English,
+    /// as the rest of the path: OmacVM has no other language, so macOS gives
+    /// it the pane's English strings.
+    static let listName: String = {
+        let pane = Bundle(path: "/System/Library/ExtensionKit/Extensions/SecurityPrivacyExtension.appex")
+        return pane?.localizedString(forKey: "ACCESSIBILITY", value: "Accessibility", table: nil) ?? "Accessibility"
+    }()
 
     /// Behind the (i): the steps.
     static var missingText: String {
         let app = (Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath
         let id = Bundle.main.bundleIdentifier ?? "org.omacvm.app"
-        return "Without it, ⌘ Tab, ⌘ Space and ⌘ ⇧ 4 go to macOS instead of Omarchy. Input Monitoring is not enough.\n\n1. Allow… clears what macOS kept for an older OmacVM build (OmacVM can show as on and still not count) and opens System Settings › Privacy & Security › Accessibility.\n2. Turn OmacVM on there. This note turns grey by itself.\n3. Quit the VM and start it again.\n\nStill red: select OmacVM there, remove it with −, add \(app) with + and turn it on. Or in Terminal: tccutil reset PostEvent \(id)"
+        return "Without it, ⌘ Tab, ⌘ Space and ⌘ ⇧ 4 go to macOS instead of Omarchy. Input Monitoring is not enough.\n\n1. Allow… clears what macOS kept for an older OmacVM build (OmacVM can show as on and still not count) and opens System Settings › Privacy & Security › \(listName).\n2. Turn OmacVM on there. This note turns grey by itself.\n3. Quit the VM and start it again.\n\nStill red: select OmacVM there, remove it with −, add \(app) with + and turn it on. Or in Terminal: tccutil reset PostEvent \(id)"
     }
 
     /// macOS keeps "control the computer" (kTCCServicePostEvent) as an entry
@@ -77,24 +108,30 @@ enum KeyAccess {
 
     static func resetArguments(_ service: String, id: String) -> [String] { ["reset", service, id] }
 
-    /// Allow…: an old "control the computer" entry goes first; with
-    /// Accessibility on that is all (allowed at once, no prompt). Else
-    /// Accessibility's own entry may be an old one too: it goes as well, then
-    /// macOS's prompt for "control the computer" (once per app; it lists
-    /// OmacVM under Accessibility, switched off) and the Accessibility pane.
-    /// The parts are passed in for the test.
-    static func allow(reset: (String) -> Void, post: () -> Bool, ask: () -> Void) {
+    /// Allow…: nothing when macOS allows already (the note turns grey a few
+    /// seconds after the switch in System Settings, so a click can come after
+    /// it, and a reset would take that grant away). Else an old "control the
+    /// computer" entry goes first; with Accessibility on that is all (allowed
+    /// at once, no prompt). Else Accessibility's own entry may be an old one
+    /// too: it goes as well, then macOS's prompt for "control the computer"
+    /// (once per app; it lists OmacVM under Accessibility, switched off) and
+    /// the Accessibility pane. `post` is macOS's answer now (`fresh`), never
+    /// this process's kept one, and only its no resets an entry: without an
+    /// answer Allow… does nothing. The parts are passed in for the test.
+    static func allow(reset: (String) -> Void, post: () -> Bool?, ask: () -> Void) {
+        guard post() == false else { return }
         reset("PostEvent")
-        guard !post() else { return }
+        guard post() == false else { return }
         reset("Accessibility")
         ask()
     }
 
-    /// Allow… in the window; tccutil off the main thread, then `done`.
+    /// Allow… in the window; macOS's answers and tccutil off the main
+    /// thread, then `done`.
     static func request(done: @escaping @MainActor () -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             var ask = false
-            allow(reset: reset, post: { post }, ask: { ask = true })
+            allow(reset: reset, post: fresh, ask: { ask = true })
             DispatchQueue.main.async {
                 if ask {
                     _ = CGRequestPostEventAccess()
@@ -116,8 +153,16 @@ enum KeyAccess {
         guard !clearedOnce else { return }
         clearedOnce = true
         DispatchQueue.global(qos: .utility).async {
-            reset("PostEvent")
+            clearOldEntry(reset: reset, post: fresh)
             DispatchQueue.main.async { MainActor.assumeIsolated { done() } }
         }
+    }
+
+    /// The red note's reset: only on macOS's no now (`fresh`), as in Allow…;
+    /// the note is red also when the new process gave no answer, and then
+    /// nothing goes. The parts are passed in for the test.
+    static func clearOldEntry(reset: (String) -> Void, post: () -> Bool?) {
+        guard post() == false else { return }
+        reset("PostEvent")
     }
 }
