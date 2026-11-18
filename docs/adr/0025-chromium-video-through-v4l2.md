@@ -139,3 +139,42 @@ still there (a looped video never looped; 3.2.15 and older).
   change, any app version.
 - Test: `vdec-test --hold-all-at-eos` (3.2.15's module fails it, 9 of 9
   rounds; the fix passes them).
+
+## Addendum (3.5.0): the per-video frame throttle
+
+- Problem: 60 fps VP9 in Chrome/Chromium in the VM showed one frame twice and
+  skipped the next, every third frame for seconds (MacBook Air: 0-3 % of the
+  frames per minute, in bursts; AV1 from MP4 ~0). Not the decoder: the same
+  with the media engine and with libvpx, and Chrome's traces showed the
+  decoder 10-12 frames ahead. Chromium's compositor (viz) throttles each
+  video's frame sink to the interval the video asks for
+  (`OnBeginFrameThrottleVideo`, on by default) and keeps the first value
+  unless it moves by more than 2 ms. The first value is the average length of
+  the frames queued at the first draw; WebM timestamps are whole milliseconds
+  (16/17/17), so that average is 16.667 over 3, 6 or 12 frames but 16.5 or
+  16.75 over 4. With 16.75 on a 16.67 ms screen the video's renderer takes
+  16.75 as its render interval, its cadence check fails (16.67 ms of drift
+  in 3.3 s, below its 8 s floor) and it picks frames by coverage, which the
+  1 ms jitter of the timestamps turns into repeat + skip pairs. Every dropped
+  frame in the traces was such a pair, and only while the window was 16.75.
+- Options: (a) `--disable-features=OnBeginFrameThrottleVideo` in Chromium's
+  flags; (b) leave it to upstream (Chromium code, not ours); (c) make
+  YouTube send MP4 (exact timestamps): VP9 comes only in WebM there.
+- Decision: (a), in chromium-video, merged like its other two switches.
+  chromium-video already makes Chromium's YouTube VP9, so every Chromium
+  user in an OmacVM.app VM is on this path. Google Chrome is not managed
+  (its flags are the user's).
+- Cost: without the throttle a video's frame sink gets every BeginFrame. At
+  60 fps on 60 Hz that is the same count (the throttle saves nothing there);
+  a 30 fps video on 60 Hz, or 60 fps on 120 Hz, wakes the renderer's video
+  compositor twice as often (30 -> 60 a second); the frames drawn and the
+  video's surface commits stay the same (30 a second in the traces).
+  MacBook Air, whole machine, one ABBA block of 120 s windows each: a 30 fps
+  VP9 clip 3327 mW with the throttle, 3331 without; YouTube VP9 1080p60 5459
+  with (94 and 141 frames dropped per window) and 5728 without (11 dropped;
+  its second window void), with the guest's CPU time, context switches and
+  IPIs the same in all four windows, so no cost beyond the spread of
+  identical windows (about 300 mW on that row). Not measured: 60 fps on a
+  120 Hz Mac (the M1 Max, where the video's wakeups double).
+- Test: `src/tests/chromium-no-av1.sh` (merge into the user's or /etc's list,
+  a line of its own, off restores, a switch the user set stays).

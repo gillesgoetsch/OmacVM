@@ -493,6 +493,13 @@ Chromium ◀─ its GPU buffer (ARGB) ◀─ GPU pass in omacvm-vdecd
   merged into Omarchy's last `--enable-features` and `--load-extension` (Chromium
   takes only the last of each). The extension tells YouTube that AV1 is not
   supported, so YouTube sends VP9: this Chromium decodes AV1 only on the CPU.
+  From 3.5.0 Chromium also gets `OnBeginFrameThrottleVideo` in its last
+  `--disable-features`: that throttle timed each video to the first guess of
+  its own frame length, and with YouTube's VP9 (WebM, timestamps in whole
+  milliseconds) the guess was often 16.75 ms on a 16.67 ms screen. Chromium
+  then dropped its frame timing and showed one frame twice and skipped the
+  next, every third frame for seconds at a time (about 1 % of 60 fps frames
+  on a MacBook Air). See ADR 0025's addendum.
   It lives in `/usr/local/lib/omacvm/chromium-no-av1`, outside the copy of
   OmacVM that every `omacvm apply` replaces (up to 3.1.4 it was in that copy,
   and an apply of other features left Chromium saying "Failed to load

@@ -20,6 +20,15 @@ Watt figures are from a MacBook Air M2 (whole Mac); other Macs are not measured 
 - **Fewer dropped video frames at 60 Hz**: the VM's display ran a hair below the Mac's rate
   (59.994 Hz on a MacBook Air), and Chrome dropped about 1 % of the frames of 60 fps videos. It now
   stays at the Mac's rate. Fewer drops, not none yet. Update VM puts it in.
+- **Smoother 60 fps video in Chromium**: Chromium could show one frame twice and skip the next,
+  every third frame for seconds at a time (on a MacBook Air up to 1-3 % of the frames of 60 fps
+  VP9 video, YouTube included, in bursts). Chromium timed each video to its first guess of the
+  frame length, and with YouTube's VP9 that guess was often a hair off the screen's. OmacVM now
+  switches that per-video throttle off in Chromium's flags (`OnBeginFrameThrottleVideo` in
+  `~/.config/chromium-flags.conf`), so videos follow the screen's real refresh again. Google Chrome
+  does the same; OmacVM does not manage its flags (add
+  `--disable-features=OnBeginFrameThrottleVideo` to its command line). From the VM's next Update VM
+  and a Chromium restart.
 - **Prefer VP9 on YouTube** (experimental, off by default, Macs without AV1 decoding: M1, M2):
   YouTube then sends VP9, which the Mac's media engine decodes, instead of AV1 on the VM's CPUs.
   MacBook Air M2, a 1080p60 video: about 1.2 W less. Videos only in AV1 are not offered, and for
