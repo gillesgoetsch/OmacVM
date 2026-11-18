@@ -344,7 +344,11 @@ ccok() { /usr/bin/python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.
 bmark() { BMARK=$(stat -f %z "$BLOG" 2>/dev/null || echo 0); }
 bsince() { local s; s=$(stat -f %z "$BLOG" 2>/dev/null || echo 0); if (( s < ${BMARK:-0} )); then cat "$BLOG"; else tail -c +$(( ${BMARK:-0} + 1 )) "$BLOG"; fi 2>/dev/null; }
 bproblems() {   # refusals and failed jobs since the mark, one line
-  bsince | grep -E ': (4[0-9][0-9]|50[0-9])( |$)|unknown-vm|cannot reach|ended [1-9]' | tail -5 | sed 's/^.*omacvm-bridge: //' | tr '\n' '|'
+  # Not a graphics memory read the Bridge answered with "looking" (it looks at its VMs again; the control
+  # centre asks again in 2 s and keeps its numbers). A running VM missing from a VM list is a problem.
+  bsince | grep -E ': (4[0-9][0-9]|50[0-9])( |$)|unknown-vm|cannot reach|ended [1-9]|is not in this one' |
+    grep -vE 'GET /omacvm/gpu-memory .*: 409 unknown-vm .*\(the Mac is looking at its VMs again' |
+    tail -5 | sed 's/^.*omacvm-bridge: //' | tr '\n' '|'
 }
 guest_feature() { gssh "sed -n 's/^OMACVM_FEATURE_${1//-/_}=//p' /etc/omacvm/env | tail -1"; }
 mac_feature() { tr ' ' '\n' < "$VMD/features" 2>/dev/null | sed -n "s/^$1=//p" | tail -1; }

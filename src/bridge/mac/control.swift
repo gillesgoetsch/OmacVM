@@ -477,14 +477,9 @@ final class Control {
                       wait: Double = VMListCache.unknownWait, key: String, listed: ([VMEntry]) -> Bool,
                       ready: ([VMEntry]) -> Bool, known: ([VMEntry]) -> Bool) -> [VMEntry] {
     let (list, start, waitFor) = q.sync { () -> ([VMEntry], Bool, Int?) in
-      if known(vms.list) {
-        if ready(vms.list) { vms.reached(key: key) }
-        return (vms.list, fresh && vms.shouldRefresh(known: true, now: Date()), nil)
-      }
-      if listed(vms.list) { let r = vms.refused(key: key, now: Date()); return (vms.list, r.start, r.waitFor) }
-      // Graphics memory (every 2 s while the control centre is open) asks no faster than an address.
-      let u = vms.unknown(now: Date(), every: fresh ? every : max(every, VMListCache.addressEvery))
-      return (vms.list, u.start, u.waitFor)
+      let l = vms.list
+      let r = vms.look(key: key, now: Date(), fresh: fresh, every: every, known: known(l), listed: listed(l), ready: ready(l))
+      return (l, r.start, r.waitFor)
     }
     if start { refreshVMs(cli) }
     guard fresh, let n = waitFor else { return list }
@@ -541,10 +536,17 @@ final class Control {
       g.wait()
       let fresh = mergeVMLists(all: all, app: app)
       if fresh == nil { log("control: omacvm vms --json gave no list (asked again in 10 s at the earliest)") }
-      let again = q.sync { () -> Bool in
+      let (again, dropped) = q.sync { () -> (Bool, [String]) in
+        let d = fresh.map { appVMsDropped(old: vms.list, new: $0) } ?? []
         let r = vms.finished(fresh, now: Date())
         for k in r.changed { status[k] = nil }   // asked again with the VM's new state
-        return r.again
+        return (r.again, d)
+      }
+      // A running app VM missing from one list (3.5.0 gate: right after a job,
+      // both lists gave JSON): which list it was, once a minute per VM.
+      let from = runner == nil ? "the Bridge's own list (no app runner for \(cli))" : app == nil ? "the Bridge's own list (the app's gave none)" : "the app's list"
+      for name in dropped {
+        logRefusal("vm list dropped \(name)", "control: OmacVM.app's VM \(logSafe(name)) ran in the last VM list and is not in this one, from \(logSafe(from)): looked for again at its next request")
       }
       runEnded.lock(); runEnded.broadcast(); runEnded.unlock()
       if again { refreshVMs(cli) }
