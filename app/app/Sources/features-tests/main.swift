@@ -379,27 +379,66 @@ expect(YouTubeVP9.info.hasPrefix("Experimental.") && YouTubeVP9.info.contains("1
        YouTubeVP9.info.contains("frames") && YouTubeVP9.info.contains("chrome://extensions"),
        "youtube-vp9 (i): experimental, the watts, VP9 instead of AV1, the dropped frames, how to remove it")
 
-// Fewer animations (fewer-animations): experimental, off by default, Omarchy 4.5's
-// own toggle; greyed out with the reason below 4.5 unless it is on.
+// Fewer animations (fewer-animations): experimental, off by default, OmacVM's
+// own border setting: Omarchy 4.0 and 4.5 alike, so no Omarchy rule in the row.
 expect(!FewerAnimations.isOn(features: nil) && FewerAnimations.isOn(features: "bridge=on fewer-animations=on"),
        "fewer-animations: off without the record's word")
-expect(FewerAnimations.row(record: nil, pending: nil, omarchy: "4.0.3rc4 omarchy-mac rc", running: true, busy: false, cli: true)
-       == MacIME.Row(on: false, enabled: false, note: FewerAnimations.needs45), "fewer-animations row on Omarchy 4.0: off, greyed, why")
-expect(FewerAnimations.row(record: "fewer-animations=on", pending: nil, omarchy: "4.0.3rc4 omarchy-mac rc", running: false, busy: false, cli: true)
-       == MacIME.Row(on: true, enabled: true, note: nil), "fewer-animations row on 4.0 while on: can go off")
-expect(FewerAnimations.row(record: nil, pending: nil, omarchy: "4.5.0 aarch64 stable", running: false, busy: false, cli: false)
-       == MacIME.Row(on: false, enabled: true, note: nil), "fewer-animations row on 4.5, stopped: switched for the next start")
-expect(FewerAnimations.row(record: "fewer-animations=off", pending: "on\n", omarchy: nil, running: true, busy: false, cli: true)
+expect(FewerAnimations.row(record: nil, pending: nil, running: true, busy: false, cli: true)
+       == MacIME.Row(on: false, enabled: true, note: nil), "fewer-animations row, running: switchable on any Omarchy")
+expect(FewerAnimations.row(record: nil, pending: nil, running: false, busy: false, cli: false)
+       == MacIME.Row(on: false, enabled: true, note: nil), "fewer-animations row, stopped: switched for the next start")
+expect(FewerAnimations.row(record: "fewer-animations=off", pending: "on\n", running: true, busy: false, cli: true)
        == MacIME.Row(on: true, enabled: true, note: "Being set up in the VM for this start."), "fewer-animations row: a pending choice wins and says so")
-expect(!FewerAnimations.row(record: nil, pending: nil, omarchy: nil, running: true, busy: true, cli: true).enabled &&
-       !FewerAnimations.row(record: nil, pending: nil, omarchy: nil, running: true, busy: false, cli: false).enabled,
+expect(!FewerAnimations.row(record: nil, pending: nil, running: true, busy: true, cli: true).enabled &&
+       !FewerAnimations.row(record: nil, pending: nil, running: true, busy: false, cli: false).enabled,
        "fewer-animations row: busy or no CLI: not switchable")
 expect(FewerAnimations.switchState.pendingFile == "fewer-animations-pending" &&
        FewerAnimations.switchState.applyArguments(vm: "V", on: true) == ["apply", "--vm", "V", "--vm-type", "app", "--feature", "fewer-animations=on", "--yes", "--transaction"],
        "fewer-animations at the start: apply's switch of it alone")
-expect(FewerAnimations.info.hasPrefix("Experimental.") && FewerAnimations.info.contains("0.45 W") &&
-       FewerAnimations.info.contains("blur or shadows") && FewerAnimations.info.contains("Omarchy's menu") &&
-       FewerAnimations.info.contains("Omarchy 4.5"), "fewer-animations (i): experimental, the watts, what goes, the same as Omarchy's menu, 4.5")
+expect(FewerAnimations.info.hasPrefix("Experimental.") && FewerAnimations.info.contains("0.43 W") &&
+       FewerAnimations.info.contains("border") && FewerAnimations.info.contains("Every other animation, blur and shadows stay") &&
+       FewerAnimations.info.contains("stays Omarchy's") && !FewerAnimations.info.contains("Needs Omarchy 4.5"),
+       "fewer-animations (i): experimental, the Air's border figure, only the border, Omarchy's toggle stays Omarchy's")
+
+// Battery saver: the top switch of the battery-saving switches.
+typealias BS = BatterySaver
+let allOff: [BS.Item] = BS.Child.allCases.map { BS.Item($0, on: false) }
+expect(BS.Child.allCases.map(\.title) == ["VM CPU clock saver", "Pause drawing while hidden", "Fewer animations", "HDR only in full screen",
+                                          "Prefer VP9 on YouTube", "Pointer on its own layer", "Draw only what changed"],
+       "battery saver: the seven switches, the ones that work at once first")
+expect(!BS.isOn(allOff) && BS.subtitle(allOff) == BS.offText && BS.accessibilityHint(allOff) == "0 of 7 on",
+       "battery saver: all off: off, the plain line")
+expect(BS.changes(allOff, to: true) == BS.Child.allCases, "battery saver on from all off: all seven")
+// The M1 Max of the design: HDR display, no AV1 decoder, HDR off (HDR only in full screen greyed), three on.
+let m1: [BS.Item] = [BS.Item(.vcpuClockSaver, on: true), BS.Item(.pauseWhileHidden, on: true), BS.Item(.fewerAnimations, on: true),
+                     BS.Item(.hdrFullScreenOnly, enabled: false, on: false), BS.Item(.youtubeVP9, on: false),
+                     BS.Item(.pointerPlane, on: false), BS.Item(.presentTiles, on: false)]
+expect(BS.isOn(m1) && BS.subtitle(m1) == "3 of 7 on." && BS.accessibilityHint(m1) == "3 of 7 on",
+       "battery saver, some on: on, the count over the shown switches, and VoiceOver says it")
+expect(BS.changes(m1, to: true) == [.youtubeVP9, .pointerPlane, .presentTiles],
+       "battery saver on: only the shown, switchable ones that are off; never HDR only in full screen while HDR is off")
+expect(BS.changes(m1, to: false) == [.vcpuClockSaver, .pauseWhileHidden, .fewerAnimations], "battery saver off: every one that is on")
+// After the top switch on the M1 Max: 6 of 7 (the greyed one stays off): never a false "all on".
+let m1on = m1.map { BS.Item($0.child, shown: $0.shown, enabled: $0.enabled, on: $0.on || $0.enabled) }
+expect(BS.subtitle(m1on) == "6 of 7 on." && BS.accessibilityHint(m1on) == "6 of 7 on", "battery saver: a greyed switch keeps all on from showing")
+// A greyed switch that is on (clock saver, then GPU safe mode): off still writes its key; it counts.
+let safe: [BS.Item] = [BS.Item(.vcpuClockSaver, enabled: false, on: true)] + allOff.dropFirst()
+expect(BS.changes(safe, to: false) == [.vcpuClockSaver] && BS.changes(safe, to: true) == Array(BS.Child.allCases.dropFirst()),
+       "battery saver: a greyed switch that is on goes off with the top switch, and is never turned on by it")
+// A Mac mini M4: AV1 decoder (no VP9 row), no HDR display: five shown, hidden ones out of every count and change.
+let mini: [BS.Item] = BS.Child.allCases.map { c in
+    BS.Item(c, shown: c != .youtubeVP9 && c != .hdrFullScreenOnly, on: c == .pointerPlane) }
+expect(BS.subtitle(mini) == "1 of 5 on." && !BS.changes(mini, to: true).contains(.youtubeVP9) &&
+       !BS.changes(mini, to: true).contains(.hdrFullScreenOnly) && BS.changes(mini, to: true).count == 4,
+       "battery saver on a Mac mini: n of 5, the hidden ones never switched")
+let hiddenOn: [BS.Item] = [BS.Item(.youtubeVP9, shown: false, on: true)] + allOff.filter { $0.child != .youtubeVP9 }
+expect(!BS.isOn(hiddenOn) && BS.changes(hiddenOn, to: false).isEmpty, "battery saver: a hidden switch neither counts nor goes off")
+let allOn: [BS.Item] = BS.Child.allCases.map { BS.Item($0, on: true) }
+expect(BS.subtitle(allOn) == BS.allOnText && BS.accessibilityHint(allOn) == "7 of 7 on" && BS.changes(allOn, to: true).isEmpty,
+       "battery saver: all on: the next-start line, nothing to switch on")
+expect(BS.Child.allCases.filter(\.isVMFeature) == [.fewerAnimations, .youtubeVP9], "battery saver: the VM's own two switches")
+expect(BS.info.hasPrefix("Experimental.") && BS.info.contains("never turns those needs on") && BS.info.contains("next start of the VM"),
+       "battery saver (i): experimental, needs never turned on, what counts when")
 
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

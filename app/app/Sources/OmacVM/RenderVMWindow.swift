@@ -50,6 +50,8 @@ enum RenderVMWindow {
         var move: OmarchyMoveCard.Preview? = OmarchyMoveCard.Preview(card: .hidden)
         /// The backup row under Storage & Updates (nil: not shown).
         var moveBackup: (bytes: Int64, exact: Bool)? = nil
+        /// The Battery saver group open (nil: as the app's key says).
+        var batterySaverOpen: Bool? = nil
     }
 
     static func allowed(bundleID: String?) -> Bool {
@@ -154,6 +156,7 @@ enum RenderVMWindow {
         state.config = config
         missionControlPictures(state, usual)
         memoryPictures(state, config, usual)
+        batterySaverPictures(state, folder, usual)
 
         // Disk › Change… open: a 128 GB disk with 9 GB used, a smaller size
         // chosen; and a 64 GB one, which cannot shrink, made larger.
@@ -294,6 +297,9 @@ enum RenderVMWindow {
                 try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("icon-\(t.id).png"))
             }
         }
+
+        // Last: it turns on the accessibility tree, which makes every later picture slower.
+        batterySaverAccessibility(state, folder, usual)
 
         saved.restore()
         try? FileManager.default.removeItem(at: tmp)
@@ -572,6 +578,113 @@ enum RenderVMWindow {
     /// both pictures, inside the card's sides and below the header within the
     /// window's height, scrolled to General; at Best it must be gone. The
     /// VM's resources and graphics file are put back after.
+    /// Battery saver (BatterySaverGroup): closed with nothing on, and open on
+    /// a Mac like an M1 Max (a display that can show HDR, no AV1 decoder):
+    /// three on (the line says "3 of 7 on."), HDR off so HDR only in full
+    /// screen is greyed with its reason. The group's top row and switch must
+    /// be there and inside the window; then the top row's (i).
+    private static func batterySaverPictures(_ state: AppState, _ folder: URL, _ usual: Preview) {
+        func shown(_ name: String, _ dark: Bool) {
+            for probe in ["battery-saver", "trailing-battery-saver", "battery-saver-disclosure"] where LayoutProbe.frames[probe] == nil {
+                note("\(name): \(probe) is missing\(dark ? " (dark)" : "")", fail: true)
+            }
+        }
+        var p = usual
+        p.hdr = true
+        p.decodesAV1 = false
+        p.batterySaverOpen = false
+        window("page-4-battery-saver-closed", state, p, height: 2600) { dark in shown("page-4-battery-saver-closed", dark) }
+        let record = folder.appendingPathComponent("features")
+        let before = try? Data(contentsOf: record)
+        Settings.hdr = false
+        Settings.vcpuClockSaver = true
+        Settings.pauseWhileHidden = true
+        try? Data("fewer-animations=on\n".utf8).write(to: record)
+        state.reloadSettings()
+        p.batterySaverOpen = true
+        window("page-5-battery-saver-open", state, p, height: 2600) { dark in shown("page-5-battery-saver-open", dark) }
+        Settings.vcpuClockSaver = false
+        Settings.pauseWhileHidden = false
+        if let before { try? before.write(to: record) } else { try? FileManager.default.removeItem(at: record) }
+        state.reloadSettings()
+        sheet("popover-5-battery-saver") { InfoText(text: BatterySaver.info) }
+    }
+
+    /// VoiceOver: in the open group, the top switch ("Battery saver", its
+    /// hint "3 of 7 on"), its (i), the disclosure ("Battery saver
+    /// switches") and every shown switch below with its own label and (i).
+    /// Read from the window's accessibility tree, as VoiceOver reads it.
+    private static func batterySaverAccessibility(_ state: AppState, _ folder: URL, _ usual: Preview) {
+        var p = usual
+        p.hdr = true
+        p.decodesAV1 = false
+        p.batterySaverOpen = true
+        let record = folder.appendingPathComponent("features")
+        let before = try? Data(contentsOf: record)
+        Settings.hdr = false
+        Settings.vcpuClockSaver = true
+        Settings.pauseWhileHidden = true
+        try? Data("fewer-animations=on\n".utf8).write(to: record)
+        state.reloadSettings()
+        defer {
+            Settings.vcpuClockSaver = false
+            Settings.pauseWhileHidden = false
+            if let before { try? before.write(to: record) } else { try? FileManager.default.removeItem(at: record) }
+            state.reloadSettings()
+        }
+        // As an assistive app asks for it: SwiftUI builds its accessibility tree only then.
+        for attr in ["AXEnhancedUserInterface", "AXManualAccessibility"] {
+            NSApp.accessibilitySetValue(true as NSNumber, forAttribute: NSAccessibility.Attribute(rawValue: attr))
+        }
+        let w = PictureWindow.make(RootView(state: state, preview: p).environment(\.controlActiveState, .key))
+        w.setContentSize(NSSize(width: WindowSize.width, height: 2600))
+        settle(w)
+        _ = w.contentView?.accessibilityChildren()
+        settle(w)
+        var seen: [(role: String, label: String, value: String, hint: String)] = []
+        var nodes = 0, other = 0
+        var kinds: [String] = []
+        // SwiftUI's own elements answer the NSAccessibility selectors without
+        // declaring the Swift protocol: ask by selector, as an assistive app does.
+        func ask(_ o: NSObject, _ name: String) -> Any? {
+            let sel = NSSelectorFromString(name)
+            guard o.responds(to: sel) else { return nil }
+            return o.perform(sel)?.takeUnretainedValue()
+        }
+        func walk(_ e: Any, _ depth: Int) {
+            guard depth < 80, let o = e as? NSObject else { other += 1; return }
+            nodes += 1
+            let label = [ask(o, "accessibilityLabel"), ask(o, "accessibilityTitle")].compactMap { $0 as? String }.first { !$0.isEmpty } ?? ""
+            let value = ask(o, "accessibilityValue").map { "\($0)" } ?? ""
+            let role = (ask(o, "accessibilityRole") as? String) ?? (ask(o, "accessibilityRole") as? NSAccessibility.Role)?.rawValue ?? ""
+            let kids = (ask(o, "accessibilityChildren") as? [Any]) ?? []
+            if nodes < 25 { kinds.append("\(type(of: e)):\(role):\(kids.count)") }
+            let hint = (ask(o, "accessibilityHelp") as? String) ?? ""
+            if !label.isEmpty { seen.append((role, label, value, hint)) }
+            for c in kids { walk(c, depth + 1) }
+        }
+        if let v = w.contentView { walk(v, 0) }
+        w.contentViewController = nil
+        func has(_ label: String, _ roles: [String], hint: String? = nil) -> Bool {
+            seen.contains { $0.label == label && roles.contains($0.role) && (hint == nil || $0.hint == hint) }
+        }
+        var missing: [String] = []
+        if !has(BatterySaver.title, ["AXCheckBox"], hint: "3 of 7 on") { missing.append("switch \"Battery saver\" with the hint \"3 of 7 on\"") }
+        if !has("About \(BatterySaver.title)", ["AXButton"]) { missing.append("(i) \"About Battery saver\"") }
+        if !has("Battery saver switches", ["AXDisclosureTriangle", "AXButton", "AXGroup", "AXOutline", "AXRow"]) { missing.append("disclosure \"Battery saver switches\"") }
+        for c in BatterySaver.Child.allCases {
+            if !has(c.title, ["AXCheckBox"]) { missing.append("switch \"\(c.title)\"") }
+            if !has("About \(c.title)", ["AXButton"]) { missing.append("(i) \"About \(c.title)\"") }
+        }
+        if missing.isEmpty {
+            note("page-5-battery-saver-open: VoiceOver labels ok (top switch, its hint, (i), disclosure, \(BatterySaver.Child.allCases.count) switches and their (i))")
+        } else {
+            note("page-5-battery-saver-open: VoiceOver labels missing: \(missing.joined(separator: ", "))", fail: true)
+            let near = seen.filter { $0.label.contains("Battery") || $0.label.hasPrefix("About") }.map { "\($0.role) '\($0.label)' '\($0.value)' '\($0.hint)'" }
+            note("  seen: \(near.prefix(30).joined(separator: "; ")) | \(nodes) nodes, \(other) not elements: \(kinds.joined(separator: " "))")
+        }
+    }
+
     private static func memoryPictures(_ state: AppState, _ config: VMConfig, _ usual: Preview) {
         let limits = ResourceLimits.mac
         let gpu = GPUMemory.file(for: config)

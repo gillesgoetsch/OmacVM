@@ -392,12 +392,14 @@ fi
 # no "holds for one frame", no watts until the M1 Max A/B/B/A of this build).
 hf=$(sed -n '/^struct HDRFullScreenOnlyRow/,/^}/p' "$R/app/app/Sources/OmacVM/SettingsRows.swift")
 hfinfo=$(grep 'static let info' <<<"$hf")
-view=$(sed -n '/if preview?.hdr ?? Mac.hasHDRDisplay {/,/}/p' "$R/app/app/Sources/OmacVM/SettingsView.swift")
-if [[ $view == *"HDRRow("*"HDRFullScreenOnlyRow(tick: state.tick)"* ]] &&
-   grep -qF 'enabled: Settings.hdr && !Settings.gpuSafeMode' <<<"$hf" && grep -qF 'badge: "experimental"' <<<"$hf"; then
-  echo "ok   HDR only in full screen: under HDR, with an HDR display, experimental, only with HDR on"
+# From 3.5.0 in the Battery saver group (BatterySaverGroup.swift), shown with an HDR display.
+group=$(cat "$R/app/app/Sources/OmacVM/BatterySaverGroup.swift")
+if grep -qF 'if shown.contains(.hdrFullScreenOnly) { HDRFullScreenOnlyRow(tick: state.tick, badge: nil) }' <<<"$group" &&
+   grep -qF '.init(.hdrFullScreenOnly, shown: hdrDisplay, enabled: Settings.hdr && !safe, on: Settings.hdrFullScreenOnly)' <<<"$group" &&
+   grep -qF 'enabled: Settings.hdr && !Settings.gpuSafeMode' <<<"$hf" && grep -qF 'var badge: String? = "experimental"' <<<"$hf"; then
+  echo "ok   HDR only in full screen: in Battery saver, with an HDR display, experimental, only with HDR on"
 else
-  echo "FAIL HDR only in full screen: not under HDR's row, or the switch works without HDR or in GPU safe mode"; fail=1
+  echo "FAIL HDR only in full screen: not in Battery saver with an HDR display, or the switch works without HDR or in GPU safe mode"; fail=1
 fi
 if [[ $hfinfo == *"Experimental"* && $hfinfo == *"HDR in a window shows as SDR"* &&
       $hfinfo == *"Any full-screen window turns HDR on"* && $hfinfo == *"Only the main window's display"* &&
@@ -413,5 +415,26 @@ if [[ $hfinfo != *"Air"* && $hfinfo != *"one frame at"* && $hfinfo != *"holds fo
 else
   echo "FAIL HDR only in full screen: a figure or battery claim the build's rows have not measured"; fail=1
 fi
+
+# (i) Battery saver's top switch (BatterySaverGroup, the same calls as the window's switch) on a
+# stopped VM: on writes the app's keys of the switchable ones and the VM's record + pending file for
+# Fewer animations; never HDR (HDR only in full screen stays off with HDR off); the other VM's record
+# stays; off turns them all off again, a greyed-out one that is on too (GPU safe mode).
+run set hdr false; run set hdrFullScreenOnly false
+run battery on Alpha > "$T/bs.txt" || { echo "FAIL battery on Alpha"; fail=1; }
+dump
+expect "Battery saver on: the app's keys on" "true true true true" \
+  "$(val app.vcpuClockSaver) $(val app.pauseWhileHidden) $(val app.pointerPlane) $(val app.presentTiles)"
+expect "Battery saver on: HDR not turned on, HDR only in full screen stays off" "false false" "$(val app.hdr) $(val app.hdrFullScreenOnly)"
+expect "Battery saver on: Fewer animations for Alpha (its record and pending file), Beta as it was" "true on false" \
+  "$(val vms.0.fewerAnimations) $(tr -d '\n' < "$V/Alpha/fewer-animations-pending") $(val vms.1.fewerAnimations)"
+defaults write "$D" gpuSafeMode -bool true
+run battery off Alpha > "$T/bs.txt" || { echo "FAIL battery off Alpha"; fail=1; }
+defaults delete "$D" gpuSafeMode
+dump
+expect "Battery saver off (GPU safe mode on): every key off, the greyed ones too" "false false false false false" \
+  "$(val app.vcpuClockSaver) $(val app.pauseWhileHidden) $(val app.pointerPlane) $(val app.presentTiles) $(val vms.0.fewerAnimations)"
+expect "Battery saver off: switched back before a start, no pending file" none "$([[ -e $V/Alpha/fewer-animations-pending ]] && echo there || echo none)"
+expect "Battery saver: no key of its own in the dump" "" "$(val app.batterySaver)$(val app.batterySaverExpanded)"
 
 exit $fail
