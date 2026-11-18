@@ -73,32 +73,6 @@ def test_local_reads_sddm_not_only_the_env(tmp_path, monkeypatch):
     assert L.Local().on["autologin"] is False          # switched off outside OmacVM
 
 
-def test_local_reads_omarchys_animations_toggle(tmp_path, monkeypatch):
-    """Fewer animations is Omarchy 4.5's no-animations toggle: switched in Omarchy's menu, the row follows."""
-    share = tmp_path / "share"
-    share.mkdir()
-    (share / "features.tsv").write_text(open(TSV, encoding="utf-8").read())
-    (share / "VERSION").write_text("3.5.0\n")
-    env = tmp_path / "env"
-    env.write_text("OMACVM_VM_TYPE=app\nOMACVM_FEATURE_fewer_animations=off\n")
-    home, omarchy = tmp_path / "home", tmp_path / "omarchy"
-    monkeypatch.setenv("OMACVM_SHARE", str(share))
-    monkeypatch.setenv("OMACVM_ENV", str(env))
-    monkeypatch.setenv("OMACVM_INSTALLED", str(tmp_path / "none.json"))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-    monkeypatch.setenv("OMACVM_SDDM_ROOT", str(tmp_path / "root"))
-    monkeypatch.setenv("OMACVM_OMARCHY_PATH", str(omarchy))
-    monkeypatch.setenv("HOME", str(home))
-    flag = str(home / ".local/state/omarchy/toggles/hypr/no-animations.lua")
-    write(flag, "-- Omarchy's\n")
-    assert L.Local().on["fewer-animations"] is False   # Omarchy 4.0: no such toggle, the env says
-    write(str(omarchy / "default/hypr/toggles/no-animations.lua"), "-- Omarchy's\n")
-    assert L.Local().on["fewer-animations"] is True    # turned off in Omarchy's menu: on
-    env.write_text("OMACVM_VM_TYPE=app\nOMACVM_FEATURE_fewer_animations=on\n")
-    os.remove(flag)
-    assert L.Local().on["fewer-animations"] is False   # animations back in Omarchy's menu: off
-
-
 # ---- the Mac fixed the record ----
 
 def test_fixed_row_shows_real_state_and_note(features):

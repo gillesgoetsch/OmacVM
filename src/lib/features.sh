@@ -190,8 +190,6 @@ features_real() {
   fi
   real=$(sed -n 's/^OMACVM_REAL_autologin=//p' <<<"$1" | tail -1)
   [[ $real == on || $real == off ]] && feature_drift "$1" autologin "$real" "SDDM's autologin in the VM"
-  real=$(sed -n 's/^OMACVM_REAL_fewer_animations=//p' <<<"$1" | tail -1)
-  [[ $real == on || $real == off ]] && feature_drift "$1" fewer-animations "$real" "Omarchy's animations toggle in the VM"
   return 0
 }
 feature_drift() {   # PROBE NAME REAL WHERE

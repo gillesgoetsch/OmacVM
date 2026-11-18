@@ -518,12 +518,12 @@ if want mission-control; then
     "$R/missioncontrol/guest/install.sh" "$U" off || not_set_up mission-control "Mission Control (off)"
   fi
 fi
-# Fewer animations (experimental, Omarchy 4.5): Omarchy's own no-animations
-# toggle. Off takes the toggle away on every apply; the Mac's probe reads the
-# toggle first, so one switched in Omarchy's menu is kept (the record follows).
+# Fewer animations (experimental): OmacVM's own Hyprland file, borders change
+# colour at once (animations/guest/install.sh). Off takes it away on every
+# apply; Omarchy's own no-animations toggle is never touched.
 if want fewer-animations; then
   if [[ ${F[fewer-animations]} == on ]]; then
-    log "Fewer animations (experimental: Omarchy's no-animations toggle)"
+    log "Fewer animations (experimental: borders change colour at once)"
     "$R/animations/guest/install.sh" "$U" on || not_set_up fewer-animations "Fewer animations"
   else
     "$R/animations/guest/install.sh" "$U" off || not_set_up fewer-animations "Fewer animations (off)"

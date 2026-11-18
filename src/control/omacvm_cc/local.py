@@ -53,14 +53,6 @@ def sddm_texts() -> list[str] | None:
     return [read(p) for p in paths]
 
 
-def animations_toggle() -> tuple[str, str]:
-    """Omarchy 4.5's no-animations toggle: its source (none below 4.5) and
-    the user's copy, which is there while animations are off. Fewer
-    animations is that toggle (animations/guest/install.sh)."""
-    src = os.path.join(os.environ.get("OMACVM_OMARCHY_PATH", "/usr/share/omarchy"), "default/hypr/toggles/no-animations.lua")
-    return src, os.path.expanduser("~/.local/state/omarchy/toggles/hypr/no-animations.lua")
-
-
 def installed_file() -> str:
     return os.environ.get("OMACVM_INSTALLED", "/etc/omacvm/installed.json")
 
@@ -219,10 +211,6 @@ class Local:
         texts = sddm_texts()
         if texts is not None and "autologin" in self.on:
             self.on["autologin"] = bool(S.sddm_autologin_user(texts))
-        # Fewer animations as Omarchy's toggle is, also switched in Omarchy's menu (the Mac fixes the record).
-        src, flag = animations_toggle()
-        if "fewer-animations" in self.on and os.path.isfile(src):
-            self.on["fewer-animations"] = os.path.isfile(flag)
         self.vm_type = self.env.get("OMACVM_VM_TYPE", "")
         self.omarchy = omarchy_version()
         self.installed = read_json(installed_file())
