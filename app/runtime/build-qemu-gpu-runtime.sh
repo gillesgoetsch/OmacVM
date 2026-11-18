@@ -1877,6 +1877,12 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-refusal-text
   [[ $(grep -cF 'if ((unsigned char)*c < 0x20)' "$virgl_source/src/venus/vkr_context.c") == 2 ]] && \
   grep -qxF '              name, call, why,' "$virgl_source/src/venus/vkr_context.c" || \
   die "vkr_pipeline.c, vkr_context.c: refusal reasons are cut at 192 bytes, span lines or keep control bytes (refusal-text patch)"
+# minMemoryMapAlignment as the guest's own mapping gives it (at most 4096): the guest kernel
+# places every Venus mapping on a guest page, KosmicKrisp says 16384 (#786: llama.cpp).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-map-alignment.patch"
+[[ $(grep -c 'minMemoryMapAlignment > VKR_GUEST_MAP_ALIGNMENT' "$virgl_source/src/venus/vkr_physical_device.c") == 2 ]] && \
+  grep -qx '#define VKR_GUEST_MAP_ALIGNMENT 4096' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_physical_device.c: the guest is told the host driver's minMemoryMapAlignment (map-alignment patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
