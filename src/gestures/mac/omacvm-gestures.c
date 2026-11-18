@@ -78,6 +78,9 @@
 //                                     its first or last workspace: out to the macOS Space on
 //                                     that side in one step (acted on only for the VM in front
 //                                     while captured, at most once a second)
+//   L                                 Hyprland's custom event omacvm-escape (a binding of the
+//                                     user's): out of the VM as the escape combo goes (acted on
+//                                     only for the VM in front while captured)
 // and first, the handshake (any VM on these networks, and any Mac program on
 // 127.0.0.1, can connect; neither side ever sends the Bridge's token itself):
 //   C <guest nonce>                   from the guest: 32 hex digits
@@ -653,6 +656,9 @@ static void windowTitle(pid_t pid, char *out, size_t cap) {
   CFTypeRef win = NULL, title = NULL;
   if (AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute, &win) != kAXErrorSuccess || !win)
     if (AXUIElementCopyAttributeValue(app, kAXMainWindowAttribute, &win) != kAXErrorSuccess) win = NULL;
+  // The app's timeout is the app object's alone: the window read from it
+  // would wait as long as macOS's global default.
+  if (win) AXUIElementSetMessagingTimeout(win, 0.1f);
   if (win && AXUIElementCopyAttributeValue(win, kAXTitleAttribute, &title) == kAXErrorSuccess && title &&
       CFGetTypeID(title) == CFStringGetTypeID())
     CFStringGetCString(title, out, (CFIndex)cap, kCFStringEncodingUTF8);
@@ -800,49 +806,36 @@ static void pauseInput(void) {
 // until its callback answers. macOS disables a tap that did not answer in
 // time; enabling it again (as before) could bring the hold back over and
 // over. Now a disabled tap is removed, never enabled again; a new one comes
-// after a hold-off (2 s, then 30 s), and after three in 10 minutes none (and
-// no trackpads) until macOS's Accessibility list changes. A watchdog off the
-// main thread disables the tap when the main thread (the tap's callback) has
-// not answered for a second.
-#define TAP_PARK 3
+// after a hold-off: 2 s, or 30 s when one was disabled in the 10 minutes
+// before. It always comes back, however often macOS disables it: the escape
+// combo is the tap's, and it is the only way out of a full-screen VM on a Mac
+// with a keyboard alone. A watchdog off the main thread disables the tap when
+// the main thread (the tap's callback) has not answered for a second, so a
+// stalling tap holds the Mac's input once per hold-off at most.
 #define TAP_FORGET 600.0
-static const double tapHoldOff[TAP_PARK - 1] = { 2, 30 };
 static double uptimeNow(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; }
 static double (*nowFn)(void) = uptimeNow;
-static double tapStrikes[TAP_PARK];   // main thread: when taps were disabled (the last 10 minutes)
-static int nStrikes;
-static double tapUntil;               // main thread: no new tap before this
-static int tapParked;                 // main thread: none until the Accessibility list changes
-static int tapMayCreate(void) { return !tapParked && nowFn() >= tapUntil; }
+static double lastStrike = -TAP_FORGET;   // main thread: when a tap was disabled last
+static double tapUntil;                   // main thread: no new tap before this
+static int tapMayCreate(void) { return nowFn() >= tapUntil; }
 static void rearmTap(const char *why);
-static void tapBack(void) { if (!tapPort && tapMayCreate()) rearmTap("hold-off over after macOS disabled it"); }
-// A strike at `now`; returns the hold-off in s, or -1: parked.
+// A strike at `now`; returns the hold-off in s.
 static double tapStrike(double now) {
-  int k = 0;
-  for (int i = 0; i < nStrikes; i++) if (now - tapStrikes[i] < TAP_FORGET) tapStrikes[k++] = tapStrikes[i];
-  if (k == TAP_PARK) { memmove(tapStrikes, tapStrikes + 1, (TAP_PARK - 1) * sizeof *tapStrikes); k--; }
-  tapStrikes[k++] = now;
-  nStrikes = k;
-  if (k >= TAP_PARK) { tapParked = 1; return -1; }
-  tapUntil = now + tapHoldOff[k - 1];
-  return tapHoldOff[k - 1];
+  double h = now - lastStrike < TAP_FORGET ? 30 : 2;
+  lastStrike = now;
+  tapUntil = now + h;
+  return h;
 }
-// Main thread: the tap was disabled (by macOS or the watchdog).
+// Main thread: the tap was disabled (by macOS or the watchdog). The next one
+// comes from checkPermissions once the hold-off is over.
 static void tapDisabled(const char *by) {
   if (!tapPort) return;
   double h = tapStrike(nowFn());
-  if (h < 0) {
-    pauseInput();
-    logf_("event tap disabled (%s) %d times in 10 minutes: removed, trackpads let go (macOS has the keyboard, "
-          "clicks and gestures) until macOS's Accessibility list changes", by, TAP_PARK);
-    return;
-  }
   removeTap();
   logf_("event tap disabled (%s): removed (never enabled again), a new one in %.0f s", by, h);
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(h * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ tapBack(); });
 }
 // macOS's Accessibility list changed: a fresh start (main thread).
-static void tapPolicyReset(void) { nStrikes = 0; tapUntil = 0; tapParked = 0; }
+static void tapPolicyReset(void) { lastStrike = -TAP_FORGET; tapUntil = 0; }
 
 // The watchdog's step every 0.25 s: 1 = ask the main thread to answer,
 // 2 = it has not answered for longer than a second.
@@ -874,19 +867,27 @@ static void *tapWatchdog(void *u) {
   return NULL;
 }
 
+// Every second (permissionTimer) and whenever macOS says a permission may
+// have changed. Without a tap and with its permissions, a new one is made as
+// soon as no hold-off keeps it away, and tried again each second until one
+// is made: no single failed step leaves a VM in front without one.
 static void checkPermissions(void) {
-  if (tapPort && !inputPaused) {
-    int perm = permFn();
-    if (permitted(perm)) return;
-    pauseInput();
-    permissionsSeen(perm);
-    logf_("permission taken away: event tap removed, trackpads let go (macOS has the keyboard, clicks and "
-          "gestures); waiting for Accessibility");
-  } else if (inputPaused && !tapParked && installTap()) {
+  if (inputPaused) {
+    if (!installTap()) return;
     inputPaused = 0;
     permissionsSeen(tapPerm);
     if (trackpad) startTrackpads();
     logf_("event tap and trackpads on again");
+    return;
+  }
+  int perm = permFn();
+  if (!permitted(perm)) {
+    pauseInput();
+    permissionsSeen(perm);
+    logf_("permission taken away: event tap removed, trackpads let go (macOS has the keyboard, clicks and "
+          "gestures); waiting for Accessibility");
+  } else if (!tapPort && tapMayCreate()) {
+    rearmTap("hold-off over after macOS disabled it");
   }
 }
 
@@ -929,18 +930,22 @@ static void accessibilityChanged(CFNotificationCenterRef c, void *o, CFNotificat
 }
 
 // Main thread only. A failed re-creation keeps the old tap while the
-// permissions are there (logged once until one works again), never without.
+// permissions are there, never without; with none, checkPermissions tries
+// again (logged once until one works again).
 static void rearmTap(const char *why) {
   static int failedLogged;
   if (inputPaused) return;   // checkPermissions brings it back
-  if (!tapMayCreate()) return;   // after macOS disabled one: tapBack, or the Accessibility list
+  if (!tapMayCreate()) return;   // after macOS disabled one: checkPermissions, after the hold-off
+  // A disabled one is counted first (frontChanged's look at it): replaced at
+  // once, a stall could come back with no hold-off.
+  if (tapPort && CFMachPortIsValid(tapPort) && !CGEventTapIsEnabled(tapPort)) return;
   if (installTap()) {
     logf_("event tap created again (%s)", why);
     failedLogged = 0;
   } else if (!permitted(permFn())) {
     checkPermissions();   // the old one goes too
   } else if (!failedLogged) {
-    logf_("cannot create the event tap again (%s); keeping the old one", why);
+    logf_("cannot create the event tap again (%s); %s", why, tapPort ? "keeping the old one" : "trying again every second");
     failedLogged = 1;
   }
 }
@@ -2710,6 +2715,21 @@ static void swipeOutFrom(int fd, unsigned gen, int dir) {
   leaveVMToward(dir);
 }
 
+// "L" from a guest (main thread): out of the VM as the combo goes, only for
+// the VM in front while captured.
+static void escapeFrom(int fd, unsigned gen) {
+  int target = 0;
+  pthread_mutex_lock(&sendLock);
+  for (int i = 0; i < MAX_CLIENTS; i++)
+    if (clients[i].fd == fd && clients[i].gen == gen) target = clients[i].target;
+  pthread_mutex_unlock(&sendLock);
+  if (!target || !capturing) { logf_("escape event from the guest: not the VM in front, captured: ignored"); return; }
+  capturing = 0; escaped = 1; movesCancelled = 0;
+  logf_("escape event from the guest: capture off");
+  sendState("esc");
+  leaveVM();
+}
+
 // "E" (after "X on 2"): left -1, right +1, "-" 0; anything else 2.
 static int edgeWord(const char *w) {
   return !strcmp(w, "left") ? -1 : !strcmp(w, "right") ? 1 : !strcmp(w, "-") ? 0 : 2;
@@ -2734,7 +2754,7 @@ static int waysFrom(const char *s, unsigned ways[2]) {
 
 // One line a guest sent after its handshake (its reader thread). "E <l> <r>"
 // and "G ..." are kept with its connection (the trackpad's thread reads them
-// when a swipe begins); "X left|right" is acted on on the main thread.
+// when a swipe begins); "X left|right" and "L" are acted on on the main thread.
 // Anything else is skipped.
 static void guestLine(int fd, unsigned gen, const char *line) {
   char a[8], b[8], more;
@@ -2771,6 +2791,7 @@ static void guestLine(int fd, unsigned gen, const char *line) {
     pthread_mutex_unlock(&sendLock);
     return;
   }
+  if (!strcmp(line, "L")) { dispatch_async(dispatch_get_main_queue(), ^{ escapeFrom(fd, gen); }); return; }
   int dir = !strcmp(line, "X left") ? -1 : !strcmp(line, "X right") ? 1 : 0;
   if (dir) dispatch_async(dispatch_get_main_queue(), ^{ swipeOutFrom(fd, gen, dir); });
 }

@@ -591,6 +591,13 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   mixer on their own real-time thread". What is left in every path: a Mac
   so busy that the VM's own threads get no time (a build on every core:
   the guest stopped for up to 150 ms) breaks the guest's streams. ADR 0045.
+- **3.5.0:** the own thread ticks with the stream (5.3 ms with PipeWire's
+  usual buffers, down to 1 ms where a guest app or the Mac's output needs
+  it) instead of every 1 ms: about 190 wakeups a second instead of 1000,
+  the same delay. qemu.log says `sound: audio tick every <N> us`. To rule
+  it out, switch the own thread off as above; for developers,
+  `OMACVM_AUDIO_THREAD_PERIOD_US=1000` in the app's environment brings back
+  the fixed 1 ms tick. ADR 0045.
 - **For 2.9.0 and 2.9.1:** a bigger safety buffer in the VM. As root in
   the VM (USER = your user):
 
@@ -608,6 +615,7 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 - **Where:** `app/runtime/patches/qemu-darwin-main-loop-qos.patch`,
   `app/runtime/patches/qemu-hda-no-catch-up.patch`,
   `app/runtime/patches/qemu-audio-own-thread.patch` (3.1.16, `audioThread`;
+  its tick: `qemu-audio-tick-follows-stream.patch`, 3.5.0;
   `AudioPath.swift`, `AudioDelay.qemuThreadMs`),
   `app/app/Sources/OmacVM/Runner.swift` (`audioClassic`), `src/cmd/check.sh`,
   the measurement tools in `app/runtime/Tests/audio/`, ADR 0036 and 0045; in the
@@ -783,6 +791,11 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   is never napped. QEMU's log says "OmacVM: App Nap: off while the VM runs".
   `OMACVM_APP_NAP=1` in QEMU's environment allows App Nap again (tests).
   Before: keep the VM's window visible while a job runs.
+- **macOS 27:** With only the `NSProcessInfo` activity, macOS 27 still
+  clamped a hidden idle VM to Utility QoS (priority 20, tier 3 timers,
+  Utility disk I/O) after about 30 s. QEMU now also registers
+  `NSAppSleepDisabled` before `main()` unless `OMACVM_APP_NAP=1`, and
+  `src/tests/app-nap.sh --live PID` checks that vCPUs stay at priority 31+.
 - **Where:** `app/runtime/patches/omacvm-cocoa-no-app-nap.patch`; test
   `src/tests/app-nap.sh` (`--live PID` checks a running VM's vCPU threads).
 

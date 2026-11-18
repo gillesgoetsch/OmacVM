@@ -18,7 +18,8 @@
 #                         else the checkout's source with Swift, falling back to
 #                         the installed app if Swift is missing or fails
 #                         mac-notch (src/display), mac-clock
-#                         (src/clock), mac-free-gb (src/lib)
+#                         (src/clock), mac-free-gb (src/lib), mac-av1
+#                         (src/youtube-vp9)
 # OMACVM_STUB_BIN: where macOS's stubs are (/usr/bin; src/tests/no-clt.sh
 # points it at stand-ins).
 _TOOLS_SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)

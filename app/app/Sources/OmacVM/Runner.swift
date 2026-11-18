@@ -164,11 +164,14 @@ final class Runner {
         if ghosttyGPU.on {
             a += ["-smbios", "type=11,value=\(GhosttyGPU.smbios)"]
         }
-        // Draw only what changed (Settings.presentTilesStart, experimental): the
-        // guest loads OmacVM's virtio-gpu driver for its Linux 7.4 damage fix,
-        // so QEMU gets what changed in each frame (omacvm-virtio-gpu-load).
-        // Off, or in GPU safe mode: nothing sent, the stock driver as before.
-        if tiles.on {
+        // Copy only what changed (Settings.partialPresentStart, on by default
+        // for SDR starts) and Draw only what changed (Settings.presentTilesStart,
+        // experimental): the guest loads OmacVM's virtio-gpu driver for its
+        // Linux 7.4 damage fix, so QEMU gets what changed in each frame
+        // (omacvm-virtio-gpu-load; a 7.4 kernel keeps its stock driver, which
+        // has the fix). Both off, or GPU safe mode: nothing sent, the stock
+        // driver as before (ADR 0049's amendment of 2026-11-16).
+        if tiles.on || partial.on {
             a += ["-smbios", "type=11,value=omacvm.damage=1"]
         }
         let console = c.folder.appendingPathComponent("logs/console.log").path
@@ -445,8 +448,12 @@ final class Runner {
         let gpuComputePending = GPUCompute.switchState.prepareStart(folder: c.folder)
         // Drag and drop switched in the window while it was stopped: the same way.
         let dropPending = DragDrop.switchState.prepareStart(folder: c.folder)
+        // Prefer VP9 on YouTube switched in the window while it was stopped: the same way.
+        let vp9Pending = YouTubeVP9.switchState.prepareStart(folder: c.folder)
         // Mission Control switched in the window while it was stopped: the same way.
         let missionControlPending = MissionControl.switchState.prepareStart(folder: c.folder)
+        // Fewer animations switched in the window while it was stopped: the same way.
+        let animationsPending = FewerAnimations.switchState.prepareStart(folder: c.folder)
         // What of the Mac this start may use (its features), read once.
         links = MacLinks.load(folder: c.folder)
         // The strip beside the notch (NotchArea, #339): FullPanel only with the
@@ -471,6 +478,8 @@ final class Runner {
         extraBright = Settings.extraBrightnessStart()
         // Draw only what changed: one answer for the guest, QEMU and qemu.log.
         tiles = Settings.presentTilesStart()
+        // Partial present: one answer for QEMU and qemu.log (not for HDR starts yet).
+        partial = Settings.partialPresentStart(hdr: hdr.on)
         // Drag and drop: this app's side listens before QEMU starts (QEMU
         // connects at its start). Cannot listen: off for this start, said why.
         dropRecord = DropPlan.record(on: false)
@@ -646,7 +655,19 @@ final class Runner {
         if tiles.on {
             env["OMACVM_GL_PRESENT_TILES"] = env["OMACVM_GL_PRESENT_TILES"] == "check" ? "check" : "1"
         }
+        // Partial present (Settings.partialPresentStart, on by default for SDR
+        // starts; ADR 0051): QEMU draws only what the VM changed into the
+        // window's picture and says once a minute how the frames went. An
+        // inherited =check (tests: partial frames compared with full draws)
+        // stays; off, QEMU draws every frame in full as before.
+        if partial.on {
+            env["OMACVM_GL_PRESENT_DAMAGE"] = env["OMACVM_GL_PRESENT_DAMAGE"] == "check" ? "check" : "1"
+        }
+        // VM CPU clock saver (ADR 0073): QEMU, which runs as the app, reads and
+        // watches vcpuClockSaver itself; an inherited OMACVM_VCPU_CLOCK_SAVER
+        // decides instead (as OMACVM_GUEST_PAUSE does). GPU safe mode keeps it off.
         if Settings.gpuSafeMode {
+            env["OMACVM_VCPU_CLOCK_SAVER"] = "0"
             env["OMACVM_VIRGL_POLL_FENCES"] = "1"
             env["OMACVM_GL_PRESENT"] = "layer"
             env["OMACVM_GL_PRESENT_ON_TICK"] = "1"
@@ -700,6 +721,7 @@ final class Runner {
             log.write(Data("\(GhosttyGPU.record(ghosttyGPU))\n".utf8))
         }
         // Draw only what changed, while the switch is on (QEMU's minute lines say how often).
+        log.write(Data("OmacVM: partial present: \(partial.on ? "on" : "off") (\(partial.why))\n".utf8))
         if Settings.presentTiles {
             log.write(Data("OmacVM: tiled present: \(tiles.on ? "on" : "off") (\(tiles.why))\n".utf8))
         }
@@ -829,8 +851,20 @@ final class Runner {
                     Task { @MainActor in self?.appendLog(line) }
                 }
             }
+            if let on = vp9Pending {
+                FeatureStart.run(config: c, switch: YouTubeVP9.switchState, what: "Prefer VP9 on YouTube", on: on, agentPath: agentPath,
+                                 until: agentDeadline, running: { kill(pid, 0) == 0 }) { [weak self] line in
+                    Task { @MainActor in self?.appendLog(line) }
+                }
+            }
             if let on = missionControlPending {
                 FeatureStart.run(config: c, switch: MissionControl.switchState, what: "Mission Control", on: on, agentPath: agentPath,
+                                 until: agentDeadline, running: { kill(pid, 0) == 0 }) { [weak self] line in
+                    Task { @MainActor in self?.appendLog(line) }
+                }
+            }
+            if let on = animationsPending {
+                FeatureStart.run(config: c, switch: FewerAnimations.switchState, what: "Fewer animations", on: on, agentPath: agentPath,
                                  until: agentDeadline, running: { kill(pid, 0) == 0 }) { [weak self] line in
                     Task { @MainActor in self?.appendLog(line) }
                 }
@@ -889,6 +923,8 @@ final class Runner {
     private(set) var hdr: (on: Bool, why: String) = (false, "switch off")
     /// Draw only what changed at this start (Settings.presentTilesStart), set in start().
     private(set) var tiles: (on: Bool, why: String) = (false, "switch off")
+    /// Partial present at this start (Settings.partialPresentStart), set in start().
+    private(set) var partial: (on: Bool, why: String) = (false, "switch off")
     /// Ghostty on the Mac's GPU at this start (Settings.ghosttyGPUStart), set in arguments().
     private(set) var ghosttyGPU: (on: Bool, why: String) = (false, "switch off")
     /// Extra brightness at this start (Settings.extraBrightnessStart), set in start().

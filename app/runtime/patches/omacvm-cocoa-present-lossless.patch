@@ -12,8 +12,9 @@ GPU writes and reads them compressed: QEMU's draw of each frame into the
 surface and WindowServer's composite of the window move fewer bytes. Nothing may read these surfaces
 back, on the CPU or with glReadPixels (it crashes on them): the boot logo's
 readback reads the guest's texture, and the partial present's check mode
-(OMACVM_GL_PRESENT_DAMAGE=check, omacvm-cocoa-present-damage.patch), which
-reads the shown surface, keeps them plain. If a half-float one cannot be
+(OMACVM_GL_PRESENT_DAMAGE=check, omacvm-cocoa-present-damage.patch) has the
+GPU copy the shown surface into a plain texture and reads that one, so its
+checks run on these surfaces too. If a half-float one cannot be
 made or bound to GL, half-float surfaces are plain for the rest of the
 run; if an 8-bit one cannot, all of them (one warning in qemu.log);
 OMACVM_GL_LOSSLESS=0 keeps them all plain. Shown as a layer's contents they
@@ -64,8 +65,8 @@ index 44f23db..42ee258 100644
 + * composite of the window move fewer bytes. Nothing may read them back: not
 + * on the CPU, not with glReadPixels (it crashes on them). The boot logo's
 + * readback reads the guest's texture; the partial present's check mode
-+ * (OMACVM_GL_PRESENT_DAMAGE=check) reads the surfaces, so it keeps them
-+ * plain. If a half-float one cannot be made or bound, half-float surfaces
++ * (OMACVM_GL_PRESENT_DAMAGE=check) reads a plain copy the GPU makes of the
++ * shown surface. If a half-float one cannot be made or bound, half-float surfaces
 + * are plain for the rest of the run; if an 8-bit one cannot, all of them;
 + * OMACVM_GL_LOSSLESS=0 keeps them all plain. Shown as a layer's contents they
 + * are checked on macOS 27 only (M1 Max, M2, M4): older systems keep plain
@@ -113,23 +114,15 @@ index 44f23db..42ee258 100644
  /*
   * present_ctx is current. Surfaces for a w x h frame, capped at the
   * largest display. Made again at most every PRESENT_REALLOC_NS: until
-@@ -8060,6 +8102,27 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
+@@ -8060,6 +8102,19 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
      present_alloc_ns = now;
      present_realloc_due = false;
  
 +    if (present_lossless < 0) {
 +        const char *e = getenv("OMACVM_GL_LOSSLESS");
-+        const char *pd = getenv("OMACVM_GL_PRESENT_DAMAGE");
 +        present_lossless = !(e && (!strcmp(e, "0") || !strcmp(e, "off")));
 +        if (!present_lossless) {
 +            info_report("cocoa: lossless surfaces: off (OMACVM_GL_LOSSLESS)");
-+        } else if (pd && !strcmp(pd, "check")) {
-+            /*
-+             * The partial present's check mode reads the shown surface back
-+             * with glReadPixels, which crashes on a compressed one.
-+             */
-+            present_lossless = 0;
-+            info_report("cocoa: lossless surfaces: off (OMACVM_GL_PRESENT_DAMAGE=check reads them back)");
 +        } else if (@available(macOS 27.0, *)) {
 +            /* checked there */
 +        } else {
@@ -141,7 +134,7 @@ index 44f23db..42ee258 100644
      NSDictionary *props = @{
          (id)kIOSurfaceWidth: @(w),
          (id)kIOSurfaceHeight: @(h),
-@@ -8068,9 +8131,20 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
+@@ -8068,9 +8123,20 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
      };
      CGColorSpaceRef cs = cocoa_gl_present_colorspace(deep, linear);
      CFPropertyListRef cs_plist = cs ? CGColorSpaceCopyPropertyList(cs) : NULL;
@@ -163,7 +156,7 @@ index 44f23db..42ee258 100644
          if (!present_surf[i]) {
              ok = false;
              break;
-@@ -8100,10 +8174,29 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
+@@ -8100,10 +8166,29 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
      }
      CGColorSpaceRelease(cs);
      glBindTexture(GL_TEXTURE_RECTANGLE, 0);

@@ -591,6 +591,18 @@ case ${mc%% *} in
   *) [[ ${OMACVM_FEATURE_mission_control:-off} == on ]] && bad "Mission Control" "its check did not answer: omacvm apply" ||
        skip "Mission Control" "off (omacvm enable mission-control)" ;;
 esac
+# Fewer animations (fewer-animations, experimental): OmacVM's own Hyprland
+# file and the line that requires it, exactly while the feature is on
+# (animations/guest/install.sh).
+FEATURE=fewer-animations
+fa=$(/usr/local/share/omacvm/animations/guest/install.sh "$U" --status 2>/dev/null | tail -n 1)
+case ${OMACVM_FEATURE_fewer_animations:-off}/$fa in
+  on/on) ok "Fewer animations" "borders change colour at once (experimental)" ;;
+  on/none) bad "Fewer animations" "on, but this VM has no Hyprland Lua config (~/.config/hypr/hyprland.lua)" ;;
+  on/*) bad "Fewer animations" "on, but OmacVM's border setting is not in place: omacvm apply" ;;
+  off/on|off/partial) bad "Fewer animations" "off, but OmacVM's border setting is still there: omacvm apply" ;;
+  *) skip "Fewer animations" "off (experimental: omacvm enable fewer-animations)" ;;
+esac
 FEATURE=""
 if [[ $GESTURES == on ]]; then
   check "Cmd as Super" "OmacVM keyboard (Mac shortcuts)" ev_device "OmacVM keyboard (Mac shortcuts)"
@@ -620,11 +632,14 @@ media_line() {
 
 # The "Changed parts" line: whether the compositor's damage reaches QEMU (Linux
 # 7.4's fix: the kernel's own, or OmacVM's driver with it). Without it every
-# frame goes to the Mac whole and "Draw only what changed" (QEMU's tiles) has
-# nothing to work with. From the build's "damage" file (ours, kernel,
-# unknown; none = no build or left out), the loader's word and whether this
-# start asked for it (omacvm.damage=1: the switch on, not in GPU safe mode):
-# with the switch off a missing fix is no fault. "STATUS<TAB>DETAIL".
+# frame goes to the Mac whole and the Mac's "Copy only what changed" (partial
+# present, on by default) and "Draw only what changed" (tiles) have nothing to
+# work with. From the build's "damage" file (ours, kernel, unknown; none = no
+# build or left out), the loader's word and whether this start asked for it
+# (omacvm.damage=1: one of those switches on, not in GPU safe mode). Only a
+# build with the fix that did not load warns; no build yet (Update VM makes
+# it), a stamp out of date after a kernel update or a build without the fix
+# is a skip with the reason: whole frames, as before. "STATUS<TAB>DETAIL".
 # src/tests/damage-check.sh.
 damage_line() {   # BUILD-DAMAGE LOADER-WORD ASKED(1/0)
   local d=$1 st=$2 asked=${3:-0}
@@ -633,11 +648,13 @@ damage_line() {   # BUILD-DAMAGE LOADER-WORD ASKED(1/0)
   elif [[ $d == ours && $st == omacvm* && $st != *"without damage_clips"* ]]; then
     printf 'ok\t%s\n' "OmacVM's driver (Linux 7.4's damage fix) tells the Mac what changed in each frame"
   elif [[ $asked != 1 ]]; then
-    printf 'skip\t%s\n' "Draw only what changed is off: the stock driver of a kernel before 7.4 sends every frame whole"
+    printf 'skip\t%s\n' "not asked (Copy only what changed and Draw only what changed are off): the stock driver of a kernel before 7.4 sends every frame whole"
+  elif [[ $st == "stock not built for"* || $st == "stock stamp out of date"* ]]; then
+    printf 'skip\t%s\n' "OmacVM's driver is not built for this kernel yet (${st#stock }; Update VM builds it, needs internet once): every frame goes to the Mac whole until then"
   elif [[ $d == ours ]]; then
-    printf 'warn\t%s\n' "Draw only what changed is on, but the stock driver runs (${st:-no word from omacvm-virtio-gpu-load}): every frame goes to the Mac whole"
+    printf 'warn\t%s\n' "OmacVM's driver with the damage fix is built but did not load (${st:-no word from omacvm-virtio-gpu-load}; omacvm-virtio-gpu-build --status): every frame goes to the Mac whole"
   else
-    printf 'warn\t%s\n' "Draw only what changed is on, but OmacVM's driver for this kernel has no damage fix (${st:-no word from omacvm-virtio-gpu-load}; omacvm-virtio-gpu-build --status says why): every frame goes to the Mac whole"
+    printf 'skip\t%s\n' "OmacVM's driver for this kernel has no damage fix (${st:-no word from omacvm-virtio-gpu-load}; omacvm-virtio-gpu-build --status says why): every frame goes to the Mac whole"
   fi
 }
 # hdr_copy_note ANSWER: the HDR line's part about Hyprland's SDR copy of each frame for
@@ -658,13 +675,17 @@ hdr_copy_note() {
 # (linux-virtio-gpu-hdr-metadata.patch). LOADER-WORD: /run/omacvm/virtio-gpu;
 # BUILD-HAS: this kernel's build has it (1/0); RUNS: that build is older than
 # this boot, so it is the one running (1/0); PQ: Virtual-1 runs PQ now (1/0; SDR
-# while the Mac cannot show PQ: display-sync's rule then has Hyprland clear it).
+# while the Mac cannot show PQ: display-sync's rule then has Hyprland clear it);
+# FOLLOW: HDR only in full screen's state (display-sync/hdr-follow; "sdr": SDR
+# because no window is in full screen, not because the Mac cannot show PQ).
 hdr_recording_line() {
-  local st=$1 has=${2:-0} runs=${3:-0} pq=${4:-1}
+  local st=$1 has=${2:-0} runs=${3:-0} pq=${4:-1} follow=${5:-}
   if [[ $st != omacvm* || $st == "omacvm 8-bit"* ]]; then
     printf 'skip\t%s\n' "the 10-bit driver does not run (see HDR output)"
   elif (( has && runs && pq )); then
     printf 'ok\t%s\n' "the screen is HDR (PQ) now and tells recorders so: Omarchy's recorder (gpu-screen-recorder) makes SDR of it"
+  elif (( has && runs )) && [[ $follow == sdr ]]; then
+    printf 'ok\t%s\n' "the screen is SDR now (HDR only in full screen: no window in full screen) and tells recorders so: recordings as without HDR"
   elif (( has && runs )); then
     printf 'ok\t%s\n' "the screen is SDR now (the Mac cannot show PQ) and tells recorders so: recordings as without HDR"
   elif (( has )); then
@@ -983,15 +1004,29 @@ app)
   # While PQ, display-sync's window rule keeps Hyprland from tone-mapping
   # windows (Chrome looked gray): its file "tonemap" says clamp, sent to this
   # Hyprland (its file "instance"; a quick re-login starts a new one).
+  # HDR only in full screen (the app's experimental switch, ADR 0074):
+  # omacvm-displays' state in display-sync/hdr-follow: "sdr" (no window in
+  # full screen: the HDR-off path), "pq", "off" or "declined: why".
   if grep -qx 'OMACVM_DEEPCOLOR=1' /run/omacvm/host.env 2>/dev/null; then
     st=$(cat /run/omacvm/virtio-gpu 2>/dev/null)
     out=$(as_user hyprctl monitors -j 2>/dev/null | jq -r '.[] | select(.name == "Virtual-1") | "\(.currentFormat) \(.colorManagementPreset)"' 2>/dev/null)
+    follow=$(cat "$RUN/omacvm/display-sync/hdr-follow" 2>/dev/null)
+    fnote=""
+    case $follow in
+      pq) fnote="; HDR only in full screen: a window is in full screen" ;;
+      declined:*) fnote="; HDR only in full screen is on but HDR stays on all the time (${follow#declined: })" ;;
+    esac
     case "$st|$out" in
       omacvm*"|XRGB2101010 hdr"|omacvm*"|XBGR2101010 hdr")
         keep=$(hdr_copy_note "$(as_user hyprctl getoption render:keep_unmodified_copy 2>/dev/null)")
         dsync=$RUN/omacvm/display-sync
-        if [[ $(cat "$dsync/tonemap" 2>/dev/null) == clamp && $(cat "$dsync/instance" 2>/dev/null) == "$(ls -t "$RUN/hypr" 2>/dev/null | head -1)" ]]; then ok "HDR output" "10-bit, HDR (PQ) on the main window's display$keep"
-        else warn "HDR output" "Virtual-1 is HDR (PQ), but Hyprland tone-maps the windows (pages look gray): no tonemap = \"clamp\" window rule from omacvm-display-sync"; fi ;;
+        if [[ $(cat "$dsync/tonemap" 2>/dev/null) != clamp || $(cat "$dsync/instance" 2>/dev/null) != "$(ls -t "$RUN/hypr" 2>/dev/null | head -1)" ]]; then
+          warn "HDR output" "Virtual-1 is HDR (PQ), but Hyprland tone-maps the windows (pages look gray): no tonemap = \"clamp\" window rule from omacvm-display-sync"
+        elif [[ $follow == declined:* ]]; then warn "HDR output" "10-bit, HDR (PQ) on the main window's display$keep$fnote"
+        else ok "HDR output" "10-bit, HDR (PQ) on the main window's display$keep$fnote"; fi ;;
+      omacvm*"|XRGB8888 srgb"|omacvm*"|XBGR8888 srgb")
+        if [[ $follow == sdr ]]; then ok "HDR output" "8-bit SDR now (HDR only in full screen, experimental): HDR (PQ) while a window on the main window's display is in full screen"
+        else warn "HDR output" "the 10-bit driver runs, but Virtual-1 is ${out:-not known} (an own rule for it in monitors.lua?)"; fi ;;
       omacvm*"|XRGB2101010 "*|omacvm*"|XBGR2101010 "*) ok "HDR output" "10-bit colour (${out#* }); HDR where the app's window shows it" ;;
       omacvm*) warn "HDR output" "the 10-bit driver runs, but Virtual-1 is ${out:-not known} (an own rule for it in monitors.lua?)" ;;
       *) warn "HDR output" "the app asked for 10-bit colour, but the stock driver runs: ${st#stock }$( [[ -z $st ]] && echo "no word from omacvm-virtio-gpu-load (omacvm apply, then restart the VM)")" ;;
@@ -1014,7 +1049,7 @@ app)
       grep -a -q drm_connector_attach_hdr_output_metadata_property "$vk" && has=1
     [[ -f $vk ]] && (( $(stat -c %Y "$vk") < $(date +%s) - $(cut -d. -f1 /proc/uptime) )) && runs=1
     pq=0; [[ ${out#* } == hdr ]] && pq=1   # Virtual-1's preset, from the HDR output line
-    IFS=$'\t' read -r rs rt < <(hdr_recording_line "$(cat /run/omacvm/virtio-gpu 2>/dev/null)" "$has" "$runs" "$pq")
+    IFS=$'\t' read -r rs rt < <(hdr_recording_line "$(cat /run/omacvm/virtio-gpu 2>/dev/null)" "$has" "$runs" "$pq" "$follow")
     case $rs in
       ok) ok "HDR recordings" "$rt" ;;
       warn) warn "HDR recordings" "$rt" ;;
@@ -1022,7 +1057,8 @@ app)
     esac
   fi
   # The compositor's damage reaches QEMU (OmacVM's driver when the start asks
-  # for it with "Draw only what changed", or the kernel's own fix).
+  # for it with "Copy only what changed" or "Draw only what changed", or the
+  # kernel's own fix).
   asked=0; grep -qx 'OMACVM_DAMAGE=1' /run/omacvm/host.env 2>/dev/null && asked=1
   IFS=$'\t' read -r ds dd < <(damage_line "$(cat "/usr/local/lib/omacvm/virtio-gpu/$(uname -r)/damage" 2>/dev/null)" \
     "$(cat /run/omacvm/virtio-gpu 2>/dev/null)" "$asked")
@@ -1084,6 +1120,17 @@ app)
     elif ! as_user /usr/local/lib/omacvm/chromium-flags.py check; then bad "video decoding in Chromium" "Chromium's flags or its no-AV1 extension missing: omacvm apply"
     else ok "video decoding in Chromium" "V4L2 -> the Mac's media engine: $s$pend"; fi
   fi
+  # Prefer VP9 on YouTube (youtube-vp9, experimental): the no-AV1 extension as
+  # an external extension of Chrome and Chromium (youtube-vp9/guest/install.sh).
+  FEATURE=youtube-vp9
+  y=$(/usr/local/share/omacvm/youtube-vp9/guest/install.sh --status 2>/dev/null || echo "bad its status did not run")
+  if [[ ${OMACVM_FEATURE_youtube_vp9:-off} == on ]]; then
+    if [[ ${y%% *} == ok ]]; then
+      ok "Prefer VP9 on YouTube" "Chrome and Chromium get the no-AV1 extension (${y#ok }) at their next start: YouTube sends VP9"
+    elif [[ $y == none ]]; then bad "Prefer VP9 on YouTube" "on, but not set up: omacvm apply"
+    else bad "Prefer VP9 on YouTube" "${y#bad }: omacvm apply"; fi
+  elif [[ $y != none ]]; then bad "Prefer VP9 on YouTube" "off, but its extension is still named for Chrome or Chromium: omacvm apply"
+  else skip "Prefer VP9 on YouTube" "off (experimental: omacvm enable youtube-vp9)"; fi
   FEATURE=""
   if [[ $drv == omacvm ]] && command -v firefox >/dev/null; then
     check "video decoding in Firefox" "the driver shim is on ld.so's path (Firefox's sandbox)" \

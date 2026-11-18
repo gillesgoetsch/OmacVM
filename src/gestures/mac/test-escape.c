@@ -204,6 +204,10 @@ typedef struct { int rd, fd; unsigned gen; volatile int done; } ReaderArg;
 static void *readerThread(void *a) { ReaderArg *r = a; readGuest(r->rd, r->fd, r->gen); r->done = 1; return NULL; }
 static pid_t launcher;   // OmacVM.app's launcher: the VMs' process name, but no QEMU
 static int fakeIsQemu(pid_t pid) { return pid != launcher; }
+// The permissions as granted: this test is about the combo, not about a Mac
+// without Accessibility (test-tap.c covers that). A runner without them would
+// otherwise pause input at the first tap that cannot be made.
+static int fakePermAll(void) { return PERM_AX | PERM_IM | PERM_POST; }
 
 // ---- swipe out that follows the fingers: a made-up trackpad, Magic Mouse and Dock ----
 static void settleSteps(void);
@@ -373,7 +377,7 @@ int main(void) {
   activateFn = fakeActivate; finderFn = fakeFinder; frontFn = fakeFront; vmWindowFn = fakeVMWindow;
   spacesFn = fakeSpaces; windowSpaceFn = fakeWindowSpace; pointerFn = fakePointer;
   vmWindowsFn = fakeVMWindows; vmAllWindowsFn = fakeAllVMWindows; askFocusFn = fakeAskFocus; focusWait = 0.05; topAppFn = fakeTopApp; hideFn = fakeHide; escapeAllFn = fakeAll;
-  warpFn = fakeWarp; warpSettle = 0; isQemuFn = fakeIsQemu;
+  warpFn = fakeWarp; warpSettle = 0; isQemuFn = fakeIsQemu; permFn = fakePermAll;
   hotkeysFn = fakeHotkeys; keyFn = fakeKey; heldFn = fakeHeld;
   swipeFn = fakeSwipe; saveSignFn = fakeSaveSign; swipeOutFn = fakeSwipeOut; swipeOutEvery = 0; swipeOutGap = 0;
   verifyAfter = 0.01; cameFromEvery = 0; doublePress = 0; missionAppFn = fakeMissionApp; missionControlOpenFn = fakeMCOpen;
@@ -1318,6 +1322,30 @@ int main(void) {
     pthread_join(th, NULL); close(rp[1]);
     settle(vm, NET_APP); sent(); press(K, HID, 0); settle(vm, NET_APP); sent();
     soOn = 0; swipeOutLook(); sent();
+  }
+
+  // ---- "L" (Hyprland's custom event omacvm-escape): out of the VM as the combo goes ----
+  {
+    const uint64_t three3[] = { 101, 102, 103 };
+    layout(1, three3, 3, NULL, 0);
+    owner[101] = terminal; winOn[101] = 11; owner[102] = vm; winOn[102] = 22; owner[103] = safari; winOn[103] = 33;
+    pointer = CGPointMake(1000, 700); front = terminal; world[0].cur = 101;
+    frontChanged(terminal, -1, 0, "", 11, 1); sent();
+    inVM(vm, 102);
+    unsigned g0 = clients[0].gen;
+    keys = spaceKeys = mcKeys = hidden = 0;
+    guestLine(clients[0].fd, g0, "L"); settleSteps();
+    check(spaceKeys == 1 && lastKey.keycode == 123 && world[0].cur == 101 && front == terminal && !mcKeys && !hidden,
+          "L: Move left a space, out to the Space it came from, as the combo (Swipe out to macOS off)");
+    check(!strcmp(sent(), "S esc ctrl-opt|") && !capturing && escaped, "L: ... capture off, the guest lets go (S esc)");
+    settle(vm, NET_APP); sent();
+    check(press(K, HID, 0) == 1 && world[0].cur == 102 && front == vm, "L: ... the combo in macOS goes back into the VM");
+    settle(vm, NET_APP); sent();
+    keys = 0;
+    pthread_mutex_lock(&sendLock); clients[0].target = 0; pthread_mutex_unlock(&sendLock);
+    guestLine(clients[0].fd, g0, "L"); settleSteps();
+    check(!keys && world[0].cur == 102 && capturing, "L from a VM that is not the one in front: ignored");
+    pthread_mutex_lock(&sendLock); clients[0].target = 1; pthread_mutex_unlock(&sendLock);
   }
 
   // ---- Swipe out that follows the fingers ("X on 2", "E"): made-up trackpad frames, a made-up Dock ----

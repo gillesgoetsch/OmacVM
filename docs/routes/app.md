@@ -496,8 +496,8 @@ the VM's SSH on `127.0.0.1:<port>`.
   (`omacvm-cocoa-cursor-stays-hidden.patch`; in a VM:
   `src/tests/pointer-reveal-vm.sh`). OmacVM Gestures leaves the Mac's
   pointer over the app's VMs to QEMU.
-- Pointer on its own layer (experimental, off; the VM window's Display
-  section, `defaults write org.omacvm.app pointerPlane -bool true`, from the
+- Pointer on its own layer (experimental, off; the VM window's Battery
+  saver group, `defaults write org.omacvm.app pointerPlane -bool true`, from the
   VM's next start; ADR 0054): the VM loads OmacVM's virtio-gpu driver with
   the option `cursor_plane=1` (built by Update VM like the 10-bit one), which
   shows its cursor plane to Hyprland: since Linux 6.8 a virtual GPU hides it
@@ -528,8 +528,8 @@ the VM's SSH on `127.0.0.1:<port>`.
   Terminate helps (the programs in it end). Not with GPU safe mode,
   Graphics OpenGL or MoltenVK (no marker: Ghostty on the CPU as before).
   `omacvm check` says which driver a running Ghostty has ("Ghostty").
-- Draw only what changed (experimental, off; the VM window's Display
-  section, `defaults write org.omacvm.app presentTiles -bool true`, from the
+- Draw only what changed (experimental, off; the VM window's Battery
+  saver group, `defaults write org.omacvm.app presentTiles -bool true`, from the
   VM's next start; ADR 0055): QEMU keeps the last whole frame on the window
   and puts a frame that changed in at most 12 squares of 256 x 256 on tile
   layers over it, so macOS redraws only those. It needs the VM to say what
@@ -604,9 +604,59 @@ The Mac's input methods type in Omarchy (feature `mac-ime`; what it does:
   step), `app/runtime/Tests/keys/test-ime.sh` (the window code's rules and
   hooks), `swift run features-tests` (the port only with the record's on).
 
+## Battery saver (experimental, off by default)
+
+The VM window's experimental switches that save battery sit together in one
+card, **Battery saver**, after Display: VM CPU clock saver, Pause drawing
+while hidden, Fewer animations, HDR only in full screen (with a display that
+can show HDR), Prefer VP9 on YouTube (on a Mac without an AV1 decoder),
+Pointer on its own layer and Draw only what changed. The arrow opens the
+list; each switch there works alone, as before. The switch at the top turns
+all of them on or off: on turns on each one this Mac can use now (a switch
+that needs something first, such as HDR only in full screen with HDR off,
+stays off and says why; the top switch never turns HDR on), off turns every
+one of them off. It is on while any of them is on, and its line says how
+many ("3 of 7 on."). The top switch keeps no setting of its own: it writes
+each switch's own key, or the VM's record for Fewer animations and Prefer
+VP9 on YouTube (at once with `omacvm enable|disable` while the VM runs, at
+its next start otherwise). HDR and 10-bit colour, Extra brightness, Ghostty
+on the Mac's GPU and Fast network stay where they were: they are
+experimental, but not battery savers.
+
+## VM CPU clock saver (experimental, off by default)
+
+The VM window's settings have **VM CPU clock saver** (in the Battery saver
+group after Display). macOS runs every thread of the app in front at the CPU clock it
+gives that window, and QEMU's vCPU threads got that high clock too, even for
+a video or a terminal. With the switch on, the vCPU threads are a thread
+group of their own (they join a work interval that is never started), so
+macOS sets their clock by their own work, like an app in the background:
+
+- Only the vCPU threads move. Their QoS class, priority and timer tier stay
+  as they are; the main loop, sound, present and display threads stay in the
+  app's group. Those share the Mac's performance cores, which then run at a
+  lower clock or on efficiency cores while the VM is light (a Mac mini M4
+  moved qemu_main to E cores too, hidden rows, ADR 0073).
+- Measured with an early version on an M1 Max playing a 1080p video at 120 Hz: 17.7 W -> 14.7-15.4
+  W for the whole Mac, with 1 to 3 dropped video frames in 12,000-15,000
+  (none with it off). A MacBook Air (M2) saved about 0.5 W with a
+  1080p60 video the VM decodes itself (AV1), and nothing for scrolling or at idle. M1 Pro and M3 are not measured; M4 only hidden, from thread counters
+  (no whole-Mac watts). The
+  owner accepted the rare drops for this opt-in switch only (ADR 0073).
+- It works at once in a running VM (QEMU watches the setting; each vCPU
+  joins or leaves on its own thread). Off puts the vCPUs back at once. GPU
+  safe mode keeps it off. `defaults write org.omacvm.app vcpuClockSaver
+  -bool true` does the same as the row.
+- QEMU's log (`logs/qemu.log`): "OmacVM: vCPU clock saver: off (the
+  switch)" at the start, and after each change "on, 10 of 10 vCPUs (the
+  switch)" or "off (the switch)"; "not available: no work interval on this
+  macOS" if macOS refuses it (the vCPUs then run as before). `omacvm check`
+  has a "VM CPU clock saver" line while it is on.
+
 ## Pause drawing while hidden (experimental, off by default)
 
-The VM window's settings have **Pause drawing while hidden** (Display). With
+The VM window's settings have **Pause drawing while hidden** (in the
+Battery saver group after Display). With
 it on, a VM whose window nobody can see stops drawing, as a macOS app does:
 
 - "Cannot be seen" is macOS's own word for the window (its occlusion): the
@@ -753,6 +803,28 @@ the 8-bit path.
   [troubleshooting 44](../troubleshooting.md#44-app-screenshots-and-screen-sharing-of-chrome-too-bright-in-an-hdr-vm)).
 - GPU safe mode turns it off. `omacvm check` has an "HDR" line.
 - How it works: [ADR 0049](../adr/0049-hdr-guest-tone-maps.md).
+
+### HDR only in full screen (experimental, off by default)
+
+In the Battery saver group after Display: **HDR only in full screen**
+(needs the HDR switch on). With HDR on, the VM's
+main display then runs as with HDR off (8-bit colour, no HDR work in the
+VM's apps and desktop) while no window there is in full screen, and
+switches to HDR when one goes full screen (a video's full-screen button,
+F11, a player, Super+F); back to SDR about 2 seconds after the last one is
+gone.
+
+- HDR in a window shows as SDR; go full screen to see it in HDR.
+- Any full-screen window turns HDR on, also a terminal.
+- Works the same on Omarchy 4.5 (Hyprland 0.56) and newer: OmacVM switches
+  the display itself; Hyprland's own auto HDR stays off.
+- A Hyprland config with `render:cm_auto_hdr`, `render:direct_scanout` or
+  `quirks:prefer_hdr` on, or an own rule for the main display: HDR stays on
+  all the time, and `omacvm check` says why ("HDR output").
+- Works at once in a running VM; the VM's part comes with Update VM. GPU
+  safe mode turns it off. From the command line: `defaults write
+  org.omacvm.app hdrFullScreenOnly -bool true`.
+- How it works: [ADR 0074](../adr/0074-hdr-only-in-full-screen.md).
 
 ## Extra brightness (experimental, off by default)
 

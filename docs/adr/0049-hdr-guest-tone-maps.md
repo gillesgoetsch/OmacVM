@@ -51,19 +51,57 @@ BT.2100 PQ, and the layer asks for EDR. It stayed hidden because:
    that does not fit a kernel is left out of that kernel's build (deep
    colour stays; the builder's `without` file and `--status` say which),
    and the loader passes only the options the build has. A start without
-   any of these switches loads the stock driver, in the initramfs too, as
-   below; a 2026-10-25 draft that loaded ours at every start was turned
-   down in review: a tainted out-of-tree module for every user for no gain
-   while both users of the fix are off, and no boot messages in the
-   initramfs.) `omacvm
+   any of these switches loads the stock driver; a 2026-10-25 draft that
+   loaded ours at every start was turned down in review: a tainted
+   out-of-tree module for every user for no gain while both users of the
+   fix are off, and no boot messages in the initramfs. Amended again
+   2026-11-16/17: "Copy only what changed" (0051's partial present, on by
+   default for SDR starts from 3.5.0) asks for it too, so every default
+   start on a kernel before 7.4 loads ours at 8 bits. This turns the 10-25
+   call around. The coordinator's go (2026-11-17) was for this direction on
+   three conditions: the initramfs check below, the timeline and the trade
+   in this paragraph, and one more typing A/B pair on the Air. Why the
+   10-25 objections no longer decide it. "No gain": the fix has a default
+   user now. On the MacBook Air (whole machine, A/B/B/A) the driver start
+   saves 219 mW on chat typing dots, 77 on the pointer, 95 on scrolling and
+   167 on an AV1 clip; typing (+3 +- 44 mW over 12 windows), a still
+   desktop and idle do not move. Without it, partial present draws no frame
+   in part on an SDR start: the stock driver flushes the whole plane on
+   every page flip. "No boot messages in the initramfs" holds for every
+   start, not for this one alone. Checked on the mini with a root that is
+   not found: neither a stock nor a damage start has a display driver in
+   the initramfs (Linux sets no scanout there; virtio_gpu comes up after
+   the switch to the real root), the firmware's GOP is Blt-only (no efifb
+   or simpledrm), and Linux's console is the VM's serial port, which QEMU
+   leaves unconnected, so the emergency shell is on neither the screen nor
+   the keyboard. Both show the boot logo and take no typing. A visible
+   initramfs console needs `console=tty0` on the kernel line and a driver
+   plus the keyboard in the initramfs: a boot change for every VM, outside
+   this amendment. The trade that stands is the taint: on a kernel before
+   7.4 a default start's guest oops reports say "O" (out-of-tree module).
+   The module is the upstream stable driver of the kernel's own version
+   plus the two 7.4 commits; at 8 bits its KMS planes, formats, modifiers
+   and properties are the stock driver's (0 lines differ on the mini). The
+   build starts from the deep-colour patch: if that one stops applying
+   there is no build, and the start loads the stock driver, as today.
+   Timeline: Linux 7.4 keeps the damage itself (upstream 730f8554f35c and
+   a9cc9905ddb7). It was at its release candidates in mid-November 2026, so
+   its release is due around mid-December and Arch Linux ARM's
+   linux-aarch64 usually follows within weeks: about January 2027. From the
+   first 7.4 kernel on, the build's damage word is "kernel" and the loader
+   keeps the stock driver: no taint, nothing to remove, and the bridge ends
+   by itself. If 3.5.0 ships after Arch Linux ARM has 7.4, this amendment
+   (the default start's ask) is dropped.) `omacvm
    apply` builds it on every app VM (7 s; downloaded, patched and built as
    a user id of its own, root only installs it) into `/usr/local/lib/omacvm/virtio-gpu/K`,
    which depmod never sees; a modprobe `install` rule loads it only when
    the start's SMBIOS says `omacvm.deepcolor=1`, else (and on any failure)
-   the stock driver. In the initramfs (mkinitcpio's kms hook puts virtio_gpu
-   there) a 10-bit start loads nothing yet and udev loads it from the real
-   root, through the loader. Turning the switch on needs one VM restart;
-   VMs whose app never asks never load it. The pacman hook rebuilds it for new kernels.
+   the stock driver. In the initramfs (no loader there) a start that asks
+   loads nothing and udev loads it from the real root, through the loader;
+   on the mini (2026-11-17) a stock start had no display driver there
+   either, although mkinitcpio's kms hook puts virtio_gpu in the image.
+   Turning the switch on needs one VM restart; VMs whose app never asks
+   never load it. The pacman hook rebuilds it for new kernels.
 3. **One app-wide switch**, shown only while a display can show HDR (EDR
    potential > 1). A start gets it only with such a display, outside GPU
    safe mode and with the IOSurface present (`Settings.hdrStart`, one

@@ -101,6 +101,16 @@ omarchy_below_45() {
   (( 10#$maj < 4 || (10#$maj == 4 && 10#$min < 5) ))
 }
 
+# Does this Mac's media engine decode AV1? Sets MAC_AV1 to hw|no|unknown once
+# per run (mac-av1.swift: VideoToolbox, at run time; M3 and newer: hw).
+# OMACVM_MAC_AV1=hw|no answers instead (tests: the feature on an M4 test Mac).
+mac_av1_load() {
+  [[ -n ${MAC_AV1:-} ]] && return 0
+  MAC_AV1=${OMACVM_MAC_AV1:-}
+  [[ -n $MAC_AV1 ]] || ! declare -F mac_tool >/dev/null || MAC_AV1=$(mac_tool mac-av1 2>/dev/null) || true
+  [[ $MAC_AV1 == hw || $MAC_AV1 == no ]] || MAC_AV1=unknown
+}
+
 # Can feature INDEX be on, on this Mac for a VM of TYPE (and the VM folder
 # FEATURES_VM_DIR, when known)? Status 1 and REASON if not.
 feature_available() {
@@ -110,6 +120,10 @@ feature_available() {
   fi
   if feature_has_tag "$1" notch && [[ ${NOTCH:-none} != notch ]]; then REASON="needs a MacBook with a notch"; return 1; fi
   if feature_has_tag "$1" laptop && [[ $(mac_battery) != yes ]]; then REASON="needs a Mac with a battery"; return 1; fi
+  if feature_has_tag "$1" no-av1; then
+    mac_av1_load
+    [[ $MAC_AV1 != hw ]] || { REASON="needs a Mac without an AV1 decoder (this one decodes AV1 itself)"; return 1; }
+  fi
   if feature_has_tag "$1" app-only && [[ -n ${TYPE:-} && $TYPE != app ]]; then REASON="OmacVM.app only"; return 1; fi
   return 0
 }

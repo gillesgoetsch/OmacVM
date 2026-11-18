@@ -415,6 +415,55 @@ dma-buf), `Tests/virgl/test-core-glsl-shaders.c` (the compositor's shader),
 buffer, a 2D texture through a 2D-array sampler, two views of one texture),
 `test-view-key.c`, `test-video-padding.c` (AV1 with Mesa's sizes).
 
+## Prefer VP9 on YouTube (experimental)
+
+M1 and M2 media engines have no AV1 decoder, and YouTube sends AV1 to Google
+Chrome whenever it can, so on those Macs Chrome decodes YouTube on the VM's
+CPUs (dav1d). Feature `youtube-vp9` (experimental, off by default; the VM
+window's **Battery saver > Prefer VP9 on YouTube**, shown only on a Mac without an
+AV1 decoder, or `omacvm enable youtube-vp9`) has YouTube send VP9 instead,
+which the media engine decodes.
+
+- How: the same small extension Chromium gets ([below](#chromium-from-arch-linux-arm):
+  on youtube.com, `MediaSource.isTypeSupported`, `canPlayType` and
+  `mediaCapabilities.decodingInfo` say no to `av01`), installed as an
+  *external extension*: a packed copy in `/usr/local/lib/omacvm/youtube-vp9.crx`
+  and a file `<id>.json` naming it in `/usr/share/google-chrome/extensions` and
+  `/usr/share/chromium/extensions`. That is Chrome's own way to add an
+  extension on Linux: no policy (so no "Managed by your organization"), no
+  command-line switch (Google Chrome ignores `--load-extension`), and Linux
+  neither asks nor needs the Web Store for it. The browsers add it at their
+  next start; it can be removed in `chrome://extensions`, and Chrome then
+  leaves it removed. Off removes the files, and the browsers remove the
+  extension at their next start.
+- The copy is packed in the VM (`src/youtube-vp9/guest/crx3.py`, Chrome's
+  CRX3 format, signed with openssl) with a key made in the VM once
+  (`/var/lib/omacvm/youtube-vp9.pem`, root only), so no key is in this
+  repository. The key stays while the switch is on (the same id at every
+  apply); off removes it too.
+- Chrome asks YouTube honestly already (AV1 "smooth" without
+  "powerEfficient", VP9 "powerEfficient"), and YouTube still picks AV1: only
+  "not supported" moves it. Chrome has no switch or policy that turns AV1
+  decoding off (source of Chrome 157 checked).
+- Measured on a MacBook Air M2 (Chrome 157, YouTube 1080p60 full screen,
+  the whole Mac, A/B/B/A, 7 windows of 2 minutes): **AV1 6.62 W, VP9
+  5.44 W, 1.18 +- 0.20 W less**. The VM's CPUs went from 63 % to 31 % of a
+  core, the Mac's GPU from 56 % to 63 % busy (the media engine's pictures
+  are converted there).
+- The trade-offs: videos and quality steps that YouTube offers only in AV1
+  are not offered; VP9 through the media engine dropped 38-236 of about
+  7200 frames per 2 minutes at 1080p60 (0.5-3.3 %), AV1 on the CPU 0-2. That
+  is why it is experimental. Those drops hit every VP9 and H.264 video on the
+  media engine, with or without this switch.
+- Macs that decode AV1 (M3 and newer) do not get it: `mac-av1` (VideoToolbox,
+  asked at run time) says `hw`, and `omacvm features` says why.
+- With Chromium video on, Omarchy's Chromium already loads the same
+  extension unpacked through its flags; the switch adds the packed copy,
+  which also works where Enhanced Safe Browsing refuses `--load-extension`.
+- Check: `omacvm check` shows *Prefer VP9 on YouTube*; in the browser,
+  `chrome://extensions` lists *OmacVM: YouTube in VP9*, and YouTube's *Stats
+  for nerds* says `vp09`.
+
 ## Chromium from Arch Linux ARM
 
 Arch Linux ARM builds Chromium without VA-API: its only hardware decoder is
@@ -444,6 +493,13 @@ Chromium ◀─ its GPU buffer (ARGB) ◀─ GPU pass in omacvm-vdecd
   merged into Omarchy's last `--enable-features` and `--load-extension` (Chromium
   takes only the last of each). The extension tells YouTube that AV1 is not
   supported, so YouTube sends VP9: this Chromium decodes AV1 only on the CPU.
+  From 3.5.0 Chromium also gets `OnBeginFrameThrottleVideo` in its last
+  `--disable-features`: that throttle timed each video to the first guess of
+  its own frame length, and with YouTube's VP9 (WebM, timestamps in whole
+  milliseconds) the guess was often 16.75 ms on a 16.67 ms screen. Chromium
+  then dropped its frame timing and showed one frame twice and skipped the
+  next, every third frame for seconds at a time (about 1 % of 60 fps frames
+  on a MacBook Air). See ADR 0025's addendum.
   It lives in `/usr/local/lib/omacvm/chromium-no-av1`, outside the copy of
   OmacVM that every `omacvm apply` replaces (up to 3.1.4 it was in that copy,
   and an apply of other features left Chromium saying "Failed to load

@@ -821,26 +821,7 @@ extension KeyAccess {
     /// before OmacVM was allowed. (Here, not in KeyAccess.swift, which
     /// src/tests/app-key-access.sh compiles on its own.)
     static func note(folder: URL) -> KeyNote {
-        KeyNote.decide(allowedNow: allowed || fresh(), lastLog: lastLog(folder: folder))
-    }
-
-    /// macOS's answer now: this process keeps its first answer (a grant
-    /// given in System Settings while OmacVM runs did not show until OmacVM
-    /// was quit), a new process gets the current one. Only asked while this
-    /// process says no; about 50 ms, at most 2 s.
-    static func fresh() -> Bool {
-        guard let exe = Bundle.main.executablePath else { return false }
-        let p = Process(), out = Pipe()
-        p.executableURL = URL(fileURLWithPath: exe)
-        p.arguments = ["--key-access"]
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        guard (try? p.run()) != nil else { return false }
-        let deadline = Date().addingTimeInterval(2)
-        while p.isRunning && Date() < deadline { usleep(10_000) }
-        if p.isRunning { p.terminate(); return false }
-        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return text.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+        KeyNote.decide(allowedNow: allowed || fresh() == true, lastLog: lastLog(folder: folder))
     }
 }
 

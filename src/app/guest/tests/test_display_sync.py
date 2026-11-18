@@ -38,12 +38,16 @@ def guest_bash() -> str | None:
 BASH = guest_bash()
 
 
-def displayid_edid(width: int, height: int, hz: float = 60.0, size: bool = True) -> bytes:
+def displayid_edid(width: int, height: int, hz: float = 60.0, size: bool = True,
+                   timing_10khz: tuple | None = None) -> bytes:
     """A base EDID plus a DisplayID 1.3 type I timing, as QEMU makes them
-    (size=False: no physical size, so the scale is Hyprland's "auto")."""
+    (size=False: no physical size, so the scale is Hyprland's "auto").
+    timing_10khz: (clock in 10 kHz, hblank, hfront, hsync, vblank, vfront, vsync)."""
     hblank, hfront, hsync = 160, 48, 32
     vblank, vfront, vsync = 60, 3, 5
     clock = round((width + hblank) * (height + vblank) * hz / 10_000)  # 10 kHz units
+    if timing_10khz:
+        clock, hblank, hfront, hsync, vblank, vfront, vsync = timing_10khz
     base = bytearray(128)
     base[0:8] = b"\x00\xff\xff\xff\xff\xff\xff\x00"
     # QEMU's density: 110 points per inch at 2x (the patch rounds to cm).
@@ -77,6 +81,34 @@ def displayid_edid(width: int, height: int, hz: float = 60.0, size: bool = True)
     ext[end] = (-sum(ext[1:end])) % 256
     ext[127] = (-sum(ext[:127])) % 256
     return bytes(base) + bytes(ext)
+
+
+def qemu_edid(width: int, height: int, mhz: int) -> bytes:
+    """A base EDID with one detailed timing as QEMU's edid-generate.c makes it:
+    its blanking from the size and the clock in 10 kHz, rounded down, from the
+    rate in mHz (OmacVM's cocoa.m: the Mac display's own, rounded down)."""
+    xfront, xsync, xblank = width * 25 // 100, width * 3 // 100, width * 35 // 100
+    yfront, ysync, yblank = height * 5 // 1000, height * 5 // 1000, height * 35 // 1000
+    clock = mhz * (width + xblank) * (height + yblank) // 10_000_000
+    if clock >= 65536 or width >= 4096 or height >= 4096:    # QEMU's DisplayID form
+        return displayid_edid(width, height, timing_10khz=(clock, xblank, xfront, xsync, yblank, yfront, ysync))
+    base = bytearray(128)
+    base[0:8] = b"\x00\xff\xff\xff\xff\xff\xff\x00"
+    base[21] = min(255, max(1, round(width / 2 * 2.54 / 110)))
+    base[22] = min(255, max(1, round(height / 2 * 2.54 / 110)))
+    d = bytearray(18)
+    d[0:2] = clock.to_bytes(2, "little")
+    d[2], d[3], d[4] = width & 0xFF, xblank & 0xFF, ((width >> 8) << 4) | (xblank >> 8)
+    d[5], d[6], d[7] = height & 0xFF, yblank & 0xFF, ((height >> 8) << 4) | (yblank >> 8)
+    d[8], d[9] = xfront & 0xFF, xsync & 0xFF
+    d[10] = ((yfront & 0x0F) << 4) | (ysync & 0x0F)
+    d[11] = ((xfront >> 8) << 6) | ((xsync >> 8) << 4) | ((yfront >> 4) << 2) | (ysync >> 4)
+    w_mm, h_mm = base[21] * 10, base[22] * 10
+    d[12], d[13], d[14] = w_mm & 0xFF, h_mm & 0xFF, ((w_mm >> 8) << 4) | (h_mm >> 8)
+    d[17] = 0x18 | 0x02 | 0x04                         # digital separate sync, both positive
+    base[54:72] = d
+    base[127] = (-sum(base[:127])) % 256
+    return bytes(base)
 
 
 # Hyprland, as far as the display sync sees it: j/monitors, and eval of an
@@ -177,7 +209,7 @@ class SyncCase(unittest.TestCase):
         (c / "status").write_text("connected\n")
         (c / "edid").write_bytes(displayid_edid(width, height, size=size))
 
-    def run_sync(self) -> subprocess.CompletedProcess:
+    def run_sync(self, mode: str = "--once") -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env.update({
             "PATH": f"{self.bin}:{env['PATH']}",
@@ -193,7 +225,7 @@ class SyncCase(unittest.TestCase):
         env.pop("HYPRLAND_INSTANCE_SIGNATURE", None)
         if self.sig:
             env["HYPRLAND_INSTANCE_SIGNATURE"] = self.sig
-        return subprocess.run([BASH, str(SYNC), "--once"], env=env, capture_output=True,
+        return subprocess.run([BASH, str(SYNC), mode], env=env, capture_output=True,
                               text=True, timeout=60)
 
     def evals(self) -> list[str]:
@@ -212,6 +244,42 @@ class SyncCase(unittest.TestCase):
         for m in data:
             m.update(width=width, height=height, refreshRate=60.0)
         (self.hypr / "monitors.json").write_text(json.dumps(data))
+
+
+class Refresh(SyncCase):
+    def test_mode_keeps_the_macs_refresh(self):
+        # Hyprland takes a whole-MHz clock. Rounding QEMU's clock to it gave
+        # 59.9948 Hz for the MacBook Air's 60 Hz panel (2940x1912), where Chrome
+        # dropped about 1 % of a 60 fps VP9 video's frames, and 60.098 / 59.812
+        # in 1080p / 720p windows. The mode now stays at the Mac's rate or a
+        # hair above (never below), with the size exact.
+        for width, height, mhz in ((2940, 1912, 60000), (1920, 1080, 60000), (1280, 720, 60000),
+                                   (1470, 956, 60000), (3024, 1964, 120000), (2240, 1240, 120000),
+                                   (2560, 1440, 59940), (640, 480, 60000)):
+            with self.subTest(mode=f"{width}x{height}@{mhz / 1000}"):
+                self.setUp()
+                c = self.drm / "card0-Virtual-1"
+                c.mkdir()
+                (c / "status").write_text("connected\n")
+                (c / "edid").write_bytes(qemu_edid(width, height, mhz))
+                r = self.run_sync()
+                self.assertEqual(r.returncode, 0, r.stderr)
+                m = self.shown()
+                self.assertEqual((m["width"], m["height"]), (width, height))
+                self.assertGreaterEqual(m["refreshRate"], mhz / 1000)
+                # at most the EDID's last 10 kHz step above (300 ppm at 640x480, 20 at the Air's)
+                self.assertLess(m["refreshRate"], mhz / 1000 * (1 + 3e-4))
+                if (width, height) == (2940, 1912):
+                    self.assertLess(m["refreshRate"], 60.0013)
+                rule = self.evals()[-1]
+                f = re.search(r'modeline (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+)', rule).groups()
+                clock, w, hss, hse, ht, h, vss, vse, vt = map(int, f)
+                # sync pulses where QEMU put them; only the back porches grew
+                self.assertEqual((hss - w, hse - hss), (width * 25 // 100, width * 3 // 100))
+                self.assertEqual((vss - h, vse - vss), (height * 5 // 1000, height * 5 // 1000))
+                self.assertGreaterEqual(ht, width + width * 35 // 100)
+                self.assertGreaterEqual(vt, height + height * 35 // 1000)
+                self.tearDown()
 
 
 class ModeAndScale(SyncCase):
@@ -564,7 +632,7 @@ def overlap(a, b) -> bool:
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
-class HDR(SyncCase):
+class HDRCase(SyncCase):
     """HDR and 10-bit colour (the app's switch): Virtual-1 at 10 bits only when
     this start asked for it and the 10-bit driver runs; PQ only while QEMU says
     it shows PQ ("edr", the headroom of the window's display)."""
@@ -579,21 +647,26 @@ class HDR(SyncCase):
         self.taint.write_text("O\n")
         self.set_window(5120, 2880)
 
-    def layout(self, edr=None):
+    def layout(self, edr=None, follow=None):
         main = {"output": "Virtual-1", "x": 0, "y": 0, "width": 1728, "height": 1117, "scale": 2}
         if edr is not None:
             main["edr"] = edr
+        if follow is not None:
+            main["hdr_follow"] = follow
         (self.tmp / "no-layout.json").write_text(json.dumps({"layout": [main]}))
 
-    def run_sync(self) -> subprocess.CompletedProcess:
+    def run_sync(self, mode: str = "--once") -> subprocess.CompletedProcess:
         os.environ.update({"OMACVM_HOST_ENV": str(self.host_env),
                            "OMACVM_VIRTIO_GPU_STATUS": str(self.status),
                            "OMACVM_VIRTIO_GPU_TAINT": str(self.taint)})
         try:
-            return super().run_sync()
+            return super().run_sync(mode)
         finally:
             for k in ("OMACVM_HOST_ENV", "OMACVM_VIRTIO_GPU_STATUS", "OMACVM_VIRTIO_GPU_TAINT"):
                 os.environ.pop(k, None)
+
+
+class HDR(HDRCase):
 
     def test_nothing_before_qemus_layout(self):
         self.run_sync()
@@ -852,6 +925,151 @@ class HDR(SyncCase):
         self.assertTrue((self.state / "held").exists())
         self.assertEqual((self.state / "Virtual-3.rule").read_text(), "kept\n")
         self.assertFalse((self.state / "Virtual-2.sent").exists())
+
+
+class HDRFullScreenOnly(HDRCase):
+    """HDR only in full screen (experimental, ADR 0074): QEMU's layout says
+    "hdr_follow" and omacvm-displays writes the state to display-sync/hdr-follow;
+    "sdr" runs Virtual-1 8-bit sRGB, anything else is today's PQ rule, byte for
+    byte. --hdr sends only the HDR part of the last rule, outside the guard."""
+
+    PQ = (', bitdepth = 10, cm = "hdr", supports_wide_color = 1, supports_hdr = 1, '
+          'max_luminance = 812, min_luminance = 0.0005, sdr_max_luminance = 203 })')
+    SDR = ', bitdepth = 8, cm = "srgb", supports_wide_color = 1, supports_hdr = 1 })'
+    CLAMP, DEFAULT, window_rules = HDR.CLAMP, HDR.DEFAULT, HDR.window_rules
+
+    def follow(self, state: str | None):
+        f = self.state / "hdr-follow"
+        if state is None:
+            f.unlink(missing_ok=True)
+        else:
+            self.state.mkdir(parents=True, exist_ok=True)
+            f.write_text(state + "\n")
+
+    def calls(self) -> list[str]:
+        return (self.hypr / "calls").read_text().splitlines()
+
+    def test_off_is_todays_rule(self):
+        self.layout(4)
+        self.run_sync()
+        today = self.evals()[-1]
+        self.assertTrue(today.endswith(self.PQ), today)
+        # Every state but "sdr", or "sdr" without the layout's word: the same rule.
+        for follow, state in ((None, "sdr"), (False, "sdr"), ("yes", "sdr"), (True, "pq"), (True, "off"),
+                              (True, "declined: cm_auto_hdr"), (True, None), (True, "SDR")):
+            self.layout(4, follow)
+            self.follow(state)
+            (self.hypr / "evals").unlink(missing_ok=True)
+            (self.state / "Virtual-1.hdr").unlink()      # sent again, to compare
+            (self.state / "Virtual-1.history").unlink(missing_ok=True)   # (not a ping-pong)
+            self.run_sync()
+            self.assertEqual(self.evals(), [today], (follow, state))
+
+    def test_sdr_while_nothing_is_full_screen(self):
+        self.layout(4, True)
+        self.follow("sdr")
+        self.run_sync()
+        last = self.evals()[-1]
+        self.assertTrue(last.endswith(self.SDR), last)
+        self.assertEqual(self.window_rules(), [])        # no clamp for an SDR output
+        self.layout(0, True)                             # QEMU cannot show PQ: today's 10-bit sRGB
+        self.run_sync()
+        self.assertIn('bitdepth = 10, cm = "srgb"', self.evals()[-1])
+
+    def test_hdr_swaps_only_the_hdr_part(self):
+        self.layout(4, True)
+        self.follow("pq")
+        self.run_sync()
+        pq = self.evals()[-1]
+        base = pq[:-len(self.PQ)]
+        self.follow("sdr")
+        r = self.run_sync("--hdr")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.evals()[-1], base + self.SDR)
+        # SDR: the rule first, then the default tone map (no frame of the PQ
+        # output on the default curve); kept and recorded as shown.
+        self.assertEqual(self.calls()[-2:], [base + self.SDR, self.DEFAULT])
+        self.assertEqual((self.state / "Virtual-1.rule").read_text().strip(), base + self.SDR)
+        self.assertEqual((self.state / "Virtual-1.hdr").read_text(), self.SDR[:-3])
+        self.follow("pq")
+        self.run_sync("--hdr")
+        # PQ: the clamp first (no frame tone-mapped), then the rule.
+        self.assertEqual(self.calls()[-2:], [self.CLAMP, pq])
+        n = len(self.evals())
+        self.run_sync("--hdr")                           # unchanged: nothing sent
+        self.run_sync()                                  # a whole run sees it shown
+        self.assertEqual(len(self.evals()), n)
+
+    def test_flips_never_count_towards_the_hold(self):
+        self.layout(4, True)
+        self.run_sync()
+        for i in range(12):                              # full screen in and out, fast
+            self.follow("sdr" if i % 2 == 0 else "pq")
+            r = self.run_sync("--hdr")
+            self.assertNotIn("keeping", r.stderr)
+        self.assertEqual(len(self.evals()), 13)
+        self.assertFalse((self.state / "Virtual-1.hold").exists())
+        self.assertFalse((self.state / "held").exists())
+        # A layout change after them is followed, not held.
+        self.set_window(3840, 2160)
+        r = self.run_sync()
+        self.assertNotIn("keeping", r.stderr)
+        self.assertIn("3840", self.evals()[-1])
+
+    def test_flips_go_on_while_held(self):
+        self.layout(4, True)
+        self.run_sync()
+        (self.state / "Virtual-1.hold").write_text(f"{time.time() + 60}\n")
+        self.follow("sdr")
+        self.run_sync("--hdr")
+        self.assertTrue(self.evals()[-1].endswith(self.SDR))
+
+    def test_hdr_leaves_the_users_rule(self):
+        self.layout(4, True)
+        self.run_sync()
+        n = len(self.evals())
+        self.config.write_text(self.config.read_text() + 'hl.monitor({ output = "Virtual-1", mode = "preferred", position = "auto", scale = 1 })\n-- mine\nhl.monitor({ output = "Virtual-1", bitdepth = 10 })\n')
+        self.follow("sdr")
+        self.run_sync("--hdr")
+        self.assertEqual(len(self.evals()), n)
+
+    def test_hdr_before_any_rule_does_nothing(self):
+        self.layout(4, True)
+        self.follow("sdr")
+        r = self.run_sync("--hdr")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.evals(), [])
+
+    hyprland, log_in_again = HDR.hyprland, HDR.log_in_again
+
+    def test_flip_after_a_new_login_sends_the_tone_map_again(self):
+        # A quick re-login: the new Hyprland has no clamp rule, but the files
+        # still say it was sent. A flip goes through take_state like a whole
+        # run, so the clamp reaches the new Hyprland before its PQ rule.
+        self.layout(4, True)
+        self.log_in_again("aaa_1")
+        self.follow("pq")
+        self.run_sync()
+        self.assertEqual(self.window_rules(), [self.CLAMP])
+        self.log_in_again("bbb_2")
+        self.layout(2, True)                             # the headroom moved: a new PQ rule
+        r = self.run_sync("--hdr")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.state / "instance").read_text(), "bbb_2\n")
+        self.assertEqual(self.window_rules(), [self.CLAMP, self.CLAMP])
+        self.assertEqual(self.calls()[-2], self.CLAMP)
+        self.assertIn('cm = "hdr"', self.calls()[-1])
+
+    def test_refused_flip_says_so(self):
+        self.layout(4, True)
+        self.run_sync()
+        shown = (self.state / "Virtual-1.hdr").read_text()
+        (self.hypr / "refuse").write_text("")
+        self.follow("sdr")
+        r = self.run_sync("--hdr")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("rejected the HDR change", r.stderr)
+        self.assertEqual((self.state / "Virtual-1.hdr").read_text(), shown)
 
 
 class Placement(unittest.TestCase):

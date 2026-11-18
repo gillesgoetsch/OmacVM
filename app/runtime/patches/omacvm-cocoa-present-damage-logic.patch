@@ -6,8 +6,12 @@ What: a header with no AppKit or GL in it: per present surface, the union
 clipped to the frame (overflow-safe: the rects come from the guest); full
 draws after a reset, another frame size, a request (all full), for a
 surface past the count, and when the box covers three quarters of the
-frame or more. Used by omacvm-cocoa-present-damage.patch (which explains
-the why).
+frame or more. And the check mode's comparison (omacvm_pd_cmp): a pixel
+is wrong only when a colour channel is off by more than 2 levels; the
+guest's own buffers disagree by a level where it reports no change
+(Hyprland on the M1 Max, ADR 0051's 2026-11-18 addendum), which a partial
+draw keeps and nobody can see. Used by omacvm-cocoa-present-damage.patch
+(which explains the why).
 
 Why its own file: so the rules are tested without QEMU or a window
 (app/runtime/Tests/display/test-present-damage.sh applies this patch to an
@@ -20,7 +24,7 @@ diff --git a/ui/omacvm-present-damage.h b/ui/omacvm-present-damage.h
 new file mode 100644
 --- /dev/null
 +++ b/ui/omacvm-present-damage.h
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,213 @@
 +/*
 + * OmacVM: which part of a present surface needs drawing (partial present).
 + *
@@ -46,9 +50,18 @@ new file mode 100644
 +#define OMACVM_PRESENT_DAMAGE_H
 +
 +#include <stdbool.h>
++#include <stddef.h>
 +#include <stdint.h>
 +
 +#define OMACVM_PD_SURFACES 8
++
++/* What the last omacvm_pd_take gave (for qemu.log's counts). */
++enum {
++    OMACVM_PD_PART,                 /* the box only (maybe empty) */
++    OMACVM_PD_FULL_ASKED,           /* full: new surfaces, another size, a request */
++    OMACVM_PD_FULL_BIG,             /* full: the box is three quarters of the frame or more */
++    OMACVM_PD_FULL_PAST,            /* full: a surface past the count */
++};
 +
 +typedef struct OmacvmPDRect {
 +    uint32_t x, y, w, h;            /* w == 0 or h == 0: nothing */
@@ -59,6 +72,7 @@ new file mode 100644
 +    uint32_t fw, fh;                /* the frame size the rects are for */
 +    bool full[OMACVM_PD_SURFACES];  /* the next draw of surface i is a full one */
 +    OmacvmPDRect box[OMACVM_PD_SURFACES]; /* else: what changed since its last draw */
++    int last;                       /* OMACVM_PD_*: what the last take gave */
 +} OmacvmPresentDamage;
 +
 +static inline bool omacvm_pd_empty(OmacvmPDRect r)
@@ -140,20 +154,87 @@ new file mode 100644
 +{
 +    *out = (OmacvmPDRect){ 0, 0, d->fw, d->fh };
 +    if (i >= d->n) {
++        d->last = OMACVM_PD_FULL_PAST;
 +        return false;
 +    }
 +    bool partial = !d->full[i];
++    d->last = partial ? OMACVM_PD_PART : OMACVM_PD_FULL_ASKED;
 +    if (partial) {
 +        *out = d->box[i];
 +        /* Most of the frame changed: a full draw costs the same. */
 +        if ((uint64_t)out->w * out->h * 4 >= (uint64_t)d->fw * d->fh * 3) {
 +            partial = false;
++            d->last = OMACVM_PD_FULL_BIG;
 +            *out = (OmacvmPDRect){ 0, 0, d->fw, d->fh };
 +        }
 +    }
 +    d->full[i] = false;
 +    d->box[i] = (OmacvmPDRect){ 0, 0, 0, 0 };
 +    return partial;
++}
++
++
++/*
++ * The check mode (OMACVM_GL_PRESENT_DAMAGE=check) compares the surface as
++ * drawn in part (A) with the same frame drawn in full (B): BGRA rows of W
++ * pixels, colour only (the window ignores alpha).
++ *
++ * A box that missed a change leaves the old picture there: stale pixels as
++ * far from the new ones as the two pictures are (the pointer's old place,
++ * text that moved). The guest's own buffers can also disagree by a level
++ * where it reported no change: Hyprland's three swapchain buffers on the
++ * M1 Max held 1b1c29 in one and 1b1b28 in the others along a window border
++ * it no longer damaged (ADR 0051, 2026-11-18: 140249 such pixels in 3.5.0's
++ * M1-1 rows, every one 1 level off, none more). A partial draw keeps the
++ * level of the buffer it copied last, a full draw shows each buffer's own:
++ * neither is wrong and the difference cannot be seen. So a pixel counts as
++ * wrong only when a channel differs by more than OMACVM_PD_CHECK_LEVELS;
++ * smaller differences are counted apart.
++ */
++#define OMACVM_PD_CHECK_LEVELS 2
++
++typedef struct OmacvmPDCmp {
++    uint64_t differ;                /* pixels that differ at all */
++    uint64_t wrong;                 /* of those, off by more than OMACVM_PD_CHECK_LEVELS */
++    unsigned max;                   /* the largest difference in a channel */
++    OmacvmPDRect box;               /* around the wrong pixels (none: the differing ones) */
++} OmacvmPDCmp;
++
++static inline OmacvmPDCmp omacvm_pd_cmp(const uint8_t *a, const uint8_t *b,
++                                        uint32_t w, uint32_t h)
++{
++    OmacvmPDCmp c = { 0, 0, 0, { 0, 0, 0, 0 } };
++    uint32_t d0x = w, d0y = h, d1x = 0, d1y = 0;    /* differing pixels */
++    uint32_t w0x = w, w0y = h, w1x = 0, w1y = 0;    /* wrong ones */
++
++    for (uint32_t y = 0; y < h; y++) {
++        const uint8_t *pa = a + (size_t)y * w * 4, *pb = b + (size_t)y * w * 4;
++        for (uint32_t x = 0; x < w; x++, pa += 4, pb += 4) {
++            if (pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2]) {
++                continue;
++            }
++            unsigned m = 0;
++            for (int k = 0; k < 3; k++) {
++                unsigned d = pa[k] > pb[k] ? pa[k] - pb[k] : pb[k] - pa[k];
++                m = d > m ? d : m;
++            }
++            c.max = m > c.max ? m : c.max;
++            c.differ++;
++            d0x = x < d0x ? x : d0x; d0y = y < d0y ? y : d0y;
++            d1x = x > d1x ? x : d1x; d1y = y > d1y ? y : d1y;
++            if (m > OMACVM_PD_CHECK_LEVELS) {
++                c.wrong++;
++                w0x = x < w0x ? x : w0x; w0y = y < w0y ? y : w0y;
++                w1x = x > w1x ? x : w1x; w1y = y > w1y ? y : w1y;
++            }
++        }
++    }
++    if (c.wrong) {
++        c.box = (OmacvmPDRect){ w0x, w0y, w1x - w0x + 1, w1y - w0y + 1 };
++    } else if (c.differ) {
++        c.box = (OmacvmPDRect){ d0x, d0y, d1x - d0x + 1, d1y - d0y + 1 };
++    }
++    return c;
 +}
 +
 +#endif

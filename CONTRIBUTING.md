@@ -96,6 +96,9 @@ src/tests/app-nap.sh
 
 `src/tests/app-storage-ui.sh DIR` renders OmacVM.app's storage screens to
 PNGs from a fixture home, without a window (not in CI).
+`src/bridge/mac/test-notifications.sh` puts up a test banner and closes the
+notifications on your Mac's screen through the Bridge's own code (in the session
+at the screen, from a terminal with Accessibility; not in CI).
 
 The Mac side runs on macOS's `/bin/bash` 3.2: no `declare -A`, `mapfile`
 or `${var,,}`.

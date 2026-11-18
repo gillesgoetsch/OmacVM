@@ -244,12 +244,12 @@ rm -rf "$HB"
 
 # What else the Mac side would ask Xcode's Command Line Tools for (src/lib/tools.sh):
 # the Swift answers it runs (is there a notch, the built-in display, the clock
-# format, free space), built here, and a python3 for the scripts (prebuilt
+# format, free space, does the media engine decode AV1), built here, and a python3 for the scripts (prebuilt
 # images, the password hash, apply, report). On a Mac without them
 # /usr/bin/python3 and swift only ask to install the tools.
 log "Mac tools and python3"
 mkdir -p "$C/Resources/tools"
-for t in display/mac-notch clock/mac-clock lib/mac-free-gb; do
+for t in display/mac-notch clock/mac-clock lib/mac-free-gb youtube-vp9/mac-av1; do
   xcrun swiftc -O -swift-version 5 -target arm64-apple-macos14.0 -o "$C/Resources/tools/${t#*/}" \
     "$C/Resources/omacvm/src/$t.swift" || { echo "${t#*/}.swift did not build" >&2; exit 1; }
 done

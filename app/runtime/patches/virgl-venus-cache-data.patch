@@ -1,0 +1,32 @@
+virglrenderer: Venus pipeline caches start without the guest's initial data
+
+What: vkCreatePipelineCache reaches the driver with initialDataSize 0 and no
+pInitialData, whatever the guest sent. Vulkan lets a cache ignore its initial data;
+vkGetPipelineCacheData and vkMergePipelineCaches still work on what the driver itself
+put into the cache in this context.
+Why: the drivers read that data with their own cache loaders, which vkr's checks on
+guest input do not cover (STANDARDS 4: the guest is untrusted). Cost: a guest app that
+saves its cache (Zink) builds its pipelines again at each start; macOS's Metal compiler
+cache still helps. Applied after virgl-venus-host-memory.patch (same function): the
+cache's charge for its initial data is then 0.
+Upstream: OmacVM policy; nothing posted.
+Tests: Tests/virgl/test-venus-commands.c (p-cache-real-data-dropped-ok; p-cache-garbage
+and p-cache-header stay E_KEEP).
+
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -217,6 +217,13 @@ static void
+ vkr_dispatch_vkCreatePipelineCache(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCreatePipelineCache *args)
+ {
++   /* OmacVM (virgl-venus-cache-data.patch): the driver gets no initial data from the guest
++    * (Vulkan lets a cache ignore it); vkr's checks on guest input do not cover the drivers'
++    * own cache loaders */
++   VkPipelineCacheCreateInfo info = *args->pCreateInfo;
++   info.initialDataSize = 0;
++   info.pInitialData = NULL;
++   args->pCreateInfo = &info;
+    struct vkr_pipeline_cache *cache = vkr_pipeline_cache_create_and_add(dispatch->data, args);
+    /* OmacVM (virgl-venus-host-memory.patch): a cache keeps what its initial data holds; one
+     * made from a driver's own data reports as much data again (2597 B on KosmicKrisp, 6570 B

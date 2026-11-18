@@ -14,12 +14,26 @@ rotate; a client's buffer scanned out directly may come with damage that is
 not relative to what was shown), a new scanout buffer until its first
 flush, a scanout that is part of its resource, and a box of three quarters
 of the frame or more.
-Off by default for now (every frame in full, as before):
-OMACVM_GL_PRESENT_DAMAGE=1 turns it on; =check (tests) also draws every
-30th partial frame in full into a texture of its own, in the surfaces'
-format, and compares them pixel for pixel (qemu.log: "present check: N
-pixels differ ..."). qemu.log says which at the first present, and logs the
-first frame drawn in part.
+QEMU draws every frame in full unless OMACVM_GL_PRESENT_DAMAGE=1 (the
+app's "Partial present" setting sets it for SDR starts, ADR 0051) or
+=check. =check (tests) also draws partial frames in full into a texture of
+its own, in the surfaces' format, and compares them pixel for pixel
+(qemu.log: "present check: N pixels differ ..."). A pixel is wrong when a
+colour channel is more than 2 levels off: the guest's own buffers disagree
+by a level where it reported no change (Hyprland on the M1 Max, ADR 0051's
+2026-11-18 addendum), and a partial draw keeps the level of the buffer it
+copied last; such checks are counted apart. It checks every partial frame for a
+while after a full draw (new surfaces, buffers, colour paths), then every
+30th. It copies the shown surface on the GPU into a plain texture and reads
+that one, so lossless-compressed surfaces are checked too (glReadPixels on
+one crashes). OMACVM_TEST_PRESENT_DAMAGE_FAULT (with =check only; tests)
+breaks the partial draws on purpose, so a test can show the check finds
+wrong pixels: =half draws only the left half of each box, =skip draws
+nothing of it. (A box 1 px narrower was not enough: a compositor's damage
+covers about three frames, so a box's edge seldom changed.) qemu.log says which at the first present, logs the first frame
+drawn in part, and once a minute while frames come: how many went in part
+(and how many of those had nothing to draw), how many in full and why, the
+frame's and the surfaces' size.
 
 Why: on a MacBook Air M2 the present's draw of a full 2940x1840 frame costs
 +0.19 W at 60 frames a second and +0.47 W at 120; drawn in a 64x64 box
@@ -37,9 +51,9 @@ Upstream: QEMU's cocoa display has no IOSurface present; not sent.
 Test: Tests/display/test-present-damage.sh (the rules, and the wiring in the
 patched ui/cocoa.m; --self-test: every check fails on the code without it,
 the runtime build runs it on the real ui/cocoa.m before this patch).
-Not done yet, and what turns it on by default: a VM run with =check in a
-window that is composited (pointer, typing, a TTY switch, the boot
-console) with 0 differing pixels, and whole-Mac power on the MacBook Air.
+In a VM: =check runs on hidden test VMs (8-bit and PQ, plain and lossless
+surfaces, with the fault hook showing the check fails when it should);
+ADR 0051 lists what was run and what is owed.
 
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
@@ -51,7 +65,7 @@ console) with 0 differing pixels, and whole-Mac power on the MacBook Air.
  #include "hw/core/boards.h"
  #include "system/system.h"
  #include "system/runstate.h"
-@@ -7427,6 +7428,126 @@
+@@ -7427,6 +7428,212 @@
   */
  static bool present_deep_failed;
  static unsigned present_next;
@@ -83,41 +97,118 @@ console) with 0 differing pixels, and whole-Mac power on the MacBook Air.
 + */
 +static bool present_pd_unflushed;
 +static GLuint present_pd_check_tex, present_pd_check_fbo;
++static GLuint present_pd_shown_tex, present_pd_shown_fbo;   /* =check: surface n, copied */
 +static uint32_t present_pd_check_w, present_pd_check_h;
 +static bool present_pd_check_half;
 +static uint64_t present_pd_checks, present_pd_bad, present_pd_frames_part;
++static uint64_t present_pd_level;      /* checks that differed by a level or two only */
++/*
++ * =check: every partial frame is checked for a while after a full draw (new
++ * surfaces, buffers, colour paths: where a wrong box would show first), then
++ * every 30th. OMACVM_TEST_PRESENT_DAMAGE_FAULT (=check only) breaks the
++ * partial draws on purpose, so a test can show that the check finds wrong
++ * pixels: =half draws the left half of each box, =skip none of it.
++ */
++static unsigned present_pd_check_burst;
++static int present_pd_fault;           /* 0 none, 1 half, 2 skip */
++/*
++ * qemu.log once a minute while frames come (STANDARDS 3: which path the
++ * frames took): frames drawn in part (and how many of those had nothing to
++ * draw), frames drawn in full and why. QEMU thread.
++ */
++enum {
++    PD_WHY_COPY, PD_WHY_SCALED, PD_WHY_REGION, PD_WHY_SIG, PD_WHY_NEWBUF,
++    PD_WHY_UNFLUSHED, PD_WHY_BIG, PD_WHY_CATCHUP, PD_WHY_N
++};
++static const char *const present_pd_why[PD_WHY_N] = {
++    "not a plain copy (boot logo, console, extra brightness)", "scaled",
++    "part of its resource", "colour path or size changed", "new buffer",
++    "buffer not flushed yet", "three quarters or more changed",
++    "catching up after a change",
++};
++static uint64_t present_pd_n_part, present_pd_n_empty, present_pd_n_full[PD_WHY_N];
++static uint64_t present_pd_px_part;    /* pixels drawn in part (the boxes) */
++static int64_t present_pd_stats_ns;
++static uint64_t present_pd_stats_sig = UINT64_MAX;
++
++/* QEMU thread: the counts above in qemu.log, at most once a minute. */
++static void present_pd_stats(uint32_t w, uint32_t h)
++{
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    uint64_t full = 0;
++
++    if (!present_pd_stats_ns) {
++        present_pd_stats_ns = now;
++        return;
++    }
++    if (now - present_pd_stats_ns < 60 * NANOSECONDS_PER_SECOND) {
++        return;
++    }
++    GString *why = g_string_new(NULL);
++    for (int k = 0; k < PD_WHY_N; k++) {
++        if (present_pd_n_full[k]) {
++            g_string_append_printf(why, "%s%s %" PRIu64, full ? ", " : ": ",
++                                   present_pd_why[k], present_pd_n_full[k]);
++        }
++        full += present_pd_n_full[k];
++        present_pd_n_full[k] = 0;
++    }
++    uint64_t drawn = present_pd_n_part - present_pd_n_empty;
++    info_report("cocoa: partial present, last %" PRId64 " s: %" PRIu64 " frames in part"
++                " (%" PRIu64 " with nothing to draw, the others %" PRIu64 " px a box on average),"
++                " %" PRIu64 " in full%s; frame %ux%u, surfaces %ux%u",
++                (now - present_pd_stats_ns) / NANOSECONDS_PER_SECOND,
++                present_pd_n_part, present_pd_n_empty, drawn ? present_pd_px_part / drawn : 0,
++                full, why->str, w, h, present_w, present_h);
++    if (present_damage_on == 2) {
++        info_report("cocoa: present check, so far: %" PRIu64 " of %" PRIu64 " checks bad, %" PRIu64
++                    " with level differences only", present_pd_bad, present_pd_checks, present_pd_level);
++    }
++    g_string_free(why, true);
++    present_pd_n_part = present_pd_n_empty = present_pd_px_part = 0;
++    present_pd_stats_ns = now;
++}
 +
 +/*
-+ * OMACVM_GL_PRESENT_DAMAGE=check (tests): every 30th frame drawn in part is
-+ * also drawn in full into a texture of its own, and the two are compared
-+ * pixel for pixel (colour only: the window ignores alpha). The texture has
-+ * the format of surface N, read from it (half float for 'RGhA': deep colour
-+ * and extra brightness; else 8-bit; the check mode keeps surfaces plain), so
-+ * both round alike when read back. qemu.log gets each frame that differs and every 100th
-+ * check. Reads back two whole frames: for tests, not for use. QEMU thread, present_ctx current, SRC bound as the
-+ * present left it.
++ * OMACVM_GL_PRESENT_DAMAGE=check (tests): a frame drawn in part is also drawn
++ * in full into a texture of its own, and the two are compared pixel for
++ * pixel (colour only: the window ignores alpha). The texture has the format
++ * of surface N, read from it (half float for 'RGhA' and '&RhA': deep colour
++ * and extra brightness; else 8-bit), so both round alike when read back.
++ * Surface N itself is never read with glReadPixels (that crashes on a
++ * lossless-compressed one): the GPU copies it into a plain texture of the
++ * same format first, which is exact for both kinds (work/power-1116/rects:
++ * lbread.m). qemu.log gets each frame that differs and every 100th check.
++ * Reads back two whole frames: for tests, not for use. QEMU thread,
++ * present_ctx current, SRC bound as the present left it.
 + */
 +static void cocoa_gl_present_pd_check(GLuint src, bool flip, unsigned n,
 +                                      OmacvmPDRect box)
 +{
 +    uint32_t w = present_w, h = present_h;
 +    size_t bytes = (size_t)w * h * 4;
-+    bool half = IOSurfaceGetPixelFormat(present_surf[n]) == 'RGhA';
++    OSType fmt = IOSurfaceGetPixelFormat(present_surf[n]);
++    bool half = fmt == 'RGhA' || fmt == '&RhA';
 +    if (present_pd_check_w != w || present_pd_check_h != h ||
 +        present_pd_check_half != half) {
 +        if (present_pd_check_tex) {
 +            glDeleteTextures(1, &present_pd_check_tex);
++            glDeleteTextures(1, &present_pd_shown_tex);
 +        }
 +        if (!present_pd_check_fbo) {
 +            glGenFramebuffers(1, &present_pd_check_fbo);
++            glGenFramebuffers(1, &present_pd_shown_fbo);
 +        }
 +        glGenTextures(1, &present_pd_check_tex);
-+        glBindTexture(GL_TEXTURE_RECTANGLE, present_pd_check_tex);
-+        glTexImage2D(GL_TEXTURE_RECTANGLE, 0,
-+                     half ? GL_RGBA16F : GL_RGBA8, w, h, 0,
-+                     half ? GL_RGBA : GL_BGRA,
-+                     half ? GL_HALF_FLOAT : GL_UNSIGNED_INT_8_8_8_8_REV,
-+                     NULL);
++        glGenTextures(1, &present_pd_shown_tex);
++        for (int k = 0; k < 2; k++) {
++            glBindTexture(GL_TEXTURE_RECTANGLE, k ? present_pd_shown_tex : present_pd_check_tex);
++            glTexImage2D(GL_TEXTURE_RECTANGLE, 0,
++                         half ? GL_RGBA16F : GL_RGBA8, w, h, 0,
++                         half ? GL_RGBA : GL_BGRA,
++                         half ? GL_HALF_FLOAT : GL_UNSIGNED_INT_8_8_8_8_REV,
++                         NULL);
++        }
 +        glBindTexture(GL_TEXTURE_RECTANGLE, 0);
 +        present_pd_check_w = w;
 +        present_pd_check_h = h;
@@ -143,42 +234,51 @@ console) with 0 differing pixels, and whole-Mac power on the MacBook Air.
 +    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 +    glPixelStorei(GL_PACK_ALIGNMENT, 4);
 +    glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, b);
++    /* surface n, copied on the GPU into the plain texture, then read */
++    glBindFramebuffer(GL_FRAMEBUFFER, present_pd_shown_fbo);
 +    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-+                           GL_TEXTURE_RECTANGLE, present_tex[n], 0);
++                           GL_TEXTURE_RECTANGLE, present_pd_shown_tex, 0);
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, present_fbo);
++    glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
++    glBindFramebuffer(GL_FRAMEBUFFER, present_pd_shown_fbo);
 +    glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, a);
 +    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
 +                           GL_TEXTURE_RECTANGLE, 0, 0);
-+    uint64_t diff = 0;
-+    uint32_t x0 = w, y0 = h, x1 = 0, y1 = 0;
-+    for (uint32_t y = 0; y < h; y++) {
-+        const uint8_t *pa = a + (size_t)y * w * 4, *pb = b + (size_t)y * w * 4;
-+        for (uint32_t x = 0; x < w; x++) {
-+            if (pa[4 * x] != pb[4 * x] || pa[4 * x + 1] != pb[4 * x + 1] ||
-+                pa[4 * x + 2] != pb[4 * x + 2]) {
-+                diff++;
-+                x0 = MIN(x0, x); y0 = MIN(y0, y);
-+                x1 = MAX(x1, x); y1 = MAX(y1, y);
-+            }
-+        }
-+    }
++    glBindFramebuffer(GL_FRAMEBUFFER, present_pd_check_fbo);
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                           GL_TEXTURE_RECTANGLE, 0, 0);
++    /*
++     * A pixel is wrong only when a colour channel is off by more than
++     * OMACVM_PD_CHECK_LEVELS (omacvm_pd_cmp): the guest's own buffers can
++     * disagree by a level where it reported no change, and a partial draw
++     * keeps the level of the buffer it copied last. Nobody sees that; a box
++     * that missed a change leaves the old picture, far more than 2 levels
++     * off. Checks with level differences only are counted apart.
++     */
++    OmacvmPDCmp c = omacvm_pd_cmp(a, b, w, h);
 +    g_free(a);
 +    g_free(b);
 +    present_pd_checks++;
-+    if (diff) {
++    if (c.wrong) {
 +        present_pd_bad++;
-+        warn_report("cocoa: present check: %" PRIu64 " pixels differ in %ux%u+%u+%u "
++        warn_report("cocoa: present check: %" PRIu64 " pixels differ in %ux%u+%u+%u, by up to %u levels "
 +                    "(drawn: %ux%u+%u+%u; %" PRIu64 " of %" PRIu64 " checks bad)",
-+                    diff, x1 - x0 + 1, y1 - y0 + 1, x0, y0, box.w, box.h, box.x, box.y,
++                    c.wrong, c.box.w, c.box.h, c.box.x, c.box.y, c.max, box.w, box.h, box.x, box.y,
 +                    present_pd_bad, present_pd_checks);
++    } else if (c.differ && ++present_pd_level == 1) {
++        info_report("cocoa: present check: the guest's buffers disagree by up to %u level%s in "
++                    "%ux%u+%u+%u where it reported no change (%" PRIu64 " pixels): not a wrong box, "
++                    "counted apart", c.max, c.max == 1 ? "" : "s", c.box.w, c.box.h, c.box.x, c.box.y,
++                    c.differ);
 +    } else if (present_pd_checks % 100 == 0) {
-+        info_report("cocoa: present check: %" PRIu64 " of %" PRIu64 " checks bad",
-+                    present_pd_bad, present_pd_checks);
++        info_report("cocoa: present check: %" PRIu64 " of %" PRIu64 " checks bad, %" PRIu64
++                    " with level differences only", present_pd_bad, present_pd_checks, present_pd_level);
 +    }
 +}
  static dispatch_queue_t present_queue;
  static QEMUTimer *present_timer;
  static int64_t present_last_ns;
-@@ -7988,6 +8109,7 @@
+@@ -7988,6 +8193,7 @@
      present_deep = deep;
      present_linear = linear;
      present_next = 0;
@@ -186,14 +286,22 @@ console) with 0 differing pixels, and whole-Mac power on the MacBook Air.
      return true;
  }
  
-@@ -8124,6 +8246,50 @@
+@@ -8124,6 +8330,82 @@
      unsigned n = (present_next + i) % present_nsurf;
      present_next = (n + 1) % present_nsurf;
  
 +    /* OmacVM: what surface n needs (partial present, see present_pd). */
 +    if (present_damage_on < 0) {
 +        const char *e = getenv("OMACVM_GL_PRESENT_DAMAGE");
++        const char *fault = getenv("OMACVM_TEST_PRESENT_DAMAGE_FAULT");
 +        present_damage_on = e && !strcmp(e, "1") ? 1 : e && !strcmp(e, "check") ? 2 : 0;
++        present_pd_fault = present_damage_on != 2 || !fault ? 0 :
++                           !strcmp(fault, "half") ? 1 : !strcmp(fault, "skip") ? 2 : 0;
++        if (present_pd_fault) {
++            warn_report("cocoa: present check: test fault on, %s (OMACVM_TEST_PRESENT_DAMAGE_FAULT)",
++                        present_pd_fault == 1 ? "only the left half of each box drawn" :
++                                                "nothing of a box drawn");
++        }
 +        info_report("cocoa: present: %s", !present_damage_on ?
 +                    "every frame in full (OMACVM_GL_PRESENT_DAMAGE=1: what changed only)" :
 +                    present_damage_on == 2 ?
@@ -228,6 +336,30 @@ console) with 0 differing pixels, and whole-Mac power on the MacBook Air.
 +                w == present_w && h == present_h &&
 +                gl_scanout_x == 0 && gl_scanout_y == 0 &&
 +                gl_scanout_w == w && gl_scanout_h == h;
++    if (present_damage_on) {
++        int why = splash || boost || !gl_scanout_borrow ? PD_WHY_COPY :
++                  w != present_w || h != present_h ? PD_WHY_SCALED :
++                  gl_scanout_x || gl_scanout_y || gl_scanout_w != w || gl_scanout_h != h ?
++                      PD_WHY_REGION :
++                  pd_sig != present_pd_stats_sig ? PD_WHY_SIG :
++                  !pd_known ? PD_WHY_NEWBUF :
++                  present_pd_unflushed ? PD_WHY_UNFLUSHED :
++                  present_pd.last == OMACVM_PD_FULL_BIG ? PD_WHY_BIG : PD_WHY_CATCHUP;
++        if (part) {
++            present_pd_n_part++;
++            present_pd_n_empty += omacvm_pd_empty(pd);
++            present_pd_px_part += (uint64_t)pd.w * pd.h;
++        } else {
++            present_pd_n_full[why]++;
++            /* =check: the partial frames right after this one are all checked */
++            present_pd_check_burst = 4 * present_nsurf;
++        }
++        present_pd_stats(w, h);
++        if (part && present_pd_fault) {
++            pd.w = present_pd_fault == 1 ? pd.w / 2 : 0;   /* tests: a wrong draw on purpose */
++        }
++    }
++    present_pd_stats_sig = pd_sig;
 +    if (part && !present_pd_logged) {
 +        present_pd_logged = true;
 +        info_report("cocoa: present: first frame drawn in part (%ux%u of %ux%u)",
@@ -237,7 +369,7 @@ console) with 0 differing pixels, and whole-Mac power on the MacBook Air.
      glBindFramebuffer(GL_FRAMEBUFFER, present_fbo);
      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                             GL_TEXTURE_RECTANGLE, present_tex[n], 0);
-@@ -8132,8 +8298,18 @@
+@@ -8132,8 +8414,18 @@
      glDisable(GL_SCISSOR_TEST);
      /* The guest's alpha means nothing here: the window is opaque. */
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -258,18 +390,19 @@ console) with 0 differing pixels, and whole-Mac power on the MacBook Air.
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
      glActiveTexture(GL_TEXTURE0);
      if (splash) {
-@@ -8151,6 +8327,10 @@
+@@ -8151,6 +8443,11 @@
          }
      }
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 +    glDisable(GL_SCISSOR_TEST);
-+    if (part && present_damage_on == 2 && ++present_pd_frames_part % 30 == 1) {
++    if (part && present_damage_on == 2 &&
++        (present_pd_check_burst ? present_pd_check_burst-- : ++present_pd_frames_part % 30 == 1)) {
 +        cocoa_gl_present_pd_check(src, flip, n, pd);
 +    }
      glBindTexture(GL_TEXTURE_2D, 0);
      glBindFramebuffer(GL_FRAMEBUFFER, 0);
      GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-@@ -8855,6 +9035,8 @@
+@@ -8855,6 +9152,8 @@
                                       uint32_t x, uint32_t y,
                                       uint32_t w, uint32_t h)
  {
@@ -278,7 +411,7 @@ console) with 0 differing pixels, and whole-Mac power on the MacBook Air.
      gl_scanout_id = backing_id;
      gl_scanout_borrow = backing_borrow;
      gl_scanout_x = x;
-@@ -8875,6 +9057,9 @@
+@@ -8875,6 +9174,9 @@
  {
      gl_dirty = true;
      omacvm_hold_dirty = true;

@@ -17,10 +17,12 @@ thp-kernel	kernel/build-thp-kernel.sh kernel/thp-pkgbuild.py kernel/alarm.sh
 control-centre	control/**
 fast-network	net/**
 chromium-video	vdec/**
+youtube-vp9	youtube-vp9/**
 gpu-compute	app/guest/venus/compute.sh app/guest/venus/opencl.sh app/guest/venus/webgpu.sh app/guest/venus/omacvm-chromium-webgpu* app/guest/venus/omacvm-webgpu.js
 vulkan	app/guest/venus/**
 x86-apps	x86/**
 mac-ime	ime/**
 drag-drop	drop/**
 mission-control	missioncontrol/**
+fewer-animations	animations/**
 core	**

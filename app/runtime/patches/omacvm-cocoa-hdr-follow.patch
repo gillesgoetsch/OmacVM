@@ -1,0 +1,236 @@
+From: OmacVM
+Subject: [PATCH] cocoa: HDR only in full screen (experimental)
+
+What: the app's switch hdrFullScreenOnly (defaults key; QEMU runs as the
+app and watches it with KVO, so a running VM follows it at once;
+OMACVM_HDR_FULL_SCREEN_ONLY=1 for a QEMU not started as the app), only
+with HDR at this start. On, the main output's entry in the layout on
+OmacVM's display port carries "hdr_follow": true, and the guest's display
+agent runs that output at 8-bit sRGB while no window there is in full
+screen and at today's 10-bit PQ while one is (omacvm-displays,
+omacvm-display-sync). The frames carry their colour in their depth (an
+8-bit scanout is sRGB, a 10-bit one PQ, as before), so QEMU tags each one
+right and the layer has EDR only for PQ. While the frames are 8-bit the
+guest is told the headroom the display had while PQ showed (else its
+most, capped at 16), not the ~1 the panel falls to, so its PQ rule is
+ready for the next full screen; after the frames turn PQ, not less until
+macOS's ramp is done (3 s; ui/omacvm-hdr-follow.h). Off: the layout and
+the headroom are as before. qemu.log: "cocoa: HDR in full screen only:
+on (...)|off (HDR as before)" when it changes, and once a minute the
+number of SDR <-> PQ switches while it is on and there were some.
+
+Why: an SDR desktop is the HDR-off path: 8-bit surfaces, no EDR, Chrome
+draws 8-bit without its FP16 layer. HDR costs battery while nothing HDR is
+on screen (the user's M1 Max: 2-3x less battery than macOS). Linux gives
+no per-frame HDR signal under an SDR desktop, so full screen is the
+trigger (ADR 0074).
+
+Threads: the switch is read and watched on the main thread; QEMU's thread
+publishes after each frame's alloc whether the surfaces show PQ and since
+when (qatomic); the main thread's once-a-second look reads that for the
+headroom. The held value is the main thread's only.
+
+Upstream: OmacVM only (OmacVM's display port).
+Test: app/runtime/Tests/display/test-hdr-follow.sh (rules and wiring);
+src/app/guest/tests/test_omacvm_displays.py and test_display_sync.py (the
+guest's side).
+
+Applies after omacvm-cocoa-present-depth-hold.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -8761,6 +8761,17 @@
+  */
+ static bool present_held;
+ static uint64_t present_holds;         /* frames held this run (for the log) */
++/*
++ * OmacVM, HDR only in full screen (ADR 0074, ui/omacvm-hdr-follow.h).
++ * Threads: omacvm_hf_switch is the main thread's (the app's key, read and
++ * watched there); QEMU's thread publishes the surfaces' state after each
++ * frame's alloc (qatomic) and the main thread reads it for the headroom
++ * it tells the guest (omacvm_hf_hold is the main thread's only).
++ */
++static int omacvm_hf_switch = -1;       /* main thread: -1 not read, 0 off, 1 on */
++static int omacvm_hf_pq;                /* qatomic: the surfaces show PQ now */
++static int64_t omacvm_hf_pq_ns;         /* qatomic: since when (REALTIME ns) */
++static unsigned omacvm_hf_flips;        /* qatomic: SDR <-> PQ changes since the last minute line */
+ static uint64_t present_cap;           /* largest display: w << 32 | h */
+ 
+ /*
+@@ -10141,6 +10152,20 @@
+         dispatch_async(dispatch_get_main_queue(), ^{
+             omacvm_bright_look();
+         });
++    }
++    /*
++     * OmacVM, HDR only in full screen: whether the surfaces show PQ now, and
++     * since when (the main thread's headroom rule, omacvm_hf_guest_edr), and
++     * how often that changed (its minute line).
++     */
++    int hf_pq = present_deep && !present_linear && present_color == 1 &&
++                cocoa_gl_present_hdr_wanted();
++    if (hf_pq != qatomic_read(&omacvm_hf_pq)) {
++        if (hf_pq) {
++            qatomic_set(&omacvm_hf_pq_ns, qemu_clock_get_ns(QEMU_CLOCK_REALTIME));
++        }
++        qatomic_set(&omacvm_hf_pq, hf_pq);
++        qatomic_inc(&omacvm_hf_flips);
+     }
+     if (present_held) {
+         /*
+@@ -13325,7 +13350,26 @@
+  */
+ static double omacvm_edr_sent = -1;
+ static dispatch_source_t omacvm_edr_timer;
++
++/*
++ * OmacVM, HDR only in full screen: with the switch on, the headroom while
++ * the frames are 8-bit is what the display had while PQ showed (else its
++ * most), and after they turn PQ not less until macOS's ramp is done
++ * (omacvm_hf_edr). Off: the current headroom, as before. Main thread.
++ */
++static OmacvmHfEdr omacvm_hf_hold = { .held = -1 };
+ 
++static double omacvm_hf_guest_edr(uint32_t display, double current, double potential,
++                                  bool use_potential)
++{
++    if (omacvm_hf_switch != 1) {
++        return omacvm_edr_value(current, potential, use_potential);
++    }
++    return omacvm_hf_edr(&omacvm_hf_hold, display, current, potential, use_potential,
++                         !qatomic_read(&omacvm_hf_pq), qatomic_read(&omacvm_hf_pq_ns),
++                         qemu_clock_get_ns(QEMU_CLOCK_REALTIME));
++}
++
+ /*
+  * Test builds: OMACVM_TEST_EDR="potential,headroom" stands in for the
+  * window's display (the app passes it to test builds only), for extra
+@@ -13370,16 +13414,17 @@
+         return 1;
+     }
+     if (omacvm_bright_test_edr(&hook_p, &hook_n)) {
+-        return omacvm_edr_value(hook_n, hook_p, false);
++        return omacvm_hf_guest_edr(0, hook_n, hook_p, false);
+     }
+     NSScreen *s = [[cocoaView window] screen];
+     if (!s) {
+         return omacvm_edr_sent > 0 ? omacvm_edr_sent : 1;
+     }
+     const char *e = getenv("OMACVM_GL_EDR_HEADROOM");
+-    return omacvm_edr_value([s maximumExtendedDynamicRangeColorComponentValue],
+-                            [s maximumPotentialExtendedDynamicRangeColorComponentValue],
+-                            e && !strcmp(e, "potential"));
++    return omacvm_hf_guest_edr(omacvm_screen_id(s),
++                               [s maximumExtendedDynamicRangeColorComponentValue],
++                               [s maximumPotentialExtendedDynamicRangeColorComponentValue],
++                               e && !strcmp(e, "potential"));
+ }
+ 
+ /* What the layout carries from now on; true when it is new. */
+@@ -13413,9 +13458,17 @@
+     dispatch_source_set_timer(omacvm_edr_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+                               NSEC_PER_SEC, NSEC_PER_SEC / 2);
+     dispatch_source_set_event_handler(omacvm_edr_timer, ^{
++        static unsigned ticks;
+         if (omacvm_guest_ready) {
+             omacvm_edr_look();
+         }
++        if (++ticks % 60 == 0) {
++            unsigned flips = qatomic_xchg(&omacvm_hf_flips, 0);
++            if (flips && omacvm_hf_switch == 1) {
++                info_report("cocoa: HDR in full screen only: %u switches between SDR and PQ "
++                            "in the last minute", flips);
++            }
++        }
+     });
+     dispatch_resume(omacvm_edr_timer);
+ }
+@@ -13620,6 +13673,70 @@
+ }
+ @end
+ 
++/*
++ * OmacVM, HDR only in full screen (experimental, ADR 0074): the app's
++ * defaults key hdrFullScreenOnly (QEMU runs as the app), watched with KVO,
++ * so a running VM follows it at once; OMACVM_HDR_FULL_SCREEN_ONLY=1 for a
++ * QEMU not started as the app. Only with HDR at this start. On, the main
++ * output's layout entry carries "hdr_follow": true and the guest's display
++ * agent runs that output in SDR while no window there is in full screen;
++ * off, the layout is as before and the guest goes back to PQ. Main thread.
++ */
++@interface OmacVMHfWatch : NSObject
++@end
++
++static void omacvm_hf_read(void)
++{
++    int on;
++
++    if (!cocoa_gl_present_hdr_wanted()) {
++        return;
++    }
++    if (omacvm_bright_as_app()) {
++        CFPreferencesAppSynchronize((CFStringRef)[[NSBundle mainBundle] bundleIdentifier]);
++        on = [[NSUserDefaults standardUserDefaults] boolForKey:@"hdrFullScreenOnly"];
++    } else {
++        const char *e = getenv("OMACVM_HDR_FULL_SCREEN_ONLY");
++        on = e && !strcmp(e, "1");
++    }
++    if (on == omacvm_hf_switch) {
++        return;
++    }
++    if (on || omacvm_hf_switch == 1) {
++        info_report("cocoa: HDR in full screen only: %s", on ?
++                    "on (the VM's main display runs SDR until a window there is in full screen)" :
++                    "off (HDR as before)");
++    }
++    omacvm_hf_switch = on;
++    omacvm_send_layout();
++}
++
++@implementation OmacVMHfWatch
++/* Any thread: the app's switch changed (this process or another). */
++- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
++                        change:(NSDictionary *)change context:(void *)context
++{
++    dispatch_async(dispatch_get_main_queue(), ^{
++        omacvm_hf_read();
++    });
++}
++@end
++
++/* Main thread, at the guest's hello: the switch read, and watched from then on. */
++static void omacvm_hf_init(void)
++{
++    static OmacVMHfWatch *watch;
++
++    if (!watch && omacvm_bright_as_app() && cocoa_gl_present_hdr_wanted()) {
++        watch = [[OmacVMHfWatch alloc] init];
++        [[NSUserDefaults standardUserDefaults] addObserver:watch
++                                                forKeyPath:@"hdrFullScreenOnly"
++                                                   options:0
++                                                   context:NULL];
++    }
++    omacvm_hf_read();
++}
++
+ /* Main thread, once the GL present is chosen. */
+ static void omacvm_bright_init(void)
+ {
+@@ -14169,6 +14286,9 @@
+         }];
+         if (i == 0 && omacvm_edr_sent >= 0) {
+             entry[@"edr"] = @(omacvm_edr_sent);
++            if (omacvm_hf_switch == 1) {
++                entry[@"hdr_follow"] = @YES;
++            }
+         }
+         [outputs addObject:entry];
+     }
+@@ -14358,6 +14478,7 @@
+             omacvm_guest_ready = true;
+             [omacvm_last_layout release];
+             omacvm_last_layout = nil;
++            omacvm_hf_init();
+             omacvm_edr_set(omacvm_edr_now());
+             omacvm_edr_watch();
+             omacvm_gp_hello(d);

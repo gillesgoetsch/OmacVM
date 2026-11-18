@@ -27,10 +27,11 @@ OFF="info: cocoa: lossless surfaces: off (OMACVM_GL_LOSSLESS)"
 OLD="info: cocoa: lossless surfaces: off (checked on macOS 27 and newer only)"
 DMG="info: cocoa: lossless surfaces: off (OMACVM_GL_PRESENT_DAMAGE=check reads them back)"
 # The lines above must be the patch's own words (3.2.6 on), or a new wording would make
-# the check print nothing without a test failing. F8OLD stays: 3.2.1 to 3.2.5's words.
+# the check print nothing without a test failing. F8OLD stays: 3.2.1 to 3.2.5's words; DMG:
+# 3.2.x to 3.4.7's (their check mode kept surfaces plain; later ones keep them lossless).
 patch="$here/../../app/runtime/patches/omacvm-cocoa-present-lossless.patch"
 for s in '"cocoa: %s surfaces %s", half ? "half-float" : "8-bit"' 'packed ? "lossless-compressed" : "plain"' \
-    "${F8#warning: }" "${FH#warning: }" "${OFF#info: }" "${OLD#info: }" "${DMG#info: }"; do
+    "${F8#warning: }" "${FH#warning: }" "${OFF#info: }" "${OLD#info: }"; do
   if grep -qF -- "$s" "$patch"; then echo "ok   patch writes '$s'"
   else echo "FAIL patch does not write '$s'"; fail=1; fi
 done
@@ -51,7 +52,7 @@ expect "8-bit failed (3.2.1 to 3.2.5's words): warn" warn "plain from then on" "
 expect "half float failed: warn, names half float" warn "lossless half-float surfaces failed" "$I8" "$IH" "$FH" "$PH"
 expect "off by OMACVM_GL_LOSSLESS: ok, plain and why" ok "lossless off (OMACVM_GL_LOSSLESS)" "$OFF" "$P8"
 expect "off before macOS 27: ok, plain and why" ok "lossless off (checked on macOS 27 and newer only)" "$OLD" "$P8"
-expect "off by OMACVM_GL_PRESENT_DAMAGE=check: ok, plain and why" ok "lossless off (OMACVM_GL_PRESENT_DAMAGE=check" "$DMG" "$P8"
+expect "off by OMACVM_GL_PRESENT_DAMAGE=check (3.4.7 and older): ok, plain and why" ok "lossless off (OMACVM_GL_PRESENT_DAMAGE=check" "$DMG" "$P8"
 grep -q 'ok "window surfaces"' "$check" && grep -q 'warn "window surfaces"' "$check" &&
   grep -q 'surfaces_line "$miclog"' "$check" || { echo "FAIL: check.sh does not print the line"; fail=1; }
 (( fail == 0 )) && echo "surfaces-check: all passed"

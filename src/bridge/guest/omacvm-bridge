@@ -18,6 +18,7 @@
 #   omacvm-bridge bluetooth power [on|off|toggle] | connect|disconnect|forget <address>
 #   omacvm-bridge bluetooth settings         the Mac's Bluetooth settings (to pair a device)
 #   omacvm-bridge wallpaper <image> [theme]  make it the Mac's wallpaper
+#   omacvm-bridge notifications dismiss      close the Mac's banners and alerts on screen (a VM in front)
 # Env: OMACVM_BRIDGE_URL (default: the Mac's address from /etc/omacvm/env, port 47831),
 #      OMACVM_BRIDGE_TOKEN_FILE (default ~/.config/omacvm-bridge/token),
 #      OMACVM_BRIDGE_EVENTS_SOCKET (default $XDG_RUNTIME_DIR/omacvm-bridge-events.sock)
@@ -168,6 +169,9 @@ case ${1:-} in
     [[ -f ${2:-} ]] || { echo "wallpaper: an image file" >&2; exit 2; }
     req -X POST -H 'Content-Type: application/octet-stream' -H "X-Omarchy-Theme: ${3:-}" \
       --data-binary "@$2" "$URL/wallpaper" ;;
+  notifications)
+    [[ ${2:-} == dismiss ]] || { echo "notifications: dismiss" >&2; exit 2; }
+    post /notifications/dismiss '{}' ;;
   password) req --max-time 75 "$URL/wifi/password${2:+?ssid=$(urlencode "$2")}" ;;
-  *) sed -n '2,23s/^# \{0,1\}//p' "$0"; exit 2 ;;
+  *) sed -n '2,24s/^# \{0,1\}//p' "$0"; exit 2 ;;
 esac

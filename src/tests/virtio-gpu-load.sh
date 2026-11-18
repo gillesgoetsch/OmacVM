@@ -390,6 +390,25 @@ expect "status: built, and what it left out" \
 rm "$B/$VG/$K/without"
 out=$(FAKE_KERNEL=7.1.4-1-aarch64-ARCH builder --status); rc=$?
 expect "status: no headers (exit 1)" "1 not built for 7.1.4-1-aarch64-ARCH: no kernel headers (this start: omacvm)" "$rc $out"
+# A kernel update while the VM ran (the 3.5.0 gate's 4.0 clone: "not built for 7.2.11: no kernel headers
+# (this start: omacvm 8-bit)"): the running kernel's modules are gone, --hook dropped its build. The line is
+# about the installed kernels, which the next start runs; this start keeps its driver.
+echo "omacvm 8-bit" > "$B/run/omacvm/virtio-gpu"
+out=$(FAKE_KERNEL=7.2.8-1-aarch64-ARCH builder --status); rc=$?
+expect "status: kernel replaced, two installed: each one, exit 1 (one is not built)" \
+  "1 not built for 7.1.4-1-aarch64-ARCH: no kernel headers; built for $K (the next start's kernels; this start: omacvm 8-bit, on 7.2.8-1-aarch64-ARCH, which a kernel update replaced)" "$rc $out"
+mv "$B/lib/modules/7.1.4-1-aarch64-ARCH" "$T/held-7.1.4"
+out=$(FAKE_KERNEL=7.2.8-1-aarch64-ARCH builder --status); rc=$?
+expect "status: kernel replaced, the new one built: exit 0" \
+  "0 built for $K, the next start's kernel (this start: omacvm 8-bit, on 7.2.8-1-aarch64-ARCH, which a kernel update replaced)" "$rc $out"
+# Headers removed, kernel still there, a build from other patches: not "not built".
+mkdir -p "$B/lib/modules/7.2.8-1-aarch64-ARCH/kernel" "$B/$VG/7.2.8-1-aarch64-ARCH"
+echo module > "$B/$VG/7.2.8-1-aarch64-ARCH/virtio-gpu.ko"; echo "0000 7.2.8-1-aarch64-ARCH" > "$B/$VG/7.2.8-1-aarch64-ARCH/stamp"
+out=$(FAKE_KERNEL=7.2.8-1-aarch64-ARCH builder --status); rc=$?
+expect "status: stale build, no headers: out of date (exit 1)" \
+  "1 out of date for 7.2.8-1-aarch64-ARCH (another patch), and no kernel headers to build it again (this start: omacvm 8-bit)" "$rc $out"
+rm -rf "$B/lib/modules/7.2.8-1-aarch64-ARCH" "$B/$VG/7.2.8-1-aarch64-ARCH"; mv "$T/held-7.1.4" "$B/lib/modules/7.1.4-1-aarch64-ARCH"
+echo omacvm > "$B/run/omacvm/virtio-gpu"
 
 # A build from another patch is built again, as its own user id, with the proxy.
 echo "0000 $K" > "$B/$VG/$K/stamp"; rm "$B/run/omacvm/virtio-gpu"

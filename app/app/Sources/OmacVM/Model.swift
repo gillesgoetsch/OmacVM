@@ -6,6 +6,7 @@ import OmacVMFeatures
 import OmacVMAudio
 import OmacVMMedia
 import OmacVMWindow
+import VideoToolbox
 
 enum HelperError: LocalizedError, Equatable {
     case io(String)
@@ -644,6 +645,16 @@ enum Settings {
         get { UserDefaults.standard.bool(forKey: ExtraBrightness.key) }
         set { UserDefaults.standard.set(newValue, forKey: ExtraBrightness.key) }
     }
+    /// HDR only in full screen (experimental, off by default, ADR 0074): with
+    /// HDR on, the VM's main display runs SDR (the HDR-off path) while no
+    /// window there is in full screen, and HDR while one is. QEMU reads this
+    /// key itself while the VM runs (it runs as the app) and tells the
+    /// guest, so a change counts at once. HDRFullScreenOnlyRow or
+    /// defaults write org.omacvm.app hdrFullScreenOnly -bool true
+    static var hdrFullScreenOnly: Bool {
+        get { UserDefaults.standard.bool(forKey: "hdrFullScreenOnly") }
+        set { UserDefaults.standard.set(newValue, forKey: "hdrFullScreenOnly") }
+    }
     /// Pause drawing while hidden (experimental, off by default): while the
     /// VM's main window cannot be seen the guest turns that display off and
     /// stops drawing. QEMU reads this key itself while the VM runs (it runs
@@ -652,6 +663,16 @@ enum Settings {
     static var pauseWhileHidden: Bool {
         get { UserDefaults.standard.bool(forKey: "pauseWhileHidden") }
         set { UserDefaults.standard.set(newValue, forKey: "pauseWhileHidden") }
+    }
+    /// VM CPU clock saver (experimental, off by default; ADR 0073): the VM's
+    /// vCPU threads in a thread group of their own, so macOS sets their clock
+    /// by their own work, not the clock it gives the app in front. QEMU reads
+    /// this key itself while the VM runs (it runs as the app), so a change
+    /// counts at once; GPU safe mode keeps it off. VCPUClockSaverRow or
+    /// defaults write org.omacvm.app vcpuClockSaver -bool true
+    static var vcpuClockSaver: Bool {
+        get { UserDefaults.standard.bool(forKey: "vcpuClockSaver") }
+        set { UserDefaults.standard.set(newValue, forKey: "vcpuClockSaver") }
     }
     /// AirPods and media controls (docs/adr/0058): while something plays in
     /// the VM, the launcher is the Mac's Now Playing app, so AirPods, Control
@@ -749,6 +770,37 @@ enum Settings {
             return (false, "OMACVM_GL_PRESENT=layer: frames in a CAOpenGLLayer")
         }
         return (true, "the VM's driver says what changed, QEMU shows it in tiles")
+    }
+    /// Partial present (ADR 0051; on by default from 3.5.0): QEMU draws only
+    /// the part of each frame the VM changed into the window's picture
+    /// (OMACVM_GL_PRESENT_DAMAGE=1), the rest of that picture is already the
+    /// frame. The same pixels, less GPU work. It needs the VM's real rects:
+    /// the boot console and TTYs always send them, a desktop with Linux 7.4
+    /// or OmacVM's virtio-gpu driver (HDR, the pointer layer, Draw only what
+    /// changed); a desktop on the stock driver of Linux 7.3 or older sends
+    /// whole frames, which stay whole draws. The VM window's switch
+    /// (PartialPresentRow) or defaults write org.omacvm.app partialPresent
+    /// -bool false. Read at each start (partialPresentStart).
+    static var partialPresent: Bool {
+        get { UserDefaults.standard.object(forKey: "partialPresent") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "partialPresent") }
+    }
+    /// Partial present for one start of the VM: the switch, QEMU's IOSurface
+    /// present (GPU safe mode's CAOpenGLLayer, or OMACVM_GL_PRESENT=layer,
+    /// draws whole frames), an inherited OMACVM_GL_PRESENT_DAMAGE=0, and not
+    /// for an HDR start (hdr: Settings.hdrStart's answer) until it has passed
+    /// its check on an HDR display (ADR 0051). Runner takes QEMU's
+    /// environment and the qemu.log line from this one answer; why says why not.
+    static func partialPresentStart(hdr: Bool) -> (on: Bool, why: String) {
+        if !partialPresent { return (false, "switch off") }
+        if gpuSafeMode { return (false, "GPU safe mode") }
+        let env = ProcessInfo.processInfo.environment
+        if env["OMACVM_GL_PRESENT"] == "layer" {
+            return (false, "OMACVM_GL_PRESENT=layer: frames in a CAOpenGLLayer")
+        }
+        if env["OMACVM_GL_PRESENT_DAMAGE"] == "0" { return (false, "OMACVM_GL_PRESENT_DAMAGE=0") }
+        if hdr { return (false, "HDR start: not checked on an HDR display yet") }
+        return (true, "only what the VM changed is drawn into the window's picture")
     }
     /// Ghostty on the Mac's GPU (experimental, off by default; ADR 0064's
     /// amendment): a start with Vulkan on KosmicKrisp tells the VM (SMBIOS
@@ -857,6 +909,15 @@ extension Mac {
         return MacNotch.of(live: off ? nil : notchGeometry, builtinOff: off,
                            remembered: notchKey.flatMap { NotchHousing.remembered(stored, mac: $0) })
     }
+
+    /// This Mac's media engine decodes AV1 (M3 and newer), asked at run time
+    /// with the call virgl's VideoToolbox decoder makes; src/youtube-vp9/mac-av1.swift
+    /// asks the same for the command. Prefer VP9 on YouTube is offered only
+    /// where it does not. Test builds: OMACVM_TEST_AV1=hw|no decides instead.
+    static let decodesAV1: Bool = {
+        if let t = TestHooks.value("OMACVM_TEST_AV1", bundleID: Bundle.main.bundleIdentifier) { return t == "hw" }
+        return VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+    }()
 
     /// A display that can show HDR (EDR headroom above SDR white: the XDR
     /// panel of a MacBook Pro, a Pro Display XDR, an HDR external). Macs

@@ -1338,6 +1338,71 @@ static int cache_case(bool with_header)
    return created(cc.ret == VK_SUCCESS ? object(id) : NULL);
 }
 
+/* a pipeline cache's data size through vkr (the driver's vkGetPipelineCacheData) */
+static size_t cache_data_size(void *cache, uint8_t *data, size_t max)
+{
+   size_t size = 0;
+   struct vn_command_vkGetPipelineCacheData g = { .device = DEVH, .pipelineCache = (VkPipelineCache)cache,
+                                                  .pDataSize = &size };
+   D->dispatch_vkGetPipelineCacheData(D, &g);
+   if (g.ret != VK_SUCCESS || size > max)
+      broken("vkGetPipelineCacheData (size)");
+   if (data && size) {
+      /* fresh arguments: vkr replaced the handles of the first call's */
+      struct vn_command_vkGetPipelineCacheData g2 = { .device = DEVH, .pipelineCache = (VkPipelineCache)cache,
+                                                      .pDataSize = &size, .pData = data };
+      D->dispatch_vkGetPipelineCacheData(D, &g2);
+      if (g2.ret != VK_SUCCESS)
+         broken("vkGetPipelineCacheData");
+   }
+   return size;
+}
+
+static void *cache_from(const void *data, size_t size)
+{
+   const uint64_t id = next_id++;
+   VkPipelineCache h = (VkPipelineCache)(uintptr_t)id;
+   VkPipelineCacheCreateInfo info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+                                      .initialDataSize = size, .pInitialData = data };
+   struct vn_command_vkCreatePipelineCache cc = { .device = DEVH, .pCreateInfo = &info, .pPipelineCache = &h };
+   D->dispatch_vkCreatePipelineCache(D, &cc);
+   if (cc.ret != VK_SUCCESS || !object(id))
+      broken("vkCreatePipelineCache");
+   return object(id);
+}
+
+/* p-cache-real-data-dropped-ok (virgl-venus-cache-data.patch): the driver's own data of a
+ * cache with a real compute pipeline in it, given back to a new cache: the new cache's data
+ * is as small as an empty cache's (the driver got none); without the patch it is larger.
+ * Only the driver's own data ever reaches it (STANDARDS 14b). */
+static int cache_dropped_case(void)
+{
+   struct world w = { 0 };
+   make_world(&w, true);
+   void *a = cache_from(NULL, 0);
+   const uint64_t id = next_id++;
+   VkPipeline h = (VkPipeline)(uintptr_t)id;
+   VkComputePipelineCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+      .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                 .module = (VkShaderModule)w.comp, .pName = "main" },
+      .layout = (VkPipelineLayout)w.layout };
+   struct vn_command_vkCreateComputePipelines c = { .device = DEVH, .pipelineCache = (VkPipelineCache)a,
+                                                    .createInfoCount = 1, .pCreateInfos = &info, .pPipelines = &h };
+   D->dispatch_vkCreateComputePipelines(D, &c);
+   if (c.ret != VK_SUCCESS)
+      broken("vkCreateComputePipelines with a cache");
+   static uint8_t data[1 << 20];
+   const size_t full = cache_data_size(a, data, sizeof(data));
+   const size_t empty = cache_data_size(cache_from(NULL, 0), NULL, sizeof(data));
+   const size_t again = cache_data_size(cache_from(data, full), NULL, sizeof(data));
+   step("cache data: with the pipeline %zu B, an empty cache %zu B, a cache made from the first %zu B", full, empty,
+        again);
+   if (ended())
+      return FATAL;
+   return full > empty && again == empty ? WORKS : ERROR;
+}
+
 /* n set layouts of one binding each of type t with count descriptors */
 static void *one_binding_layout(VkDescriptorType t, uint32_t count, VkShaderStageFlags stages)
 {
@@ -1514,6 +1579,8 @@ static int case_pipeline(const char *c)
    setup(needs);
    if (IS("p-cache-garbage") || IS("p-cache-header"))
       return cache_case(IS("p-cache-header"));
+   if (IS("p-cache-real-data-dropped-ok"))
+      return cache_dropped_case();
    if (!strncmp(c, "p-layout-", 9))
       return case_pipeline_layout(c);
    struct world w = { 0 };
@@ -7719,11 +7786,11 @@ static int case_host_memory(const char *c)
       return end(w.cmd);
    }
    if (IS("h-obj-cache-size") || IS("h-obj-cache-again-ok")) {
-      /* a pipeline cache's charge grows with its initial data: the driver's own data of a
-       * cache with real compute pipelines in it (one shader, 32 work group sizes) given to 50
-       * new caches, each charged its data on top of the 20 KB and all of it back at their
-       * destroy; again: 2000 made and destroyed, under an 8 MB account. Only data the driver
-       * wrote reaches it (STANDARDS 14b). */
+      /* a pipeline cache's charge: the driver's own data of a cache with real compute
+       * pipelines in it (one shader, 32 work group sizes) given to 50 new caches, each charged
+       * the 20 KB every cache has (the driver gets none of the data, virgl-venus-cache-data.patch,
+       * so it keeps none) and all of it back at their destroy; again: 2000 made and destroyed,
+       * under an 8 MB account. Only data the driver wrote reaches vkr (STANDARDS 14b). */
       const bool again = IS("h-obj-cache-again-ok");
       h_env("256", again ? "8" : "64", NULL);
       setup(0);
@@ -7780,7 +7847,7 @@ static int case_host_memory(const char *c)
            ended() ? " (the context ended)" : "");
       if (ended())
          return FATAL;
-      return after <= before && (again || each >= (20u << 10) + bytes) ? WORKS : ERROR;
+      return after <= before && (again || each >= (20u << 10)) ? WORKS : ERROR;
    }
    if (IS("h-obj-module-size") || IS("h-obj-module-again-ok")) {
       /* a module's charge grows with its code (both drivers keep a copy, vkr its scan): the
@@ -7976,6 +8043,7 @@ struct test_case {
 static const struct test_case cases[] = {
    /* pipelines, layouts, stages */
    { "p-ok", E_WORKS }, { "p-gfx-ok", E_WORKS }, { "p-cache-garbage", E_KEEP }, { "p-cache-header", E_KEEP },
+   { "p-cache-real-data-dropped-ok", E_WORKS },
    { "p-spec-oob", E_REFUSE }, { "p-spec-wrap", E_REFUSE },
    { "p-spec-dup-id", E_REFUSE, "specialization constant 0 in two entries" },
    /* array lengths from spec constant operations (#624, 3.4.5) */

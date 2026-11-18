@@ -4,8 +4,8 @@
 # falls back to plain surfaces of that kind for the run when one cannot be made or bound, gives the layer
 # EDR for both half-float kinds, makes half float lossless only where that was checked on screen (HDR, Extra
 # brightness, both with the layer's EDR; a 10-bit scanout without HDR or OMACVM_GL_COLOR=native stays plain), never makes 10-bit 'l10r' surfaces, reads OMACVM_GL_LOSSLESS and never reads a present surface on the CPU.
-# glReadPixels from one (it crashes on a compressed one) happens only in the partial present's check mode
-# (OMACVM_GL_PRESENT_DAMAGE=check), which keeps the surfaces plain. Without an argument: only that the checks catch the code
+# Nothing reads a present surface with glReadPixels (it crashes on a compressed one): the partial present's check mode
+# (OMACVM_GL_PRESENT_DAMAGE=check) reads a plain copy the GPU makes of it, and keeps lossless surfaces. Without an argument: only that the checks catch the code
 # without it (CI); GL drawing into such a surface is checked on the Mac by work/window-path/lbcheck.m (a GPU).
 #   test-present-lossless.sh                       (CI)
 #   test-present-lossless.sh <patched ui/cocoa.m>  (the runtime build)
@@ -48,15 +48,14 @@ problems() {
   grep -q '@available(macOS 27.0, \*)' <<<"$alloc" || echo "lossless surfaces on a macOS they are not checked on"
   ! grep -q 'IOSurfaceLock(present_surf\|IOSurfaceGetBaseAddress(present_surf' "$m" ||
     echo "a present surface is read on the CPU (a compressed one cannot be)"
-  grep -q 'getenv("OMACVM_GL_PRESENT_DAMAGE")' <<<"$alloc" &&
-    grep -q 'OMACVM_GL_PRESENT_DAMAGE=check reads them back' <<<"$alloc" ||
-    echo "the partial present's check mode gets compressed surfaces (its glReadPixels crashes on them)"
-  # glReadPixels with a present surface attached crashes on a compressed one. Only the partial present's
-  # check mode does it, and it keeps the surfaces plain (above).
+  # The check mode keeps lossless surfaces (it reads a plain copy), so it checks what is shown.
+  ! grep -q 'getenv("OMACVM_GL_PRESENT_DAMAGE")' <<<"$alloc" ||
+    echo "the partial present's check mode makes plain surfaces (it would not check the lossless ones that are shown)"
+  # glReadPixels with a present surface attached crashes on a compressed one: nothing may do it.
   local readers
   readers=$(present_readers "$m")
-  [[ -z $readers || $readers == cocoa_gl_present_pd_check ]] ||
-    echo "a present surface is read back with glReadPixels outside the check mode: ${readers//$'\n'/ }"
+  [[ -z $readers ]] ||
+    echo "a present surface is read back with glReadPixels: ${readers//$'\n'/ }"
 }
 # Functions that call glReadPixels while a present surface (present_tex[...]) is the framebuffer's attachment.
 present_readers() {
@@ -77,6 +76,7 @@ static void cocoa_gl_layer_follow(CALayer *layer, IOSurfaceRef surf, bool linear
 }
 static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linear)
 {
+    const char *pd = getenv("OMACVM_GL_PRESENT_DAMAGE");
     bool packed = present_lossless == 1 && (!half || present_lossless_half == 1);
     for (int i = 0; i < present_nsurf && ok; i++) {
         present_surf[i] = IOSurfaceCreate((CFDictionaryRef)props);
@@ -123,7 +123,7 @@ EOF2
   { echo "test-present-lossless: the checks miss half float lossless without EDR" >&2; exit 1; }
 old=$(problems "$work/old.m")
 for want in "not made lossless-compressed" "still plain" "no plain surfaces after" "OMACVM_GL_LOSSLESS is not read" "not checked on" \
-  "no EDR for lossless" "where it was not checked on screen" "10-bit 'l10r' surfaces are made" "check mode gets compressed surfaces" "glReadPixels outside the check mode: cocoa_gl_present_snapshot"; do
+  "no EDR for lossless" "where it was not checked on screen" "10-bit 'l10r' surfaces are made" "check mode makes plain surfaces" "read back with glReadPixels: cocoa_gl_present_snapshot"; do
   [[ $old == *"$want"* ]] || { echo "test-present-lossless: the checks miss the old code: $want" >&2; exit 1; }
 done
 [[ $old != *cocoa_gl_present_guest* ]] ||

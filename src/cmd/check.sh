@@ -612,6 +612,34 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     warn) warn "window surfaces" "${sl#*$'\t'}" ;;
   esac
 fi
+# Copy only what changed (partial present, ADR 0051) this run: the app's word at the
+# start ("OmacVM: partial present: on|off (why)") and QEMU's count once a minute while
+# frames come (frames drawn in part, in full and why; the last count). Whole frames are
+# no fault: a desktop on the stock driver of Linux 7.3 or older sends whole frames. A
+# check mode (tests) that found differing pixels warns. Nothing from an app before it.
+partial_line() {   # qemu.log -> "ok|warn<TAB>detail", nothing without the app's line
+  local l why c bad
+  l=$(sed -n 's/^OmacVM: partial present: //p' "$1" | tail -1)
+  [[ -n $l ]] || return 0
+  why=$(sed -n 's/^o[nf]* (\(.*\))$/\1/p' <<<"$l")
+  if [[ $l != on* ]]; then printf 'ok\t%s\n' "off (${why:-no reason given})"; return 0; fi
+  c=$(grep -oE 'cocoa: partial present, last [0-9]+ s: .*' "$1" | tail -1)
+  bad=$(grep -oE 'cocoa: present check, so far: [0-9]+ of [0-9]+ checks bad' "$1" | tail -1)
+  if [[ -n $bad && ${bad#cocoa: present check, so far: } != 0\ of* ]]; then
+    printf 'warn\t%s\n' "on, but its check mode found differing pixels: ${bad#cocoa: present check, so far: } (logs/qemu.log has each)"
+  elif [[ -n $c ]]; then
+    printf 'ok\t%s\n' "on: ${c#cocoa: partial present, }"
+  else
+    printf 'ok\t%s\n' "on (${why}); QEMU counts the frames once a minute while they come"
+  fi
+}
+if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
+  pl=$(partial_line "$miclog")
+  case ${pl%%$'\t'*} in
+    ok) ok "Copy only what changed" "${pl#*$'\t'}" ;;
+    warn) warn "Copy only what changed" "${pl#*$'\t'}" ;;
+  esac
+fi
 # Whether the VM's GPU work ran without QEMU's big lock this run (ADR 0046,
 # gpuOffMainLoop: on by default after 3.1.25). A runtime before 3.1.18 says nothing.
 if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
@@ -620,6 +648,22 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     *"fences polled"*) warn "GPU lock" "gpuOffMainLoop is on, but fences are polled this run: virgl keeps QEMU's big lock" ;;
     "virgl runs with the BQL"*) ok "GPU lock" "virgl runs with QEMU's big lock (Graphics without QEMU's lock is off)" ;;
   esac
+fi
+# VM CPU clock saver this run (ADR 0073, vcpuClockSaver: experimental, off by
+# default). QEMU's last line says what the vCPUs did with the switch (it can
+# change while the VM runs); nothing when it is off or the runtime is older.
+if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
+  vcs=$(grep -o 'OmacVM: vCPU clock saver: .*' "$miclog" | tail -1); vcs=${vcs#OmacVM: vCPU clock saver: }
+  if [[ $vcs =~ ^on,\ ([0-9]+)\ of\ ([0-9]+)\ vCPUs ]]; then
+    if [[ ${BASH_REMATCH[1]} == "${BASH_REMATCH[2]}" && ${BASH_REMATCH[1]} != 0 ]]; then
+      ok "VM CPU clock saver" "on: the VM's CPUs run at the clock of their own work (experimental)"
+    else
+      warn "VM CPU clock saver" "on, but only ${BASH_REMATCH[1]} of ${BASH_REMATCH[2]} VM CPUs joined: the others run as before"
+    fi
+  elif [[ $vcs == "not available: "* ]]; then
+    vcs=${vcs#not available: }
+    warn "VM CPU clock saver" "on, but not available (${vcs% (*}): the VM's CPUs run as before"
+  fi
 fi
 # Vulkan windows without a copy this run (ADR 0047, vkWindowsNoCopy: on by default
 # after 3.1.25). virglrenderer says so once Venus made its device; nothing when

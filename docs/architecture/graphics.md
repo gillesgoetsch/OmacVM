@@ -97,7 +97,7 @@ on CGL, not on ANGLE.
 | GPU safe mode (the old fence and frame path) | built: `gpu-native`, hidden | `gpuSafeMode` default |
 | Present on each flush | built: `gpu-native` | `qemu-cocoa-gl-present-on-flush.patch` |
 | IOSurface present | built: `gpu-native` | `qemu-cocoa-gl-present-iosurface.patch` |
-| Partial present (only the box the guest changed; needs Linux 7.4 or OmacVM's driver for real rects) | built: `frame-path`, off by default (`OMACVM_GL_PRESENT_DAMAGE=1`) | `omacvm-cocoa-present-damage*.patch`, ADR 0051 |
+| Partial present (only the box the guest changed; needs Linux 7.4 or OmacVM's driver for real rects) | on by default for SDR starts from 3.5.0 (switch "Copy only what changed", `partialPresent`; QEMU env `OMACVM_GL_PRESENT_DAMAGE=1`); off for HDR starts until checked on an HDR display; qemu.log counts once a minute; `omacvm check` "Copy only what changed" | `omacvm-cocoa-present-damage*.patch`, ADR 0051 |
 | Tiled present (a frame that changed little goes to WindowServer as a few tile layers over the last whole frame; the same guest rects) | built: `window-draw`, off by default (experimental switch "Draw only what changed", `presentTiles`, which also has the VM load OmacVM's driver for its damage fix, SMBIOS `omacvm.damage=1`; `OMACVM_GL_PRESENT_TILES=1`; Linux 7.4 has the fix itself) | `omacvm-cocoa-present-tiles*.patch`, ADR 0055 |
 | Blob alignment for 16 KiB pages | built: `gpu-native`, `gpu-venus` | `qemu-virtio-gpu-blob-alignment.patch` |
 | Venus on MoltenVK | built: `gpu-venus`, merged into `gpu-native`, hidden switch | see section 6 |
@@ -159,6 +159,7 @@ and no render server process on macOS (ADR 0012).
  +-------------------------------------------------------------------------+
  | vCPU threads (HVF) x N                                                  |
  |   guest runs; a queue kick is an MMIO exit -> takes the BQL             |
+ |   VM CPU clock saver on: a thread group of their own (ADR 0073)         |
  |                                                                         |
  | QEMU main loop  [BQL]                                                   |
  |   virtio-gpu ctrl + cursor queues, virglrenderer (vrend), all GL work,  |
@@ -197,6 +198,11 @@ Rules:
   inside `drawInCGLContext` holding the BQL.
 - Venus threads do not take the BQL; they talk to the main loop only
   through the proxy's fence fd and resource callbacks.
+- Only the vCPU threads ever join the VM CPU clock saver's work interval
+  (ADR 0073, experimental): macOS then sets their clock by their own load.
+  The main loop, vrend-sync, the present queue, the display link and the
+  sound thread stay in the app's thread group with their own QoS; they share
+  the performance cluster's clock, which is lower while the vCPUs are light.
 - Head windows (one per extra display) share the main view's GL context
   (`gl_view_ctx`); all their drawing happens under the same rules.
 
@@ -1139,8 +1145,8 @@ bench lock and are indications only):
   plain; `OMACVM_GL_LOSSLESS=0` keeps them all plain; macOS 27 and newer only,
   where it is checked). Nothing reads them back
   (no CPU read, no `glReadPixels`: it crashes on them); the partial present's
-  check mode (`OMACVM_GL_PRESENT_DAMAGE=check`) keeps them plain and compares in
-  the shown surface's kind.
+  check mode (`OMACVM_GL_PRESENT_DAMAGE=check`) reads a plain copy the GPU makes
+  of the shown surface and compares in its kind (lossless ones too, from 3.5.0).
 - **Colour**: surfaces are tagged; Core Animation converts sRGB (or PQ) to
   the display. HDR and 10-bit colour is the app's experimental switch
   (`hdr`, shown only while a display can show HDR; ADR 0049): a start with
@@ -1173,6 +1179,15 @@ bench lock and are indications only):
   frames' own path (8-bit, or PQ with HDR at once). Hidden: no frames, and
   macOS drops the headroom about 15 s later; fully covered: no frames, but
   macOS keeps 2x headroom.
+- **HDR only in full screen** (experimental, `hdrFullScreenOnly`, ADR 0074):
+  the guest runs Virtual-1 8-bit sRGB while no window there is in full
+  screen and the PQ rule while one is (`omacvm-displays`' follower,
+  `omacvm-display-sync --hdr`); the scanout depth is the frame's colour tag
+  (8-bit sRGB, 10-bit PQ), so no frame is tagged wrong. QEMU never draws a
+  frame into surfaces of the other colour: in the surfaces' hold-off such a
+  frame is held until the right ones are made (also without the switch, with
+  HDR). While SDR the guest is told the PQ headroom it had (or the display's
+  most), not the ~1 the panel falls to without EDR.
 - **HDR clients**: an app must hand Hyprland a PQ image description
   (`wp_color_manager_v1`). GStreamer's `waylandsink` does; mpv 0.41 with
   `--gpu-api=opengl` does not (mpv's master does, with `vo=gpu-next`; app

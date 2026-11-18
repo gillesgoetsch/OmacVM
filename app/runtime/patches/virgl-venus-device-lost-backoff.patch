@@ -1,0 +1,298 @@
+virglrenderer: new Venus devices wait after the Mac's driver loses one
+
+What: when the Mac's Vulkan driver answers VK_ERROR_DEVICE_LOST to a VM's
+Venus work (vkQueueSubmit/2, the fence and timeline semaphore waits and
+queries, vkr's own sync submit and fence thread, vkDeviceWaitIdle at
+teardown), vkr counts a lost device and refuses vkCreateDevice for a while
+(VK_ERROR_INITIALIZATION_FAILED, one log line naming the app and the wait):
+10 s after the first, doubling for each further one within 30 min, at most
+10 min; reports within 2 s of the last counted one are the same loss.
+Devices that exist go on. One state per QEMU process (one VM), under a
+mutex; the rules are src/venus/vkr_restart_guard.h, without vkr.
+Why: an app in the VM that a harness or a service starts again and again
+after each lost device went straight back to the Mac's driver every time.
+A short, growing wait between rounds keeps that loop from hammering the
+driver; apps that do not lose devices never see it.
+Upstream: OmacVM policy, not sent.
+Tests: Tests/virgl/test-venus-restart-guard.sh (CI and the runtime build:
+the header's rules on the CPU).
+
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index 03fe07d..41921db 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -17,6 +17,10 @@
+ #include "vkr_physical_device.h"
+ #include "vkr_queue.h"
+ #include "vkr_render_pass.h"
++#include "vkr_restart_guard.h"
++
++#include <pthread.h>
++#include <time.h>
+ 
+ static VkResult
+ vkr_device_create_queues(struct vkr_context *ctx,
+@@ -141,12 +145,66 @@ vkr_device_init_iosurface_windows(struct vkr_device *dev)
+    }
+ }
+ 
++
++/* OmacVM (virgl-venus-device-lost-backoff.patch): one state for the whole VM (this QEMU
++ * process); vkr_restart_guard.h has the rules */
++static pthread_mutex_t vkr_restart_mutex = PTHREAD_MUTEX_INITIALIZER;
++static struct vkr_restart_guard vkr_restart;
++
++static uint64_t
++vkr_restart_now_ns(void)
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (uint64_t)ts.tv_sec * VKR_RESTART_GUARD_SEC + (uint64_t)ts.tv_nsec;
++}
++
++void
++vkr_device_note_lost(struct vkr_context *ctx, VkResult result, const char *where)
++{
++   if (result != VK_ERROR_DEVICE_LOST)
++      return;
++   pthread_mutex_lock(&vkr_restart_mutex);
++   const bool counted = vkr_restart_guard_lost(&vkr_restart, vkr_restart_now_ns());
++   const uint32_t strikes = vkr_restart.strikes;
++   const uint64_t hold = vkr_restart_guard_hold_ns(strikes) / VKR_RESTART_GUARD_SEC;
++   pthread_mutex_unlock(&vkr_restart_mutex);
++   if (counted)
++      vkr_log("%s: the Mac's driver lost the device of %s (%u lost device%s in this VM "
++              "lately): new Vulkan devices wait %" PRIu64 " s",
++              where, ctx && ctx->debug_name ? ctx->debug_name : "?", strikes,
++              strikes == 1 ? "" : "s", hold);
++}
++
++/* true when a new device may be made now; else the reply is VK_ERROR_INITIALIZATION_FAILED */
++static bool
++vkr_device_restart_ok(struct vkr_context *ctx)
++{
++   pthread_mutex_lock(&vkr_restart_mutex);
++   const uint64_t wait = vkr_restart_guard_wait_ns(&vkr_restart, vkr_restart_now_ns());
++   const uint32_t strikes = vkr_restart.strikes;
++   pthread_mutex_unlock(&vkr_restart_mutex);
++   if (!wait)
++      return true;
++   vkr_log("vkCreateDevice of %s refused: the Mac's driver lost devices of this VM "
++           "(%u time%s lately), new devices wait %" PRIu64 " s more",
++           ctx->debug_name ? ctx->debug_name : "?", strikes, strikes == 1 ? "" : "s",
++           (wait + VKR_RESTART_GUARD_SEC - 1) / VKR_RESTART_GUARD_SEC);
++   return false;
++}
++
+ static void
+ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+                             struct vn_command_vkCreateDevice *args)
+ {
+    struct vkr_context *ctx = dispatch->data;
+ 
++   /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++   if (!vkr_device_restart_ok(ctx)) {
++      args->ret = VK_ERROR_INITIALIZATION_FAILED;
++      return;
++   }
++
+    struct vkr_physical_device *physical_dev =
+       vkr_physical_device_from_handle(args->physicalDevice);
+    struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
+@@ -551,6 +609,8 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+       VkResult result = vk->DeviceWaitIdle(device);
+       if (result != VK_SUCCESS)
+          vkr_log("vkDeviceWaitIdle(%p) failed(%d)", dev, (int32_t)result);
++      /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++      vkr_device_note_lost(ctx, result, "vkDeviceWaitIdle");
+    }
+ 
+    mtx_destroy(&dev->object_mutex);
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index f722097..aae46e9 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -168,4 +168,10 @@ vkr_object_hold(struct vkr_object *obj)
+ void
+ vkr_object_unhold(struct vkr_object *obj);
+ 
++
++/* OmacVM (virgl-venus-device-lost-backoff.patch): the Mac's driver reported a lost device
++ * (result VK_ERROR_DEVICE_LOST) for ctx at where; new devices wait a while (vkr_restart_guard.h) */
++void
++vkr_device_note_lost(struct vkr_context *ctx, VkResult result, const char *where);
++
+ #endif /* VKR_DEVICE_H */
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index b90a22d..ca066dd 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -112,6 +112,8 @@ vkr_queue_sync_submit(struct vkr_queue *queue,
+    if (result == VK_ERROR_DEVICE_LOST) {
+       sync->device_lost = true;
+       vkr_log("sync submit hit device lost for fence_id %" PRIu64, fence_id);
++      /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++      vkr_device_note_lost(queue->context, result, "sync submit");
+    } else if (result != VK_SUCCESS) {
+       vkr_device_free_queue_sync(dev, sync);
+       vkr_log("sync submit failed (vk ret %d) for fence_id %" PRIu64, result, fence_id);
+@@ -237,6 +239,8 @@ vkr_queue_thread(void *arg)
+       } else {
+          result = vk->WaitForFences(dev->base.handle.device, 1, &sync->fence, true,
+                                     ns_per_sec * 3);
++         /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++         vkr_device_note_lost(ctx, result, "fence wait");
+       }
+ 
+       mtx_lock(&queue->sync_thread.mutex);
+@@ -559,6 +563,8 @@ vkr_dispatch_vkQueueSubmit(struct vn_dispatch_context *dispatch,
+    args->ret =
+       vk->QueueSubmit(args->queue, args->submitCount, args->pSubmits, args->fence);
+    mtx_unlock(&queue->vk_mutex);
++   /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++   vkr_device_note_lost(dispatch->data, args->ret, "vkQueueSubmit");
+ }
+ 
+ static void
+@@ -634,6 +640,8 @@ vkr_dispatch_vkQueueSubmit2(struct vn_dispatch_context *dispatch,
+    args->ret =
+       vk->QueueSubmit2(args->queue, args->submitCount, args->pSubmits, args->fence);
+    mtx_unlock(&queue->vk_mutex);
++   /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++   vkr_device_note_lost(dispatch->data, args->ret, "vkQueueSubmit2");
+ }
+ 
+ static void
+@@ -662,7 +670,7 @@ vkr_dispatch_vkResetFences(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkGetFenceStatus(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkGetFenceStatus(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkGetFenceStatus *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+@@ -670,10 +678,12 @@ vkr_dispatch_vkGetFenceStatus(UNUSED struct vn_dispatch_context *dispatch,
+ 
+    vn_replace_vkGetFenceStatus_args_handle(args);
+    args->ret = vk->GetFenceStatus(args->device, args->fence);
++   /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++   vkr_device_note_lost(dispatch->data, args->ret, "vkGetFenceStatus");
+ }
+ 
+ static void
+-vkr_dispatch_vkWaitForFences(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkWaitForFences(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkWaitForFences *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+@@ -682,6 +692,8 @@ vkr_dispatch_vkWaitForFences(UNUSED struct vn_dispatch_context *dispatch,
+    vn_replace_vkWaitForFences_args_handle(args);
+    args->ret = vk->WaitForFences(args->device, args->fenceCount, args->pFences,
+                                  args->waitAll, args->timeout);
++   /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++   vkr_device_note_lost(dispatch->data, args->ret, "vkWaitForFences");
+ }
+ 
+ static void
+@@ -729,7 +741,7 @@ vkr_dispatch_vkDestroySemaphore(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkGetSemaphoreCounterValue(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkGetSemaphoreCounterValue(struct vn_dispatch_context *dispatch,
+                                         struct vn_command_vkGetSemaphoreCounterValue *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+@@ -737,10 +749,12 @@ vkr_dispatch_vkGetSemaphoreCounterValue(UNUSED struct vn_dispatch_context *dispa
+ 
+    vn_replace_vkGetSemaphoreCounterValue_args_handle(args);
+    args->ret = vk->GetSemaphoreCounterValue(args->device, args->semaphore, args->pValue);
++   /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++   vkr_device_note_lost(dispatch->data, args->ret, "vkGetSemaphoreCounterValue");
+ }
+ 
+ static void
+-vkr_dispatch_vkWaitSemaphores(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkWaitSemaphores(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkWaitSemaphores *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+@@ -748,6 +762,8 @@ vkr_dispatch_vkWaitSemaphores(UNUSED struct vn_dispatch_context *dispatch,
+ 
+    vn_replace_vkWaitSemaphores_args_handle(args);
+    args->ret = vk->WaitSemaphores(args->device, args->pWaitInfo, args->timeout);
++   /* OmacVM (virgl-venus-device-lost-backoff.patch) */
++   vkr_device_note_lost(dispatch->data, args->ret, "vkWaitSemaphores");
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_restart_guard.h b/src/venus/vkr_restart_guard.h
+new file mode 100644
+index 0000000..0dd764d
+--- /dev/null
++++ b/src/venus/vkr_restart_guard.h
+@@ -0,0 +1,63 @@
++/* OmacVM (virgl-venus-device-lost-backoff.patch): when the Mac's driver reports a lost
++ * device (VK_ERROR_DEVICE_LOST on work of this VM), vkr refuses new Venus devices for a
++ * while, so a guest app that its harness or the guest starts again and again after each
++ * lost device does not go straight back to the driver. The first lost device holds new
++ * devices back for 10 s; each further one within 30 min doubles that, up to 10 min; 30 min
++ * without one starts at 10 s again. Reports within 2 s of the last counted one are the
++ * same loss (every queue, fence and context of the VM sees it) and count once. Devices that
++ * exist go on; the driver ends the ones it lost. The rules only: vkr_device.c keeps one state per
++ * QEMU process (one VM) under a mutex; Tests/virgl/test-venus-restart-guard.c checks them. */
++#ifndef VKR_RESTART_GUARD_H
++#define VKR_RESTART_GUARD_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#define VKR_RESTART_GUARD_SEC 1000000000ull
++#define VKR_RESTART_GUARD_FIRST_NS (10ull * VKR_RESTART_GUARD_SEC)
++#define VKR_RESTART_GUARD_MAX_NS (600ull * VKR_RESTART_GUARD_SEC)
++#define VKR_RESTART_GUARD_FORGET_NS (1800ull * VKR_RESTART_GUARD_SEC)
++#define VKR_RESTART_GUARD_SAME_NS (2ull * VKR_RESTART_GUARD_SEC)
++
++struct vkr_restart_guard {
++   uint32_t strikes;     /* lost devices counted (one per loss) */
++   uint64_t counted_ns;  /* when the last counted loss was reported */
++   uint64_t last_ns;     /* when the last report came */
++   uint64_t until_ns;    /* new devices are refused before this */
++};
++
++/* how long new devices wait after the n-th counted loss (n >= 1) */
++static inline uint64_t
++vkr_restart_guard_hold_ns(uint32_t strikes)
++{
++   uint64_t hold = VKR_RESTART_GUARD_FIRST_NS;
++   for (uint32_t i = 1; i < strikes && hold < VKR_RESTART_GUARD_MAX_NS; i++)
++      hold *= 2;
++   return hold < VKR_RESTART_GUARD_MAX_NS ? hold : VKR_RESTART_GUARD_MAX_NS;
++}
++
++/* a lost device reported at now_ns; true when it counts as a new loss */
++static inline bool
++vkr_restart_guard_lost(struct vkr_restart_guard *g, uint64_t now_ns)
++{
++   if (g->strikes && now_ns >= g->counted_ns && now_ns - g->counted_ns < VKR_RESTART_GUARD_SAME_NS) {
++      g->last_ns = now_ns;
++      return false;
++   }
++   if (g->strikes && now_ns >= g->last_ns && now_ns - g->last_ns >= VKR_RESTART_GUARD_FORGET_NS)
++      g->strikes = 0;
++   if (g->strikes < UINT32_MAX)
++      g->strikes++;
++   g->counted_ns = g->last_ns = now_ns;
++   g->until_ns = now_ns + vkr_restart_guard_hold_ns(g->strikes);
++   return true;
++}
++
++/* nanoseconds a new device must still wait at now_ns (0: it may be made) */
++static inline uint64_t
++vkr_restart_guard_wait_ns(const struct vkr_restart_guard *g, uint64_t now_ns)
++{
++   return now_ns < g->until_ns ? g->until_ns - now_ns : 0;
++}
++
++#endif

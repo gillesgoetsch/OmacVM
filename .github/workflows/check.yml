@@ -500,11 +500,19 @@ jobs:
       - name: vCPU stall note (a vCPU blocked on the Mac's memory or without a core)
         run: app/runtime/Tests/vcpu/test-vcpu-stall.sh
 
+      - name: VM CPU clock saver (ADR 0073; join, scheduling kept, leave before the end, no retry; omacvm check line)
+        run: |
+          app/runtime/Tests/vcpu/test-vcpu-clock-saver.sh
+          src/tests/vcpu-clock-saver-check.sh
+
       - name: Graphics memory guard keeps a part for the desktop (the rules)
         run: app/runtime/Tests/virgl/test-gpu-guard-policy.sh
 
       - name: Guest SPIR-V scan (fuzzed on the CPU, sanitizers)
         run: app/runtime/Tests/virgl/fuzz-venus-spirv.sh
+
+      - name: New Venus devices wait after a lost one (the rules)
+        run: app/runtime/Tests/virgl/test-venus-restart-guard.sh
 
       - name: App menu Restart the Desktop after Later (QEMU's side)
         run: app/runtime/Tests/display/test-restart-desktop.sh
@@ -602,6 +610,8 @@ jobs:
         run: app/runtime/Tests/display/test-guest-pause.sh
       - name: The Mac's display on while a video plays in the VM (ADR 0070; the rules, the wiring)
         run: app/runtime/Tests/display/test-video-awake.sh
+      - name: HDR only in full screen and no frame in surfaces of the other colour (ADR 0074; the rules, the wiring)
+        run: app/runtime/Tests/display/test-hdr-follow.sh
       - name: The pointer's layer as bright as the boosted frames (ADR 0054; the checks catch code without it)
         run: |
           app/runtime/Tests/display/test-pointer-bright.sh
@@ -674,7 +684,7 @@ jobs:
       - name: The move to Omarchy 4.5 (preflight, steps, resume, keyring, report), its repo files, pkg-add's marking
         run: src/tests/omarchy-move.sh
 
-      - name: Test disk images made with a time limit (hdiutil create hung in newfs_hfs and newfs_apfs on the mini's CI host)
+      - name: Test disk images made with a time limit and one more try after a hang (hdiutil create hung in newfs_hfs and newfs_apfs on the mini's CI host)
         run: src/tests/hdiutil-create-test.sh
 
       - name: OmacVM.app moves VM folders safely (fixtures, small disk images)
@@ -706,6 +716,9 @@ jobs:
       - name: omacvm check's "window surfaces" line says which surfaces the app's window used (lossless or plain)
         run: src/tests/surfaces-check.sh
 
+      - name: omacvm check's "Copy only what changed" line says how the window's frames were copied (partial present)
+        run: src/tests/partial-check.sh
+
       - name: Disk flushes as write barriers (patch pinned and tested, log lines, check)
         run: src/tests/disk-flush.sh
 
@@ -735,6 +748,12 @@ jobs:
 
       - name: Chromium's no-AV1 extension survives an apply of other features (its place, 3.1.4's path moved, check)
         run: src/tests/chromium-no-av1.sh
+
+      - name: Prefer VP9 on YouTube (experimental) packs the no-AV1 extension for Chrome and Chromium, on/off/status, offered only without AV1 decoding
+        run: src/tests/youtube-vp9.sh
+
+      - name: Fewer animations (experimental) is OmacVM's own border setting, on/off/status, the user's hyprland.lua kept, Omarchy's toggle untouched
+        run: src/tests/fewer-animations.sh
 
       - name: Chrome's WebRTC encoder flags survive Update VM and come back at a start
         run: src/tests/video-encode-flags.sh
@@ -846,8 +865,11 @@ jobs:
   # centre runs in the VM too, so its tests run here, not on the Macs' runners.
   guest:
     runs-on: ubuntu-24.04-arm
-    # The guest steps take 6-10 min, the control centre's tests about 5.5 more.
-    timeout-minutes: 20
+    # Green runs take 19.5-19.8 min (2026-11-17): the control centre's tests about
+    # 5.5, the HDR capture shader variants about 7.5, the rest 6-7. With a 20-min
+    # limit one slow minute on GitHub's runner cancelled it (#765, #811, #814, #817,
+    # #824). 35 leaves room; a step that hangs still ends the job.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -893,6 +915,12 @@ jobs:
 
       - name: A feature switch on Linux (GNU sed, glide off path)
         run: src/tests/feature-switch.sh
+
+      - name: Prefer VP9 on YouTube on Linux (OpenSSL and GNU tools, as in the VM)
+        run: src/tests/youtube-vp9.sh
+
+      - name: Fewer animations on Linux (GNU tools, as in the VM)
+        run: src/tests/fewer-animations.sh
 
       - name: Update VM installs Omanotch again only when its files changed (Python's compiled files left out; GNU tools, as in the VM)
         run: src/tests/omanotch-stamp.sh

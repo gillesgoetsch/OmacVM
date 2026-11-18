@@ -264,6 +264,35 @@ struct HDRRow: View {
     }
 }
 
+/// HDR only in full screen (Settings.hdrFullScreenOnly, experimental, off by
+/// default, ADR 0074): only with a display that can show HDR, under HDRRow.
+/// QEMU reads the key itself, so a running VM follows the switch at once.
+/// Works only while HDR is on (and not in GPU safe mode).
+struct HDRFullScreenOnlyRow: View {
+    var tick = 0
+    /// nil in the Battery saver group (its top row has it).
+    var badge: String? = "experimental"
+    @State private var on = Settings.hdrFullScreenOnly
+
+    static let info = "With HDR and 10-bit colour on: while no window is in full screen, the VM's main display runs as with HDR off: 8-bit colour, no HDR work in the VM's apps and desktop, and the Mac's display stays in its normal brightness range. When a window goes full screen there (a video's full-screen button, F11, a player, Super+F), that display switches to HDR as before, and back to SDR about 2 seconds after the last full-screen window is gone. The cost: HDR in a window shows as SDR (Chrome tone-maps it, as on a display without HDR); go full screen to see it in HDR. Any full-screen window turns HDR on, also a terminal, and then costs what HDR costs today. Only the main window's display. On Hyprland 0.56 (Omarchy 4.5), Hyprland's own auto HDR switches only for a full-screen app that already draws HDR, which Chrome never does on an SDR desktop. 0.57 offers HDR to the full-screen app, but switches the display one frame late. So OmacVM switches the display itself on both, and Hyprland's auto HDR stays off. If your Hyprland config turns on render:cm_auto_hdr, render:direct_scanout or quirks:prefer_hdr, or has its own rule for the main display, the VM keeps HDR all the time and omacvm check says why. Works at once in a running VM; the VM gets its part with Update VM. Off: HDR exactly as before. Experimental."
+
+    var body: some View {
+        SettingRow(title: "HDR only in full screen", badge: badge,
+                   subtitle: Self.subtitle(hdr: Settings.hdr, safeMode: Settings.gpuSafeMode),
+                   info: Self.info, probe: "hdr-full-screen-only") {
+            RowSwitch(title: "HDR only in full screen", isOn: $on, enabled: Settings.hdr && !Settings.gpuSafeMode)
+        }
+        .onChange(of: on) { _, v in if v != Settings.hdrFullScreenOnly { Settings.hdrFullScreenOnly = v } }
+        .onChange(of: tick) { _, _ in on = Settings.hdrFullScreenOnly }
+    }
+
+    static func subtitle(hdr: Bool, safeMode: Bool) -> String {
+        if safeMode { return "Off while GPU safe mode is on." }
+        if !hdr { return "Needs HDR and 10-bit colour." }
+        return "SDR on the desktop, HDR when a window goes full screen."
+    }
+}
+
 /// Extra brightness (Settings.extraBrightness, experimental, ADR 0050): only
 /// with a display that has the headroom (Mac.hasExtraBrightnessDisplay).
 /// QEMU reads the key itself, so a running VM follows the switch at once.
@@ -289,12 +318,14 @@ struct ExtraBrightnessRow: View {
 /// switch at once.
 struct PauseWhileHiddenRow: View {
     var tick = 0
+    /// nil in the Battery saver group (its top row has it).
+    var badge: String? = "experimental"
     @State private var on = Settings.pauseWhileHidden
 
     static let info = "Saves battery while you work in macOS with the VM in the background. When none of the VM's window can be seen for 2 seconds (minimised, covered by other windows, on another Space, the screen locked or asleep), the VM turns its display off and stops drawing, as macOS apps do for a window nobody sees: Linux apps get no new frames and stop drawing too. Sound, videos' sound, downloads, timers and everything else in the VM keep running. As soon as any part of the window shows again, the VM draws again; the first new picture comes a few frames later, until then you see the last one. A visible window is never touched: every frame, at the display's full rate. Only the VM's main window: in full screen on several displays, the other displays' windows keep drawing. Screen sharing or recording of the VM's screen from inside the VM keeps it drawing. Works at once in a running VM. Experimental: it switches the VM's display off and on (DPMS), as Omarchy's own screen blanking does."
 
     var body: some View {
-        SettingRow(title: "Pause drawing while hidden", badge: "experimental",
+        SettingRow(title: "Pause drawing while hidden", badge: badge,
                    subtitle: "Less battery while the VM's window cannot be seen. Sound and downloads keep running.",
                    info: Self.info, probe: "pause-while-hidden") {
             RowSwitch(title: "Pause drawing while hidden", isOn: $on)
@@ -304,16 +335,40 @@ struct PauseWhileHiddenRow: View {
     }
 }
 
+/// VM CPU clock saver (Settings.vcpuClockSaver, experimental, off by
+/// default, ADR 0073): QEMU watches the key, so it works at once in a
+/// running VM; GPU safe mode keeps it off.
+struct VCPUClockSaverRow: View {
+    var tick = 0
+    /// nil in the Battery saver group (its top row has it).
+    var badge: String? = "experimental"
+    @State private var on = Settings.vcpuClockSaver
+
+    static let info = "Experimental. macOS runs every thread of the app in front at a high CPU clock, and the VM's CPUs get that clock too, even for a video or a terminal. With this on, the VM's CPUs get the clock their own work needs, like an app in the background. Graphics, sound, HDR and 120 Hz keep their own settings, but they share the Mac's CPU cores, which then run at a lower clock or on efficiency cores while the VM is light. Measured with an early version on an M1 Max playing a 1080p video at 120 Hz: the whole Mac took 14.7-15.4 W instead of 17.7 W (2.4-3.1 W less). The trade-off: 1 to 3 dropped video frames in 12,000-15,000, none with it off. On a MacBook Air (M2) it saved about 0.5 W with a 1080p60 video the VM decodes itself (AV1), and nothing for scrolling or at idle. On a Mac mini (M4) the VM's CPUs and the main thread moved to efficiency cores; its whole-Mac watts are not measured. Other Macs are not measured yet. Sound with it on is not measured yet. Works at once in a running VM, and off puts the VM's CPUs back as before at once. GPU safe mode keeps it off."
+
+    var body: some View {
+        SettingRow(title: "VM CPU clock saver", badge: badge,
+                   subtitle: Settings.gpuSafeMode ? "Off while GPU safe mode is on." : "Up to 3 W less on an M1 Max, little on a MacBook Air (M2); other Macs not measured. Can drop a rare video frame. Works at once.",
+                   info: Self.info, probe: "vcpu-clock-saver") {
+            RowSwitch(title: "VM CPU clock saver", isOn: $on, enabled: !Settings.gpuSafeMode)
+        }
+        .onChange(of: on) { _, v in if v != Settings.vcpuClockSaver { Settings.vcpuClockSaver = v } }
+        .onChange(of: tick) { _, _ in on = Settings.vcpuClockSaver }
+    }
+}
+
 /// Pointer on its own layer (Settings.pointerPlane, experimental, off by
 /// default): read by each start of the VM.
 struct PointerPlaneRow: View {
     var tick = 0
+    /// nil in the Battery saver group (its top row has it).
+    var badge: String? = "experimental"
     @State private var on = Settings.pointerPlane
 
     static let info = "Moving the pointer no longer redraws the VM's screen. Linux puts the pointer on a layer of its own, and the Mac shows that layer over the VM's window: the same pointer in the same place (with Extra brightness as bright as the picture), but the VM's picture is not drawn again for each move. Less GPU work and battery while you move the pointer. The pointer moves on its own, like the Mac's own pointer: while you drag something it can be a frame ahead of it. On every display the VM uses. Counts from the next start of the VM; the VM gets the driver for it with Update VM (needs internet once). Experimental."
 
     var body: some View {
-        SettingRow(title: "Pointer on its own layer", badge: "experimental",
+        SettingRow(title: "Pointer on its own layer", badge: badge,
                    subtitle: Settings.macPointer ? "Off while macPointer is set (defaults)." : "Moving the pointer no longer redraws the VM's screen. From the next start of the VM.",
                    info: Self.info, probe: "pointer-plane") {
             RowSwitch(title: "Pointer on its own layer", isOn: $on, enabled: !Settings.macPointer)
@@ -323,16 +378,37 @@ struct PointerPlaneRow: View {
     }
 }
 
+/// Partial present (Settings.partialPresent, on by default from 3.5.0):
+/// read by each start of the VM.
+struct PartialPresentRow: View {
+    var tick = 0
+    @State private var on = Settings.partialPresent
+
+    static let info = "Only the part of each frame that changed is copied into the window's picture; the rest of that picture is already right. The same pixels, less GPU work: a pointer, a blinking cursor, a clock or typing change a few small boxes. Pages that scroll, video and windows that move change most of the frame and are copied whole, as before. The VM has to say what changed: its boot screen and text consoles always do; for its desktop the VM loads OmacVM's own build of its graphics driver while this is on (Linux 7.4 and newer say it themselves and keep their own driver). Update VM builds that driver (needs internet once); until then, whole frames. A window or full screen that scales the VM's picture (not shown pixel for pixel, as Full screen including notch at some of Omarchy's scales) copies whole frames as before. Not yet with HDR: it is off for a start with HDR until it is checked on an HDR display. GPU safe mode turns it off. Off: whole frames, and the VM's standard driver, as before. Counts from the next start of the VM."
+
+    var body: some View {
+        SettingRow(title: "Copy only what changed",
+                   subtitle: Settings.gpuSafeMode ? "Off while GPU safe mode is on." : "Only the changed part of each frame is copied into the window. From the next start of the VM.",
+                   info: Self.info, probe: "partial-present") {
+            RowSwitch(title: "Copy only what changed", isOn: $on, enabled: !Settings.gpuSafeMode)
+        }
+        .onChange(of: on) { _, v in if v != Settings.partialPresent { Settings.partialPresent = v } }
+        .onChange(of: tick) { _, _ in on = Settings.partialPresent }
+    }
+}
+
 /// Draw only what changed (Settings.presentTiles, experimental, off by
 /// default): QEMU's tiled present, read by each start of the VM.
 struct PresentTilesRow: View {
     var tick = 0
+    /// nil in the Battery saver group (its top row has it).
+    var badge: String? = "experimental"
     @State private var on = Settings.presentTiles
 
-    static let info = "When only a small part of the VM's screen changes (the pointer, a blinking cursor, a clock, a spinner), only that part goes to macOS as new pixels, in squares of 256 x 256; macOS then redraws only those squares of the window instead of all of it. Less GPU work and battery, measured for the whole Mac: a MacBook Air M2 at 60 Hz with the pointer moving 11-17 % less power. On a MacBook Pro M1 Max with HDR at 120 Hz, macOS used less GPU time to draw the window with the pointer moving or a spinner (its power is still being measured). The same picture and the same frame rate in the tests (60 Hz 8-bit and HDR, 120 Hz HDR). Pages that scroll or play video change most of the screen and stay as before. With the switch on, the VM loads OmacVM's own build of its graphics driver, which tells the Mac what changed in each frame: Update VM builds it (needs internet once). Off, the Mac draws whole frames as before, and the VM loads the driver it would without this switch: the standard one, or OmacVM's own when HDR and 10-bit colour or Pointer on its own layer is on (that one now always says what changed, but the Mac does not use it). A window that scales the VM's picture (not shown pixel for pixel) draws whole frames as before. Counts from the next start of the VM. Experimental: it may use up to about 130 MB more memory on large displays while parts change (the squares' own pictures and what macOS keeps of them). GPU safe mode turns it off."
+    static let info = "When only a small part of the VM's screen changes (the pointer, a blinking cursor, a clock, a spinner), only that part goes to macOS as new pixels, in squares of 256 x 256; macOS then redraws only those squares of the window instead of all of it. Less GPU work and battery, measured for the whole Mac: a MacBook Air M2 at 60 Hz with the pointer moving 11-17 % less power. On a MacBook Pro M1 Max with HDR at 120 Hz, macOS used less GPU time to draw the window with the pointer moving or a spinner (its power is still being measured). The same picture and the same frame rate in the tests (60 Hz 8-bit and HDR, 120 Hz HDR). Pages that scroll or play video change most of the screen and stay as before. With the switch on, the VM loads OmacVM's own build of its graphics driver, which tells the Mac what changed in each frame: Update VM builds it (needs internet once). Off, the Mac draws whole frames as before, and the VM loads the driver it would without this switch: the standard one, or OmacVM's own when Copy only what changed, HDR and 10-bit colour or Pointer on its own layer is on (that one always says what changed, and Copy only what changed uses it). A window that scales the VM's picture (not shown pixel for pixel) draws whole frames as before. Counts from the next start of the VM. Experimental: it may use up to about 130 MB more memory on large displays while parts change (the squares' own pictures and what macOS keeps of them). GPU safe mode turns it off."
 
     var body: some View {
-        SettingRow(title: "Draw only what changed", badge: "experimental",
+        SettingRow(title: "Draw only what changed", badge: badge,
                    subtitle: Settings.gpuSafeMode ? "Off while GPU safe mode is on." : "Small changes go to macOS as small squares, not as a whole new picture. From the next start of the VM.",
                    info: Self.info, probe: "present-tiles") {
             RowSwitch(title: "Draw only what changed", isOn: $on, enabled: !Settings.gpuSafeMode)
@@ -534,7 +610,7 @@ struct KeyboardRow: View {
     var preview: KeyNote?
     @State private var keyNote = KeyNote.none
 
-    static let allowedInfo = "Without this permission, ⌘ Tab, ⌘ Space and ⌘ ⇧ 4 go to macOS instead of Omarchy. macOS keeps it under Privacy & Security › Accessibility."
+    static let allowedInfo = "Without this permission, ⌘ Tab, ⌘ Space and ⌘ ⇧ 4 go to macOS instead of Omarchy. macOS keeps it under Privacy & Security › \(KeyAccess.listName)."
 
     var body: some View {
         SettingRow(title: "Keyboard access", subtitle: "Lets Mac shortcuts like ⌘Tab reach the VM.",
@@ -596,6 +672,11 @@ enum VMRecord {
         let text = (try? String(contentsOf: folder.appendingPathComponent("features"), encoding: .utf8)) ?? ""
         return text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).contains { $0 == "\(feature)=off" }
     }
+    /// The VM folder's file NAME (the features record, a pending switch); nil when there is none.
+    static func text(_ name: String, folder: URL) -> String? {
+        try? String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8)
+    }
+    static func features(folder: URL) -> String? { text("features", folder: folder) }
 }
 
 // MARK: Sharing & Devices

@@ -1,0 +1,111 @@
+From: OmacVM
+Subject: [PATCH] hvf: the vCPU threads follow the VM CPU clock saver
+
+What: omacvm_vcpu_clock_saver_set(on, why), called with the BQL by the
+app's switch (omacvm-cocoa-vcpu-clock-saver.patch), queues a follow on
+every vCPU with async_run_on_cpu: queued work wakes a halted, offline or
+stopped vCPU too, and the vCPU joins or leaves the group on its own thread.
+The last vCPU to follow writes "OmacVM: vCPU clock saver: on, N of M vCPUs
+(why)", "off (why)" or "not available: why" to qemu.log. A vCPU made while
+the switch is on joins after hvf_init_vcpu; every vCPU leaves before
+hvf_vcpu_destroy. With the switch never on nothing is queued, loaded or
+made: today's behaviour. The rules are in qemu-hvf-vcpu-clock-saver-logic.patch.
+
+Why: the vCPUs' clock by their own load, not the clock macOS gives the
+window in front (ADR 0073), switched at once in a running VM.
+
+Upstream: not sent.
+Test: app/runtime/Tests/vcpu/test-vcpu-clock-saver.sh with the patched
+accel/hvf/hvf-accel-ops.c (the runtime build).
+
+--- a/accel/hvf/hvf-accel-ops.c
++++ b/accel/hvf/hvf-accel-ops.c
+@@ -59,6 +59,8 @@
+ #include "system/hvf.h"
+ #include "system/hvf_int.h"
+ #include <mach/mach_time.h>
++#include "qemu/error-report.h"
++#include "qemu/omacvm-vcpu-clock-saver.h"
+ 
+ HVFState *hvf_state;
+ 
+@@ -151,6 +153,61 @@
+ }
+ 
+ /*
++ * OmacVM: VM CPU clock saver (ADR 0073, include/qemu/omacvm-vcpu-clock-saver.h).
++ * The switch and the tally are read and written with the BQL; each vCPU's
++ * place is its own thread's. A change reaches every vCPU as queued work
++ * (async_run_on_cpu), which also wakes a halted or stopped vCPU, and the
++ * vCPU joins or leaves on its own thread; the last one says in qemu.log
++ * what they did.
++ */
++static bool omacvm_vcs_on;
++static const char *omacvm_vcs_why = "the switch";
++static OmacvmVcsTally omacvm_vcs_tally;
++static __thread OmacvmVcs omacvm_vcs_self;
++
++static void omacvm_vcs_follow_work(CPUState *cpu, run_on_cpu_data arg)
++{
++    char line[160];
++    bool in = omacvm_vcs_follow(&omacvm_vcs_self, omacvm_vcs_on);
++
++    if (omacvm_vcs_tally_done(&omacvm_vcs_tally, arg.host_int, in)) {
++        omacvm_vcs_text(line, sizeof(line), omacvm_vcs_on, &omacvm_vcs_tally, omacvm_vcs_why);
++        info_report("OmacVM: vCPU clock saver: %s", line);
++    }
++}
++
++/* With the BQL (ui/cocoa.m: at start and when the switch changes). */
++void omacvm_vcpu_clock_saver_set(bool on, const char *why)
++{
++    static bool asked;
++    CPUState *cpu;
++    unsigned gen;
++    int n = 0;
++
++    omacvm_vcs_on = on;
++    omacvm_vcs_why = why;
++    if (!on && !asked) {
++        /* Never on: nothing to leave, so nothing is queued or loaded (today's way). */
++        info_report("OmacVM: vCPU clock saver: off (%s)", why);
++        return;
++    }
++    if (!hvf_enabled()) {
++        info_report("OmacVM: vCPU clock saver: not available: no HVF (%s)", why);
++        return;
++    }
++    asked = true;
++    CPU_FOREACH(cpu) {
++        n += cpu->created;
++    }
++    gen = omacvm_vcs_tally_begin(&omacvm_vcs_tally, n);
++    CPU_FOREACH(cpu) {
++        if (cpu->created) {
++            async_run_on_cpu(cpu, omacvm_vcs_follow_work, RUN_ON_CPU_HOST_INT(gen));
++        }
++    }
++}
++
++/*
+  * The HVF-specific vCPU thread function. This one should only run when the host
+  * CPU supports the VMX "unrestricted guest" feature.
+  */
+@@ -171,6 +228,8 @@
+     current_cpu = cpu;
+ 
+     hvf_init_vcpu(cpu);
++    /* OmacVM: a vCPU made while the clock saver is on joins at once (ADR 0073). */
++    omacvm_vcs_follow(&omacvm_vcs_self, omacvm_vcs_on);
+ 
+     /* signal CPU creation */
+     cpu_thread_signal_created(cpu);
+@@ -186,6 +245,8 @@
+         }
+     } while (!cpu->unplug || cpu_can_run(cpu));
+ 
++    /* OmacVM: out of the clock saver's group before the thread ends (ADR 0073). */
++    omacvm_vcs_follow(&omacvm_vcs_self, false);
+     hvf_vcpu_destroy(cpu);
+     cpu_thread_signal_destroyed(cpu);
+     bql_unlock();

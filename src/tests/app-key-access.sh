@@ -20,11 +20,18 @@ let a = CommandLine.arguments
 switch a[1] {
 case "tap": print(KeyAccess.tapFailed(folder: URL(fileURLWithPath: a[2])) ? "refused" : "fine")
 case "record": print(KeyAccess.record)
+case "list": print(KeyAccess.listName)
 case "reset-args": print(KeyAccess.resetArguments(a[2], id: a[3]).joined(separator: " "))
-case "allow":   // a[2]: what macOS says after the old "control the computer" entry is gone
+case "allow":   // a[2]: macOS's answer at each check in turn, such as refused,allowed (none: no answer)
+    var answers: [Bool?] = a[2].split(separator: ",").map { $0 == "none" ? nil : $0 == "allowed" }
     var steps: [String] = []
-    KeyAccess.allow(reset: { steps.append("reset \($0)") }, post: { steps.append("check"); return a[2] == "allowed" },
+    KeyAccess.allow(reset: { steps.append("reset \($0)") }, post: { steps.append("check"); return answers.removeFirst() },
                     ask: { steps.append("ask") })
+    print(steps.joined(separator: ", "))
+case "clear":   // a[2]: macOS's answer now: refused, allowed, none (no answer)
+    var steps: [String] = []
+    KeyAccess.clearOldEntry(reset: { steps.append("reset \($0)") },
+                            post: { steps.append("check"); return a[2] == "none" ? nil : a[2] == "allowed" })
     print(steps.joined(separator: ", "))
 default: exit(2)
 }
@@ -45,12 +52,30 @@ case $r in
   "keys: Input Monitoring "*" for OmacVM") echo "ok   qemu.log line: $r" ;;
   *) echo "FAIL qemu.log line: '$r'"; fail=1 ;;
 esac
+# The list in System Settings by the name this macOS shows it (macOS 27.2:
+# "Device Control and Data Access", before: "Accessibility").
+n=$("$T/key-access" list)
+case $n in
+  ""|ACCESSIBILITY) echo "FAIL the list's name: '$n'"; fail=1 ;;
+  *) echo "ok   the list's name on this macOS: $n" ;;
+esac
 # Allow… with an old entry (MacBook 2026-10-07: tccd "Failed to match existing
 # code requirement ... kTCCServicePostEvent", OmacVM on under Accessibility):
 # the app's own "control the computer" entry goes first, without a password.
 expect "tccutil resets only this app's entry" "reset PostEvent org.omacvm.app" "$("$T/key-access" reset-args PostEvent org.omacvm.app)"
-expect "Allow…, Accessibility on: the old entry goes, nothing else" "reset PostEvent, check" "$("$T/key-access" allow allowed)"
-expect "Allow…, still refused: both entries go, then macOS asks" "reset PostEvent, check, reset Accessibility, ask" "$("$T/key-access" allow refused)"
+# macOS 27.2: OmacVM switched on in System Settings, then two more clicks
+# on Allow… a second later, while the note was still red: each reset took the
+# grant away again, and the next VM start had no tap.
+expect "Allow…, allowed now: no reset, no ask" "check" "$("$T/key-access" allow allowed)"
+expect "Allow…, no answer from macOS: no reset, no ask" "check" "$("$T/key-access" allow none)"
+expect "Allow…, no answer after the old entry went: Accessibility stays" "check, reset PostEvent, check" "$("$T/key-access" allow refused,none)"
+expect "Allow…, Accessibility on: the old entry goes, nothing else" "check, reset PostEvent, check" "$("$T/key-access" allow refused,allowed)"
+expect "Allow…, still refused: both entries go, then macOS asks" "check, reset PostEvent, check, reset Accessibility, ask" "$("$T/key-access" allow refused,refused)"
+# The red note's own reset, once per app run, follows the same rule: the
+# note is red also when macOS gave no answer within 2 s.
+expect "Red note, refused now: the old entry goes by itself" "check, reset PostEvent" "$("$T/key-access" clear refused)"
+expect "Red note, no answer from macOS: no reset by itself" "check" "$("$T/key-access" clear none)"
+expect "Red note, allowed now: no reset by itself" "check" "$("$T/key-access" clear allowed)"
 # What the window asks for: what QEMU's active tap needs ("control the
 # computer", the Accessibility pane), not Input Monitoring.
 src=$R/app/app/Sources/OmacVM/KeyAccess.swift
@@ -60,14 +85,18 @@ has "Allow… asks for control the computer" '_ = CGRequestPostEventAccess()'
 has "... and opens Accessibility" 'Privacy_Accessibility'
 hasnt "... not Input Monitoring" 'CGRequestListenEventAccess'
 hasnt "... nor its pane" 'Privacy_ListenEvent'
+has "the steps name the list as this macOS does" 'Privacy & Security › \(listName).'
 has "the window checks control the computer" 'static var allowed: Bool { post }'
-src=$R/app/app/Sources/OmacVM/Views.swift
-has "... and only that (not Input Monitoring)" 'KeyNote.decide(allowedNow: allowed || fresh(),'
 has "... asked again in a new process (macOS keeps a process's first answer)" '"--key-access"'
+has "Allow… takes macOS's answer now, not this process's first one" 'allow(reset: reset, post: fresh,'
+has "... and so does the red note's reset" 'clearOldEntry(reset: reset, post: fresh)'
+src=$R/app/app/Sources/OmacVM/Views.swift
+has "... and only that (not Input Monitoring)" 'KeyNote.decide(allowedNow: allowed || fresh() == true,'
 src=$R/app/app/Sources/OmacVM/main.swift
 has "the new process asks control the computer" 'print(CGPreflightPostEventAccess() ? "1" : "0")'
 hasnt "... not Input Monitoring there either" 'CGPreflightListenEventAccess() ? "1"'
 src=$R/app/app/Sources/OmacVM/SettingsRows.swift
+has "... and so does the (i) of an allowed row" 'Privacy & Security › \(KeyAccess.listName).'
 has "a red note clears an old entry once by itself" 'KeyAccess.clearOldEntryOnce'
 has "Allow… looks again when it is done" 'KeyAccess.request { refreshKeyNote() }'
 exit $fail

@@ -25,9 +25,12 @@ enum SettingsDump {
             "vkWindowsNoCopy": Settings.vkWindowsNoCopy,
             "hdr": Settings.hdr,
             "extraBrightness": Settings.extraBrightness,
+            "hdrFullScreenOnly": Settings.hdrFullScreenOnly,
             "pauseWhileHidden": Settings.pauseWhileHidden,
+            "vcpuClockSaver": Settings.vcpuClockSaver,
             "pointerPlane": Settings.pointerPlane,
             "presentTiles": Settings.presentTiles,
+            "partialPresent": Settings.partialPresent,
             "ghosttyGPU": Settings.ghosttyGPU,
             "mediaControls": Settings.mediaControls,
             "closeAction": Settings.closeAction.rawValue,
@@ -62,8 +65,12 @@ enum SettingsDump {
             "macIME": MacIME.pending(pending) ?? MacIME.isOn(features: record),
             "dragDrop": DragDrop.switchState.pending(
                 try? String(contentsOf: f.appendingPathComponent(DragDrop.switchState.pendingFile), encoding: .utf8)) ?? DragDrop.isOn(features: record),
+            "youtubeVP9": YouTubeVP9.switchState.pending(
+                try? String(contentsOf: f.appendingPathComponent(YouTubeVP9.switchState.pendingFile), encoding: .utf8)) ?? YouTubeVP9.isOn(features: record),
             "missionControl": MissionControl.switchState.pending(
                 try? String(contentsOf: f.appendingPathComponent(MissionControl.switchState.pendingFile), encoding: .utf8)) ?? MissionControl.isOn(features: record),
+            "fewerAnimations": FewerAnimations.switchState.pending(
+                try? String(contentsOf: f.appendingPathComponent(FewerAnimations.switchState.pendingFile), encoding: .utf8)) ?? FewerAnimations.isOn(features: record),
             "gpuCompute": GPUCompute.switchState.pending(
                 try? String(contentsOf: f.appendingPathComponent(GPUCompute.pendingFile), encoding: .utf8)) ?? GPUCompute.isOn(features: record),
         ]

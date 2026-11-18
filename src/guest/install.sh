@@ -8,8 +8,8 @@
 #                    [--graphics opengl|vulkan] [--kernel-new build|keep]
 # Features: the list in ../features.tsv (bridge, wallpaper, gestures, scroll-momentum,
 # omanotch, mac-clock, camera, no-idle-lock, autologin, thp-kernel, battery, external-brightness,
-# control-centre, fast-network, chromium-video, gpu-compute, vulkan, x86-apps, touch-id, mac-ime, drag-drop,
-# mission-control) with its defaults; a feature
+# control-centre, fast-network, chromium-video, youtube-vp9, gpu-compute, vulkan, x86-apps, touch-id, mac-ime,
+# drag-drop, mission-control, fewer-animations) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
 # so a later run without --feature keeps them.
 # --vm-type: app (OmacVM.app), the only one; anything else stops (exit 2):
@@ -443,6 +443,17 @@ if want chromium-video && [[ $TYPE == app ]]; then
     "$R/vdec/guest/install.sh" "$U" off || not_set_up chromium-video "Chromium video (off)"
   fi
 fi
+# Prefer VP9 on YouTube (experimental): OmacVM's no-AV1 extension as an
+# external extension of Google Chrome and Chromium. Off removes it on every
+# apply; nothing of it runs or talks to the Mac.
+if want youtube-vp9 && [[ $TYPE == app ]]; then
+  if [[ ${F[youtube-vp9]} == on ]]; then
+    log "Prefer VP9 on YouTube (experimental)"
+    "$R/youtube-vp9/guest/install.sh" on || not_set_up youtube-vp9 "Prefer VP9 on YouTube"
+  else
+    "$R/youtube-vp9/guest/install.sh" off || not_set_up youtube-vp9 "Prefer VP9 on YouTube (off)"
+  fi
+fi
 # Vulkan (Venus): OmacVM's Mesa for it, built once in the VM. Its own step,
 # so the control centre can repair it alone.
 if want vulkan && [[ $TYPE == app ]]; then
@@ -505,6 +516,17 @@ if want mission-control; then
     [[ -z $ONLY ]] || "$R/missioncontrol/guest/install.sh" "$U" --repair || not_set_up mission-control "Mission Control (repair)"
   else
     "$R/missioncontrol/guest/install.sh" "$U" off || not_set_up mission-control "Mission Control (off)"
+  fi
+fi
+# Fewer animations (experimental): OmacVM's own Hyprland file, borders change
+# colour at once (animations/guest/install.sh). Off takes it away on every
+# apply; Omarchy's own no-animations toggle is never touched.
+if want fewer-animations; then
+  if [[ ${F[fewer-animations]} == on ]]; then
+    log "Fewer animations (experimental: borders change colour at once)"
+    "$R/animations/guest/install.sh" "$U" on || not_set_up fewer-animations "Fewer animations"
+  else
+    "$R/animations/guest/install.sh" "$U" off || not_set_up fewer-animations "Fewer animations (off)"
   fi
 fi
 if ! want battery; then

@@ -95,6 +95,22 @@ hook monitor.layout_changed (omacvm_app.lua) runs `omacvm-displays poke`; for
 15 s after any change it compares the layout twice a second; and it compares
 it every 10 s anyway.
 
+HDR only in full screen (OmacVM.app's experimental switch, ADR 0074): when
+the Mac's layout says "hdr_follow": true for Virtual-1 (with "edr" >= 1: PQ
+can be shown), the agent runs that output at 8-bit sRGB while no window on it
+is in Hyprland's full screen (fullscreen mode 2, on its shown workspace or
+special workspace, mapped and not hidden) and at the PQ rule while one is: at
+once into full screen, 2 s after the last one is gone, never two switches
+within 1.5 s (QEMU makes new surfaces for a new depth at most once a second).
+It writes sdr, pq, off or "declined: why" to
+$XDG_RUNTIME_DIR/omacvm/display-sync/hdr-follow and runs
+`omacvm-display-sync --hdr` in the background (a newer state waits for the
+running one, then goes). It declines (PQ as before, the reason in that file
+for omacvm check) when Hyprland's render:cm_auto_hdr or
+render:direct_scanout is not 0, its quirks:prefer_hdr is on, monitors.lua has
+the user's own rule for Virtual-1, or Hyprland refused the 8-bit rule. The
+switch off ("hdr_follow" gone): off, the PQ rule as before.
+
 The layout goes to $XDG_RUNTIME_DIR/omacvm/displays.json, where
 omacvm-display-sync takes the positions from, and the built-in display's
 output to $XDG_RUNTIME_DIR/omacvm/builtin (missing: none of them), which
@@ -106,7 +122,8 @@ The switch "Use external displays" is ~/.config/omacvm/displays.conf
   omacvm-displays                   run the agent (the user service)
   omacvm-displays external on|off|toggle
   omacvm-displays state             "on" or "off" (nothing without the port)
-  omacvm-displays status            the switch, the outputs and the ones showing a video ("inhibit"), as JSON
+  omacvm-displays status            the switch, the outputs, the ones showing a video ("inhibit")
+                                    and HDR only in full screen's state ("hdr_follow"), as JSON
   omacvm-displays desktop           displays that show no desktop, as JSON
   omacvm-displays poke              tell the agent the layout moved (Hyprland's hook)
   omacvm-displays pause             whether it can pause drawing, the displays it turned off and
@@ -1998,6 +2015,254 @@ def poke(path: Path = POKE, message: bytes = b"layout\n") -> None:
         pass
 
 
+HDR_FOLLOW = RUNTIME / "omacvm/display-sync/hdr-follow"
+HDR_EXIT = 2.0    # seconds after the last full-screen window is gone: SDR again
+HDR_GAP = 1.5     # seconds at least between two switches (QEMU: one new depth a second)
+HDR_RUN = 20.0    # seconds a display-sync --hdr run may take before it is stopped
+# socket2 events after which the agent looks again whether Virtual-1 shows a full-screen window.
+HDR_EVENTS = frozenset((b"fullscreen", b"workspace", b"workspacev2", b"activespecial",
+                        b"activespecialv2", b"openwindow", b"closewindow", b"movewindow",
+                        b"movewindowv2", b"focusedmon", b"focusedmonv2", b"monitoradded",
+                        b"monitoraddedv2", b"monitorremoved", b"monitorremovedv2",
+                        b"configreloaded", b"changefloatingmode"))
+
+
+def hdr_asked(message: dict) -> bool:
+    """QEMU's layout asks for HDR only in full screen: Virtual-1 says
+    "hdr_follow": true and a headroom of at least 1 (PQ can be shown)."""
+    for o in message.get("layout") if isinstance(message.get("layout"), list) else []:
+        if isinstance(o, dict) and o.get("output") == "Virtual-1":
+            edr = o.get("edr")
+            return (o.get("hdr_follow") is True and isinstance(edr, (int, float))
+                    and not isinstance(edr, bool) and edr >= 1)
+    return False
+
+
+def full_screen_on(clients, monitors_data, output: str = "Virtual-1") -> bool | None:
+    """Whether OUTPUT shows a window in Hyprland's full screen (fullscreen
+    mode 2, not only maximised) on its shown workspace or special workspace,
+    mapped and not hidden. None: Hyprland gave no usable answer."""
+    if not isinstance(clients, list) or not isinstance(monitors_data, list):
+        return None
+    shown: set[int] = set()
+    for m in monitors_data:
+        if not isinstance(m, dict) or m.get("name") != output or m.get("disabled"):
+            continue
+        for key in ("activeWorkspace", "specialWorkspace"):
+            ws = m.get(key)
+            wid = ws.get("id") if isinstance(ws, dict) else None
+            if isinstance(wid, int) and not isinstance(wid, bool) and wid != 0:
+                shown.add(wid)
+    for c in clients:
+        if not isinstance(c, dict):
+            continue
+        fs = c.get("fullscreen")
+        ws = c.get("workspace")
+        wid = ws.get("id") if isinstance(ws, dict) else None
+        if (isinstance(fs, int) and not isinstance(fs, bool) and fs & 2 and wid in shown
+                and c.get("mapped") is not False and c.get("hidden") is not True):
+            return True
+    return False
+
+
+def hypr_number(name: str) -> int | None:
+    """A number or bool option (j/getoption); None: no answer or not one."""
+    o = hypr_json(f"j/getoption {name}")
+    if not isinstance(o, dict):
+        return None
+    v = o.get("int", o.get("bool"))
+    if isinstance(v, bool):
+        return int(v)
+    return v if isinstance(v, int) else None
+
+
+def hdr_decline(option=hypr_number, lua: Path = MONITORS_LUA) -> str | None:
+    """Why HDR only in full screen cannot work in this session, or None.
+    Hyprland's own auto HDR could put PQ on the 8-bit output, direct scanout
+    could show a full-screen 10-bit sRGB buffer before the switch (QEMU would
+    take it for PQ), prefer_hdr offers every window PQ (nothing saved), and
+    the user's own rule for the output is left alone (display-sync)."""
+    for name, why in (("render:cm_auto_hdr", "Hyprland's render:cm_auto_hdr is on"),
+                      ("render:direct_scanout", "Hyprland's render:direct_scanout is on"),
+                      ("quirks:prefer_hdr", "Hyprland's quirks:prefer_hdr is on")):
+        if option(name):
+            return why
+    try:
+        if own_main_rule(lua.read_text()):
+            return f"{lua} has its own rule for Virtual-1"
+    except OSError:
+        pass
+    return None
+
+
+class HdrFollow:
+    """HDR only in full screen: the main output 8-bit sRGB while no window on it
+    is in full screen, the PQ rule while one is (see the module's text). The
+    state goes to HDR_FOLLOW; display-sync --hdr applies it, in the background,
+    so the agent's loop never waits for Hyprland. Every Hyprland request here
+    has hypr_request's 2 s limit, the run HDR_RUN."""
+
+    def __init__(self, path: Path = HDR_FOLLOW, look=None, decline=hdr_decline,
+                 start=None, clock=time.monotonic) -> None:
+        self.path = path
+        self.look = look or (lambda: full_screen_on(hypr_json("j/clients"), hypr_json("j/monitors")))
+        self.decline_check = decline
+        self.start = start or (lambda: subprocess.Popen([SYNC, "--hdr"], stdin=subprocess.DEVNULL,
+                                                        stdout=subprocess.DEVNULL))
+        self.clock = clock
+        self.asked = False
+        self.declined: str | None = None
+        self.refused = False
+        self.state: str | None = None     # what the file says now
+        self.full: bool | None = None     # Virtual-1 shows a full-screen window
+        self.off_since: float | None = None
+        self.last_flip = float("-inf")
+        self.dirty = False                # look again whether something is full screen
+        self.recheck = False              # look again at the reasons to decline
+        self.run: subprocess.Popen | None = None
+        self.run_at = 0.0
+        self.again = False                # the state changed while a run was going
+        self.said: str | None = None
+
+    def layout(self, message: dict) -> None:
+        """QEMU's layout: the switch on or off (and whether PQ can be shown)."""
+        asked = hdr_asked(message)
+        if asked and not self.asked:
+            self.recheck = True
+            self.dirty = True
+        self.asked = asked
+
+    def events(self, data: bytes) -> None:
+        """Hyprland's events: look again after those that can change full screen."""
+        if not self.asked:
+            return
+        names = {line.split(b">>", 1)[0] for line in data.split(b"\n") if line}
+        if names & HDR_EVENTS:
+            self.dirty = True
+        if b"configreloaded" in names:
+            self.recheck = True
+
+    def target(self, now: float) -> tuple[str | None, float | None]:
+        """The state to write now (None: none) and when to look again (None: on an event)."""
+        if not self.asked:
+            want = "off" if self.state not in (None, "off") else None
+        elif self.declined:
+            want = f"declined: {self.declined}"
+        elif self.full is None:
+            want = None                    # not known yet: as it is
+        elif self.full:
+            self.off_since = None
+            want = "pq"
+        elif self.state == "pq":
+            # Out of full screen: SDR once none has been back for HDR_EXIT.
+            if self.off_since is None:
+                self.off_since = now
+            if now < self.off_since + HDR_EXIT:
+                return None, self.off_since + HDR_EXIT
+            want = "sdr"
+        else:
+            want = "sdr"
+        if want is None or want == self.state:
+            return None, None
+        if (want == "sdr") != (self.state == "sdr") and now < self.last_flip + HDR_GAP:
+            return None, self.last_flip + HDR_GAP
+        return want, None
+
+    def tick(self) -> None:
+        """Called from the agent's loop: collect a finished run, look, write, run."""
+        now = self.clock()
+        self.collect(now)
+        if self.recheck:
+            self.recheck = False
+            if self.asked:
+                why = "Hyprland refused the 8-bit rule" if self.refused else self.decline_check()
+                if why != self.declined:
+                    self.declined = why
+                    if why:
+                        self.say(f"HDR only in full screen: declined, PQ as before ({why})")
+        if self.dirty:
+            self.dirty = False
+            if self.asked and not self.declined:
+                full = self.look()
+                if full is not None:
+                    self.full = full
+        want, _ = self.target(now)
+        if want is None:
+            return
+        if (want == "sdr") != (self.state == "sdr"):
+            self.last_flip = now
+        if want == "off" or self.state in (None, "off"):
+            self.say("HDR only in full screen: " + ("off, PQ as before" if want == "off" else "on"))
+        self.write(want)
+        if self.run is None:
+            self.begin(now)
+        else:
+            self.again = True
+
+    def due_at(self) -> float | None:
+        """When tick has something to do (None: only on an event or a layout)."""
+        now = self.clock()
+        times = []
+        if self.run is not None:
+            times.append(now + 0.2)
+        if self.dirty or self.recheck:
+            times.append(now)
+        _, at = self.target(now)
+        if at is not None:
+            times.append(at)
+        return min(times) if times else None
+
+    def write(self, state: str) -> None:
+        self.state = state
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(state + "\n")
+            tmp.replace(self.path)
+        except OSError as error:
+            log(f"HDR only in full screen: {self.path} not written: {error}")
+
+    def begin(self, now: float) -> None:
+        self.again = False
+        self.run_at = now
+        try:
+            self.run = self.start()
+        except OSError as error:
+            self.run = None
+            log(f"HDR only in full screen: display sync failed: {error}")
+
+    def collect(self, now: float) -> None:
+        if self.run is None:
+            return
+        code = self.run.poll()
+        if code is None:
+            if now - self.run_at > HDR_RUN:
+                self.run.kill()
+                self.run.wait()
+                log("HDR only in full screen: display sync took too long, stopped")
+                code = -1
+            else:
+                return
+        self.run = None
+        if code == 3 and self.state == "sdr" and not self.refused:
+            # Hyprland refused the 8-bit rule: decline, PQ back.
+            self.refused = True
+            self.recheck = True
+            self.again = False
+            return
+        if self.again:
+            self.begin(now)
+
+    def say(self, text: str) -> None:
+        if text != self.said:
+            self.said = text
+            log(text)
+
+    def stop(self) -> None:
+        if self.run is not None and self.run.poll() is None:
+            self.run.kill()
+
+
 class Agent:
     def __init__(self) -> None:
         self.fd = os.open(PORT, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -2030,6 +2295,7 @@ class Agent:
         self.locks = DISPLAY_LOCKS
         self.awake = GuestAwake()
         self.lua_scale: float | None = None   # monitors.lua's, when last looked at
+        self.hdr = HdrFollow()
 
     def send(self, message: dict) -> None:
         self.outbox += json.dumps(message, separators=(",", ":")).encode() + b"\n"
@@ -2079,6 +2345,9 @@ class Agent:
         self.lua_changed()
         if self.last_report - getattr(self, "last_inhibit", 0.0) >= INHIBIT_EVERY - 0.5:
             self.check_inhibit()
+        hdr = getattr(self, "hdr", None)
+        if hdr and hdr.asked:
+            hdr.dirty = True   # an event may have been missed
 
     def check_inhibit(self, find=video_outputs) -> None:
         """Whether a video plays (inhibiting_outputs), to the Mac: at once when
@@ -2106,8 +2375,14 @@ class Agent:
         self.send({"inhibit": outputs})
 
     def stop(self, *_args) -> None:
-        """SIGTERM (the user service stops): the Mac lets go at once, not after its lease."""
+        """SIGTERM (the user service stops): the Mac lets go at once, not after its lease.
+        HDR only in full screen leaves the output as it is: SDR is shown right
+        (QEMU tags each frame by its depth), and a Hyprland that is shutting
+        down is not asked anything."""
         INHIBIT_STATE.unlink(missing_ok=True)
+        hdr = getattr(self, "hdr", None)
+        if hdr:
+            hdr.stop()
         self.awake.release()
         if self.inhibit:
             try:
@@ -2252,6 +2527,7 @@ class Agent:
             return
         write_state(message)
         run_sync()
+        self.hdr.layout(message)
         self.layout_changed()
         self.soon(0.3)
 
@@ -2273,6 +2549,10 @@ class Agent:
         at = pause.due_at() if pause else None
         if at is not None:
             due.append(at + 0.05)
+        hdr = getattr(self, "hdr", None)
+        at = hdr.due_at() if hdr else None
+        if at is not None:
+            due.append(at)
         return max(0.0, min(due) - now)
 
     def run(self) -> None:
@@ -2353,6 +2633,9 @@ class Agent:
             self.soon(0.3)
         if shell_event(data):
             self.watch_shell()
+        hdr = getattr(self, "hdr", None)
+        if hdr:
+            hdr.events(data)
 
     def due(self) -> None:
         """What is due now: the report (and a look for the shell), the
@@ -2374,6 +2657,9 @@ class Agent:
         at = pause.due_at() if pause else None
         if at is not None and now >= at:
             pause.tick()
+        hdr = getattr(self, "hdr", None)
+        if hdr:
+            hdr.tick()
 
 
 def notify(text: str) -> None:
@@ -2404,8 +2690,13 @@ def main(argv: list[str]) -> int:
             layout = json.loads(STATE.read_text())
         except (OSError, ValueError):
             pass
+        try:
+            hdr_follow = HDR_FOLLOW.read_text().strip()
+        except OSError:
+            hdr_follow = None
         print(json.dumps({"external": external_on(), "port": PORT.exists(),
-                          "layout": layout, "monitors": monitors(), "inhibit": status_inhibit()}, indent=2))
+                          "layout": layout, "monitors": monitors(), "inhibit": status_inhibit(),
+                          "hdr_follow": hdr_follow}, indent=2))
         return 0
     if len(argv) >= 2 and argv[1] == "desktop":
         repairs = None
