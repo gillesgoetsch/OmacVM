@@ -204,6 +204,10 @@ typedef struct { int rd, fd; unsigned gen; volatile int done; } ReaderArg;
 static void *readerThread(void *a) { ReaderArg *r = a; readGuest(r->rd, r->fd, r->gen); r->done = 1; return NULL; }
 static pid_t launcher;   // OmacVM.app's launcher: the VMs' process name, but no QEMU
 static int fakeIsQemu(pid_t pid) { return pid != launcher; }
+// The permissions as granted: this test is about the combo, not about a Mac
+// without Accessibility (test-tap.c covers that). A runner without them would
+// otherwise pause input at the first tap that cannot be made.
+static int fakePermAll(void) { return PERM_AX | PERM_IM | PERM_POST; }
 
 // ---- swipe out that follows the fingers: a made-up trackpad, Magic Mouse and Dock ----
 static void settleSteps(void);
@@ -373,7 +377,7 @@ int main(void) {
   activateFn = fakeActivate; finderFn = fakeFinder; frontFn = fakeFront; vmWindowFn = fakeVMWindow;
   spacesFn = fakeSpaces; windowSpaceFn = fakeWindowSpace; pointerFn = fakePointer;
   vmWindowsFn = fakeVMWindows; vmAllWindowsFn = fakeAllVMWindows; askFocusFn = fakeAskFocus; focusWait = 0.05; topAppFn = fakeTopApp; hideFn = fakeHide; escapeAllFn = fakeAll;
-  warpFn = fakeWarp; warpSettle = 0; isQemuFn = fakeIsQemu;
+  warpFn = fakeWarp; warpSettle = 0; isQemuFn = fakeIsQemu; permFn = fakePermAll;
   hotkeysFn = fakeHotkeys; keyFn = fakeKey; heldFn = fakeHeld;
   swipeFn = fakeSwipe; saveSignFn = fakeSaveSign; swipeOutFn = fakeSwipeOut; swipeOutEvery = 0; swipeOutGap = 0;
   verifyAfter = 0.01; cameFromEvery = 0; doublePress = 0; missionAppFn = fakeMissionApp; missionControlOpenFn = fakeMCOpen;
