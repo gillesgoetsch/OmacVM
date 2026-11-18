@@ -420,7 +420,7 @@ buffer, a 2D texture through a 2D-array sampler, two views of one texture),
 M1 and M2 media engines have no AV1 decoder, and YouTube sends AV1 to Google
 Chrome whenever it can, so on those Macs Chrome decodes YouTube on the VM's
 CPUs (dav1d). Feature `youtube-vp9` (experimental, off by default; the VM
-window's **General > Prefer VP9 on YouTube**, shown only on a Mac without an
+window's **Battery saver > Prefer VP9 on YouTube**, shown only on a Mac without an
 AV1 decoder, or `omacvm enable youtube-vp9`) has YouTube send VP9 instead,
 which the media engine decodes.
 
