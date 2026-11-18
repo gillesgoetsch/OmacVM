@@ -791,6 +791,11 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   is never napped. QEMU's log says "OmacVM: App Nap: off while the VM runs".
   `OMACVM_APP_NAP=1` in QEMU's environment allows App Nap again (tests).
   Before: keep the VM's window visible while a job runs.
+- **macOS 27:** With only the `NSProcessInfo` activity, macOS 27 still
+  clamped a hidden idle VM to Utility QoS (priority 20, tier 3 timers,
+  Utility disk I/O) after about 30 s. QEMU now also registers
+  `NSAppSleepDisabled` before `main()` unless `OMACVM_APP_NAP=1`, and
+  `src/tests/app-nap.sh --live PID` checks that vCPUs stay at priority 31+.
 - **Where:** `app/runtime/patches/omacvm-cocoa-no-app-nap.patch`; test
   `src/tests/app-nap.sh` (`--live PID` checks a running VM's vCPU threads).
 

@@ -3,7 +3,8 @@ Subject: [PATCH] cocoa: no App Nap while the VM runs
 
 What: QEMU's window process holds an NSProcessInfo activity
 (NSActivityUserInitiatedAllowingIdleSystemSleep) from the start of its run
-loop; OMACVM_APP_NAP=1 leaves it out. QEMU's log says which.
+loop, and registers the user default NSAppSleepDisabled before main();
+OMACVM_APP_NAP=1 leaves both out. QEMU's log says which.
 
 Why: macOS naps an app none of whose windows can be seen: the screen
 locked, the VM's full screen on another Space, the window minimized or
@@ -14,14 +15,22 @@ loops/s napped, 490-590 with the activity (as with a visible window); all
 QEMU threads at priority 4 napped, 28-31 with it. UTM's QEMU (a helper without
 windows) and Parallels' VM process are never napped. The Mac can still
 sleep when idle (AllowingIdleSystemSleep).
+On macOS 27 the activity alone is not enough: about 30 s after the window
+went out of sight, macOS still clamps every thread to Utility QoS
+(priority 20, timers at latency tier 3), and an idle guest's 20 ms sleeps
+wake up to 150 ms late, seconds late while the Mac is busy.
+NSAppSleepDisabled, set as a user default, ended that on the same VM. The
+key in OmacVM.app's Info.plist changes nothing for QEMU, so the patch
+registers the default itself.
 
 Upstream: not sent (QEMU's cocoa UI is for a desktop window; a policy choice).
 Test: src/tests/app-nap.sh (offline); QEMU's log line; the live check in
-the test's header (vCPU thread priority with the window out of sight).
+the test's header (with the window out of sight: no Utility clamp, vCPU
+threads at priority 31 or above).
 
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -4260,8 +4260,33 @@
+@@ -4260,8 +4260,59 @@
      }
  }
  
@@ -34,12 +43,38 @@ the test's header (vCPU thread priority with the window out of sight).
 + * VM keeps working while nobody looks at it, as in UTM or Parallels. Idle
 + * system sleep stays allowed. OMACVM_APP_NAP=1 lets macOS nap it (tests).
 + */
++static bool omacvm_app_nap_allowed(void)
++{
++    const char *v = getenv("OMACVM_APP_NAP");
++
++    return v && strcmp(v, "1") == 0;
++}
++
++/*
++ * The activity alone keeps the threads above background priority, but on
++ * macOS 27 the hidden VM is still clamped to Utility QoS after about 30 s
++ * (vCPUs at priority 20, timers at latency tier 3). The user default
++ * NSAppSleepDisabled opts the process out of App Nap. A constructor
++ * registers it before main(), ahead of AppKit's start in
++ * cocoa_display_init: in a test app, a default registered after NSApp
++ * existed was ignored.
++ */
++static void __attribute__((constructor)) omacvm_no_app_nap_default(void)
++{
++    if (omacvm_app_nap_allowed()) {
++        return;
++    }
++    @autoreleasepool {
++        [[NSUserDefaults standardUserDefaults]
++            registerDefaults:@{ @"NSAppSleepDisabled": @YES }];
++    }
++}
++
 +static void omacvm_no_app_nap(void)
 +{
 +    static id activity;
-+    const char *v = getenv("OMACVM_APP_NAP");
 +
-+    if (v && strcmp(v, "1") == 0) {
++    if (omacvm_app_nap_allowed()) {
 +        info_report("OmacVM: App Nap: allowed (OMACVM_APP_NAP=1)");
 +        return;
 +    }
