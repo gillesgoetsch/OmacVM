@@ -1,0 +1,66 @@
+From: OmacVM
+Subject: [PATCH] vkr: minMemoryMapAlignment is what the guest's own mapping gives
+
+A guest maps Venus device memory itself: Mesa's Venus driver asks the guest
+kernel for the blob (DRM_IOCTL_VIRTGPU_MAP) and mmaps it, so the pointer an
+app gets from vkMapMemory is aligned to a guest page and no more; the host
+driver's own mapping is never what the app sees. vkr passed the host's
+minMemoryMapAlignment through: KosmicKrisp says 16384 (the Mac's page),
+and a 4 KiB guest's mappings of larger allocations landed 4096, 8192 or
+12288 bytes off it (a probe in the guest: 16 MiB and 138 MiB allocations,
+every time). llama.cpp's pinned host buffer aligns its base to that limit
+inside an allocation of size + 32 bytes and came up short at model load
+("not enough space in the buffer", #786); MoltenVK says 64 and was not
+affected.
+
+Now vkr reports at most 4096, the smallest page a Linux guest uses, in
+vkGetPhysicalDeviceProperties (the cached properties) and in
+vkGetPhysicalDeviceProperties2. Every guest mapping meets it, also with
+larger guest pages. Nothing on the host reads the value.
+
+Upstream: could go upstream (any host with pages above 4 KiB, or a driver
+that reports more than the guest's page).
+Test: the build checks the clamp is in both places; in a VM with Vulkan on
+KosmicKrisp a probe maps 64 KiB to 138 MiB allocations and finds each
+pointer a multiple of the reported alignment, and llama-bench loads a model
+with its default flags (issue #786).
+
+--- a/src/venus/vkr_physical_device.c	2026-11-18 21:18:42
++++ b/src/venus/vkr_physical_device.c	2026-11-18 21:18:42
+@@ -4,6 +4,11 @@
+  */
+ 
+ #include "vkr_physical_device.h"
++
++/* OmacVM (virgl-venus-map-alignment.patch): a guest maps device memory through its
++ * kernel (DRM_IOCTL_VIRTGPU_MAP + mmap), page aligned and no more: 4 KiB is the
++ * smallest page Linux uses, so every guest gets at least that */
++#define VKR_GUEST_MAP_ALIGNMENT 4096
+ 
+ #include "venus-protocol/vn_protocol_renderer_device.h"
+ 
+@@ -696,6 +701,12 @@
+ 
+    VkPhysicalDeviceProperties *props = &physical_dev->properties;
+    props->apiVersion = vkr_api_version_cap_minor(props->apiVersion, VKR_MAX_API_VERSION);
++
++   /* OmacVM (virgl-venus-map-alignment.patch): the guest maps memory itself, on its own
++    * pages, at whatever page its kernel picks: only that is promised (KosmicKrisp says
++    * 16384, its Mac page; llama.cpp's host buffer came up short by the difference, #786) */
++   if (props->limits.minMemoryMapAlignment > VKR_GUEST_MAP_ALIGNMENT)
++      props->limits.minMemoryMapAlignment = VKR_GUEST_MAP_ALIGNMENT;
+ }
+ 
+ static inline void
+@@ -1171,6 +1182,11 @@
+    vn_replace_vkGetPhysicalDeviceProperties2_args_handle(args);
+    vk->GetPhysicalDeviceProperties2(args->physicalDevice, args->pProperties);
+ 
++   /* OmacVM (virgl-venus-map-alignment.patch): the alignment the guest's own mapping gives */
++   VkPhysicalDeviceLimits *lim = &args->pProperties->properties.limits;
++   if (lim->minMemoryMapAlignment > VKR_GUEST_MAP_ALIGNMENT)
++      lim->minMemoryMapAlignment = VKR_GUEST_MAP_ALIGNMENT;
++
+    /* OmacVM (virgl-venus-render-pass-limits.patch): the views the device can render */
+    const uint32_t views = physical_dev->limits.multiview_views;
+    VkPhysicalDeviceMultiviewProperties *mv =

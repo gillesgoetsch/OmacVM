@@ -540,7 +540,9 @@ the VM's SSH on `127.0.0.1:<port>`.
   the standard one, or OmacVM's own for HDR, the pointer layer or frames in
   step (which now always has the fix; QEMU then only collects the changed
   parts). MacBook Air M2, full screen at 60 Hz, the pointer moving:
-  11-17 % less power for the whole Mac; MacBook Pro M1 Max, HDR at 120 Hz:
+  11-17 % less power for the whole Mac (an empty desktop); with Copy only
+  what changed also on (2026-11-17): a chat's typing dots -209 mW (about
+  7 %), the pointer over four app windows about -95 mW; MacBook Pro M1 Max, HDR at 120 Hz:
   WindowServer less GPU time (pointer moving, spinner; watts there are a
   first measurement, set td2, to be re-run). The same pictures
   and frame rate at 60 Hz (8-bit and HDR) and 120 Hz (HDR).

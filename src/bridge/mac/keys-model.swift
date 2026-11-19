@@ -486,6 +486,33 @@ struct HIDCopies {
   mutating func removed(device: UInt64) { first[device] = nil }
 }
 
+/// When the keyboard reader tries IOHIDManagerOpen again after it failed
+/// (#813, reported by @ilyador: Karabiner holds a keyboard, 0xe00002c5, or a
+/// keyboard cannot be opened, 0xe00002c7). MediaKeys.check asks every 2 s and
+/// at every app switch; each try opens every keyboard again in macOS's HID
+/// driver, where other input tools wait too. The wait doubles from 2 s to
+/// 5 min; an open that works starts it again from 2 s.
+struct HIDOpenRetry {
+  static let first = 2.0
+  static let longest = 300.0
+  private(set) var wait = 0.0
+  private var next = -Double.infinity
+
+  func due(at now: Double) -> Bool { now >= next }
+
+  /// A failed open: the wait until the next try.
+  mutating func failed(at now: Double) -> Double {
+    wait = wait == 0 ? Self.first : min(wait * 2, Self.longest)
+    next = now + wait
+    return wait
+  }
+
+  mutating func opened() {
+    wait = 0
+    next = -Double.infinity
+  }
+}
+
 /// One press can reach the Bridge twice: from the keyboard (IOHIDManager) and
 /// as macOS's media-key event (the tap), where a Mac delivers both. Whichever
 /// comes first acts; the other path's copy within `window` s is dropped.

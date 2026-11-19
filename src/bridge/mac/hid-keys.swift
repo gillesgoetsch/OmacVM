@@ -10,7 +10,16 @@ import IOKit.hid
 // are looked at (whether they are held, nothing else); no key is logged.
 // Main thread (main run loop).
 final class BrightnessKeys {
+  // One manager for the Bridge's lifetime: a new IOHIDManager per try is
+  // never given back by macOS (~370 KB each with 3 keyboards; at one try
+  // every 2 s that was the 2.3 GB of #813).
   private var manager: IOHIDManager?
+  private var isOpen = false
+  private var retry = HIDOpenRetry()
+  /// Seams for tests/hid: macOS's answers (the real calls by default).
+  var access: () -> IOHIDAccessType = { IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) }
+  var open: (IOHIDManager) -> IOReturn = { IOHIDManagerOpen($0, IOOptionBits(kIOHIDOptionsTypeNone)) }
+  var makeManager: (BrightnessKeys) -> IOHIDManager = { BrightnessKeys.make($0) }
   private var keyboards = HIDKeyboards()
   private var copies = HIDCopies()
   private var maps: [UInt64: [UInt32: UInt32]] = [:]   // per keyboard (registry id)
@@ -32,10 +41,11 @@ final class BrightnessKeys {
 
   /// Opens once Input Monitoring is granted (asked every 2 s with the media
   /// keys); not decided yet: macOS asks the user once. What is missing is
-  /// logged once.
-  func ensure() {
-    guard manager == nil else { return }
-    let access = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
+  /// logged once. A failed open is tried again on the same manager, after
+  /// HIDOpenRetry's wait (2 s doubling to 5 min), not at every ask (#813).
+  func ensure(at now: Double = ProcessInfo.processInfo.systemUptime) {
+    guard !isOpen else { return }
+    let access = self.access()
     if access == kIOHIDAccessTypeUnknown && !asked {
       asked = true
       _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
@@ -45,6 +55,32 @@ final class BrightnessKeys {
           + "with a VM in front they do nothing (System Settings > Privacy & Security > Input Monitoring)")
       return
     }
+    guard retry.due(at: now) else { return }
+    let m: IOHIDManager
+    if let made = manager {
+      // Its last open failed: close what of it did open, then open again.
+      IOHIDManagerClose(made, IOOptionBits(kIOHIDOptionsTypeNone))
+      m = made
+    } else {
+      m = makeManager(self)
+      manager = m
+    }
+    let r = open(m)
+    guard r == kIOReturnSuccess else {
+      let wait = retry.failed(at: now)
+      say("brightness keys: cannot read the keyboard (IOHIDManagerOpen: 0x\(String(UInt32(bitPattern: r), radix: 16))); "
+          + "trying again in \(Int(wait)) s")
+      return
+    }
+    isOpen = true
+    retry.opened()
+    said = nil
+    log("brightness keys: reading them from the keyboard (they act only while an OmacVM VM is in front)\(Self.copiesNote(m))")
+  }
+
+  /// The manager: every keyboard and consumer control, on the main run loop.
+  /// Made once (see `manager`).
+  static func make(_ owner: BrightnessKeys) -> IOHIDManager {
     let m = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
     let kinds: [[String: Any]] = [[kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop, kIOHIDDeviceUsageKey: kHIDUsage_GD_Keyboard],
                                   [kIOHIDDeviceUsagePageKey: kHIDPage_Consumer, kIOHIDDeviceUsageKey: kHIDUsage_Csmr_ConsumerControl]]
@@ -52,21 +88,13 @@ final class BrightnessKeys {
     IOHIDManagerRegisterInputValueCallback(m, { ctx, _, _, value in
       guard let ctx else { return }
       Unmanaged<BrightnessKeys>.fromOpaque(ctx).takeUnretainedValue().value(value)
-    }, Unmanaged.passUnretained(self).toOpaque())
+    }, Unmanaged.passUnretained(owner).toOpaque())
     IOHIDManagerRegisterDeviceRemovalCallback(m, { ctx, _, _, device in
       guard let ctx else { return }
       Unmanaged<BrightnessKeys>.fromOpaque(ctx).takeUnretainedValue().gone(device)
-    }, Unmanaged.passUnretained(self).toOpaque())
+    }, Unmanaged.passUnretained(owner).toOpaque())
     IOHIDManagerScheduleWithRunLoop(m, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
-    let r = IOHIDManagerOpen(m, IOOptionBits(kIOHIDOptionsTypeNone))
-    guard r == kIOReturnSuccess else {
-      IOHIDManagerUnscheduleFromRunLoop(m, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
-      say("brightness keys: cannot read the keyboard (IOHIDManagerOpen: 0x\(String(UInt32(bitPattern: r), radix: 16))); retrying")
-      return
-    }
-    manager = m
-    said = nil
-    log("brightness keys: reading them from the keyboard (they act only while an OmacVM VM is in front)\(Self.copiesNote(m))")
+    return m
   }
 
   /// Keyboards IOHIDManager gives more than once (each copy is read once, HIDCopies).
