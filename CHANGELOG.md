@@ -3,6 +3,28 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.1
+
+Fixes for the Bridge next to Karabiner-Elements and for llama.cpp with Vulkan, and a clearer
+Omanotch check line.
+
+- **Bridge memory next to Karabiner-Elements** (#813, reported by @ilyador): when another app held
+  a keyboard for itself (Karabiner-Elements does), OmacVM Bridge tried to read the keyboards again
+  every 2 seconds with a new reader, and each try kept about 0.4 MB that macOS never gave back: the
+  Bridge grew to gigabytes over a few hours. It now keeps one reader and tries again after 2 s, then
+  waits twice as long each time, up to 5 minutes. Needs the app update.
+- **Vulkan apps that map large memory** (#786): with Vulkan on KosmicKrisp, OmacVM told apps that
+  mapped memory is aligned to 16 KiB, but the VM maps it on 4 KiB pages. llama.cpp then stopped
+  while loading a model ("not enough space in the buffer") unless started with `--no-host`. The VM
+  is now told 4 KiB, and llama.cpp runs with its default settings. Needs the app update, from the
+  VM's next start.
+- **Omanotch's bar copy** (seen in #829's report by @epicoun): when Omarchy's `omarchy plugin
+  clone` could not make the bar copy, `omacvm check` now says why instead of "made no copy ()".
+- **Draw only what changed** (Battery saver, experimental, off by default): now checked together
+  with Copy only what changed (on by default) in full screen at 120 Hz and with HDR. Its (i) gives
+  the MacBook Air M2's figures for the two together: about 7 % less power with a chat's typing
+  dots, about 3 % with the pointer moving over app windows.
+
 ## 3.5.0
 
 The power release: the VM copies only what changed on screen, its sound wakes the Mac less, and new
