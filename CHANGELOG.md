@@ -21,9 +21,9 @@ Omanotch check line.
 - **Omanotch's bar copy** (seen in #829's report by @epicoun): when Omarchy's `omarchy plugin
   clone` could not make the bar copy, `omacvm check` now says why instead of "made no copy ()".
 - **Draw only what changed** (Battery saver, experimental, off by default): now checked together
-  with Copy only what changed (on by default) in full screen at 120 Hz and with HDR. Its (i) gives
-  the MacBook Air M2's figures for the two together: about 7 % less power with a chat's typing
-  dots, about 3 % with the pointer moving over app windows.
+  with Copy only what changed (on by default), in a window and in full screen at 120 Hz, and on its
+  own with HDR on: the same pixels. Its (i) gives the MacBook Air M2's figures for the two together:
+  about 7 % less power with a chat's typing dots, about 3 % with the pointer moving over app windows.
 
 ## 3.5.0
 
