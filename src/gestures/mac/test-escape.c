@@ -1536,6 +1536,20 @@ int main(void) {
     padSwipe(3, 0.6, 0.57, 20); padLift(); guestGot();
     check(!nDockEv && !spaceKeys && world[0].cur == 102 && capturing, "follow: ... a short one (3 % of the width): nothing");
     dockFollows = 1; dockMisses = 0;
+    // Not followed (yet), but fingers come down for another swipe before the
+    // look (the person swiped back with macOS's own swipe; M5 MacBook Pro,
+    // macOS 27.2): no step, no miss, the capture taken again.
+    double va = verifyAfter; verifyAfter = 0.3;
+    dockFollow = 0; nDockEv = 0; spaceKeys = 0;
+    padSwipe(3, 0.6, 0.3, 30); pad(0, 0, 0);
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, false);   // its end, not yet the look
+    check(!capturing && escaped && spaceKeys == 0, "follow, swiped again: the swipe out ended, capture off, the look pending");
+    padSwipe(4, 0.3, 0.6, 15); pad(0, 0, 0); settleSteps(); guestGot();
+    check(dockLast() == kSwipeEnded && spaceKeys == 0 && !swipes && world[0].cur == 102 && !dockMisses && !missFlipped && dockFollows && !escaped,
+          "follow, swiped again before the look: no step, no Dock swipe, no miss; the capture re-armed");
+    settle(vm, NET_APP); guestGot(); takeLook();
+    check(capturing, "follow, swiped again: ... the capture check takes the VM again");
+    dockFollow = 1; verifyAfter = va;
     // Finished, but the Space did not change: the one step.
     dockFollow = 0; nDockEv = 0; spaceKeys = 0;
     padSwipe(3, 0.6, 0.3, 30); padLift(); guestGot();
