@@ -42,7 +42,8 @@
 #    made-up Dock: Began, Changed..., Ended or Cancelled at the lift: pulled back,
 #    slow, flick), the Magic Mouse's too; inward, up and down, a tap, a pinch, no
 #    Space on that side, the setting off or a guest that says nothing: the guest's;
-#    macOS not following: the one step at the lift; the Dock swipe's events as
+#    macOS not following: the one step at the lift,
+#    unless another swipe began before the look (no step); the Dock swipe's events as
 #    macOS 26 and 27 read them (swipe-take.h, test-escape.c); only the finger counts the
 #    guest switches workspaces with ("G", Hyprland's gestures: 4 fingers with 3 given to
 #    tiling), four fingers coming down one after the other are no pinch. "X left|right" from a
