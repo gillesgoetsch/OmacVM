@@ -414,7 +414,12 @@ static int forwarding;          // last frame sent to the guest had fingers
 static int pinchArmed, pinch;   // 2-finger gesture tracking
 static float d0, cx0, cy0;
 
-static int touching(const MTTouch *t) { return t->state >= 1 && t->state <= 5 && t->zTotal > 0.0f; }
+// A finger in contact (state 3 or 4) counts whatever its pressure: the M5
+// MacBook Pro's trackpad reports most touching fingers with zTotal 0 (#838).
+// The other states count only with pressure.
+static int touching(const MTTouch *t) {
+  return (t->state >= 3 && t->state <= 4) || (t->state >= 1 && t->state <= 5 && t->zTotal > 0.0f);
+}
 
 // Swipe out that follows the fingers (below, with the swipe out): what
 // becomes of this trackpad frame (TK_*), and the frames held back meanwhile.

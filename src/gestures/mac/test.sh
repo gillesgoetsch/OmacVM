@@ -73,8 +73,10 @@
 #    sleep; connected again) is taken, from the next look or 1 s after macOS
 #    adds it, and the old one let go and not held; the same device listed again
 #    is not; beside a Magic Trackpad touched last, the built-in one's new device
-#    does not take over, so the guest hears its size when it is touched next
-#    (test-trackpads.c, made-up devices).
+#    does not take over, so the guest hears its size when it is touched next;
+#    fingers in contact with zTotal 0 (the M5 MacBook Pro's trackpad, #838)
+#    count, hovering ones without pressure do not (test-trackpads.c, made-up
+#    devices).
 # 12. macOS's Three Finger Drag on (read live): three fingers stay macOS's drag
 #    (nothing to the guest, macOS's gesture events pass, no swipe out with
 #    three), four still go to the VM; off (the default): three and four go to
