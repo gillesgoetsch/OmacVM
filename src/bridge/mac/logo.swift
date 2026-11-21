@@ -245,8 +245,8 @@ final class LogoLight {
   private func frame() {
     guard !stopped else { return }
     let next = player.frame(ProcessInfo.processInfo.systemUptime, want: want, hw: hw)
-    // While a mode plays: a napping Bridge would stutter the fades, and see a
-    // wake late (off lit after it for seconds).
+    // While a mode plays: a napping Bridge would stutter the fades and the
+    // breath, and see a wake late (off lit after it for seconds).
     if next != nil && activity == nil {
       activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
                                                        reason: "the Mac's logo light")

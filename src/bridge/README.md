@@ -271,10 +271,10 @@ The lit Apple logo on the lid of newer MacBook Pros (feature `logo-light`;
 the room's light. `ioreg -r -n bklb-backlight@0 -d 1` shows it; on a Mac
 without it `/logo` answers `409` `no-logo`.
 
-`GET /logo` → `{"mode": "auto"}`, `{"mode": "off"}` or `{"mode": "on",
-"percent": 50}`. `POST /logo` with one of those sets it: `percent` 1-100, a
-whole JSON number, may be left out (50); any other word, number or key is
-`400`. `409` `off` while `logo_light` is false. In the VM, `omacvm-logo`
+`GET /logo` → `{"mode": "auto"}`, `{"mode": "off"}`, `{"mode": "on",
+"percent": 50}` or `{"mode": "breathe", "rate": 15}`. `POST /logo` with one of
+those sets it: `percent` 1-100 and `rate` 6-30, whole JSON numbers, may be left
+out (50 and 15); any other word, number or key is `400`. `409` `off` while `logo_light` is false. In the VM, `omacvm-logo`
 (`guest/omacvm-logo`) says the same in words.
 
 ```bash
@@ -284,8 +284,9 @@ curl "${H[@]}" -d '{"mode": "on", "percent": 30}' $B/logo
 - **Whose mode.** The last one set. The Bridge watches its user's running
   apps (`NSWorkspace` `runningApplications`, KVO): once no OmacVM.app VM of
   this Bridge runs (`VMApp`), the logo is `auto` again.
-- **How it plays** (`LogoPlayer`). `on` writes the duty itself, at most 60
-  times a second while it fades. corebrightnessd writes its own level in
+- **How it plays** (`LogoPlayer`). `on` and `breathe` write the duty
+  themselves, at most 60 times a second while it moves; `Breath` makes each
+  breath, from slow noise that drifts from one to the next. corebrightnessd writes its own level in
   bursts of 1 to 7 s at about 120 Hz whenever the room's light or the
   display's brightness changes, and fades the logo out while the display
   sleeps or the lid is closed. So a readback (`high-period`) that is not the
@@ -299,8 +300,8 @@ curl "${H[@]}" -d '{"mode": "on", "percent": 30}' $B/logo
   its fade, set back to 0 after it), which holds the logo dark through its
   changes. The keyboard backlight follows that state too, so each keyboard
   hears straight after that the display is lit. A display that woke is lit
-  again in that state: `off` blanks again. A fade from `on` to `off` ends on
-  1 tick, then duty 0 and a blank without a fade of its own. A fade to `auto`
+  again in that state: `off` blanks again. A fade from `on` or `breathe` to
+  `off` ends on 1 tick, then duty 0 and a blank without a fade of its own. A fade to `auto`
   ends on corebrightnessd's own level (`FinalNits` × `Factor` through its
   `PWMCalibrationManager` for the node), then the logo is its own.
 - **The PWM.** `IORegistryEntrySetCFProperties` with `set-duty-cycle` (duty ×
@@ -317,7 +318,7 @@ curl "${H[@]}" -d '{"mode": "on", "percent": 30}' $B/logo
   logo is macOS's, and `/logo` answers `409` `off`.
 
 Tests: `src/tests/logo-light.sh`: the VM's `omacvm-logo` against a made-up
-client, then the modes, curves and `LogoPlayer` against a made-up logo and
+client, then the modes, curves, breath and `LogoPlayer` against a made-up logo and
 corebrightnessd, and `LogoLight`'s switches; `--live` plays modes on this
 Mac's logo through the Bridge's own code. Measured and tested on a MacBook Pro
 Mac17,13 (M5 Pro, macOS 27.2).

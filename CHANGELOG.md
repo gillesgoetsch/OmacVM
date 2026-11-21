@@ -6,8 +6,9 @@ in more words.
 ## 3.5.2 (unreleased)
 
 - **The Apple logo's light.** On a MacBook Pro with a lit Apple logo on its lid, `omacvm-logo` in
-  the VM sets it: macOS's own (`auto`), `off`, or steady (`on 1-100`, as bright as the eye sees
-  it), every change a 3 s fade. The Mac plays it through the Bridge: dark while the display sleeps
+  the VM sets it: macOS's own (`auto`), `off`, steady (`on 1-100`, as bright as the eye sees it)
+  or breathing (`breathe 6-30` breaths a minute, each breath a little different), every change a
+  3 s fade. The Mac plays it through the Bridge: dark while the display sleeps
   or the lid is closed, macOS's again once no VM runs. Feature `logo-light`, on by default on a
   Mac with the lit logo; it comes with Update VM.
 

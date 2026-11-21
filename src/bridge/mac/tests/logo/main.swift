@@ -1,8 +1,8 @@
 // Tests of logo-model.swift and logo.swift, built and run by src/tests/logo-light.sh.
-//   logo-test                     the modes, the curves and the player against a made-up logo and
-//                                 corebrightnessd, and LogoLight's switches (no lit logo needed)
+//   logo-test                     the modes, the curves, the breath and the player against a made-up
+//                                 logo and corebrightnessd, and LogoLight's switches (no lit logo needed)
 //   logo-test live [WORDS SECS]... this Mac's logo through the Bridge's own LogoLight: each mode for
-//                                 its seconds (e.g. "on 50" 8 off 8), then no VM runs, so the logo
+//                                 its seconds (e.g. "on 50" 8 breathe 20 off 8), then no VM runs, so the logo
 //                                 goes back to auto. SIGTERM stops it as launchd stops the Bridge.
 //   logo-test state               the logo and corebrightnessd now (reads only)
 import Foundation
@@ -12,6 +12,16 @@ func check(_ ok: Bool, _ what: String, line: Int = #line) {
   if ok { print("ok   \(what)") } else { failed += 1; print("FAIL \(what) (line \(line))") }
 }
 func log(_ s: String) { print("log: \(s)") }
+
+/// A seeded uniform source in (0, 1], so every run breathes the same.
+final class Seeded {
+  private var s: UInt64
+  init(_ seed: UInt64) { s = seed }
+  func next() -> Double {
+    s ^= s << 13; s ^= s >> 7; s ^= s << 17
+    return Double(s >> 11 | 1) / Double(UInt64(1) << 53)
+  }
+}
 
 /// A made-up logo: the PWM's readback and corebrightnessd, which fades the
 /// logo out on a blank (over its fade), writes its own level for the room's
@@ -70,17 +80,23 @@ func modes() {
   check(parse(#"{"mode": "on"}"#) == .on(percent: 50), "on without a percent: on 50")
   check(parse(#"{"mode": "on", "percent": 1}"#) == .on(percent: 1) && parse(#"{"mode": "on", "percent": 100}"#) == .on(percent: 100),
         "on 1 and on 100")
+  check(parse(#"{"mode": "breathe"}"#) == .breathe(rate: 15), "breathe without a rate: breathe 15")
+  check(parse(#"{"mode": "breathe", "rate": 6}"#) == .breathe(rate: 6) && parse(#"{"mode": "breathe", "rate": 30}"#) == .breathe(rate: 30),
+        "breathe 6 and breathe 30")
   for bad in [#"{"mode": "on", "percent": 0}"#, #"{"mode": "on", "percent": 101}"#, #"{"mode": "on", "percent": 50.5}"#,
               #"{"mode": "on", "percent": 50.0}"#, #"{"mode": "on", "percent": true}"#, #"{"mode": "on", "percent": "50"}"#,
+              #"{"mode": "breathe", "rate": 5}"#, #"{"mode": "breathe", "rate": 31}"#, #"{"mode": "on", "rate": 15}"#,
+              #"{"mode": "breathe", "percent": 50}"#, #"{"mode": "off", "rate": 15}"#,
               #"{"mode": "auto", "percent": 50}"#, #"{"mode": "off", "percent": 50}"#, #"{"mode": "dim"}"#, #"{"mode": 1}"#,
               #"{"mode": "on", "percent": 50, "fade": 1}"#, #"{}"#, #"[]"#, #""on""#, "", "on 50"] {
     check(parse(bad) == nil, "refused: \(bad.isEmpty ? "no body" : bad)")
   }
-  for m in [LogoMode.auto, .off, .on(percent: 50), .on(percent: 7)] {
+  for m in [LogoMode.auto, .off, .on(percent: 50), .on(percent: 7), .breathe(rate: 15), .breathe(rate: 30)] {
     let back = parse(String(decoding: try! JSONSerialization.data(withJSONObject: m.json), as: UTF8.self))
     check(back == m, "\(m.words): its JSON reads back as itself")
   }
-  check([LogoMode.auto, .off, .on(percent: 50)].map(\.words) == ["auto", "off", "on 50"], "words: auto, off, on 50")
+  check([LogoMode.auto, .off, .on(percent: 50), .breathe(rate: 15)].map(\.words) == ["auto", "off", "on 50", "breathe 15"],
+        "words: auto, off, on 50, breathe 15")
 }
 
 func curves() {
@@ -102,11 +118,38 @@ func curves() {
   check(C.ease(0) == 0 && abs(C.ease(1) - 1) < 1e-12 && abs(C.ease(0.5) - 0.5) < 1e-12, "ease: 0, 0.5, 1")
 }
 
+func breath() {
+  let r = Seeded(1)
+  for rate in [6, 15, 30] {
+    var b = Breath().next(at: 0, rate: rate, random: r.next)
+    var ticks: [Int] = [], count = 0, last = b.start, deep = 0
+    for i in 0..<(600 * 60) {
+      let t = Double(i) / 60
+      ticks.append(LogoCurve.tick(ofLevel: b.level(at: t, rate: rate, random: r.next)))
+      if b.start != last { count += 1; last = b.start; if b.deeper { deep += 1 } }
+    }
+    // A deeper breath every 8 is 1.4 to 1.5 times as long: 1.06 breaths' length on average.
+    let want = Double(rate) * 10 / 1.06
+    check(abs(Double(count) - want) < want * 0.12, "breathe \(rate): \(count) breaths in 10 minutes (about \(Int(want)))")
+    check(ticks.min()! >= 43 && ticks.min()! <= 44, "breathe \(rate): it rests at the floor, never darker (\(ticks.min()!) ticks)")
+    check(ticks.max()! <= 768 && ticks.max()! >= 400, "breathe \(rate): a deep breath goes high, never above 80 % (\(ticks.max()!))")
+    check(deep >= count / 14 && deep <= count / 5, "breathe \(rate): \(deep) of \(count) breaths are deeper (about 1 in 8)")
+  }
+  // A breath without noise (depth 1, 1.4 s in, 2.6 s out at 15): its peak at 25 % duty, and the
+  // exhale's long tail, which halfway out has fallen 85 % of the way.
+  var b = Breath().next(at: 0, rate: 15, random: { 1 })
+  let top = LogoCurve.tick(ofLevel: b.level(at: b.inhale, rate: 15, random: { 1 }))
+  let half = b.level(at: b.inhale + b.exhale / 2, rate: 15, random: { 1 })
+  check(top == 240, "a breath of depth 1 peaks at 240 ticks (\(top))")
+  check(abs((half - Breath.floor) / (Breath.peak - Breath.floor) - 0.146) < 0.001, "halfway out, 15 % of the breath is left")
+}
+
 func player() {
+  let r = Seeded(2)
   let on50 = LogoCurve.onTicks(50), on80 = LogoCurve.onTicks(80)
 
   // auto -> on 50: waits for macOS's level to stand still, then fades from it over 3 s.
-  var hw = FakeLogo(), p = LogoPlayer()
+  var hw = FakeLogo(), p = LogoPlayer(random: r.next)
   check(p.frame(0, want: .auto, hw: hw) == nil, "auto: no frames at all")
   hw.high = 201; hw.level = 201
   run(&p, hw, 0, 10, .on(percent: 50))
@@ -129,13 +172,14 @@ func player() {
   check(back.first.map { abs($0 - 300) < 15 } == true && back.last == on80 && nondecreasing(back),
         "then a fade from 300 back up to \(on80) (\(back.first ?? -1) ...)")
 
-  // on, and the display sleeps for a minute: nothing lit by us, on again after the wake.
-  hw = FakeLogo(); p = LogoPlayer()
-  run(&p, hw, 0, 100, .on(percent: 80), [(20, { hw.sleep() }), (80, { hw.wake() })])
-  check(hw.writes(from: 20, to: 80).isEmpty, "the display sleeps: no write for the whole minute")
+  // breathe, and the display sleeps for a minute: nothing lit by us, the breath again after the wake.
+  hw = FakeLogo(); p = LogoPlayer(random: r.next)
+  run(&p, hw, 0, 100, .breathe(rate: 15), [(20, { hw.sleep() }), (80, { hw.wake() })])
+  check(hw.writes(from: 4, to: 20).count > 100, "breathe: writes while it breathes")
+  check(hw.writes(from: 20.02, to: 80).isEmpty, "the display sleeps: no write for the whole minute")
   let wake = hw.writes(from: 80, to: 100)
   check((hw.writes.first { $0.t >= 80 }?.t ?? 0) > 81, "after the wake: back once macOS's level stood still (\(hw.writes.first { $0.t >= 80 }?.t ?? 0))")
-  check(wake.last == on80 && hw.high == on80, "and fades to on 80 again")
+  check(wake.count > 100, "and breathes again")
 
   // Our write lands just after corebrightnessd switched the logo off: the factor check switches it off.
   hw = FakeLogo(); p = LogoPlayer()
@@ -157,21 +201,29 @@ func player() {
   let asked = run(&p, hw, 25, 30, .auto)
   check(asked.last! == nil, "auto again: no frames")
 
-  // on -> off: fades down to 1 tick, never 0, then dark and a blank with no fade of its own.
-  hw = FakeLogo(); p = LogoPlayer()
-  run(&p, hw, 0, 10, .on(percent: 80))
+  // breathe -> off: fades down to 1 tick, never 0, then dark and a blank with no fade of its own.
+  hw = FakeLogo(); p = LogoPlayer(random: r.next)
+  run(&p, hw, 0, 10, .breathe(rate: 15))
   run(&p, hw, 10, 15, .off)
   let down = hw.writes(from: 10, to: 15)
-  check(nonincreasing(down) && down.last == 1 && !down.contains(0), "on -> off: down to 1 tick, never 0 (\(down.count) writes)")
+  check(nonincreasing(down) && down.last == 1 && !down.contains(0), "breathe -> off: down to 1 tick, never 0 (\(down.count) writes)")
   check(hw.darks == 1 && hw.blanks.last?.on == true && hw.blanks.last!.fade < 0.001 && !hw.on, "then dark, and corebrightnessd hears blank at once")
 
-  // on -> auto: fades to macOS's level, then hands it back.
-  hw = FakeLogo(); p = LogoPlayer()
-  run(&p, hw, 0, 10, .on(percent: 80))
+  // breathe -> auto: fades to macOS's level, then hands it back.
+  hw = FakeLogo(); p = LogoPlayer(random: r.next)
+  run(&p, hw, 0, 10, .breathe(rate: 15))
   hw.level = 180
   run(&p, hw, 10, 15, .auto)
   let toMac = hw.writes(from: 10, to: 15)
-  check(abs((toMac.last ?? 0) - 180) <= 1 && hw.handBacks == 1 && p.phase == .idle, "on -> auto: fades to macOS's 180, then it is macOS's")
+  check(abs((toMac.last ?? 0) - 180) <= 1 && hw.handBacks == 1 && p.phase == .idle, "breathe -> auto: fades to macOS's 180, then it is macOS's")
+
+  // on 50 -> breathe -> on 50: into the breath and out of it, from where the logo is.
+  hw = FakeLogo(); p = LogoPlayer(random: r.next)
+  run(&p, hw, 0, 10, .on(percent: 50))
+  run(&p, hw, 10, 30, .breathe(rate: 15))
+  run(&p, hw, 30, 40, .on(percent: 50))
+  check(hw.writes(from: 10, to: 30).count > 300 && hw.high == on50 && hw.writes(from: 34, to: 40).isEmpty,
+        "on 50 -> breathe -> on 50: it breathes, then stands still at \(on50) again")
 
   // The Bridge stops.
   hw = FakeLogo(); p = LogoPlayer()
@@ -226,7 +278,7 @@ func live(_ steps: [String]) {
   let plan: [(mode: LogoMode, seconds: Double)] = stride(from: 0, to: steps.count, by: 2).map { i in
     let w = steps[i].split(separator: " ").map(String.init)
     var o: [String: Any] = ["mode": w.first ?? ""]
-    if w.count == 2, let n = Int(w[1]) { o["percent"] = n }
+    if w.count == 2, let n = Int(w[1]) { o[w[0] == "on" ? "percent" : "rate"] = n }
     guard w.count == o.count, i + 1 < steps.count, let s = Double(steps[i + 1]),
           case .success(let m) = LogoMode.parse(try! JSONSerialization.data(withJSONObject: o)) else {
       print("not a step: \(steps[i]) \(i + 1 < steps.count ? steps[i + 1] : "(no seconds)")"); exit(2)
@@ -254,7 +306,7 @@ case "state":
   print("readback \(hw.readback()) macOS \(hw.macOS()) keyboards \(hw.keyboardCount)")
   exit(0)
 default:
-  modes(); curves(); player(); light()
+  modes(); curves(); breath(); player(); light()
 }
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")

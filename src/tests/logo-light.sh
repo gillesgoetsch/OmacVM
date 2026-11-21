@@ -5,7 +5,7 @@
 # logo. With --live, also on this Mac's lit Apple logo through the Bridge's own
 # code: each mode for its seconds, then the logo is macOS's again. Stop a
 # Bridge that plays a mode first: two writers fight over the logo.
-#   src/tests/logo-light.sh [--live [WORDS SECONDS]...]   e.g. --live "on 50" 8 off 8
+#   src/tests/logo-light.sh [--live [WORDS SECONDS]...]   e.g. --live "on 50" 8 breathe 20 off 8
 #   src/tests/logo-light.sh --state                      what the logo and macOS say now (reads only)
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -36,6 +36,7 @@ EOF
     printf '%s|%s|%s|%s' "$rc" "$out" "$(cat "$T/sent" 2>/dev/null || echo -)" "$err"
   }
   is "the mode that plays, as its words" "0|on 50|GET|" "$(FAKE_OUT='{"mode": "on", "percent": 50}' logo)"
+  is "breathe 15" "0|breathe 15|GET|" "$(FAKE_OUT='{"mode": "breathe", "rate": 15}' logo)"
   is "auto" "0|auto|GET|" "$(logo)"
   is "auto: sent, nothing printed" '0||{"mode": "auto"}|' "$(logo auto)"
   is "off" '0||{"mode": "off"}|' "$(logo off)"
@@ -43,7 +44,10 @@ EOF
   is "on 080: a whole number" '0||{"mode": "on", "percent": 80}|' "$(logo on 080)"
   is "on 1" '0||{"mode": "on", "percent": 1}|' "$(logo on 1)"
   is "on 100" '0||{"mode": "on", "percent": 100}|' "$(logo on 100)"
-  for bad in "on 0" "on 101" "on 5.5" "on -5" "on +5" "on 1000" "on x" "dim" "off 3" "auto auto" "on 50 x"; do
+  is "breathe 6" '0||{"mode": "breathe", "rate": 6}|' "$(logo breathe 6)"
+  is "breathe 30" '0||{"mode": "breathe", "rate": 30}|' "$(logo breathe 30)"
+  for bad in "on 0" "on 101" "on 5.5" "on -5" "on +5" "on 1000" "on x" "breathe 5" "breathe 31" "breathe 100" "breathe x" \
+             "dim" "off 3" "auto auto" "on 50 x"; do
     # shellcheck disable=SC2086
     r=$(logo $bad); is "usage: omacvm-logo $bad (exit 2, nothing sent)" "2||-" "${r%|*}"
   done
@@ -61,7 +65,7 @@ fi
 swiftc -O -swift-version 5 -target arm64-apple-macos13.0 -o "$T/logo-test" \
   "$M/control_policy.swift" "$M/logo-model.swift" "$M/logo.swift" "$M/tests/logo/main.swift" -framework IOKit
 case ${1:-} in
-  --live) shift; [[ $# -gt 0 ]] || set -- "on 50" 8 "on 80" 6 off 8 auto 5
+  --live) shift; [[ $# -gt 0 ]] || set -- "on 50" 8 "on 80" 6 breathe 20 off 8 auto 5
           (cd "$T" && ./logo-test live "$@") ;;
   --state) "$T/logo-test" state ;;
   *) "$T/logo-test" || fail=1 ;;

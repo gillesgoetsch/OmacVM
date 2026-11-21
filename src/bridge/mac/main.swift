@@ -34,8 +34,8 @@
 //   GET  /timezone         {"zone": "Europe/Zurich"}: the Mac's time zone, which the VM follows (omacvm-timezone)
 //   POST /notifications/dismiss  the Mac's banners and alerts on screen close, while an OmacVM.app
 //                          VM is in front: {"closed": N} (notifications.swift)
-//   GET  /logo             the mode the lit Apple logo on the lid plays: {"mode": "auto"|"off"}
-//                          or {"mode": "on", "percent": 1-100}
+//   GET  /logo             the mode the lit Apple logo on the lid plays: {"mode": "auto"|"off"},
+//                          {"mode": "on", "percent": 1-100} or {"mode": "breathe", "rate": 6-30}
 //   POST /logo             one of those from a VM; auto again once no VM runs (logo.swift)
 //   /omacvm/...            the control centre's requests (control.swift, docs/adr/0031): hello, status,
 //                          updates, updates/check, settings/update-checks, jobs, jobs/<id>; OmacVM.app

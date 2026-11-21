@@ -378,7 +378,7 @@ if [[ $BRIDGE == on ]]; then
   elif [[ $(mac_logo) != yes ]]; then skip "logo light" "this Mac has no lit Apple logo"
   else
     lg=""; declare -F bget >/dev/null && lg=$(bget /logo)
-    if lm=$(jq -er 'select(.mode) | [.mode, (.percent // empty | tostring)] | join(" ")' <<<"$lg" 2>/dev/null); then
+    if lm=$(jq -er 'select(.mode) | [.mode, (.percent // .rate // empty | tostring)] | join(" ")' <<<"$lg" 2>/dev/null); then
       ok "logo light" "plays $lm (omacvm-logo in the VM sets it)"
     elif [[ $(jq -r '.code // empty' <<<"$lg" 2>/dev/null) == off ]]; then skip "logo light" "off on this Mac (logo_light in $c)"
     else bad "logo light" "the Bridge does not answer /logo (omacvm update)"; fi
