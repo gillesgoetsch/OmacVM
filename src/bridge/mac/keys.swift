@@ -18,12 +18,14 @@ final class Config {
   var keyboardLowSteps = true  // keyboard light: KeyboardSteps.low below macOS's lowest step (keylight.swift)
   var externalBrightness = true  // brightness keys set the external display a VM is on (external-brightness.swift)
   var brightnessSteps = BrightnessStep.defaultSteps   // display brightness keys: 1/N per press (external-model.swift)
+  var logoLight = true   // the VM may set the Apple logo on the lid (logo.swift)
   var onExternalBrightness: (() -> Void)?   // external_brightness switched in the file
+  var onLogoLight: (() -> Void)?            // logo_light switched in the file
   private var stamp: Date?
 
   init() {
     guard load() else { save(); return }
-    if !has("keyboard_low_steps") || !has("external_brightness") || !has("brightness_steps") { save() }   // shows the switches in the file
+    if !has("keyboard_low_steps") || !has("external_brightness") || !has("brightness_steps") || !has("logo_light") { save() }   // shows the switches in the file
   }
 
   private var object: [String: Any]? {
@@ -40,17 +42,19 @@ final class Config {
     menuBarIcon = o["menu_bar_icon"] as? Bool ?? menuBarIcon
     keyboardLowSteps = o["keyboard_low_steps"] as? Bool ?? keyboardLowSteps
     externalBrightness = o["external_brightness"] as? Bool ?? externalBrightness
+    logoLight = o["logo_light"] as? Bool ?? logoLight
     brightnessSteps = BrightnessStep.steps((o["brightness_steps"] as? NSNumber)?.intValue ?? brightnessSteps)
     return true
   }
 
-  /// omacvm apply switches external_brightness in the file: taken without a restart.
+  /// omacvm apply switches external_brightness and logo_light in the file: taken without a restart.
   func reloadIfChanged() {
     let now = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
     guard now != stamp else { return }
-    let was = externalBrightness, steps = brightnessSteps
+    let was = externalBrightness, steps = brightnessSteps, logo = logoLight
     _ = load()
     if steps != brightnessSteps { log("config: brightness_steps=\(brightnessSteps)") }
+    if logo != logoLight { log("config: logo_light=\(logoLight)"); onLogoLight?() }
     guard was != externalBrightness else { return }
     log("config: external_brightness=\(externalBrightness)")
     onExternalBrightness?()
@@ -60,7 +64,7 @@ final class Config {
     // Keys this class does not know stay (touch_id_password_fallback, touchid.swift).
     var o = object ?? [:]
     let mine: [String: Any] = ["capture_keys": captureKeys, "menu_bar_icon": menuBarIcon, "keyboard_low_steps": keyboardLowSteps,
-                               "external_brightness": externalBrightness, "brightness_steps": brightnessSteps]
+                               "external_brightness": externalBrightness, "brightness_steps": brightnessSteps, "logo_light": logoLight]
     o.merge(mine) { _, new in new }
     if let d = try? JSONSerialization.data(withJSONObject: o, options: [.prettyPrinted, .sortedKeys]) {
       FileManager.default.createFile(atPath: path, contents: d)
@@ -735,5 +739,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
   @objc private func openLog() { NSWorkspace.shared.open(URL(fileURLWithPath: logPath)) }
 
-  @objc private func quit() { log("quit from the menu bar (starts again at next login)"); exit(0) }
+  @objc private func quit() {
+    log("quit from the menu bar (starts again at next login)")
+    logoLight?.stop()   // the logo goes back to macOS first
+    exit(0)
+  }
 }

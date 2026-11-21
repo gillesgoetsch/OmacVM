@@ -7,6 +7,7 @@
 scroll-momentum	gestures/guest/glide.sh
 gestures	gestures/**
 external-brightness	bridge/guest/omacvm-ddcutil
+logo-light	bridge/guest/omacvm-logo
 bridge	bridge/**
 wallpaper	wallpaper/**
 omanotch	omanotch/** guest/omacvm-omanotch.service guest/omanotch-notifications.sh guest/omanotch-copies-hook.sh

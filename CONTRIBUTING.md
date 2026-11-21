@@ -79,6 +79,7 @@ app/runtime/Tests/display/test-pointer-guard.sh
 app/runtime/Tests/display/test-pointer-start.sh
 src/tests/app-fullscreen-space.sh
 src/tests/keyboard-light.sh
+src/tests/logo-light.sh
 src/tests/features-off.sh && src/tests/features-checklist.sh
 src/tests/app-storage.sh
 (cd app/app && swift run update-tests)

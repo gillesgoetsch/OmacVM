@@ -155,6 +155,7 @@ GLIDE=${OMACVM_FEATURE_scroll_momentum:-${OMACVM_FEATURE_glide:-off}}; OMANOTCH=
 CONTROL=${OMACVM_FEATURE_control_centre:-off}
 MAC_CLOCK=${OMACVM_FEATURE_mac_clock:-off}; CAMERA=${OMACVM_FEATURE_camera:-off}; BATTERY=${OMACVM_FEATURE_battery:-off}
 EXT_BRIGHTNESS=${OMACVM_FEATURE_external_brightness:-off}
+LOGO_LIGHT=${OMACVM_FEATURE_logo_light:-off}
 TOUCH_ID=${OMACVM_FEATURE_touch_id:-off}
 CHROMIUM_VIDEO=${OMACVM_FEATURE_chromium_video:-on}
 
@@ -405,6 +406,18 @@ if [[ $BRIDGE == on ]]; then
       elif (.displays | length) == 0 then "no external display on the Mac now"
       else [.displays[] | "\(.name): \(if .method == "ddc" then "DDC/CI" elif .method == "apple" then "its own control" else "not settable" end)"] | join(", ") end' <<<"$ex")"
   else bad "external brightness" "the Bridge does not answer /display/external (an older Bridge: omacvm update on the Mac)"; fi
+  # The Apple logo's light: omacvm-logo asks the Mac's Bridge which mode plays.
+  FEATURE=logo-light
+  if [[ $LOGO_LIGHT != on ]]; then skip "logo light" "off (omacvm enable logo-light)"
+  elif [[ ! -x /usr/local/bin/omacvm-logo ]]; then bad "logo light" "/usr/local/bin/omacvm-logo is missing (omacvm apply)"
+  else
+    lm=$(as_user omacvm-logo 2>&1); lrc=$?
+    case $lrc in
+      0) ok "logo light" "plays $lm (omacvm-logo)" ;;
+      3) skip "logo light" "${lm#omacvm-logo: }" ;;
+      *) bad "logo light" "${lm#omacvm-logo: } (an older Bridge: omacvm update on the Mac)" ;;
+    esac
+  fi
   # Touch ID (ADR 0041): the keys, the PAM lines and the polkit rule. The
   # Mac's side shows only with a finger, so not asked here.
   FEATURE=touch-id

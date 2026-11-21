@@ -495,6 +495,13 @@ enum VMApp {
   /// executable for its QEMU (the app's DockIdentity, 3.0.1).
   static func of(_ app: NSRunningApplication?) -> VMApp? {
     guard let app, let exe = pidPath(app.processIdentifier) ?? app.executableURL?.path else { return nil }
+    return of(executable: exe)
+  }
+
+  /// A process by its pid alone, the kernel's path (the logo's owner, logo.swift).
+  static func of(pid: pid_t) -> VMApp? { pidPath(pid).flatMap(of(executable:)) }
+
+  private static func of(executable exe: String) -> VMApp? {
     let name = (exe as NSString).lastPathComponent
     if exe.hasSuffix("/runtime/bin/OmacVM") || name == "qemu-system-aarch64" {
       return VMOwner.ours(appID: appID(exe), testBridge: testBridge) ? .omacvm : nil
