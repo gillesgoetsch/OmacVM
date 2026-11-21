@@ -225,6 +225,68 @@ the pointer instead (ADR 0041, 3.2.11 addendum). Moving the dialog would at
 least mean making the pointer's window key before asking, which changes who
 holds the keyboard.
 
+## A touch display: what AppKit sends QEMU's view (November 2026)
+
+Measured on the MacBook Pro with the touch display (Mac17,10, macOS 27.2.1)
+with a test app whose view overrides the mouse methods as QemuCocoaView does
+(#843). AppKit makes mouse events for such a view itself, inside the app: the
+event's source pid is the app's, its source state 0, and Quartz event taps
+never see them.
+
+- A tap: mouseEntered, mouseMoved, then mouseDown and mouseUp 0.2 ms apart at
+  the lift, then mouseExited. Taps last 50-75 ms and report no movement.
+- A touch that moves: mouseDown at once, then mouseDragged. No scroll events
+  ever, for one finger or two.
+- Still for about 730 ms: rightMouseDown; moving after that is a right drag.
+- A pinch: magnify and rotate events.
+- The real cursor never moves. NSEvent.mouseLocation says the finger's place
+  only while the events are made, and the emulated mouseMoved's delta is the
+  jump from the real cursor (also while it is detached).
+
+A gesture recognizer on the view that recognizes takes the touch from the
+emulation: none of its events come. NSPressGestureRecognizer waits for the
+click recognizer to fail, so on a still finger the emulation's right button
+wins. One recognizer that begins at touch-down and decides everything itself
+works (omacvm-cocoa-touch.patch). AppKit tracks touches in the event-tracking
+run loop mode, so timers that must fire meanwhile go in the common modes.
+NSIsTouchNative does not stop the emulation for a view that overrides the
+mouse methods (TN3216; not measured).
+
+MultitouchSupport lists the touch display too ("Kiwi", family 1, 346 x 226
+mm, built in). Its IORegistry DeviceUsagePairs say touch screen (0x0D, 0x04);
+the trackpad's say touch pad (0x0D, 0x05). MTDeviceIsOpaqueSurface is 0 for
+both.
+
+MultitouchSupport lists the touch display but gives another process none of
+its frames: with a frame callback on it, OmacVM Gestures got nothing for
+taps, pinches or fingers held 5 s on the screen, while the trackpad's frames
+came as always. A touch display's touches reach only the app touched, so
+only QEMU's window can pass a pinch on.
+
+A pinch in the guest (measured in Omarchy 4, Hyprland 0.56.2, Chromium 153,
+with a uinput copy of QEMU's virtio-multitouch device). Linux has two ways to
+a pinch: a touchpad's goes through libinput's gesture recognition to the app
+under the pointer, which zooms there; a touch screen's contacts go as they
+are to the app under the fingers, which recognizes the pinch itself and
+zooms between them, as macOS does on its touch display.
+
+- Two contacts spreading from 5 % to 25 % of the screen's width: Chromium's
+  visualViewport.scale went from 1 to 3.9 and back to 1 when they closed,
+  smoothly, with no flag set. Two contacts moving together: nothing (on a
+  page that does not scroll). One contact's tap: a click.
+- Hyprland puts a touch device that is not bound to an output on the focused
+  one and sends the contacts to the surface under them (its source,
+  Touch.cpp); the pointer's place does not change.
+- With the device in the guest Chromium tells pages navigator.maxTouchPoints
+  10 and (any-pointer: coarse); (pointer: coarse) stays false and (hover:
+  hover) true, with the tablet as the first pointer.
+- QEMU's device as it is also has a mouse's buttons: udev marks it
+  ID_INPUT_MOUSE as well as ID_INPUT_TOUCHSCREEN and Hyprland lists it under
+  mice and under touch devices. With BTN_TOUCH alone it is a touch screen
+  only (omacvm-virtio-multitouch-touch-only.patch).
+- Ctrl and the wheel is no pinch: Chromium zooms the page in steps (110 %,
+  125 %, ...) and lays it out again (its source; not measured here).
+
 ## Full screen including notch after a display change (October 2026)
 
 From the user's MacBook Pro M4 Max (3.2.9) and macOS 27's AppKit, read on

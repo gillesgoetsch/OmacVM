@@ -372,6 +372,9 @@ jobs:
       - name: Magic Mouse swipe setting (3 or 4 fingers) and its row, only with a Magic Mouse
         run: src/tests/app-mouse-swipe.sh
 
+      - name: The VM's touch screen (a pinch's fingers), only on a Mac with a touch display (#843)
+        run: src/tests/app-touch-display.sh
+
       - name: Tests that build the app's SwiftUI sources take a toolchain with SwiftUI's macro plugins (Xcode's when a CLT swiftc comes first)
         run: src/tests/swift-macros.sh
 
@@ -624,6 +627,10 @@ jobs:
         run: |
           app/runtime/Tests/display/test-pointer-hover.sh
           app/runtime/Tests/display/test-pointer-hover.sh --self-test
+      - name: Touch on a touch display, taps, scrolling, hold-drag and right click (#843; the rules, the checks catch code without it)
+        run: |
+          app/runtime/Tests/touch/test-touch.sh
+          app/runtime/Tests/touch/test-touch.sh --self-test
       - name: Tiled present, only the changed tiles to WindowServer; every tile drawn equals the whole frame (the checks catch code without it)
         run: |
           app/runtime/Tests/display/test-present-tiles.sh
