@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.5.2 (unreleased)
+
+- **The Apple logo's light.** On a MacBook Pro with a lit Apple logo on its lid, `omacvm-logo` in
+  the VM sets it: macOS's own (`auto`), `off`, steady (`on 1-100`, as bright as the eye sees it) or
+  breathing (`breathe 6-30` breaths a minute), every change a 3 s fade. The Mac plays it through the
+  Bridge: dark while the display sleeps or the lid is closed, macOS's again when the VM stops.
+  Feature `logo-light`, on by default on a Mac with the lit logo; it comes with Update VM.
+
 ## 3.5.1
 
 Fixes for the Bridge next to Karabiner-Elements and for llama.cpp with Vulkan, and a clearer
