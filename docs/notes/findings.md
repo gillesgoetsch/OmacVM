@@ -255,7 +255,10 @@ mouse methods (TN3216; not measured).
 MultitouchSupport lists the touch display too ("Kiwi", family 1, 346 x 226
 mm, built in). Its IORegistry DeviceUsagePairs say touch screen (0x0D, 0x04);
 the trackpad's say touch pad (0x0D, 0x05). MTDeviceIsOpaqueSurface is 0 for
-both.
+both. The test app that measured all this is in
+`app/runtime/Tests/touch/probe/` (build.sh, then its guided steps;
+analyze.py summarizes its log). The hardware runs and their summaries:
+https://github.com/mlamoure/mac-touch-display-probe.
 
 MultitouchSupport lists the touch display but gives another process none of
 its frames: with a frame callback on it, OmacVM Gestures got nothing for
