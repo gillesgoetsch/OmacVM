@@ -3738,9 +3738,10 @@ static void *serverThread(void *arg) {
 }
 
 // ---- the trackpads (the built-in one, every Magic Trackpad) and Magic Mice ----
-// MultitouchSupport lists every multi-touch surface, the Magic Mouse's too; a
-// trackpad is told apart by its size (a Magic Trackpad is 160 x 115 mm, a Magic
-// Mouse's surface well under 100 mm wide), a Magic Mouse by its family id or
+// MultitouchSupport lists every multi-touch surface, the Magic Mouse's and a
+// touch display's too; a trackpad is told apart by its size (a Magic Trackpad
+// is 160 x 115 mm, a Magic Mouse's surface well under 100 mm wide), a touch
+// display by its HID usage (mtTouchScreen), a Magic Mouse by its family id or
 // HID product (isMagicMouseKind). Looked for again every 10 s, and 1 s after
 // macOS adds a multi-touch device (watchMultitouch), so a Magic Trackpad or
 // Magic Mouse connected later (or again) is taken too.
@@ -3842,8 +3843,48 @@ static void startMouse(MTDeviceRef d, int w, int h, int family, int product) {
         "one-finger flick = back/forward; scrolling as before)", renewed ? " again" : "", family, product, mw / 100, mh / 100);
 }
 
+// A touch display (the MacBook Pro with the touch screen, macOS 27) is a
+// multi-touch surface too, built in and 346 mm wide, but no trackpad: its HID
+// usage is a touch screen (Digitizer page 0x0D, usage 0x04), a trackpad's a
+// touch pad (0x0D, 0x05). No frame of it ever comes here (measured: taps,
+// pinches, fingers held 5 s; its touches reach only the app touched, and the VM
+// app takes them, #843). Taken for a trackpad it was held as a second built-in
+// one, and listed after the trackpad it was the one in use: the guest was told
+// a touchpad 346 mm wide from the helper's start (and whenever macOS made the
+// display's device anew) until the trackpad was touched.
+static int mtTouchScreen(MTDeviceRef d) {
+  io_service_t svc = MTDeviceGetService(d);
+  if (!svc) return 0;
+  int found = 0;
+  CFTypeRef v = IORegistryEntrySearchCFProperty(svc, kIOServicePlane, CFSTR("DeviceUsagePairs"), NULL,
+                                                kIORegistryIterateRecursively | kIORegistryIterateParents);
+  if (v && CFGetTypeID(v) == CFArrayGetTypeID()) {
+    for (CFIndex i = 0; !found && i < CFArrayGetCount((CFArrayRef)v); i++) {
+      CFTypeRef pair = CFArrayGetValueAtIndex((CFArrayRef)v, i);
+      if (CFGetTypeID(pair) != CFDictionaryGetTypeID()) continue;
+      CFTypeRef pg = CFDictionaryGetValue((CFDictionaryRef)pair, CFSTR("DeviceUsagePage"));
+      CFTypeRef us = CFDictionaryGetValue((CFDictionaryRef)pair, CFSTR("DeviceUsage"));
+      int page = 0, usage = 0;
+      if (pg && CFGetTypeID(pg) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)pg, kCFNumberIntType, &page);
+      if (us && CFGetTypeID(us) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)us, kCFNumberIntType, &usage);
+      found = page == 0x0D && usage == 0x04;
+    }
+  }
+  if (v) CFRelease(v);
+  return found;
+}
+
 static int isTrackpad(MTDeviceRef d, int *w, int *h) {
   if (MTDeviceGetSensorSurfaceDimensions(d, w, h) != 0) *w = *h = 0;
+  if (mtTouchScreen(d)) {
+    static uint64_t said;   // once per device (the 10 s look lists it again)
+    uint64_t entry = mtEntry(d);
+    if (entry != said) {
+      said = entry;
+      logf_("touch display: %d x %d mm, not a trackpad (the VM app takes its touches)", *w / 100, *h / 100);
+    }
+    return 0;
+  }
   return MTDeviceIsBuiltIn(d) || *w >= 10000;
 }
 
