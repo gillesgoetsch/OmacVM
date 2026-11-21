@@ -35,7 +35,7 @@ MAC_SETUP_WAIT=${OMACVM_HELPER_WAIT:-60}
 mac_helper_of() {   # FEATURE
   MAC_HELPER=""
   case $1 in
-    bridge|control-centre) MAC_HELPER="OmacVM Bridge" ;;   # the control centre asks the Mac through it
+    bridge|control-centre|logo-light) MAC_HELPER="OmacVM Bridge" ;;   # the control centre asks the Mac through it, and it plays the logo
     gestures|scroll-momentum) MAC_HELPER="OmacVM Gestures" ;;
     omanotch) MAC_HELPER=Omanotch ;;
   esac

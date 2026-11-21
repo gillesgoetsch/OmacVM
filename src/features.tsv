@@ -1,9 +1,9 @@
 # OmacVM features: the one list that the setup questions, `omacvm features`,
 # `omacvm enable/disable`, the VM installer (guest/install.sh) and the checks
 # follow. One feature per line, tab-separated:
-#   name  default (on|off|notch: on with a notch|laptop: on with a battery)  sides (mac,vm)  tags  needs  title  summary
+#   name  default (on|off|notch: on with a notch|laptop: on with a battery|logo: on with a lit Apple logo)  sides (mac,vm)  tags  needs  title  summary
 # Tags: experimental, slow (switching it on is a build in the VM: minutes to over an hour, by CPUs; shown in words while off, never as "slow"), notch (needs a MacBook with a notch),
-# laptop (needs a Mac with a battery), app-only (OmacVM.app's VMs only; every VM is one since 3.4.0),
+# laptop (needs a Mac with a battery), logo (needs a MacBook Pro with a lit Apple logo on its lid), app-only (OmacVM.app's VMs only; every VM is one since 3.4.0),
 # omarchy-45 (needs Omarchy 4.5 or newer in the VM: the VM folder's omarchy record on the Mac, `pacman -Q omarchy`
 # in the VM; no record yet: the VM decides).
 # no-av1 (offered only on a Mac whose media engine has no AV1 decoder, asked at run time: M1 and M2 Macs).
@@ -16,6 +16,7 @@ omanotch	notch	mac,vm	notch	-	Omanotch	Omarchy's bar beside the MacBook's notch
 mac-clock	on	mac,vm	-	-	The Mac's clock	the clock at the far right of the bar, formatted like the Mac's menu bar
 camera	on	mac,vm	-	-	The Mac's camera	Linux apps and video calls in the browser see it as Mac Camera; it is on only while one of them uses it
 battery	laptop	mac,vm	laptop	-	The Mac's battery	its charge and charging state in Omarchy's bar, as on a laptop
+logo-light	logo	mac,vm	logo	bridge	The Apple logo's light	omacvm-logo in the VM sets the lit Apple logo on the MacBook's lid: macOS's own, off, or steady at a brightness, every change a soft fade; dark while the display sleeps, macOS's again once no VM runs
 external-brightness	on	mac,vm	-	bridge	External display brightness	the brightness keys set the external display the VM is in front on, over DDC/CI (a Studio Display or Pro Display XDR as macOS does), and so do Omarchy's own brightness keys and monitor panel, whose brightness slider also sets the Mac's built-in display, in full screen and in a window
 chromium-video	on	vm	app-only	-	Chromium video on the Mac	Arch Linux ARM's Chromium decodes H.264 and VP9 on the Mac's media engine, like Chrome and Brave do on their own (OmacVM.app)
 youtube-vp9	off	vm	experimental,app-only,no-av1	-	Prefer VP9 on YouTube	Google Chrome and Chromium tell YouTube they cannot play AV1, so it sends VP9, which the Mac's media engine decodes instead of the VM's CPUs (about 1.2 W less on a MacBook Air M2); videos only in AV1 and YouTube's AV1-only quality steps are not offered, and the media engine drops about 1-3 % of frames at 1080p60 for now; Macs without an AV1 decoder only (M1, M2)

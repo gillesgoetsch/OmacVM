@@ -7,7 +7,7 @@
 #                    [--vm-name-b64 NAME] [--only F,...] [--strict F,...|all]
 #                    [--graphics opengl|vulkan] [--kernel-new build|keep]
 # Features: the list in ../features.tsv (bridge, wallpaper, gestures, scroll-momentum,
-# omanotch, mac-clock, camera, no-idle-lock, autologin, thp-kernel, battery, external-brightness,
+# omanotch, mac-clock, camera, no-idle-lock, autologin, thp-kernel, battery, logo-light, external-brightness,
 # control-centre, fast-network, chromium-video, youtube-vp9, gpu-compute, vulkan, x86-apps, touch-id, mac-ime,
 # drag-drop, mission-control, fewer-animations) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
@@ -595,6 +595,17 @@ elif [[ ${F[external-brightness]} == on ]]; then
 elif grep -qs '^# omacvm-ddcutil' "$DDC"; then
   log "external display brightness: off"
   rm -f "$DDC" && rm -rf "/run/user/$(id -u "$U")/omarchy-brightness-display-ddc"
+fi
+# The Apple logo's light: omacvm-logo, the VM's command for it (the Mac's Bridge plays it).
+LOGO=/usr/local/bin/omacvm-logo
+if ! want logo-light; then
+  :
+elif [[ ${F[logo-light]} == on ]]; then
+  log "the Apple logo's light"
+  cmp -s "$R/bridge/guest/omacvm-logo" "$LOGO" || install -m755 "$R/bridge/guest/omacvm-logo" "$LOGO"
+elif [[ -e $LOGO ]]; then
+  log "the Apple logo's light: off"
+  rm -f "$LOGO"
 fi
 # Touch ID for sudo, polkit and 1Password (ADR 0041): the keys come from omacvm apply.
 if want touch-id; then
