@@ -5,8 +5,11 @@
 #  * ~/.config/hypr/omacvm_glide.lua (scroll factor for the virtual trackpad,
 #    Chromium-based apps), loaded from hyprland.lua;
 #  * --disable-smooth-scrolling in Chromium's and Chrome's flags files, so
-#    Chromium does not animate on top of macOS's momentum (tested with it).
-#    Only files that exist; a marker remembers which ones OmacVM changed, so
+#    Chromium does not animate on top of macOS's momentum (tested with it);
+#  * WaylandUnscaledTouchpadScrolling in their last --disable-features, so
+#    Chromium scrolls a touchpad at the scale its factor is tuned for
+#    (glide-flags.py).
+#    Only files that exist; markers remember which ones OmacVM changed, so
 #    turning Glide off never removes a flag the user set.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -37,6 +40,7 @@ if [[ $ON == on ]]; then
     printf '%s\n' "$FLAG" | home_append "$f"
     home_grep "$MARK" -qxF "$f" || echo "$f" | home_append "$MARK"
   done
+  home_run python3 -I - on "$H" < glide-flags.py
   echo "scroll momentum: on (restart Chromium-based apps once)"
 else
   if home_grep "$HY/hyprland.lua" -qxF "$LINE" || [[ -e $HY/omacvm_glide.lua ]]; then
@@ -53,6 +57,7 @@ else
     done < <(home_cat "$MARK")
     home_run rm -f "$MARK"
   fi
+  home_run python3 -I - off "$H" < glide-flags.py
   echo "scroll momentum: off"
 fi
 # A running Hyprland picks the change up now.

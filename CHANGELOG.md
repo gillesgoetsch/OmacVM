@@ -3,6 +3,13 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## Unreleased
+
+- **Scroll momentum: Chrome scrolls as far as macOS again.** Chromium's field trial config, which
+  Chrome for Testing applies, turns on `WaylandUnscaledTouchpadScrolling`, and a two-finger scroll
+  then moved the page a fifth of what macOS moves it. Scroll momentum now turns that feature off in
+  the flags files where it puts `--disable-smooth-scrolling` (restart Chromium once).
+
 ## 3.5.1
 
 Fixes for the Bridge next to Karabiner-Elements and for llama.cpp with Vulkan, and a clearer
