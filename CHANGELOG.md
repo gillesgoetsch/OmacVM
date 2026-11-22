@@ -8,7 +8,9 @@ in more words.
 - **Scroll momentum: Chrome scrolls as far as macOS again.** Chromium's field trial config, which
   Chrome for Testing applies, turns on `WaylandUnscaledTouchpadScrolling`, and a two-finger scroll
   then moved the page a fifth of what macOS moves it. Scroll momentum now turns that feature off in
-  the flags files where it puts `--disable-smooth-scrolling` (restart Chromium once).
+  the flags files where it puts `--disable-smooth-scrolling` (restart Chromium once). T3 Code, an
+  Electron app, gets the scroll factor of the other Chromium-based apps: it scrolled 3.7 times as
+  far as macOS.
 
 ## 3.5.1
 

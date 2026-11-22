@@ -22,5 +22,5 @@ end
 local chromium_ratio = 3.3
 hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", accel_profile = "flat", natural_scroll = true,
             scroll_factor = 0.328 * chromium_ratio * 2 / monitor_scale() })
-o.window("(chromium|google-chrome.*|chrome-.*|brave-browser.*|microsoft-edge.*|vivaldi.*|slacky|[Ss]lack|discord|vesktop|[Cc]ode|code-oss|[Cc]ursor|obsidian|[Ss]ignal|[Ss]potify|1[Pp]assword|teams-for-linux|figma-linux|[Ee]lectron)",
+o.window("(chromium|google-chrome.*|chrome-.*|brave-browser.*|microsoft-edge.*|vivaldi.*|slacky|[Ss]lack|discord|vesktop|[Cc]ode|code-oss|[Cc]ursor|obsidian|[Ss]ignal|[Ss]potify|1[Pp]assword|teams-for-linux|figma-linux|[Ee]lectron|com\\.t3tools\\.T3Code)",
          { scroll_touchpad = 1 / chromium_ratio })

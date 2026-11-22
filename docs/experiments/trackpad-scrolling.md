@@ -556,14 +556,17 @@ daemon's Glide and libinput 1.32's two-finger scroll (it starts after 1.5 mm;
 the flat profile posts 0.11685 per 1/100 mm), played into that window and
 compared with macOS's own scroll of the same touches (`A` + `W`):
 
-| Window                                   | Page / macOS, all 20 |
-| ---------------------------------------- | -------------------- |
-| Chrome 158, the feature on (field trial) | 0.20                 |
-| Chrome 158, the feature off              | 0.99                 |
+| Window                                       | Page / macOS, all 20 |
+| -------------------------------------------- | -------------------- |
+| Chrome 158, the feature on (field trial)     | 0.20                 |
+| Chrome 158, the feature off                  | 0.99                 |
+| Electron 44 (Chromium 152, T3 Code), no rule | 3.74                 |
+| Electron 44 with `scroll_touchpad = 1 / 3.3` | 1.00                 |
 
 The page reaches 90 % of its way within 40 ms of when macOS does. So Glide
 turns the feature off in the flags files where it puts
-`--disable-smooth-scrolling`.
+`--disable-smooth-scrolling`, and T3 Code (`com.t3tools.T3Code`, Electron)
+joins the Chromium-based windows.
 
 ## Candidate if the wheel cannot pan a zoomed page
 
