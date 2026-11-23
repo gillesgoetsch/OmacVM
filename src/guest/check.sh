@@ -1337,7 +1337,7 @@ else
   # of autologin.sh before 3.5.2 cannot tell.
   if declare -F sddm_last_user >/dev/null && [[ -d /var/lib/sddm ]]; then
     lu=$(sddm_last_user)
-    sddm_is_user "$lu" || warn "login screen" "names no user (SDDM's last user: ${lu:-none}): Omarchy's login screen sends an empty user name, so no password works; Update VM in OmacVM.app sets it to $U"
+    sddm_is_user "$lu" || warn "login screen" "names no user (SDDM's last user: ${lu:-none}): Omarchy's login screen sends an empty user name, so no password works; Update VM in OmacVM.app sets it to user $U"
   fi
 fi
 FEATURE=mac-clock

@@ -71,5 +71,5 @@ sddm_last_user_set() {
   chmod 644 "$t"
   chown sddm:sddm "$t" 2>/dev/null || true
   mv -f "$t" "$SDDM_STATE" || { rm -f "$t"; return 1; }
-  echo "login screen: SDDM's last user is $u now (it named ${cur:-nobody}), so Omarchy's login screen logs in as $u"
+  echo "login screen: Omarchy's login screen logs in as $u now (SDDM's last user named ${cur:-nobody})"
 }

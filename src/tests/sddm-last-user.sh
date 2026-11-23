@@ -26,7 +26,7 @@ expect "no state file: nobody" "" "$(last)"
 out=$(set_ xa4)
 expect "no state file: written with the user and Omarchy's session" \
   "[Last]|Session=/usr/local/share/wayland-sessions/omarchy.desktop|User=xa4" "$(st)"
-expect "... and said so" "login screen: SDDM's last user is xa4 now (it named nobody), so Omarchy's login screen logs in as xa4" "$out"
+expect "... and said so" "login screen: Omarchy's login screen logs in as xa4 now (SDDM's last user named nobody)" "$out"
 expect "... no temporary file left" "" "$(ls -A "$T/r/var/lib/sddm" | grep -v '^state.conf$')"
 expect "again: nothing to do, nothing said" "" "$(set_ xa4)"
 
