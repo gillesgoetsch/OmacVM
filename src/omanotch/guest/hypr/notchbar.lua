@@ -139,19 +139,26 @@ end)
 -- on a numbered workspace 11 on NOTCH, gone from sight). So it is told by the
 -- output, not by the workspace's name: a window on NOTCH goes back to the
 -- built-in display's workspace at once.
+-- Hyprland 0.56 hands out its windows, workspaces and monitors as userdata,
+-- not tables: a field is read with field(), which never raises for one that
+-- is not there.
+local function field(o, k)
+  if o == nil then return nil end
+  local ok, v = pcall(function() return o[k] end)
+  if ok then return v end
+end
+
 local function notch_workspace(ws)
-  if type(ws) ~= "table" then return false end
-  local name = ws.name or ws.config_name
+  local name = field(ws, "name") or field(ws, "config_name")
   if name == "notch" or name == "name:notch" then return true end
-  local m = ws.monitor
-  return type(m) == "table" and m.name == NOTCH_OUTPUT
+  return field(field(ws, "monitor"), "name") == NOTCH_OUTPUT
 end
 
 local function builtin_workspace()
   for _, m in ipairs(hl.get_monitors()) do
     if m.name == builtin_output() then
-      local aw = m.active_workspace or m.activeWorkspace
-      return aw and (aw.name or aw.id)
+      local aw = field(m, "active_workspace") or field(m, "activeWorkspace")
+      return field(aw, "name") or field(aw, "id")
     end
   end
 end
@@ -163,11 +170,12 @@ end
 hl.on("window.move_to_workspace", function(a, b)
   pcall(function()
     local win, ws = a, b
-    if type(win) == "table" and win.window then win, ws = win.window, win.workspace end
-    if not win or not win.address then return end
-    if not notch_workspace(ws or win.workspace) then return end
+    if field(win, "window") then win, ws = field(win, "window"), field(win, "workspace") end
+    local address = field(win, "address")
+    if not address then return end
+    if not notch_workspace(ws or field(win, "workspace")) then return end
     local target = builtin_workspace()
-    if target then send_back(win.address, target) end
+    if target then send_back(address, target) end
   end)
 end)
 
@@ -178,11 +186,11 @@ local function bring_back()
   pcall(function()
     local target
     for _, w in ipairs(hl.get_windows() or {}) do
-      local m = w.monitor
-      if w.address and ((type(m) == "table" and m.name == NOTCH_OUTPUT) or notch_workspace(w.workspace)) then
+      local address = field(w, "address")
+      if address and (field(field(w, "monitor"), "name") == NOTCH_OUTPUT or notch_workspace(field(w, "workspace"))) then
         target = target or builtin_workspace()
         if not target then return end
-        send_back(w.address, target)
+        send_back(address, target)
       end
     end
   end)
