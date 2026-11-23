@@ -1,6 +1,7 @@
 #!/bin/bash
-# HDR only in full screen and the depth hold (ADR 0074; omacvm-cocoa-hdr-follow-logic.patch,
-# omacvm-cocoa-present-depth-hold.patch, omacvm-cocoa-hdr-follow.patch): the logic patch makes
+# HDR only in full screen and the depth holds (ADR 0074; omacvm-cocoa-hdr-follow-logic.patch,
+# omacvm-cocoa-present-depth-hold.patch, omacvm-cocoa-hdr-follow.patch,
+# omacvm-cocoa-present-depth-first.patch): the logic patch makes
 # ui/omacvm-hdr-follow.h in an empty folder (with omacvm-edr.h from the headroom's logic patch) and
 # test-hdr-follow.c runs against it; then the wiring in ui/cocoa.m. No QEMU, no display.
 #   test-hdr-follow.sh                         (CI: the wiring from the patches)
@@ -27,7 +28,7 @@ if [[ $# -ge 1 ]]; then
 else
   # The patches' new side: context and added lines, without the removed ones.
   m=$work/new.m
-  for p in omacvm-cocoa-present-depth-hold.patch omacvm-cocoa-hdr-follow.patch; do
+  for p in omacvm-cocoa-present-depth-hold.patch omacvm-cocoa-hdr-follow.patch omacvm-cocoa-present-depth-first.patch; do
     awk '/^@@/ {on=1; next} on && /^-/ {next} on {print substr($0, 2)}' "$patches/$p"
   done > "$m"
 fi
@@ -49,6 +50,7 @@ all=$(cat "$m")
 part() { if (( full )); then body "$1"; else cat "$m"; fi; }
 alloc=$(part 'static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linear)')
 present=$(part 'static bool cocoa_gl_present(void)')
+flush=$(part 'static void cocoa_gl_scanout_flush(DisplayChangeListener *dcl,')
 now=$(part 'static double omacvm_edr_now(void)')
 watch=$(part 'static void omacvm_edr_watch(void)')
 layout=$(part 'static void omacvm_send_layout(void)')
@@ -69,6 +71,19 @@ if (( full )); then   # the order needs the whole function (the hunks have only 
   order "the hold comes before the tiles" "$present" 'if (present_held) {' 'if (present_tiles_wanted()'
   held=$(awk '/^    if \(present_held\) \{/ {on=1} on {print} on && /^    }$/ {exit}' <<<"$present")
   has "a held frame is drawn again once the surfaces are made" "$held" 'gl_dirty = true;'
+fi
+# A new depth's first frame (Hyprland's undrawn buffer): held until the guest's next flush, before alloc.
+has "every flush is counted" "$flush" 'present_flushes++;'
+has "the first-frame rule decides" "$present" 'int first = omacvm_hf_first(&present_first, present_surf[0] != NULL, present_deep, deep,'
+has "its timer never at or before now" "$present" 'timer_mod(present_timer, omacvm_hf_hold_due(present_first.since, OMACVM_HF_FIRST_MAX_NS, fnow));'
+has "it can be turned off" "$present" 'getenv("OMACVM_GL_DEPTH_FIRST")'
+has "a first-frame hold is logged" "$present" "a new depth's first frame (%s) held until the guest's next"
+has "a frame drawn by the time limit is logged" "$present" 'no newer frame %d ms after a depth change, the newest drawn'
+if (( full )); then
+  order "the first-frame hold comes before alloc" "$present" 'int first = omacvm_hf_first(' 'if (!cocoa_gl_present_alloc(w, h, deep, linear)) {'
+  first=$(awk '/^        if \(first == OMACVM_HF_FIRST_HOLD\) \{/ {on=1} on {print} on && /^        }$/ {exit}' <<<"$present")
+  has "a first-frame hold keeps the last frame and comes back dirty" "$first" 'gl_dirty = true;'
+  has "a first-frame hold returns before alloc" "$first" 'return true;'
 fi
 # The surfaces' state for the main thread, published by QEMU's thread.
 has "the present publishes PQ surfaces" "$present" 'qatomic_set(&omacvm_hf_pq, hf_pq);'

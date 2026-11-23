@@ -1305,8 +1305,11 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hdr-follow-lo
   die "ui/cocoa.m: an HDR-follow wiring check passes without the patches (test-hdr-follow.sh)"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-depth-hold.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hdr-follow.patch"
+# A new scanout depth's first frame is not drawn (Hyprland attaches an
+# undrawn buffer to its format change): held until the guest's next frame.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-depth-first.patch"
 "$native_dir/Tests/display/test-hdr-follow.sh" "$source_dir/ui/cocoa.m" || \
-  die "ui/cocoa.m: the depth hold or HDR only in full screen is not wired as tested (test-hdr-follow.sh)"
+  die "ui/cocoa.m: the depth hold, the first-frame hold or HDR only in full screen is not wired as tested (test-hdr-follow.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent, and on
 # macOS 27 clamped it to Utility QoS despite the activity.
