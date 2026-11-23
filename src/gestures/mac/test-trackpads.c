@@ -106,12 +106,15 @@ static void drain(int *f, int *a) {
 // time) to whoever started the device macOS has for it now (hw[0]'s entry).
 // A device object of an entry that is gone gets nothing, though it still says
 // it runs: as on the M1 Max. dev: to that object instead (a stray frame).
-static float step;
+// touchState, touchZ: each finger's state and pressure (a finger in contact
+// with pressure, unless a test says otherwise).
+static float step, touchZ = 0.5f;
+static int touchState = 4;
 static void touch(MTDeviceRef dev, int n) {
   MTTouch t[5]; memset(t, 0, sizeof t);
   step += 0.002f;
   for (int i = 0; i < n; i++) {
-    t[i].state = 4; t[i].zTotal = 0.5f; t[i].pathIndex = i + 1;
+    t[i].state = touchState; t[i].zTotal = touchZ; t[i].pathIndex = i + 1;
     t[i].normalized.pos.x = 0.3f + 0.1f * (float)i + step; t[i].normalized.pos.y = 0.5f;
   }
   if (dev) { frameCb(dev, t, n, 0, 0); return; }
@@ -286,6 +289,14 @@ int main(void) {
   check(nPads == 2 && D(padDev())->entry == 0x1e00, "a wake beside a Magic Trackpad: the built-in one's new device taken");
   check(swipeWidth(NULL) == 12400, "... touched next, the guest scales for the built-in one again (124 mm)");
   check(swipeWidth(magic) == 16000, "... and for the Magic Trackpad when it is touched again");
+
+  // The M5 MacBook Pro's trackpad: most fingers in contact read zTotal 0
+  // (#838). They count; a hovering finger without pressure does not.
+  touchZ = 0.0f;
+  check(swipeWidth(NULL) == 12400, "fingers in contact with zTotal 0 (the M5's trackpad): a four-finger swipe reaches the guest");
+  touchState = 2;
+  check(swipe() == 0, "hovering fingers with zTotal 0: not counted");
+  touchState = 4; touchZ = 0.5f;
 
   printf("%s\n", fail ? "FAIL trackpads" : "ok   trackpads: a device macOS made anew (a wake) is taken, the old one let go");
   return fail;
