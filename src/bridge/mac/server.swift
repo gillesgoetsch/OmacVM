@@ -291,7 +291,10 @@ func audioControl(_ path: String, _ body: [String: Any]) throws -> String {
 /// logo on the lid plays, or a new one from a VM. The VM only names a mode
 /// (LogoMode.parse checks it); the Mac plays it.
 func logoRequest(_ fd: Int32, peer: String, method: String, body: Data) {
-  guard let logo = logoLight else { return respond(fd, 409, ["error": "this Mac has no lit Apple logo", "code": "no-logo"]) }
+  guard let logo = logoLight else {
+    if let why = logoUnsupported { return respond(fd, 501, ["error": "the Bridge cannot play this Mac's lit Apple logo: \(why)", "code": "unsupported"]) }
+    return respond(fd, 409, ["error": "this Mac has no lit Apple logo", "code": "no-logo"])
+  }
   let off: [String: Any] = ["error": "the logo light is off on this Mac (logo_light in the Bridge's config.json): omacvm enable logo-light",
                             "code": "off"]
   switch method {

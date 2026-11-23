@@ -50,6 +50,8 @@ EOF
   r=$(logo on ""); is "usage: on with an empty number" "2||-" "${r%|*}"
   is "the Mac has no lit logo: exit 3" "3||{\"mode\": \"off\"}|omacvm-logo: this Mac has no lit Apple logo" \
     "$(FAKE_RC=22 FAKE_OUT='{"error": "this Mac has no lit Apple logo", "code": "no-logo"}' logo off)"
+  is "a macOS the Bridge cannot play it on: exit 1, its words" "1||GET|omacvm-logo: this macOS lacks a call" \
+    "$(FAKE_RC=22 FAKE_OUT='{"error": "this macOS lacks a call", "code": "unsupported"}' logo)"
   is "off on the Mac: exit 1, its words" "1||GET|omacvm-logo: the logo light is off on this Mac" \
     "$(FAKE_RC=22 FAKE_OUT='{"error": "the logo light is off on this Mac", "code": "off"}' logo)"
   is "no Bridge that proves itself: exit 1, the client's words" "1||GET|omacvm-logo: omacvm-bridge: no proof" \

@@ -32,17 +32,16 @@ final class PWMLogo: LogoHardware {
   private let keyboards: [UInt64]
   var onNote: (String, [String: Any]) -> Void = { _, _ in }
 
-  /// This Mac's logo, or why there is none (no bklb-backlight, or a macOS
-  /// without the parts of CoreBrightness this uses).
+  /// This Mac's logo, or why the Bridge cannot play it (LogoMissing).
   static func find() -> Result<PWMLogo, LogoMissing> {
     let pwm = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceNameMatching("bklb-backlight"))
-    guard pwm != 0 else { return .failure(LogoMissing("no bklb-backlight")) }
+    guard pwm != 0 else { return .failure(.absent) }
     guard dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_LAZY) != nil,
           let clientClass = NSClassFromString("BrightnessSystemClient") as? NSObject.Type,
           let configClass = NSClassFromString("PWMConfiguration") as? NSObject.Type,
           let calibrationClass: AnyClass = NSClassFromString("PWMCalibrationManager") else {
       IOObjectRelease(pwm)
-      return .failure(LogoMissing("this macOS's CoreBrightness has no BrightnessSystemClient or PWMCalibrationManager"))
+      return .failure(.unsupported("this macOS's CoreBrightness has no BrightnessSystemClient or PWMCalibrationManager"))
     }
     let client = clientClass.init()
     let config = configClass.init()
@@ -53,7 +52,7 @@ final class PWMLogo: LogoHardware {
           class_getInstanceMethod(calibrationClass, initSel) != nil,
           class_getInstanceMethod(calibrationClass, convertSel) != nil else {
       IOObjectRelease(pwm)
-      return .failure(LogoMissing("this macOS's CoreBrightness lacks a call the logo needs"))
+      return .failure(.unsupported("this macOS's CoreBrightness lacks a call the logo needs"))
     }
     // The calibration corebrightnessd uses for this node: 1000 nits at most, as a percentage of the duty.
     config.perform(setters[0], with: "bklb-backlight")
@@ -63,7 +62,7 @@ final class PWMLogo: LogoHardware {
     guard let fresh = (calibrationClass as AnyObject).perform(NSSelectorFromString("alloc"))?.takeUnretainedValue(),
           let calibration = unsafeBitCast(initIMP, to: InitCalibration.self)(fresh, initSel, pwm, config)?.takeRetainedValue() as? NSObject else {
       IOObjectRelease(pwm)
-      return .failure(LogoMissing("PWMCalibrationManager did not take bklb-backlight"))
+      return .failure(.unsupported("PWMCalibrationManager did not take bklb-backlight"))
     }
     // The keyboard backlight follows corebrightnessd's blank state too (blank).
     var keyboards: [UInt64] = []
@@ -151,7 +150,12 @@ final class PWMLogo: LogoHardware {
   }
 }
 
-struct LogoMissing: Error { let why: String; init(_ why: String) { self.why = why } }
+/// Why the Bridge plays no logo: this Mac has none (no bklb-backlight), or
+/// this macOS's CoreBrightness lacks a part that playing it needs.
+enum LogoMissing: Error {
+  case absent
+  case unsupported(String)
+}
 
 // ---- what plays it ----
 

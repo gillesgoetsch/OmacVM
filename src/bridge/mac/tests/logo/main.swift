@@ -221,7 +221,7 @@ func live(_ steps: [String]) {
   setvbuf(stdout, nil, _IOLBF, 0)
   let found = PWMLogo.find()
   guard case .success(let hw) = found else {
-    if case .failure(let e) = found { print("no lit logo on this Mac: \(e.why)") }
+    if case .failure(let e) = found { print("no logo to play on this Mac: \(e)") }
     exit(3)
   }
   let start = ProcessInfo.processInfo.systemUptime
