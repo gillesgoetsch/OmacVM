@@ -95,3 +95,27 @@ one sRGB.
   into the row's (i) only from this build's own M1 Max A/B/B/A rows.
 - macOS keeps the panel's headroom up about 15 s after the last EDR frame
   whatever QEMU does.
+
+## Addendum (3.5.2): the switch's first frame
+
+The user saw a flicker when leaving full screen. Cause (mini, Hyprland
+0.56.2, guest DRM debug; work/release-3.5.2/hdr-flicker): Hyprland makes the
+format change in a commit that scans out a buffer of its new swapchain it has
+not drawn into yet (`CMonitorState::ensureBufferPresent`, also in 0.57), and
+draws the picture into that same buffer for its next frame, 16-18 ms later.
+There is no modeset blank (mode, active and connectors unchanged). The
+sentence above, "content, format and description change together in the next
+composed frame", holds only from that next frame on. QEMU drew the undrawn
+buffer, because a switch comes at least a second after the last one and gets
+new surfaces at once (the depth hold covers only the surfaces' hold-off).
+
+- QEMU does not draw a new scanout depth's first frame while surfaces of the
+  other depth are there: the window keeps its last frame until the guest's
+  next flush, at most 200 ms, then the newest frame goes on as before
+  (`omacvm-cocoa-present-depth-first.patch`, rule in
+  `ui/omacvm-hdr-follow.h`). Entering full screen gets the same.
+- One frame later at each switch, never a wrong one. `OMACVM_GL_DEPTH_FIRST=0`
+  draws it as before; `OMACVM_TEST_FRAME_LOG=1` logs every frame the present
+  decides on, for the rows.
+- Not in the guest: the undrawn buffer is how Hyprland makes a format change
+  possible; the display agent cannot avoid it.

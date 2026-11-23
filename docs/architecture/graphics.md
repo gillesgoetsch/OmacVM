@@ -1187,7 +1187,10 @@ bench lock and are indications only):
   frame into surfaces of the other colour: in the surfaces' hold-off such a
   frame is held until the right ones are made (also without the switch, with
   HDR). While SDR the guest is told the PQ headroom it had (or the display's
-  most), not the ~1 the panel falls to without EDR.
+  most), not the ~1 the panel falls to without EDR. Hyprland's format change
+  scans out a buffer it has not drawn yet and draws into it one frame later,
+  so a new depth's first frame is held until the guest's next one (at most
+  200 ms; `omacvm-cocoa-present-depth-first.patch`, ADR 0074's addendum).
 - **HDR clients**: an app must hand Hyprland a PQ image description
   (`wp_color_manager_v1`). GStreamer's `waylandsink` does; mpv 0.41 with
   `--gpu-api=opengl` does not (mpv's master does, with `vo=gpu-next`; app
