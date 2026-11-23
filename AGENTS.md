@@ -663,6 +663,7 @@ The less obvious ones, with causes and where the fix lives, are in
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| OmacVM.app: after an Omarchy update to Mesa 26.3 (4.0 VMs on the live ALARM mirror, 2026-11) the desktop is black, `logs/qemu.log` says "failed to dispatch GET_PIPE_RESOURCE_LAYOUT: 22" for Hyprland, Xwayland, quickshell | the runtime told the guest capset bit 19 (the macOS tap's CORE_PROFILE_ONLY); Mesa 26.3 reads it as upstream's QUERY_FORMAT_MODIFIER and asks a layout for every shared texture, which a runtime without GBM refuses: the context is lost | the runtime's `virgl-caps-format-modifier-bit.patch` (bit 19 off; `Tests/virgl/test-caps-format-modifier.c`); update the app, then restart the VM |
 | Black screen at start, journal: `Couldn't open a GBM device` | partial update: Mesa newer than its LLVM (`ldd /usr/lib/gbm/dri_gbm.so` shows "not found") | full `pacman -Syu`, or `pacman -U` the old Mesa from the cache; `src/guest/gbm-guard test` (docs/troubleshooting.md, 27) |
 | `omacvm apply`/`enable`/`disable`/`update`: "has OmacVM X, this omacvm is Y ... does not go back" (exit 3) | an older omacvm runs (an old `~/.omacvm` checkout first on the PATH, beside a newer OmacVM.app) | the app's own `Contents/Resources/omacvm/omacvm`, or `omacvm update` first; `--allow-downgrade` only to go back on purpose |
 | `omacvm check`: Omanotch not connected, Mac log says "another guest is connected" | Omanotch serves one VM at a time | close or stop `notchcast` in the other VM |
