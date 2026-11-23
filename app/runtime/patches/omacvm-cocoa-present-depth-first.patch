@@ -1,0 +1,174 @@
+From: OmacVM
+Subject: [PATCH] cocoa: a new scanout depth's first frame is not drawn
+
+What: when the guest's scanout changes depth (8 <-> 10 bit) while
+surfaces of the other depth are there, its first frame in the new depth
+is not drawn: the window keeps its last frame until the guest's next
+frame (a newer flush), at most OMACVM_HF_FIRST_MAX_NS (200 ms), then the
+newest frame goes on as before (new surfaces, the colour hold, the
+queue, the tiles). One hold per new depth. qemu.log: "cocoa: present: a
+new depth's first frame (8-bit|10-bit) held until the guest's next (N
+this run)", the first and every 100th; "no newer frame 200 ms after a
+depth change, the newest drawn" when the time limit draws it.
+OMACVM_GL_DEPTH_FIRST=0 draws it as before. Test hook
+OMACVM_TEST_FRAME_LOG=1: one qemu.log line per frame the present
+decides on (flush, scanout, depth, held or drawn, 9 points of the
+guest's picture read from its texture), for counting wrong frames.
+
+Why: with "HDR only in full screen" (ADR 0074) the guest's display
+agent switches the main output between 8-bit sRGB and 10-bit PQ. Hyprland
+(0.56 and 0.57) makes that format change in a commit that carries a
+buffer of its new swapchain it has not drawn into yet
+(CMonitorState::ensureBufferPresent: "attaching one from the swapchain
+for modeset being possible", then rollback), and draws the picture into
+the same buffer for its next frame, about one refresh later (mini, guest
+DRM debug: the switch's commit and the drawn one 16-18 ms apart, the
+same FB, at all 10 switches). The switch comes at least a second after
+the last one, so QEMU made the new surfaces at once and drew that buffer:
+a flash at every switch, most visible when leaving full screen (the
+still desktop, 2 s after the window left it).
+
+Threads: QEMU's thread (BQL), as the present and the scanout callbacks.
+
+Upstream: OmacVM only (IOSurface present). The undrawn buffer is
+Hyprland's; not reported.
+Test: app/runtime/Tests/display/test-hdr-follow.sh (the rule in
+test-hdr-follow.c, the wiring; --self-test fails on the code before).
+
+Applies after omacvm-cocoa-hdr-follow.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -8880,6 +8880,17 @@
+ static bool present_held;
+ static uint64_t present_holds;         /* frames held this run (for the log) */
+ /*
++ * OmacVM: a new scanout depth's first frame is not drawn: Hyprland's format
++ * change scans out a buffer it has not drawn into yet
++ * (ui/omacvm-hdr-follow.h, 3.). The guest's flushes (each a new frame), the
++ * hold, and its switch (OMACVM_GL_DEPTH_FIRST=0: drawn as before). QEMU
++ * thread.
++ */
++static uint64_t present_flushes;
++static OmacvmHfFirst present_first;
++static uint64_t present_first_holds;   /* this run (for the log) */
++static int present_first_on = -1;      /* -1 not read yet */
++/*
+  * OmacVM, HDR only in full screen (ADR 0074, ui/omacvm-hdr-follow.h).
+  * Threads: omacvm_hf_switch is the main thread's (the app's key, read and
+  * watched there); QEMU's thread publishes the surfaces' state after each
+@@ -10167,7 +10178,50 @@
+     present_last_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+     return nt;
+ }
++
++/*
++ * OmacVM test hook OMACVM_TEST_FRAME_LOG=1: a qemu.log line per frame the
++ * present decides on: the guest's flush, its scanout, depth, what was done,
++ * and 9 points of the guest's picture (mean of R, G, B; how many are black)
++ * read from its texture (never from a surface). For counting wrong frames
++ * at a depth switch; each line costs 9 GPU round trips. QEMU thread,
++ * present_ctx current.
++ */
++static void omacvm_frame_log(GLuint src, uint32_t w, uint32_t h, bool deep, const char *what)
++{
++    static int on = -1;
++    static GLuint fbo;
+ 
++    if (on < 0) {
++        const char *e = getenv("OMACVM_TEST_FRAME_LOG");
++        on = e && !strcmp(e, "1");
++    }
++    if (on != 1 || !src || !w || !h) {
++        return;
++    }
++    if (!fbo) {
++        glGenFramebuffers(1, &fbo);
++    }
++    GLint old = 0;
++    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &old);
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
++    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src, 0);
++    double sum = 0;
++    int black = 0;
++    for (int j = 1; j <= 5; j += 2) {
++        for (int i = 1; i <= 5; i += 2) {
++            GLfloat px[4] = { 0 };
++            glReadPixels(w * i / 6, h * j / 6, 1, 1, GL_RGBA, GL_FLOAT, px);
++            sum += (px[0] + px[1] + px[2]) / 3;
++            black += px[0] < 0.004f && px[1] < 0.004f && px[2] < 0.004f;
++        }
++    }
++    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, old);
++    info_report("cocoa: frame: flush %" PRIu64 " scanout %u %s, %s, probe mean %.4f black %d/9",
++                present_flushes, gl_scanout_id, deep ? "10-bit" : "8-bit", what, sum / 9, black);
++}
++
+ /* QEMU thread, BQL held. Returns false when nothing could be shown. */
+ static bool cocoa_gl_present(void)
+ {
+@@ -10267,6 +10321,42 @@
+                     pq && linear ? ", HDR (PQ) with extra brightness" :
+                     pq ? ", HDR (PQ)" : linear ? ", extra brightness" : "");
+         deep_logged = deep + 2 * linear;
++    }
++    /*
++     * OmacVM: the first frame in a new scanout depth is not drawn. Hyprland
++     * attaches a buffer of its new swapchain to the format change and draws
++     * into it for its next frame (ui/omacvm-hdr-follow.h, 3.): the window
++     * keeps its last frame until the guest's next flush, at most
++     * OMACVM_HF_FIRST_MAX_NS. Before alloc, so before the colour hold, the
++     * queue and the tiles.
++     */
++    if (present_first_on < 0) {
++        const char *e = getenv("OMACVM_GL_DEPTH_FIRST");
++        present_first_on = !(e && !strcmp(e, "0"));
++        if (!present_first_on) {
++            info_report("cocoa: present: a new depth's first frame is drawn (OMACVM_GL_DEPTH_FIRST=0)");
++        }
++    }
++    if (src && present_first_on) {
++        int64_t fnow = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++        int first = omacvm_hf_first(&present_first, present_surf[0] != NULL, present_deep, deep,
++                                    present_flushes, fnow);
++        if (first == OMACVM_HF_FIRST_HOLD) {
++            if (present_first.since == fnow &&
++                (++present_first_holds == 1 || present_first_holds % 100 == 0)) {
++                info_report("cocoa: present: a new depth's first frame (%s) held until the guest's next "
++                            "(%" PRIu64 " this run)", deep ? "10-bit" : "8-bit", present_first_holds);
++            }
++            omacvm_frame_log(src, w, h, deep, "held (a new depth's first)");
++            timer_mod(present_timer, omacvm_hf_hold_due(present_first.since, OMACVM_HF_FIRST_MAX_NS, fnow));
++            CGLSetCurrentContext(prev);
++            gl_dirty = true;
++            return true;
++        }
++        if (first == OMACVM_HF_FIRST_LATE) {
++            info_report("cocoa: present: no newer frame %d ms after a depth change, the newest drawn",
++                        (int)(OMACVM_HF_FIRST_MAX_NS / SCALE_MS));
++        }
+     }
+     if (!cocoa_gl_present_alloc(w, h, deep, linear)) {
+         if (!(deep || linear) || !cocoa_gl_present_alloc(w, h, false, false)) {
+@@ -10305,10 +10395,12 @@
+             info_report("cocoa: present: a %s frame held until its surfaces are made "
+                         "(%" PRIu64 " this run)", deep ? "PQ" : "sRGB", present_holds);
+         }
++        omacvm_frame_log(src, w, h, deep, "held (other colour)");
+         CGLSetCurrentContext(prev);
+         gl_dirty = true;
+         return true;
+     }
++    omacvm_frame_log(src, w, h, deep, present_deep == deep ? "drawn" : "drawn (other depth)");
+     /*
+      * The surfaces there are decide how to draw, not the switch: during
+      * the hold-off (alloc) a frame of the other kind goes into them, and
+@@ -11473,6 +11565,7 @@
+     omacvm_gp_guest_frame();    /* the guest's first frames after a pause (guest-pause patch) */
+     gl_dirty = true;
+     omacvm_hold_dirty = true;
++    present_flushes++;          /* a new frame (a new depth's first frame is held until the next) */
+     /* What changed, for the surfaces' next draws (partial present). */
+     omacvm_pd_add(&present_pd, x, y, w, h);
+     present_pd_unflushed = false;

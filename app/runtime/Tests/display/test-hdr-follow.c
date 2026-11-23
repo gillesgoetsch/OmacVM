@@ -117,6 +117,43 @@ int main(void)
     s.depth_ns = t;
     check(present(&s, true, false, false, t + 100 * MS) == SCALED, "without HDR a 10-bit frame goes into 8-bit surfaces as before");
 
+    /*
+     * A new depth's first frame (Hyprland's undrawn buffer): held until the
+     * guest's next flush, at most OMACVM_HF_FIRST_MAX_NS. As measured on the
+     * mini (Hyprland 0.56.2): the switch's frame at flush 10, the drawn one
+     * in the same buffer at flush 11, 18 ms later.
+     */
+    OmacvmHfFirst f = { 0 };
+    check(omacvm_hf_first(&f, false, false, true, 1, t) == OMACVM_HF_FIRST_DRAW, "no surfaces yet: drawn");
+    check(omacvm_hf_first(&f, true, true, true, 2, t) == OMACVM_HF_FIRST_DRAW, "same depth: drawn");
+    check(omacvm_hf_first(&f, true, true, false, 10, t) == OMACVM_HF_FIRST_HOLD, "leaving PQ: the first 8-bit frame is held");
+    check(omacvm_hf_first(&f, true, true, false, 10, t + 5 * MS) == OMACVM_HF_FIRST_HOLD, "the same frame again (a tick): still held");
+    check(omacvm_hf_first(&f, true, true, false, 11, t + 18 * MS) == OMACVM_HF_FIRST_DRAW, "the guest's next frame: drawn");
+    check(omacvm_hf_first(&f, true, true, false, 12, t + 20 * MS) == OMACVM_HF_FIRST_DRAW,
+          "still PQ surfaces (the colour hold-off): never held twice");
+    check(omacvm_hf_first(&f, true, false, false, 13, t + 30 * MS) == OMACVM_HF_FIRST_DRAW, "8-bit surfaces: drawn");
+    check(omacvm_hf_first(&f, true, false, true, 20, t + 2 * S) == OMACVM_HF_FIRST_HOLD, "entering PQ: the first 10-bit frame is held");
+    check(omacvm_hf_first(&f, true, false, true, 21, t + 2 * S + 17 * MS) == OMACVM_HF_FIRST_DRAW, "and the next one drawn");
+    /* No newer frame: the newest is drawn at the time limit, once. */
+    f = (OmacvmHfFirst){ 0 };
+    check(omacvm_hf_first(&f, true, false, true, 30, t) == OMACVM_HF_FIRST_HOLD, "held");
+    check(omacvm_hf_first(&f, true, false, true, 30, t + OMACVM_HF_FIRST_MAX_NS - 1) == OMACVM_HF_FIRST_HOLD,
+          "held until the time limit");
+    check(omacvm_hf_first(&f, true, false, true, 30, t + OMACVM_HF_FIRST_MAX_NS) == OMACVM_HF_FIRST_LATE,
+          "drawn at the time limit (LATE)");
+    check(omacvm_hf_first(&f, true, false, true, 30, t + OMACVM_HF_FIRST_MAX_NS + 1) == OMACVM_HF_FIRST_DRAW,
+          "then drawn");
+    check(omacvm_hf_hold_due(t, OMACVM_HF_FIRST_MAX_NS, t + 300 * MS) > t + 300 * MS, "its timer never in the past");
+    /* Back to the surfaces' depth before the next frame: drawn; a new change holds again. */
+    f = (OmacvmHfFirst){ 0 };
+    check(omacvm_hf_first(&f, true, true, false, 40, t) == OMACVM_HF_FIRST_HOLD, "8-bit first frame held");
+    check(omacvm_hf_first(&f, true, true, true, 41, t + 10 * MS) == OMACVM_HF_FIRST_DRAW, "PQ again: drawn");
+    check(omacvm_hf_first(&f, true, true, false, 42, t + 20 * MS) == OMACVM_HF_FIRST_HOLD, "a new change: held again");
+    /* While the hold is on, the other depth (the guest switched back) is a change of its own. */
+    f = (OmacvmHfFirst){ 0 };
+    check(omacvm_hf_first(&f, true, false, true, 50, t) == OMACVM_HF_FIRST_HOLD, "10-bit held in 8-bit surfaces");
+    check(omacvm_hf_first(&f, true, false, false, 51, t + 5 * MS) == OMACVM_HF_FIRST_DRAW, "8-bit again: drawn");
+
     /* The headroom the guest is told. */
     OmacvmHfEdr h = { .held = -1 };
     near(omacvm_hf_edr(&h, 1, 1.2, 16, false, true, 0, 0), 16, "SDR first: the display's most");

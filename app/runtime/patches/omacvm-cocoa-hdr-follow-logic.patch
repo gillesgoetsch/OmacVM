@@ -22,7 +22,7 @@ diff --git a/ui/omacvm-hdr-follow.h b/ui/omacvm-hdr-follow.h
 new file mode 100644
 --- /dev/null
 +++ b/ui/omacvm-hdr-follow.h
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,173 @@
 +/*
 + * OmacVM, HDR only in full screen (experimental, ADR 0074): the rules
 + * without AppKit, tested on their own
@@ -33,7 +33,7 @@ new file mode 100644
 + * switch hdrFullScreenOnly the guest's display agent runs the main window's
 + * output 8-bit sRGB while no window there is in full screen, and today's
 + * 10-bit PQ while one is (omacvm-displays, omacvm-display-sync). So each
-+ * frame carries its own colour; two things are left for QEMU:
++ * frame carries its own colour; three things are left for QEMU:
 + *
 + * 1. A frame is never drawn into surfaces of the other colour. New surfaces
 + *    for a new depth are made at once (omacvm-cocoa-hdr-headroom.patch), but
@@ -137,6 +137,62 @@ new file mode 100644
 +        h->held = v;
 +    }
 +    return v;
++}
++
++/*
++ * 3. A new scanout depth's first frame is not shown. Hyprland changes an
++ *    output's format (8 <-> 10 bit, the switch above) in a commit that
++ *    carries a buffer of its new swapchain it has not drawn into yet
++ *    (CMonitorState::ensureBufferPresent, 0.56 and 0.57), and draws the
++ *    picture into that same buffer for its next frame, about one refresh
++ *    later. Shown, that buffer was a flash at every switch (not the
++ *    desktop). So while surfaces of the other depth are there, the window
++ *    keeps its last frame until the guest's next frame (a newer flush) or
++ *    OMACVM_HF_FIRST_MAX_NS, whichever comes first; then the newest frame
++ *    goes on as before. One hold per new depth: once over, nothing more is
++ *    held until the surfaces have that depth.
++ */
++#define OMACVM_HF_FIRST_MAX_NS 200000000LL
++
++enum { OMACVM_HF_FIRST_DRAW, OMACVM_HF_FIRST_HOLD, OMACVM_HF_FIRST_LATE };
++
++typedef struct OmacvmHfFirst {
++    bool on;            /* a frame of a new depth was seen ... */
++    bool deep;          /* ... of this depth */
++    bool over;          /* its hold is over */
++    uint64_t flush;     /* the guest's flush it came with */
++    int64_t since;      /* when it was seen */
++} OmacvmHfFirst;
++
++/*
++ * What happens to a frame: drawn, held, or drawn because the time limit
++ * is over (LATE: the guest sent nothing newer). surfaces: there are some,
++ * of depth surf_deep; frame_deep: this frame's; flush: the guest's flushes
++ * so far.
++ */
++static inline int omacvm_hf_first(OmacvmHfFirst *f, bool surfaces, bool surf_deep, bool frame_deep,
++                                  uint64_t flush, int64_t now)
++{
++    if (!surfaces || surf_deep == frame_deep) {
++        f->on = false;
++        return OMACVM_HF_FIRST_DRAW;
++    }
++    if (!f->on || f->deep != frame_deep) {
++        f->on = true;
++        f->deep = frame_deep;
++        f->over = false;
++        f->flush = flush;
++        f->since = now;
++        return OMACVM_HF_FIRST_HOLD;
++    }
++    if (f->over) {
++        return OMACVM_HF_FIRST_DRAW;
++    }
++    if (flush == f->flush && now - f->since < OMACVM_HF_FIRST_MAX_NS) {
++        return OMACVM_HF_FIRST_HOLD;
++    }
++    f->over = true;
++    return flush == f->flush ? OMACVM_HF_FIRST_LATE : OMACVM_HF_FIRST_DRAW;
 +}
 +
 +#endif
