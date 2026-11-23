@@ -144,6 +144,12 @@ func player() {
   run(&p, hw, 10, 12, .on(percent: 50))
   check(hw.darks == 1 && !hw.on, "a write of ours after macOS's sleep: switched off within a second")
 
+  // The PWM switched on but shows no high period: nothing to fade from, so on waits and writes nothing.
+  hw = FakeLogo(); p = LogoPlayer()
+  hw.high = -1
+  run(&p, hw, 0, 10, .on(percent: 50))
+  check(hw.writes.isEmpty && p.phase == .waiting, "no high period on the PWM: on waits, no write (\(hw.writes.first?.tick ?? 0))")
+
   // auto -> off: corebrightnessd blanks it; a wake makes it lit again, so off blanks again; off -> auto unblanks.
   hw = FakeLogo(); p = LogoPlayer()
   run(&p, hw, 0, 10, .off)
