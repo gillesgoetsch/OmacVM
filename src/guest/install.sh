@@ -369,6 +369,10 @@ else
   done < <(sddm_autologin_others)
   [[ -z $(sddm_autologin_user) ]] || log "autologin: SDDM still logs $(sddm_autologin_user) in (/etc/sddm.conf or /usr/lib/sddm/sddm.conf.d): remove [Autologin] there"
 fi
+# Omarchy's login screen logs in as SDDM's last user: one that names nobody
+# (a new VM nobody logged in to yet) gets the desktop user (#837).
+r=$(sddm_last_user_set "$U") || r="login screen: SDDM's last user could not be set ($SDDM_STATE)"
+[[ -z $r ]] || log "$r"
 
 # Omarchy's idle screensaver and lock: its own "Stay Awake" switch turns both
 # off (the shell watches the file). The marker remembers that OmacVM set it, so
