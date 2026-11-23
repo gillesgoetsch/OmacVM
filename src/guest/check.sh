@@ -1331,7 +1331,15 @@ if [[ -f /usr/local/share/omacvm/guest/autologin.sh ]]; then
   source /usr/local/share/omacvm/guest/autologin.sh; al=$(sddm_autologin_user)
 else al=""; [[ -f /etc/sddm.conf.d/20-omacvm-autologin.conf ]] && al=$U; fi
 if [[ -n $al ]]; then ok "autologin" "on: SDDM logs $al in"
-else ok "autologin" "off"; fi
+else
+  ok "autologin" "off"
+  # Omarchy's login screen sends SDDM's last user's name (#837); the VM's copy
+  # of autologin.sh before 3.5.2 cannot tell.
+  if declare -F sddm_last_user >/dev/null && [[ -d /var/lib/sddm ]]; then
+    lu=$(sddm_last_user)
+    sddm_is_user "$lu" || warn "login screen" "names no user (SDDM's last user: ${lu:-none}): Omarchy's login screen sends an empty user name, so no password works; Update VM in OmacVM.app sets it to $U"
+  fi
+fi
 FEATURE=mac-clock
 if [[ $MAC_CLOCK == on ]]; then
   f=$(jq -r '.bar.layout.right[-1] | select(.id == "omarchy.clock") | .format' "$H/.config/omarchy/shell.json" 2>/dev/null)

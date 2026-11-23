@@ -405,6 +405,9 @@ jobs:
       - name: Feature state truth (the record against the fast network and SDDM autologin)
         run: src/tests/feature-truth.sh
 
+      - name: Omarchy's login screen names the VM's user (SDDM's last user, #837); install.sh sets it, check.sh warns while it names nobody
+        run: src/tests/sddm-last-user.sh
+
       - name: After an update from an older OmacVM (Textual without pacman, the Vulkan driver's words)
         run: src/tests/upgrade-path.sh
 
