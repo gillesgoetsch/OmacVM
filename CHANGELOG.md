@@ -3,14 +3,45 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## Unreleased
+## 3.5.2
 
-- **Scroll momentum: Chrome scrolls as far as macOS again.** Chromium's field trial config, which
-  Chrome for Testing applies, turns on `WaylandUnscaledTouchpadScrolling`, and a two-finger scroll
-  then moved the page a fifth of what macOS moves it. Scroll momentum now turns that feature off in
-  the flags files where it puts `--disable-smooth-scrolling` (restart Chromium once). T3 Code, an
-  Electron app, gets the scroll factor of the other Chromium-based apps: it scrolled 3.7 times as
-  far as macOS.
+No flash at the HDR switch, brightness that stays put after sleep, a login fix for new VMs, and
+gesture fixes for the newest MacBook Pros.
+
+- **HDR only in full screen: no flash at the switch.** When the VM's display switched between SDR
+  and HDR (leaving or entering full screen), one black frame showed: Hyprland's first frame after
+  the switch was not drawn yet. OmacVM now keeps the last picture until the VM's next frame (at
+  most 200 ms). Needs the app update.
+- **Brightness after sleep**: after the Mac or its display woke, the brightness could run to full
+  bright or full dark, and the brightness keys seemed stuck until it was set in macOS. OmacVM Bridge
+  repeated a held brightness key until the key's release came, and a release lost around a wake
+  let it run through the whole range. A held key now repeats only while the keyboard still reads it
+  down; sleep, wake and the lock screen end any held key; a key on a sleeping display is left to
+  macOS. Needs the app update.
+- **Login on a new VM** (#837, reported by @xa4): a VM made with "Build it yourself" had no saved
+  user for the login screen, and Omarchy's login screen has no user name field, so no password
+  worked with autologin off. Setting up the VM now saves its user when none is saved; an existing
+  VM gets it at its next Update VM, and `omacvm check` warns while it is missing.
+- **Omanotch: no window stays on the hidden NOTCH output** (#848, reported by @dandomin): windows
+  on a numbered workspace that landed on the notch output stayed there, out of sight. They now go
+  back to the built-in display, whatever the workspace is called.
+- **Gestures on the M5 MacBook Pro** (#838 and #839 by @mlamoure): its trackpad reports most
+  fingers in contact with no pressure, so four-finger swipes did nothing. A finger in contact now
+  counts whatever its pressure.
+- **Gestures: swiping on into the VM** (#841 and #842 by @mlamoure): a swipe from macOS's desktops
+  on into the VM's workspaces now carries on instead of bouncing until the fingers rest.
+- **Gestures: no late step after a swipe out** (#840 by @mlamoure): when you swiped again right
+  after a swipe out to macOS, the helper could move you a second time the wrong way.
+- **Gestures: the touch display is not a trackpad** (#846 by @mlamoure, part of #843): on a MacBook
+  Pro with the touch display, the helper no longer takes the display for a second trackpad.
+- **Scroll momentum: Chrome scrolls as far as macOS again** (#851 by @rubas). Chromium's field trial
+  config, which Chrome for Testing applies, turns on `WaylandUnscaledTouchpadScrolling`, and a
+  two-finger scroll then moved the page a fifth of what macOS moves it. Scroll momentum now turns
+  that feature off in the flags files where it puts `--disable-smooth-scrolling` (restart Chromium
+  once). T3 Code, an Electron app, gets the scroll factor of the other Chromium-based apps: it
+  scrolled 3.7 times as far as macOS.
+- **Omanotch check** (#850 by @rubas): when the bar copy's folder has no `Bar.qml`, `omacvm check`
+  says the copy is missing instead of "back".
 
 ## 3.5.1
 
