@@ -157,11 +157,15 @@ static CGEventFlags fakeHeld(void) {
   return 0;
 }
 static CGPoint fakePointer(void) { return pointer; }
+// "macOS" slides this Space in (a swipe into it, not landed yet: the display's
+// current Space is still the one before); its app's window shows meanwhile.
+static uint64_t slideTo;
 // The VM's on-screen windows: full screen on each display that shows its Space.
 static int fakeVMWindows(pid_t pid, CGRect *out, int cap) {
   int k = 0;
   if (pid == hiddenPid) return 0;
-  for (int i = 0; i < nWorld && k < cap; i++) if (owner[world[i].cur] == pid) out[k++] = world[i].b;
+  for (int i = 0; i < nWorld && k < cap; i++)
+    if (owner[world[i].cur] == pid || (slideTo && owner[slideTo] == pid && idx(&world[i], slideTo) >= 0)) out[k++] = world[i].b;
   return k;
 }
 static pid_t fakeTopApp(CGRect b, pid_t skip, CGWindowID *win) {
@@ -1638,6 +1642,82 @@ int main(void) {
     soOn = 0; swipeOutLook(); guestGot();
     check(!clients[0].waysKnown, "fingers: SwipeOut off: what the guest said is forgotten (G too)");
     soOn = 1; swipeOutLook(); guestGot(); guestLine(clients[0].fd, g0, "E right left"); takeLook();
+
+    // Swipe in: macOS says the Space changed (and puts the VM in front) only once its slide has
+    // stopped; swipes on into the workspaces were macOS's until then, bouncing at the VM's Space
+    // (user, 2026-11-20: "it resists. You have to stop, pause, and then swipe again"). The capture
+    // comes on at the lift while macOS still slides.
+    {
+      guestLine(clients[0].fd, g0, "E - left");   // fingers left: the guest's workspace swipe
+      front = terminal; world[0].cur = 101; settle(vm, NET_APP); guestGot();
+      check(!capturing && !strcmp(gotOther, "S off|"), "swipe in: in macOS on Desktop 1, not captured");
+      nDockEv = 0;
+      slideTo = 102;   // fingers left: macOS slides the VM's Space (on the right) in
+      padSwipe(4, 0.6, 0.45, 12); padLift(); guestGot();
+      check(capturing && swipeIn.until > 0 && !strcmp(gotOther, "S on|") && gotFrames == 0 && !nDockEv && world[0].cur == 101 && front == terminal,
+            "swipe in: the lift of a swipe macOS finishes, the VM's window sliding in: captured at once (S on), before macOS says it landed");
+      settle(vm, NET_APP); guestGot();
+      check(capturing && !gotOther[0], "swipe in: ... the capture check holds it while macOS still slides (Terminal still in front)");
+      padSwipe(4, 0.6, 0.3, 30); padLift(); guestGot();
+      check(gotFrames == 31 && gotLifts == 1 && !nDockEv && capturing, "swipe in: ... the next swipe on: the guest's workspace swipe, nothing to macOS");
+      world[0].cur = 102; front = vm; slideTo = 0; settle(vm, NET_APP); guestGot();
+      check(capturing && !swipeIn.until && !gotOther[0], "swipe in: ... macOS lands, the VM in front: captured as usual, nothing more sent");
+
+      // Back out while macOS still slides: a swipe out, the Mac's.
+      front = terminal; world[0].cur = 101; settle(vm, NET_APP); guestGot();
+      slideTo = 102; padSwipe(4, 0.6, 0.45, 12); padLift(); guestGot();
+      check(capturing && takeDisp.ok && takeDisp.vmSpace == 102 && takeDisp.left,
+            "swipe in: captured while sliding: the capture check counts the VM's Space (Desktop 1 on its left), not the current one");
+      nDockEv = 0;
+      padSwipe(4, 0.3, 0.6, 30); padLift(); guestGot();
+      check(dockLast() == kSwipeEnded && !capturing && gotFrames == 0, "swipe in: ... fingers right at once: macOS's swipe back to Desktop 1, the guest gets none of it");
+      slideTo = 0; settle(vm, NET_APP); guestGot(); settleSteps(); guestGot();
+      check(!capturing && !swipeIn.until, "swipe in: ... out again, nothing held");
+
+      // Not macOS's way into the VM: nothing taken.
+      front = terminal; world[0].cur = 101; settle(vm, NET_APP); guestGot();
+      slideTo = 102; padSwipe(4, 0.6, 0.5, 20); padSwipe(4, 0.5, 0.56, 10); padLift(); guestGot();
+      check(!capturing && !swipeIn.until, "swipe in: pulled back before the lift (macOS slides back): not captured");
+      padSwipe(4, 0.6, 0.55, 40); for (int i = 0; i < 10; i++) pad(4, 0.55, 0.5);
+      padLift(); guestGot();
+      check(!capturing, "swipe in: slow and short, then still (macOS slides back): not captured");
+      padSwipe(4, 0.4, 0.55, 12); padLift(); guestGot();
+      check(!capturing, "swipe in: fingers right on Desktop 1 (toward no Space): not captured");
+      slideTo = 0; padSwipe(4, 0.6, 0.45, 12); padLift(); guestGot();
+      check(!capturing, "swipe in: the VM's window not sliding in (macOS did not move): not captured");
+      threeDrag = 1; slideTo = 102; padSwipe(3, 0.6, 0.45, 12); padLift(); guestGot();
+      check(!capturing, "swipe in: three fingers with Three Finger Drag (macOS's drag): not captured");
+      threeDrag = 0;
+
+      // Taken, but macOS slides the VM's Space away after all, or never lands: off again.
+      padSwipe(4, 0.6, 0.45, 12); padLift(); guestGot();
+      check(capturing, "swipe in: taken again");
+      slideTo = 0; settle(vm, NET_APP); guestGot();
+      check(!capturing && !swipeIn.until && !strcmp(gotOther, "S off|"), "swipe in: ... the VM's window gone (macOS slid back): capture off");
+      double wait0 = swipeInWait; swipeInWait = 0.03;
+      slideTo = 102; padSwipe(4, 0.6, 0.45, 12); padLift(); guestGot();
+      usleep(40000); settle(vm, NET_APP); guestGot();
+      check(!capturing && !swipeIn.until, "swipe in: ... the VM never comes to the front: capture off after the wait");
+      swipeInWait = wait0;
+
+      // From the right: fingers right show the Space on the left.
+      front = safari; world[0].cur = 103; settle(vm, NET_APP); guestGot();
+      slideTo = 102; padSwipe(4, 0.4, 0.55, 12); padLift(); guestGot();
+      check(capturing && swipeIn.until > 0, "swipe in: from the Space on the right, fingers right: captured");
+      world[0].cur = 102; front = vm; slideTo = 0; settle(vm, NET_APP); guestGot();
+
+      // Chained across Spaces: macOS's current Space is still the first one.
+      const uint64_t chain[] = { 101, 104, 102 };
+      layout(1, chain, 3, NULL, 0); owner[104] = safari; winOn[104] = 44;
+      front = terminal; world[0].cur = 101; settle(vm, NET_APP); guestGot();
+      padSwipe(4, 0.6, 0.45, 12); padLift(); guestGot();
+      check(!capturing, "swipe in, chained: the first swipe (Desktop 1 to 2, the VM's window not shown): not captured");
+      slideTo = 102; padSwipe(4, 0.6, 0.45, 12); padLift(); guestGot();
+      check(capturing && swipeIn.space == 102, "swipe in, chained: the next one, the VM's window sliding in (two Spaces on): captured");
+      world[0].cur = 102; front = vm; slideTo = 0; settle(vm, NET_APP); guestGot();
+      layout(1, three3, 3, NULL, 0); world[0].cur = 102; settle(vm, NET_APP); guestGot();
+      guestLine(clients[0].fd, g0, "E right left"); takeLook();
+    }
 
     // Two displays with "all": the fingers' display follows them, the other one the shortcut.
     const uint64_t in2[] = { 201, 202 }, out2[] = { 301, 302 };
