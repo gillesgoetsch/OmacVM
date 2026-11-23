@@ -190,6 +190,7 @@ end
 local function bring_back_soon() hl.timer(bring_back, { timeout = 1, type = "oneshot" }) end
 hl.on("window.open", bring_back_soon)
 hl.on("workspace.active", bring_back_soon)
+hl.on("workspace.move_to_monitor", bring_back_soon)
 
 -- The overlap with the built-in display is deliberate (see above), but
 -- Hyprland warns about any overlapping monitors after every layout change

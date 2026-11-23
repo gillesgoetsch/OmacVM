@@ -87,8 +87,11 @@ check("move to a workspace on the built-in display: left alone", moved("0xc3") =
 -- workspace event brings them back.
 load({})
 windows = { { address = "0xd1", monitor = NOTCH, workspace = { id = 3, name = "3", monitor = NOTCH } } }
-fire("workspace.active")
+fire("workspace.move_to_monitor")
 check("a workspace moved to NOTCH: its window comes back", moved("0xd1") and moved("0xd1").workspace == "1")
+moves = {}
+fire("workspace.active")
+check("... and at the next workspace change too", moved("0xd1") ~= nil)
 moves = {}
 windows = { { address = "0xd2", monitor = V1, workspace = { id = 1, name = "1", monitor = V1 } } }
 fire("window.open")
