@@ -1949,7 +1949,7 @@ grep -q 'if (!vkr_device_restart_ok(ctx)) {' "$virgl_source/src/venus/vkr_device
 # shared texture, which this build refuses: every desktop GL context was lost. After the
 # context-loss patch, whose context holds the define.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-caps-format-modifier-bit.patch"
-! grep -q 'CORE_PROFILE_ONLY' "$virgl_source/src/virgl_hw.h" "$virgl_source/src/vrend/vrend_renderer.c" && \
+! grep -q 'VIRGL_CAP_V2_CORE_PROFILE_ONLY' "$virgl_source/src/virgl_hw.h" "$virgl_source/src/vrend/vrend_renderer.c" && \
   ! grep -q 'QUERY_FORMAT_MODIFIER;' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vrend_renderer.c: the guest is still told capset bit 19 (caps-format-modifier-bit patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
