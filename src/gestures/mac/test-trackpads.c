@@ -319,6 +319,7 @@ int main(void) {
   touchState = 2;
   check(swipe() == 0, "hovering fingers with zTotal 0: not counted");
   touchState = 4; touchZ = 0.5f;
+  swipeWidth(magic);   // the Magic Trackpad touched last again, as the touch display's check expects
 
   // The MacBook Pro's touch display (macOS 27): MultitouchSupport lists it,
   // built in and 346 x 226 mm ("Kiwi", family 1), its HID usage a touch screen.
