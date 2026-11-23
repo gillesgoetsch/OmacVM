@@ -1018,7 +1018,7 @@ jobs:
           src/ime/tests/build-addon.sh
           src/ime/tests/run.sh
 
-      - name: Hyprland Lua files parse (omacvm_app.lua), and keep the outputs' rules over a config reload
+      - name: Hyprland Lua files parse (omacvm_app.lua), and keep the outputs' rules over a config reload; no window stays on Omanotch's NOTCH output (#848)
         run: |
           # Hyprland 0.56 runs Lua 5.5 (a loop variable is read-only there; 5.4 accepts it)
           # www.lua.org's download fails now and then: retries, then PUC-Rio's copy of
@@ -1034,6 +1034,7 @@ jobs:
           /tmp/lua-5.5.0/src/luac -p src/app/guest/omacvm_app.lua src/omanotch/guest/hypr/notchbar.lua src/guest/omacvm_vm.lua
           d=$(mktemp -d)
           XDG_RUNTIME_DIR=$d XDG_CONFIG_HOME=$d /tmp/lua-5.5.0/src/lua src/app/guest/tests/omacvm_app_test.lua src/app/guest/omacvm_app.lua
+          /tmp/lua-5.5.0/src/lua src/omanotch/guest/tests/notchbar_test.lua src/omanotch/guest/hypr/notchbar.lua
 
       - name: Transparent panels on Hyprland 0.57 (#630) on every route; omacvm_vm.lua, its installer, its check line
         run: LUA=/tmp/lua-5.5.0/src/lua src/tests/dmabuf-alpha.sh
