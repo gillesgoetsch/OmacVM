@@ -131,6 +131,8 @@ func displayControl(_ path: String, _ body: [String: Any]) throws -> String {
   switch path {
   case "/display/brightness":
     guard let now = Brightness.get() else { throw APIError(409, "no display whose brightness macOS sets (lid closed?)") }
+    // Asleep, its level is no base for a step and a level set now is undone at the wake.
+    if let id = Brightness.displayID, CGDisplayIsAsleep(id) != 0 { throw APIError(409, "the display is asleep") }
     let absolute = (body["brightness"] as? NSNumber)?.floatValue, delta = (body["delta"] as? NSNumber)?.floatValue
     guard absolute != nil || delta != nil else { throw APIError(400, "send {\"brightness\": 0..1} or {\"delta\": -1..1}") }
     let target = max(0, min(1, absolute ?? (now + (delta ?? 0))))
@@ -166,6 +168,8 @@ func builtinBrightness(_ id: CGDirectDisplayID, percent: Double?, delta: Double?
   let name = "Built-in Display"
   guard let now = Brightness.level(id) else { throw APIError(503, "\(name) did not answer") }
   guard set else { return ["brightness": BrightnessStep.percent(Double(now)), "display": name, "method": "builtin"] }
+  // Asleep, its level is no base for a step and a level set now is undone at the wake.
+  guard CGDisplayIsAsleep(id) == 0 else { throw APIError(409, "\(name) is asleep") }
   let target = OutputBrightness.target(now: Double(now), percent: percent, delta: delta)
   guard Brightness.set(Float(target), on: id) else { throw APIError(503, "\(name) did not take it") }
   osdEvents.brightnessQuiet()

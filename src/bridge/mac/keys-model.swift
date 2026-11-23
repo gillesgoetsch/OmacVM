@@ -314,10 +314,10 @@ enum MediaRoute {
   /// sets (the built-in one, else the display macOS dims itself, the main one
   /// first; nil: none). `external`: what is known about the VM's display when
   /// it is external. `keyboardLight`: this Mac has one. `command`: Command
-  /// is held.
+  /// is held. `displayAsleep`: the VM's display is asleep (CGDisplayIsAsleep).
   static func route(_ key: MediaKey, vm: FrontVM?, volumeSettable: Bool, muteSettable: Bool,
                     macBrightness: UInt32?, external: ExternalState, keyboardLight: Bool,
-                    command: Bool = false) -> KeyRoute {
+                    command: Bool = false, displayAsleep: Bool = false) -> KeyRoute {
     guard let vm else { return .macOS(nil) }   // no VM in front: macOS's keys
     switch key {
     case .volumeUp, .volumeDown, .mute:
@@ -340,6 +340,10 @@ enum MediaRoute {
       if vm.vmKeys, let q = key.qcode { return .vm(q) }
       return .macOS("the VM takes no keys from the Bridge (QEMU's control socket not found)")
     case .brightnessUp, .brightnessDown:
+      // A press on a sleeping display wakes it (macOS's) and steps nothing:
+      // its level is no base for a step then, and its key-up can be lost in
+      // the wake (KeyHeldCheck).
+      if displayAsleep { return .macOS(nil) }
       if !vm.builtin, external == .works { return .external(vm.display) }
       // The Bridge's own call reaches the VM's display: the built-in one, or a
       // Mac mini's only display that macOS dims itself (LG UltraFine, Studio
@@ -447,6 +451,13 @@ struct HIDKeyboards {
     modsDown[device] = nil
   }
 
+  /// Sleep, wake, the lock screen (BrightnessKeys.reset): a key-up may have
+  /// been lost, so fn, Shift and Option count as up until pressed again.
+  mutating func releaseAll() {
+    fnDown = []
+    modsDown = [:]
+  }
+
   mutating func value(device: UInt64, usage: UInt32, pressed: Bool, map: [UInt32: UInt32], fnState: Bool) -> MediaKey? {
     if HIDUsage.fn.contains(usage) {
       if pressed { fnDown.insert(device) } else { fnDown.remove(device) }
@@ -464,6 +475,33 @@ struct HIDKeyboards {
     // keyboard may send fn from another of its HID interfaces than F1.
     guard let to = map[usage], !fnDown.isEmpty == fnState else { return nil }
     return HIDBrightness.key(to)
+  }
+}
+
+/// Whether a held brightness key read from the keyboard still repeats. HID
+/// sends one press and one release; the Bridge repeats in between. A release
+/// it never gets (around sleep and wake: the key that woke the display, a
+/// Bluetooth keyboard reconnecting, the lock screen taking the key-up) ran a
+/// hold to its 64 repeats: from any level to full bright or full dark, and
+/// every press after that again (3.5.1). So each repeat first reads the key
+/// on the keyboard (its last reported value). Only trusted where it works:
+/// the read at the press must say "down", else (a keyboard whose values do
+/// not read back, or no read at all) the repeats go on as before, until the
+/// release or maxRepeats.
+struct KeyHeldCheck {
+  private let trusted: Bool
+  private let read: () -> Bool?
+
+  /// `atPress`: the read right at the press; `read`: the same read later.
+  init(atPress: Bool?, read: @escaping () -> Bool?) {
+    trusted = atPress == true
+    self.read = read
+  }
+
+  /// False only when the keyboard reads the key up (or no longer answers).
+  func stillDown() -> Bool {
+    guard trusted else { return true }
+    return read() == true
   }
 }
 

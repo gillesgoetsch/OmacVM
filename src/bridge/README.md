@@ -468,7 +468,12 @@ They act only while an OmacVM.app VM is in front, by the same rule; a press
 that also came through the tap acts once, and a display macOS already
 changed itself is not stepped again (unless the Bridge stepped it itself
 meanwhile: quick presses each step). HID sends no key repeat, so a held key
-repeats at macOS's key repeat speed until it is released. A held key keeps
+repeats at macOS's key repeat speed until it is released, and only while the
+keyboard still reads it down (its last reported value, `KeyHeldCheck`): a
+key-up lost around sleep, a display wake or the lock screen once ran the
+brightness to full bright or full dark. Sleep, wake, a display sleeping or
+waking and the lock screen end a held key and count fn, Shift and Option as
+up; a press on a sleeping display only wakes it (macOS's). A held key keeps
 what its first press meant: Shift let go (or pressed) during the hold does
 not move the rest of it between the keyboard light and the display
 (`KeyHold`; the same for macOS's own repeats through the tap). Tests: `mac/test-models.sh`,
