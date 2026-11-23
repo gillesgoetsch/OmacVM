@@ -269,7 +269,8 @@ The lit Apple logo on the lid of newer MacBook Pros (feature `logo-light`;
 `AppleARMPWMDevice` `bklb-backlight` (25 kHz, a period of 960 ticks of a
 24 MHz clock), which corebrightnessd drives from the display's brightness and
 the room's light. `ioreg -r -n bklb-backlight@0 -d 1` shows it; on a Mac
-without it `/logo` answers `409` `no-logo`.
+without it `/logo` answers `409` `no-logo`, and `501` `unsupported` on a macOS
+whose CoreBrightness lacks a part the Bridge uses.
 
 `GET /logo` → `{"mode": "auto"}`, `{"mode": "off"}`, `{"mode": "on",
 "percent": 50}` or `{"mode": "breathe", "rate": 15}`. `POST /logo` with one of

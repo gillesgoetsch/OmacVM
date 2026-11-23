@@ -177,16 +177,20 @@ let externalBrightness = ExternalBrightness(unsafeFile: supportDir + "/ddc-unsaf
 let menuBar = MenuBar()
 
 log("starting (pid \(getpid()), token \(tokenPath))")
-// The lit Apple logo on the lid of a MacBook Pro that has one (logo.swift); nil elsewhere.
-let logoLight: LogoLight? = {
+// The lit Apple logo on the lid of a MacBook Pro that has one (logo.swift); nil
+// elsewhere, and on a macOS whose CoreBrightness it cannot use (logoUnsupported: why).
+let (logoLight, logoUnsupported): (LogoLight?, String?) = {
   switch PWMLogo.find() {
   case .success(let hw):
     hw.onNote = { event, _ in if event == "blank" || event == "unblank" { log("logo light: \(event)") } }
     log("logo light: found (\(hw.keyboardCount) keyboard\(hw.keyboardCount == 1 ? "" : "s") follow its blank state)")
-    return LogoLight(hw: hw, enabled: config.logoLight)
-  case .failure(let e):
-    log("logo light: none on this Mac (\(e.why))")
-    return nil
+    return (LogoLight(hw: hw, enabled: config.logoLight), nil)
+  case .failure(.absent):
+    log("logo light: none on this Mac")
+    return (nil, nil)
+  case .failure(.unsupported(let why)):
+    log("logo light: this macOS cannot play it (\(why))")
+    return (nil, why)
   }
 }()
 location.onChange = { hub.changed("wifi", why: "location") }

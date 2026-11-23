@@ -173,7 +173,7 @@ struct Breath {
 /// The logo's PWM and corebrightnessd, as LogoPlayer uses them (logo.swift:
 /// the real ones; the tests: a made-up logo).
 protocol LogoHardware: AnyObject {
-  /// The PWM as the IORegistry shows it: switched on, and its high period in ticks.
+  /// The PWM as the IORegistry shows it: switched on, and its high period in ticks (-1: it shows none).
   func readback() -> (on: Bool, high: Int)
   /// One plain duty write of `tick` ticks, switched on, as corebrightnessd's own. False: refused.
   func write(_ tick: Int) -> Bool
@@ -231,7 +231,8 @@ struct LogoPlayer {
     if let r = resetFadeAt, t >= r { hw.resetFade(); resetFadeAt = nil }
     let rb = hw.readback()
     if rb.high != high { high = rb.high; changedAt = t }
-    var lit = rb.on
+    // A PWM that shows no high period gives no level to fade from: not lit.
+    var lit = rb.on && rb.high >= 0
 
     if want != applied {
       hw.note("mode", ["mode": want.words, "was": applied.words])
