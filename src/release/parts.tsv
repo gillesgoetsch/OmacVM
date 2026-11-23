@@ -4,7 +4,7 @@
 # takes the rest. A part named like a feature (src/features.tsv) shows as an
 # update on that feature's row in the control centre.
 #   part	patterns
-scroll-momentum	gestures/guest/glide.sh
+scroll-momentum	gestures/guest/glide.sh gestures/guest/glide-flags.py
 gestures	gestures/**
 external-brightness	bridge/guest/omacvm-ddcutil
 bridge	bridge/**

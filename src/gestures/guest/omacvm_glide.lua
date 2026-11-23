@@ -15,9 +15,12 @@ end
 -- Tuned on a MacBook Pro 16" at display scale 2 against macOS side by side:
 -- GTK apps and the rest take the base factor; Chromium-based apps (Chromium,
 -- Chrome, Omarchy's web apps, Electron) turn touchpad scrolling into about
--- 3.3 times more movement, so they get a third of it.
+-- 3.3 times more movement, so they get a third of it. That holds for
+-- Chromium's 12 pixels per unit of the compositor. With the feature
+-- WaylandUnscaledTouchpadScrolling, Chromium takes 2.5 and scrolls a fifth as
+-- far, so glide.sh turns it off.
 local chromium_ratio = 3.3
 hl.device({ name = "apple-inc.-magic-trackpad-(omacvm)", accel_profile = "flat", natural_scroll = true,
             scroll_factor = 0.328 * chromium_ratio * 2 / monitor_scale() })
-o.window("(chromium|google-chrome.*|chrome-.*|brave-browser.*|microsoft-edge.*|vivaldi.*|slacky|[Ss]lack|discord|vesktop|[Cc]ode|code-oss|[Cc]ursor|obsidian|[Ss]ignal|[Ss]potify|1[Pp]assword|teams-for-linux|figma-linux|[Ee]lectron)",
+o.window("(chromium|google-chrome.*|chrome-.*|brave-browser.*|microsoft-edge.*|vivaldi.*|slacky|[Ss]lack|discord|vesktop|[Cc]ode|code-oss|[Cc]ursor|obsidian|[Ss]ignal|[Ss]potify|1[Pp]assword|teams-for-linux|figma-linux|[Ee]lectron|com\\.t3tools\\.T3Code)",
          { scroll_touchpad = 1 / chromium_ratio })

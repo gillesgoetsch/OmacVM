@@ -535,6 +535,39 @@ to the same display scale. Omarchy itself sets per-app touchpad speeds
 
 Results: "much better, love it". This is the state that shipped as Glide.
 
+### 30. Chromium's unscaled touchpad scrolling (2026-11-22)
+
+Chrome for Testing 158 scrolled a fifth as far as macOS. It applies
+Chromium's field trial config, which turns on
+`WaylandUnscaledTouchpadScrolling`: a touchpad's axis values then become
+pixels times its `scroll_scaling_factor`, 2.5, instead of the old `/ 10 *
+120`, 12 (`ui/ozone/platform/wayland/host/wayland_event_source.cc` and
+`wayland_pointer.cc`; the feature is off by default in
+`ui/ozone/common/features.cc`). Step 29's `1 / 3.3` assumes the 12.
+
+Measured in a throwaway Chrome window on Hyprland 0.56.2, with finger axis
+events from a `zwlr_virtual_pointer_v1` client: 100 units at the window's
+0.303 moved the page 76 px with the feature and 363 px without it, also with
+`--disable-field-trial-config`. A second `--disable-features` switch is
+ignored: Chromium keeps only the last one.
+
+Then 20 real scrolls, from the Mac helper's stream, through the guest
+daemon's Glide and libinput 1.32's two-finger scroll (it starts after 1.5 mm;
+the flat profile posts 0.11685 per 1/100 mm), played into that window and
+compared with macOS's own scroll of the same touches (`A` + `W`):
+
+| Window                                       | Page / macOS, all 20 |
+| -------------------------------------------- | -------------------- |
+| Chrome 158, the feature on (field trial)     | 0.20                 |
+| Chrome 158, the feature off                  | 0.99                 |
+| Electron 44 (Chromium 152, T3 Code), no rule | 3.74                 |
+| Electron 44 with `scroll_touchpad = 1 / 3.3` | 1.00                 |
+
+The page reaches 90 % of its way within 40 ms of when macOS does. So Glide
+turns the feature off in the flags files where it puts
+`--disable-smooth-scrolling`, and T3 Code (`com.t3tools.T3Code`, Electron)
+joins the Chromium-based windows.
+
 ## Candidate if the wheel cannot pan a zoomed page
 
 Replay macOS's physics as **touchpad** movement instead of wheel steps: move
