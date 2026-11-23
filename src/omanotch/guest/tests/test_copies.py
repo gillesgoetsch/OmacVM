@@ -640,6 +640,16 @@ class Copies(unittest.TestCase):
         self.assertEqual(self.follow(install=True), 0)
         self.assertEqual(self.check()["bar copy"][0], "ok")
 
+    def test_a_folder_without_bar_qml_is_not_the_copy_back(self):
+        """The copy's folder is there, its Bar.qml is not, and the clone fails: the check says why."""
+        self.follow(install=True)
+        self.entry().unlink()
+        self.clone_fails = "omarchy-plugin-clone: cannot write to the plugins folder"
+        self.follow(install=True)
+        st, d = self.check()["bar copy"]
+        self.assertEqual(st, "warn")
+        self.assertIn("made no copy (omarchy-plugin-clone: cannot write to the plugins folder)", d)
+
     def test_what_counts_as_not_loading(self):
         """The shell's log as Quickshell writes it: errors naming the copy
         count, binding loops (Omarchy's own bar has them) and other files do not."""

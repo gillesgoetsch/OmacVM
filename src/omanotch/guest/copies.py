@@ -837,7 +837,7 @@ def check_lines():
             out.append(("warn", c.title, f"not updated, kept as it is: {s.get('why')} (both sides marked in {show(c.state_file('conflict'))})"))
         elif res == "unknown":   # 3.1.12's: made new at the next Update VM
             out.append(("ok", c.title, "made new from Omarchy's at the next Update VM"))
-        elif res == "missing" and os.path.isdir(c.dir):
+        elif res == "missing" and os.path.isfile(os.path.join(c.dir, c.entry)):
             out.append(("ok", c.title, "back: follows Omarchy's updates from the next login"))
         else:
             out.append(("warn", c.title, f"not updated: {s.get('why')}"))
