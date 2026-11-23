@@ -252,6 +252,11 @@ static int tpW = 15600, tpH = 9600;   // built-in trackpad, 1/100 mm
 static FILE *rec;                 // --record: trackpad frames and macOS's scroll, for analysis
 static double unixNow(void) { return CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970; }
 static volatile int fingers;      // contacts in the touching trackpad's last frame
+// Touches of three or more fingers begun on a trackpad, captured or not (a
+// swipe out's look asks whether one came after it), and whether every finger
+// has lifted since the last one counted.
+static volatile int padSwipes;
+static int padLifted = 1;
 // macOS's Three Finger Drag as last read (threeDragLook): 1 = three fingers on
 // a trackpad drag in macOS, so a three-finger touch stays macOS's.
 static volatile int threeDrag;
@@ -453,6 +458,8 @@ static int frameCb(MTDeviceRef dev, MTTouch *touches, int n, double ts, int fram
 
   int send = 0;
   if (k != 2) pinchSent = 0;
+  if (!k) padLifted = 1;
+  else if (k >= 3 && padLifted) { padSwipes++; padLifted = 0; }
   fingers = k;
   if (rec && k > 0) {
     float sx = 0, sy = 0;
@@ -2828,6 +2835,7 @@ typedef struct {
   double began, unit;       // unit: the Dock's progress for one Space there
   CGPoint at;
   TakeDisplay d;
+  int swipes;               // padSwipes at its end
 } TakeRun;
 static TakeDisplay takeDisp;
 static TakeRun takeRun;
@@ -2988,6 +2996,15 @@ static void takeLanded(TakeRun r, int looks) {
     if (!leaveToward(r.toward, r.d.id)) focusPointerDisplay();   // with "all" the other displays follow
     return;
   }
+  // Another swipe began before this look: the person moved on (or back
+  // into the VM) with macOS's own swipe. A step now would move them again,
+  // the wrong way. No step, and no miss; still in the VM's Space, the
+  // capture check takes it again.
+  if (padSwipes != r.swipes) {
+    logf_("swipe out: another swipe before macOS was seen to finish this one: no step");
+    escaped = 0;
+    return;
+  }
   takeMissed("a finished swipe did not change the Space");
   leaveToward(r.toward, 0);
 }
@@ -3026,6 +3043,7 @@ static void takeAct(SwipeTake *s, int tk, const char *who) {
     int commit = takeRun.follows ? s->commit : s->along >= TAKE_STEP_MIN && s->speed > TAKE_BACK;
     if (takeRun.follows) dockPostFn(commit ? kSwipeEnded : kSwipeCancelled, takeUnits(s->progress), takeUnits(s->speed), takeRun.at);
     takeQuietUntil = monoNow() + TAKE_QUIET;
+    takeRun.swipes = padSwipes;
     TakeRun r = takeRun;
     double progress = s->progress, speed = s->speed;
     dispatch_async(dispatch_get_main_queue(), ^{ takeEnded(r, commit, progress, speed); });
