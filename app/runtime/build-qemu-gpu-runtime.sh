@@ -1318,6 +1318,22 @@ grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
   die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
 grep -qF 'registerDefaults:@{ @"NSAppSleepDisabled": @YES }' "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: QEMU's window process must opt out of App Nap (no-app-nap patch)"
+# OmacVM: touch on a touch display (#843): one recognizer per window takes
+# every direct touch at touch-down (AppKit's mouse emulation made a scroll a
+# drag, and taps misfired), the rules decide taps, scrolling, hold-drags and
+# right clicks; a pinch's two fingers go to the guest's touch screen
+# (virtio-multitouch, a touch screen only: no mouse's buttons, which took the
+# tablet's clicks). Its rules' test, a check that the wiring checks fail on
+# the code before, the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-touch-logic.patch"
+"$native_dir/Tests/touch/test-touch.sh" || \
+  die "touch on a touch display fails its test (test-touch.sh)"
+"$native_dir/Tests/touch/test-touch.sh" --self-test "$source_dir/ui/cocoa.m" "$source_dir/hw/input/virtio-input-hid.c" || \
+  die "ui/cocoa.m: a touch wiring check passes without the patch (test-touch.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-virtio-multitouch-touch-only.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-touch.patch"
+"$native_dir/Tests/touch/test-touch.sh" "$source_dir/ui/cocoa.m" "$source_dir/hw/input/virtio-input-hid.c" || \
+  die "ui/cocoa.m: touch on a touch display is not wired as tested (test-touch.sh)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"

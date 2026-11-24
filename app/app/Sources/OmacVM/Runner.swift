@@ -238,8 +238,17 @@ final class Runner {
         // Drag and drop (drag-drop on only; docs/drag-and-drop.md): its port
         // and the read-only drop share after everything, the Mac folder too,
         // so turning it on or off moves no other device (DropPlan.finish).
-        return DropPlan.finish(arguments: a, on: links.dragDrop, folder: c.dropFolder.path, portSocket: q(c.dropPortSocket.path))
+        a = DropPlan.finish(arguments: a, on: links.dragDrop, folder: c.dropFolder.path, portSocket: q(c.dropPortSocket.path))
+        // A touch screen for the VM, only on a Mac with a touch display (#843):
+        // QEMU's window sends a pinch's two fingers to it (TouchDisplay). Last
+        // of all, so no other device moves with or without it; the VM finds
+        // it by what it is.
+        touchScreen = TouchDisplay.wanted()
+        return a + TouchDisplay.arguments(on: touchScreen)
     }
+
+    /// The VM's touch screen at this start (TouchDisplay).
+    private(set) var touchScreen = false
 
     /// The USB switch at this start (USBSwitch), and its qemu.log record.
     private(set) var usbOn = false
@@ -696,6 +705,7 @@ final class Runner {
         if let n = sizeNote { log.write(Data("OmacVM: resources: \(c.cpus) CPUs, \(c.memoryMB) MB for this start: \(n)\n".utf8)) }
         if let g = graphics { log.write(Data("OmacVM: graphics: \(g.record)\n".utf8)) }
         log.write(Data("OmacVM: USB devices: \(usbRecord)\n".utf8))
+        log.write(Data("OmacVM: touch screen: \(TouchDisplay.record(on: touchScreen))\n".utf8))
         log.write(Data("OmacVM: media controls: \(Settings.mediaControls ? "on" : "off") (the app's switch AirPods and media controls)\n".utf8))
         if Settings.firmwareWait > 0 {
             log.write(Data("OmacVM: the firmware waits \(Settings.firmwareWait) s for a key (firmwareWait)\n".utf8))
