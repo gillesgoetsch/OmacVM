@@ -7,6 +7,12 @@
 # Layout: GPT, 2 GiB EFI (/boot) + btrfs with @, @home, @log (Omarchy adds
 # @factory and snapper); zstd:1, noatime, async discard. GRUB, because
 # omarchy-mac's snapshot restore/reset tooling expects it.
+# With a home disk (OmacVM.app's data.img: a second NVMe disk, serial
+# omacvm-home; docs/adr/0076) /home is that whole disk, on xfs, and there is
+# no @home: files that change in place (databases, build trees) cost btrfs
+# its copies on write and its compression. noatime, discard (what is deleted
+# goes back to the Mac as it does from btrfs), and systemd grows it into a
+# longer disk when it mounts it.
 # OMACVM_OMARCHY=4.5 (OmacVM.app's VMs): the new system comes from Omarchy's
 # snapshot of Arch Linux ARM (arm-$OMARCHY_CHANNEL-mirror.omarchy.org, the
 # one Omarchy 4.5's repo files name), so base and Omarchy match and nothing
@@ -42,9 +48,11 @@ if [[ -s $PROXY_ENV ]]; then
   echo "proxy: $(sed -nE 's|//[^/@]*@|//***@|; s/^(http|https|all)_proxy=//p' "$PROXY_ENV" | tr '\n' ' ')"
 fi
 
-D=$(lsblk -dnpo NAME,TRAN | awk '$2 == "nvme" { print $1; exit }')
+H=$(lsblk -dnpo NAME,SERIAL | awk '$2 == "omacvm-home" { print $1; exit }')
+D=$(lsblk -dnpo NAME,TRAN,SERIAL | awk '$2 == "nvme" && $3 != "omacvm-home" { print $1; exit }')
 [[ -b ${D:-} ]] || { echo "base-install: no NVMe disk found" >&2; exit 1; }
 P=${D}p
+HOME_OPT=noatime,discard
 
 log "clock"
 # Package signatures and HTTPS need a right clock. The live system's comes from
@@ -105,7 +113,7 @@ retry pacman -Sy --noconfirm --needed archlinuxarm-keyring ||
   die "could not update archlinuxarm-keyring (mirror, network or clock; see the lines above)"
 
 log "tools for the install"
-retry pacman -S --noconfirm --needed arch-install-scripts dosfstools btrfs-progs gptfdisk >/dev/null ||
+retry pacman -S --noconfirm --needed arch-install-scripts dosfstools btrfs-progs gptfdisk $([[ ! -b $H ]] || echo xfsprogs) >/dev/null ||
   die "could not install the tools for the install (see the lines above)"
 
 log "partitions on $D"
@@ -115,12 +123,18 @@ partprobe "$D"; sleep 1
 mkfs.fat -F32 -n OMARCHYEFI "${P}1" >/dev/null
 mkfs.btrfs -f -L omarchy "${P}2" >/dev/null
 mount "${P}2" /mnt
-for s in @ @home @log; do btrfs subvolume create "/mnt/$s" >/dev/null; done
+for s in @ $([[ -b $H ]] || echo @home) @log; do btrfs subvolume create "/mnt/$s" >/dev/null; done
 umount /mnt
 O=noatime,compress=zstd:1,space_cache=v2,discard=async
 mount -o "$O,subvol=@" "${P}2" /mnt
 mkdir -p /mnt/home /mnt/var/log /mnt/boot
-mount -o "$O,subvol=@home" "${P}2" /mnt/home
+if [[ -b $H ]]; then
+  log "home disk on $H"
+  mkfs.xfs -f -L omacvm-home "$H" >/dev/null
+  mount -o "$HOME_OPT" "$H" /mnt/home
+else
+  mount -o "$O,subvol=@home" "${P}2" /mnt/home
+fi
 mount -o "$O,subvol=@log" "${P}2" /mnt/var/log
 mount -o umask=0077 "${P}1" /mnt/boot
 
@@ -148,6 +162,7 @@ EOF
 PACLOG=/root/pacstrap.log
 PKGS=(base base-devel linux-aarch64 linux-aarch64-headers archlinuxarm-keyring
   btrfs-progs dosfstools grub efibootmgr openssh sudo git networkmanager nano vim man-db)
+[[ ! -b $H ]] || PKGS+=(xfsprogs)
 # OmacVM.app sends progress.sh first: then its progress lines go to the Mac too.
 declare -F pac_progress >/dev/null || pac_progress() { cat > "$1"; }
 declare -F cache_watch >/dev/null || cache_watch() { :; }
@@ -195,6 +210,8 @@ sed "s|$TARGET_MIRRORS|/etc/pacman.d/mirrorlist|" /root/pacman.alarm.conf > /mnt
 sed -i 's/^\[options\]/[options]\nColor\nVerbosePkgLists/' /mnt/etc/pacman.conf
 cp "$TARGET_MIRRORS" /mnt/etc/pacman.d/mirrorlist
 genfstab -U /mnt > /mnt/etc/fstab
+# The home disk by OmacVM's label, with its own options (genfstab lists the kernel's).
+sed -i "s|^UUID=[^[:space:]]*\([[:space:]]\+/home[[:space:]]\+xfs[[:space:]]\+\).*|LABEL=omacvm-home\1$HOME_OPT,x-systemd.growfs\t0 0|" /mnt/etc/fstab
 install -m644 "$PACLOG" /mnt/var/log/omacvm-pacstrap.log
 if [[ -s $PROXY_ENV ]]; then
   log "the Mac's proxy, kept in the new system"
@@ -242,6 +259,11 @@ grub-install --target=arm64-efi --efi-directory=/boot --removable 2>&1 | tail -1
 grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -1
 rm /root/omacvm.pub
 EOF
+# Two NVMe disks get their names (nvme0n1, nvme1n1) in the order they answer,
+# which changes from start to start. Until omacvm apply gives the kernel its
+# initramfs (root by UUID), GRUB names the root for the kernel itself: by
+# PARTUUID then, not by today's device name.
+[[ ! -b $H ]] || echo 'GRUB_DISABLE_LINUX_PARTUUID=false' >> /mnt/etc/default/grub
 arch-chroot /mnt bash /root/setup-base.sh
 rm -f /mnt/root/setup-base.sh
 sync; umount -R /mnt

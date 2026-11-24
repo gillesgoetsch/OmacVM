@@ -3,6 +3,20 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.6.1 (unreleased)
+
+- **A disk of its own for your home folder** (off by default). **Home disk** in the app's setup, or
+  `omacvm build --home-gb N` (its questions ask under Custom), builds a
+  VM whose `/home` is a second disk, `data.img`, on xfs; the system stays on btrfs with its update
+  snapshots. btrfs copies a block before it changes it and compresses what it writes, which costs
+  most where files change in place: on xfs the same disk took about 2.7 times the synced writes a
+  second and 1.5 to 2.2 times the transactions of a PostgreSQL benchmark, and a file rewritten at random
+  stayed in 2 pieces instead of 885,849 (ADR 0076). git clone and compiles are the same. The home
+  disk is sparse, gives back what you delete at once, and grows in the VM window (Home disk ›
+  Change…); xfs cannot shrink. `omacvm check` has a "home disk" line. Only for VMs built here
+  with the option: other VMs and prebuilt VMs are as before, and it cannot be switched off later;
+  the steps for a VM you have are in docs/routes/app.md.
+
 ## 3.5.2
 
 A desktop fix for Omarchy 4.0 VMs after their next system update, no flash at the HDR switch,

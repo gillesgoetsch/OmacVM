@@ -90,6 +90,7 @@ proxy_to_vm() {
 vm_load() {
   VM_DIR=$(cd "$1" && pwd)
   [[ -f $VM_DIR/vm.env ]] || die "no vm.env in $VM_DIR"
+  HOME_GB=   # only vm.env says a VM has a home disk
   source "$VM_DIR/vm.env"
   : "${NAME:?}" "${CPUS:?}" "${MEM_MB:?}" "${DISK_GB:?}" "${SSH_PORT:?}" "${VM_USER:?}"
   # A VM from a bigger Mac: the app's size for this run (VMConfig.forThisMac); vm.env stays.
@@ -104,6 +105,15 @@ vm_load() {
   QEMU_UEFI=(-drive "if=pflash,format=raw,readonly=on,file=$(qe "$FIRMWARE")"
              -drive "if=pflash,format=raw,file=$(qe "$VM_DIR/efi-vars.fd")")
   DISK_OPT="if=none,id=disk,file=$(qe "$VM_DIR/disk.img"),format=raw,cache=writeback,discard=unmap"
+  # The home disk (HOME_GB, from omacvm build --home-gb; docs/adr/0076):
+  # data.img with the same options, in every start (qemu_headless), never a
+  # boot device. The VM finds it by its serial and has /home on it.
+  HOME_DISK=()
+  if [[ -n $HOME_GB ]]; then
+    [[ $HOME_GB =~ ^[0-9]{1,5}$ ]] || die "HOME_GB in vm.env is not a number"
+    HOME_DISK=(-drive "if=none,id=home,file=$(qe "$VM_DIR/data.img"),format=raw,cache=writeback,discard=unmap"
+               -device nvme,serial=omacvm-home,drive=home)
+  fi
   if [[ ! -f $KEY ]]; then
     mkdir -p "$(dirname "$KEY")"; chmod 700 "$(dirname "$KEY")"
     ssh-keygen -t ed25519 -N "" -C omacvm -f "$KEY" -q
@@ -289,7 +299,7 @@ qemu_headless() {
     -action reboot=reset,shutdown=poweroff -boot menu=on,splash-time=0 \
     -serial "file:$(qe "$LOG/$name-console.log")" \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" -device virtio-net-pci,netdev=net0,romfile= \
-    -device virtio-rng-pci -qmp "unix:$(qe "$QMP"),server=on,wait=off" "$@" \
+    -device virtio-rng-pci -qmp "unix:$(qe "$QMP"),server=on,wait=off" "$@" ${HOME_DISK[@]+"${HOME_DISK[@]}"} \
     > "$LOG/$name-qemu.log" 2>&1 &
   echo $! > "$PIDFILE"
   sleep 1
