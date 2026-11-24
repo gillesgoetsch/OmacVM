@@ -1,0 +1,63 @@
+From: OmacVM
+Subject: [PATCH] virtio-input: the multitouch device is a touch screen only (#843)
+
+What: virtio-multitouch no longer takes the UIs' button events and no longer
+shows the guest a mouse's buttons: its handler takes multitouch events only,
+and of the keys it has BTN_TOUCH alone.
+
+Why: OmacVM attaches it on a Mac with a touch display, for a pinch's two
+fingers (omacvm-cocoa-touch.patch), next to the tablet. QEMU sends a button
+event to the first handler that takes buttons, and a virtio device's handler
+goes to the front when the guest's driver starts it: with the mouse's
+buttons on it, clicks went to whichever of the two the guest started last
+(to the touch screen: lost). The guest also took it for a mouse as well as
+a touch screen (udev: ID_INPUT_MOUSE and ID_INPUT_TOUCHSCREEN; Hyprland
+listed it under both), measured in the guest with a uinput copy of the
+device: without the buttons it is a touch screen only. Its contacts need no
+BTN_TOUCH events (multitouch slots carry them; QEMU's GTK UI sends its
+BTN_TOUCH presses to the first button handler, OmacVM's Cocoa UI none).
+
+Upstream: the same change was posted to qemu-devel in December 2025
+("hw/input/virtio-input-hid: remove mouse buttons on virtio-multitouch-pci",
+for Android guests with a mouse and a multitouch device); not merged.
+Test: app/runtime/Tests/touch/test-touch.sh (with the patched sources: the
+handler's mask and the keys).
+Applies after qemu-cocoa-pinch-zoom.patch.
+
+--- a/hw/input/virtio-input-hid.c
++++ b/hw/input/virtio-input-hid.c
+@@ -509,9 +509,15 @@
+ 
+ /* ----------------------------------------------------------------- */
+ 
++/*
++ * OmacVM (#843): a touch screen only, no mouse's buttons. With them the UI's
++ * button events went to whichever of this device and the tablet the guest
++ * started last (a click lost to the touch screen), and the guest took the
++ * touch screen for a mouse as well.
++ */
+ static const QemuInputHandler virtio_multitouch_handler = {
+     .name  = VIRTIO_ID_NAME_MULTITOUCH,
+-    .mask  = INPUT_EVENT_MASK_BTN | INPUT_EVENT_MASK_MTT,
++    .mask  = INPUT_EVENT_MASK_MTT,
+     .event = virtio_input_handle_event,
+     .sync  = virtio_input_handle_sync,
+ };
+@@ -571,11 +577,15 @@
+         ABS_MT_POSITION_X,
+         ABS_MT_POSITION_Y,
+     };
++    /* OmacVM (#843): BTN_TOUCH only (a touch screen's), not a mouse's buttons. */
++    unsigned short keys[] = {
++        BTN_TOUCH,
++    };
+ 
+     vhid->handler = &virtio_multitouch_handler;
+     virtio_input_init_config(vinput, virtio_multitouch_config);
+-    virtio_input_extend_config(vinput, keymap_button,
+-                               ARRAY_SIZE(keymap_button),
++    virtio_input_extend_config(vinput, keys,
++                               ARRAY_SIZE(keys),
+                                VIRTIO_INPUT_CFG_EV_BITS, EV_KEY);
+     virtio_input_extend_config(vinput, abs_props,
+                                ARRAY_SIZE(abs_props),
