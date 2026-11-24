@@ -178,19 +178,16 @@ let menuBar = MenuBar()
 
 log("starting (pid \(getpid()), token \(tokenPath))")
 // The lit Apple logo on the lid of a MacBook Pro that has one (logo.swift); nil
-// elsewhere, and on a macOS whose CoreBrightness it cannot use (logoUnsupported: why).
-let (logoLight, logoUnsupported): (LogoLight?, String?) = {
-  switch PWMLogo.find() {
-  case .success(let hw):
-    hw.onNote = { event, _ in if event == "blank" || event == "unblank" { log("logo light: \(event)") } }
-    log("logo light: found (\(hw.keyboardCount) keyboard\(hw.keyboardCount == 1 ? "" : "s") follow its blank state)")
-    return (LogoLight(hw: hw, enabled: config.logoLight), nil)
-  case .failure(.absent):
-    log("logo light: none on this Mac")
-    return (nil, nil)
-  case .failure(.unsupported(let why)):
-    log("logo light: this macOS cannot play it (\(why))")
-    return (nil, why)
+// elsewhere. Its private CoreBrightness is loaded only once logo_light is on.
+let logoLight: LogoLight? = {
+  guard PWMLogo.present() else { log("logo light: none on this Mac"); return nil }
+  log("logo light: this Mac has one (logo_light=\(config.logoLight))")
+  return LogoLight(enabled: config.logoLight) {
+    PWMLogo.find().map { hw in
+      hw.onNote = { event, _ in if event == "blank" || event == "unblank" { log("logo light: \(event)") } }
+      log("logo light: found (\(hw.keyboardCount) keyboard\(hw.keyboardCount == 1 ? "" : "s") follow its blank state)")
+      return hw as LogoHardware
+    }
   }
 }()
 location.onChange = { hub.changed("wifi", why: "location") }

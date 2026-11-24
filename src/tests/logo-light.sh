@@ -61,6 +61,8 @@ EOF
   is "no Bridge that proves itself: exit 1, the client's words" "1||GET|omacvm-logo: omacvm-bridge: no proof" \
     "$(FAKE_RC=1 FAKE_OUT='' FAKE_ERR='omacvm-bridge: no proof' logo)"
   is "no answer at all: exit 1" "1||GET|omacvm-logo: curl: (7) Failed to connect" "$(FAKE_RC=7 FAKE_OUT='' FAKE_ERR='curl: (7) Failed to connect' logo)"
+  is "too many changes (429): exit 1, its words" "1||{\"mode\": \"off\"}|omacvm-logo: too many changes: wait a moment" \
+    "$(FAKE_RC=22 FAKE_OUT='{"error": "too many changes: wait a moment", "code": "busy"}' logo off)"
   is "an older Bridge (404): exit 1" "1||GET|omacvm-logo: the Mac's Bridge has no /logo yet: omacvm update on the Mac" "$(FAKE_RC=22 FAKE_OUT='{"error": "not found"}' FAKE_ERR='curl: (22) The requested URL returned error: 404' logo)"
 fi
 

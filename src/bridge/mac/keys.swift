@@ -18,7 +18,7 @@ final class Config {
   var keyboardLowSteps = true  // keyboard light: KeyboardSteps.low below macOS's lowest step (keylight.swift)
   var externalBrightness = true  // brightness keys set the external display a VM is on (external-brightness.swift)
   var brightnessSteps = BrightnessStep.defaultSteps   // display brightness keys: 1/N per press (external-model.swift)
-  var logoLight = true   // the VM may set the Apple logo on the lid (logo.swift)
+  var logoLight = false  // the VM may set the Apple logo on the lid (logo.swift; opt-in)
   var onExternalBrightness: (() -> Void)?   // external_brightness switched in the file
   var onLogoLight: (() -> Void)?            // logo_light switched in the file
   private var stamp: Date?

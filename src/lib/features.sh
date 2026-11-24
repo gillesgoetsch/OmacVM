@@ -85,7 +85,6 @@ feature_default() {
     on) echo on ;;
     notch) [[ ${NOTCH:-none} == notch ]] && echo on || echo off ;;
     laptop) [[ $(mac_battery) == yes ]] && echo on || echo off ;;
-    logo) [[ $(mac_logo) == yes ]] && echo on || echo off ;;
     *) echo off ;;
   esac
 }

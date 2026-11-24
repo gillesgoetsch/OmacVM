@@ -80,6 +80,22 @@ enum LogoMode: Equatable {
   }
 }
 
+/// How often a VM may change the mode: a burst of `burst`, then one every
+/// `every` seconds. Each change can reach corebrightnessd (a blank, a fade
+/// back), so a guest that loops omacvm-logo gets 429 instead.
+struct LogoChangeLimit {
+  static let burst = 5.0, every = 0.5
+  private var tokens = LogoChangeLimit.burst, at = -Double.infinity
+
+  mutating func admit(_ now: Double) -> Bool {
+    tokens = min(Self.burst, tokens + max(0, now - at) / Self.every)
+    at = now
+    guard tokens >= 1 else { return false }
+    tokens -= 1
+    return true
+  }
+}
+
 /// The logo's PWM and the eye. Measured on a MacBook Pro Mac17,13 (M5 Pro,
 /// macOS 27.2): one white LED, `AppleARMPWMDevice` bklb-backlight, a 25 kHz
 /// carrier from a 24 MHz clock, so a period of 960 ticks; the IORegistry's
@@ -210,7 +226,8 @@ struct LogoPlayer {
     case fadingOut   // fades toward off or toward corebrightnessd's level
   }
   static let frame = 1.0 / 60   // a write a frame at most, as corebrightnessd's own fades (about 120 Hz) need no more
-  static let slowFrame = 0.1    // while nothing of ours moves: macOS's writes are seen within it
+  static let slowFrame = 0.1    // while a mode waits on a lit display: macOS's writes are seen within it
+  static let restFrame = 0.5    // steady on, off, or a display that sleeps: a few wake-ups a second at most
   static let still = 1.0        // seconds macOS's level stands still before a mode fades back in
 
   private(set) var applied = LogoMode.auto
@@ -315,12 +332,12 @@ struct LogoPlayer {
 
     switch phase {
     case .playing:
-      if case .on = applied, t - fadeAt >= LogoCurve.fade { return Self.slowFrame }   // steady
+      if case .on = applied, t - fadeAt >= LogoCurve.fade { return Self.restFrame }   // steady
       return Self.frame
     case .fadingOut: return Self.frame
-    case .waiting: return Self.slowFrame
+    case .waiting: return lit ? Self.slowFrame : Self.restFrame
     case .idle:
-      if applied == .off { return Self.slowFrame }
+      if applied == .off { return Self.restFrame }
       return resetFadeAt.map { max(0, $0 - t) }
     }
   }

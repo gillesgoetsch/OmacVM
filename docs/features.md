@@ -27,7 +27,7 @@ The short version is the grid at the top of the [README](../README.md).
 | **The Mac's clock** | Omarchy's clock at the far right of the bar, in your Mac's menu bar format (day, date, 12 or 24 hours, seconds, language) |
 | **The Mac's time zone** *(with the Bridge)* | The VM's time zone follows the Mac's: at every start and when the Mac's changes (you travel). A zone you set in the VM yourself is kept; set it back to the Mac's and it follows again |
 | **The Mac's battery** | On a MacBook, Omarchy's battery icon and panel show the Mac's charge and charging, as on a laptop, plus time left and Omarchy's low-battery warning (not tested yet with the Mac on battery; the VM never suspends for it) |
-| **The Apple logo's light** *(on a MacBook Pro with a lit logo)* | `omacvm-logo` in the VM sets the lit Apple logo on the lid: macOS's own, off, steady at a brightness or breathing, every change a 3 s fade. Dark while the display sleeps, macOS's again once no VM runs ([details](#the-apple-logos-light)) |
+| **The Apple logo's light** *(opt-in, on a MacBook Pro with a lit logo)* | `omacvm-logo` in the VM sets the lit Apple logo on the lid: macOS's own, off, steady at a brightness or breathing, every change a 3 s fade. Dark while the display sleeps, macOS's again once no VM runs ([details](#the-apple-logos-light)) |
 | **Your keyboard layout** | Taken from the Mac |
 | **Chromium video on the Mac** *(on by default)* | Omarchy's own Chromium decodes H.264 and VP9 (YouTube included) on the Mac's media engine, as Google Chrome and Brave do on their own: YouTube 4K takes about half the CPU it takes otherwise. A small kernel module and a sandboxed decoder service in the VM; a video it cannot take plays on the CPU. Off: `omacvm disable chromium-video` ([details](video-decode.md#chromium-from-arch-linux-arm)) |
 | **Prefer VP9 on YouTube** *(experimental, off by default, from 3.5; Macs without an AV1 decoder: M1, M2)* | An M1 or M2 media engine has no AV1 decoder, so the AV1 that YouTube sends is decoded on the VM's CPUs. With this on, Google Chrome and Chromium in the VM tell YouTube they cannot play AV1, and YouTube streams VP9, which the Mac's media engine decodes: on a MacBook Air M2 a 1080p60 YouTube video took about 1.2 W less for the whole Mac (5.4 W instead of 6.6 W). Videos and quality steps that YouTube offers only in AV1 are not offered, and for now the media engine drops about 1-3 % of the frames of a 1080p60 VP9 video. **Battery saver > Prefer VP9 on YouTube** in the app's VM window (shown only on a Mac without an AV1 decoder), `omacvm enable youtube-vp9` or the control centre; the browsers take it at their next start, and you can remove it in `chrome://extensions` ([how](video-decode.md#prefer-vp9-on-youtube-experimental)) |
@@ -359,8 +359,10 @@ VM is on:
 ## The Apple logo's light
 
 Newer MacBook Pros light the Apple logo on the lid, and macOS drives it: it
-follows the display's brightness and the room's light. With `logo-light` (on
-by default on a Mac that has the lit logo, needs the Bridge), the VM sets it:
+follows the display's brightness and the room's light. With `logo-light` (off
+by default; offered only on a Mac that has the lit logo; needs the Bridge),
+the VM sets it. Switch it on in the VM window's settings ("The Apple logo's
+light"), or with `omacvm enable logo-light`:
 
 ```bash
 omacvm-logo               # the mode that plays: auto, off, on 50 or breathe 15
@@ -387,7 +389,8 @@ omacvm-logo breathe 15    # breathes, about 6 to 30 breaths a minute (default 15
   logo is dark, as macOS keeps it, and the mode plays again after the wake.
 - **Whose mode.** The VM's that set it last. Once no VM runs, and when the
   Bridge stops, the logo is macOS's again (`auto`).
-- **In scripts.** Exit 0 done, 1 the Mac's side failed or cannot be reached
+- **In scripts.** A VM may change the mode 5 times at once, then once every
+  half second (more is refused, exit 1). Exit 0 done, 1 the Mac's side failed or cannot be reached
   (try again), 2 usage (nothing is sent), 3 the Mac has no lit logo. The mode
   prints as the words that set it, so `omacvm-logo $was` (unquoted) puts it
   back.

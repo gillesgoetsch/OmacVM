@@ -158,7 +158,7 @@ func player() {
   check(last - first > 2.5 && last - first <= 3.05, "on 50: fades for 3 s, its last steps near the end (\(last - first))")
   check(nonincreasing(hw.writes.map(\.tick)) && hw.writes.last?.tick == on50, "on 50: from 201 down to \(on50), every write a step down")
   check(hw.writes(from: last + 0.01, to: 10).isEmpty && hw.high == on50, "on 50: steady after its fade, no writes")
-  check(p.frame(10, want: .on(percent: 50), hw: hw) == LogoPlayer.slowFrame, "on, steady: a frame every 0.1 s")
+  check(p.frame(10, want: .on(percent: 50), hw: hw) == LogoPlayer.restFrame, "on, steady: a frame every 0.5 s")
 
   // on 50 -> on 80, from where it is.
   run(&p, hw, 10, 15, .on(percent: 80))
@@ -252,7 +252,7 @@ func waitUntil(_ seconds: Double, _ cond: () -> Bool) -> Bool {
 /// LogoLight with a made-up logo: its mode, no VM left, the switch in the config, the stop.
 func light() {
   let hw = FakeLogo()
-  let light = LogoLight(hw: hw, enabled: true)
+  let light = LogoLight(enabled: true) { .success(hw) }
   check(light.set(.off) == .changed, "a VM sets off")
   check(light.set(.off) == .kept, "the same again: kept, nothing to do")
   check(light.state.mode == .off, "it plays off")
@@ -266,7 +266,41 @@ func light() {
   check(light.set(.on(percent: 50)) == .changed, "on again on this Mac: a VM sets on 50")
   light.stop()
   check(light.state.mode == .auto && light.set(.off) == .refused, "the Bridge stops: auto, and nothing more")
-  check(LogoLight(hw: FakeLogo(), enabled: false).set(.off) == .refused, "a Bridge started with the logo light off refuses at once")
+  check(LogoLight(enabled: false) { .success(FakeLogo()) }.set(.off) == .refused, "a Bridge started with the logo light off refuses at once")
+
+  // Off by default: the hardware (CoreBrightness) is made only once the switch is on, and once.
+  var made = 0
+  let lazy = LogoLight(enabled: false) { made += 1; return .success(FakeLogo()) }
+  check(made == 0, "logo light off: CoreBrightness never loaded")
+  lazy.setEnabled(true); lazy.setEnabled(false); lazy.setEnabled(true)
+  check(made == 1, "switched on: loaded once (\(made))")
+
+  // A macOS whose CoreBrightness lacks a call: unsupported, never a crash, and asked once.
+  var tries = 0
+  let old = LogoLight(enabled: true) { tries += 1; return .failure(.unsupported("no PWMCalibrationManager")) }
+  check(old.set(.off) == .unsupported && old.state.unsupported == "no PWMCalibrationManager", "unsupported: refused with why")
+  old.setEnabled(true)
+  check(tries == 1 && old.state.mode == .auto, "unsupported: not tried again, auto")
+
+  // A guest that loops omacvm-logo: 5 changes at once, then one every 0.5 s.
+  let busy = LogoLight(enabled: true) { .success(FakeLogo()) }
+  let outs = (0..<8).map { i in busy.set(i % 2 == 0 ? .on(percent: 10 + i) : .breathe(rate: 10 + i)) }
+  check(outs.prefix(5).allSatisfy { $0 == .changed } && outs.suffix(3).allSatisfy { $0 == .busy }, "a burst of 8 changes: 5 taken, 3 busy (\(outs))")
+  busy.stop()
+  var lim = LogoChangeLimit()
+  check((0..<5).allSatisfy { _ in lim.admit(100) } && !lim.admit(100), "the limit: a burst of 5")
+  check(!lim.admit(100.4) && lim.admit(100.5) && !lim.admit(100.6), "then one every 0.5 s")
+  check((0..<5).allSatisfy { _ in lim.admit(200) }, "full again after a rest")
+}
+
+/// The player's rest: steady on, off and a sleeping display wake the Bridge at most twice a second.
+func rest() {
+  var hw = FakeLogo(), p = LogoPlayer()
+  let asked = run(&p, hw, 0, 30, .off)
+  check(asked.suffix(10).allSatisfy { $0 == LogoPlayer.restFrame }, "off, settled: a frame every 0.5 s")
+  hw = FakeLogo(); p = LogoPlayer()
+  let slept = run(&p, hw, 0, 60, .on(percent: 50), [(20, { hw.sleep() })])
+  check(slept.suffix(20).allSatisfy { $0 == LogoPlayer.restFrame }, "on while the display sleeps: a frame every 0.5 s")
 }
 
 func live(_ steps: [String]) {
@@ -291,7 +325,7 @@ func live(_ steps: [String]) {
     }
     return (m, s)
   }
-  let light = LogoLight(hw: hw, enabled: true)
+  let light = LogoLight(enabled: true) { .success(hw) }
   light.stopOnSIGTERM()
   for step in plan {
     print("\(stamp()) set \(step.mode.words) for \(step.seconds) s")
@@ -312,7 +346,7 @@ case "state":
   print("readback \(hw.readback()) macOS \(hw.macOS()) keyboards \(hw.keyboardCount)")
   exit(0)
 default:
-  modes(); curves(); breath(); player(); light()
+  modes(); curves(); breath(); player(); light(); rest()
 }
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")

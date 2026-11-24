@@ -32,7 +32,16 @@ final class PWMLogo: LogoHardware {
   private let keyboards: [UInt64]
   var onNote: (String, [String: Any]) -> Void = { _, _ in }
 
-  /// This Mac's logo, or why the Bridge cannot play it (LogoMissing).
+  /// The logo's PWM is in the IORegistry: IOKit only, nothing private loaded.
+  static func present() -> Bool {
+    let pwm = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceNameMatching("bklb-backlight"))
+    guard pwm != 0 else { return false }
+    IOObjectRelease(pwm)
+    return true
+  }
+
+  /// This Mac's logo, or why the Bridge cannot play it (LogoMissing). Loads
+  /// CoreBrightness, so only once the logo light is on (LogoLight).
   static func find() -> Result<PWMLogo, LogoMissing> {
     let pwm = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceNameMatching("bklb-backlight"))
     guard pwm != 0 else { return .failure(.absent) }
@@ -161,35 +170,44 @@ enum LogoMissing: Error {
 
 /// The logo's mode, as the last VM asked for it. One serial queue; a frame
 /// timer that runs while something of ours moves (LogoPlayer says when), and
-/// not at all on auto.
+/// not at all on auto. The hardware (PWMLogo.find, which loads the private
+/// CoreBrightness) is made only once the logo light is on.
 final class LogoLight {
   private let q = DispatchQueue(label: "omacvm-bridge.logo", qos: .userInteractive)
-  private let hw: LogoHardware
+  private let make: () -> Result<LogoHardware, LogoMissing>
+  private var hw: LogoHardware?
+  private var unsupported: String?
   private var player = LogoPlayer()
   private var want = LogoMode.auto
+  private var limit = LogoChangeLimit()
   private let timer: DispatchSourceTimer
   private var activity: NSObjectProtocol?
   private var stopSignal: DispatchSourceSignal?
-  private var on: Bool, stopped = false
+  private var on = false, stopped = false
 
-  init(hw: LogoHardware, enabled: Bool) {
-    self.hw = hw
-    on = enabled
+  init(enabled: Bool, hardware: @escaping () -> Result<LogoHardware, LogoMissing>) {
+    make = hardware
     timer = DispatchSource.makeTimerSource(queue: q)
     timer.setEventHandler { [weak self] in self?.frame() }
     timer.resume()   // one shot at a time, scheduled by frame and kick
+    q.sync { switchTo(enabled) }
   }
 
-  /// The feature on this Mac (logo_light) and the mode it plays, as the VM asked for it.
-  var state: (enabled: Bool, mode: LogoMode) { q.sync { (on, want) } }
+  /// The feature on this Mac (logo_light), the mode it plays as the VM asked
+  /// for it, and why this macOS cannot play it (nil: it can, or not asked yet).
+  var state: (enabled: Bool, mode: LogoMode, unsupported: String?) { q.sync { (on, want, unsupported) } }
 
-  enum Outcome { case refused, kept, changed }
+  enum Outcome: Equatable { case refused, unsupported, busy, kept, changed }
 
-  /// A VM's mode. refused: the logo light is off on this Mac; kept: it plays that already.
+  /// A VM's mode. refused: the logo light is off on this Mac; unsupported:
+  /// this macOS cannot play it; busy: too many changes (LogoChangeLimit);
+  /// kept: it plays that already.
   func set(_ mode: LogoMode) -> Outcome {
     q.sync {
       guard on, !stopped else { return .refused }
+      guard hw != nil else { return .unsupported }
       guard mode != want else { return .kept }
+      guard limit.admit(ProcessInfo.processInfo.systemUptime) else { return .busy }
       want = mode
       kick()
       return .changed
@@ -208,14 +226,22 @@ final class LogoLight {
 
   /// The feature on this Mac (logo_light in the Bridge's config.json): off
   /// gives the logo back to macOS.
-  func setEnabled(_ enabled: Bool) {
-    q.sync {
-      on = enabled
-      guard !enabled, want != .auto else { return }
-      log("logo light: off on this Mac: \(want.words) -> auto")
-      want = .auto
-      kick()
+  func setEnabled(_ enabled: Bool) { q.sync { switchTo(enabled) } }
+
+  private func switchTo(_ enabled: Bool) {
+    on = enabled
+    if enabled, hw == nil, unsupported == nil {
+      switch make() {
+      case .success(let h): hw = h
+      case .failure(let e):
+        if case .unsupported(let why) = e { unsupported = why } else { unsupported = "no bklb-backlight" }
+        log("logo light: this macOS cannot play it (\(unsupported!))")
+      }
     }
+    guard !enabled, want != .auto else { return }
+    log("logo light: off on this Mac: \(want.words) -> auto")
+    want = .auto
+    kick()
   }
 
   /// The Bridge stops (SIGTERM from launchd, Quit, or a logout): the logo is
@@ -225,6 +251,7 @@ final class LogoLight {
       guard !stopped else { return }
       stopped = true
       want = .auto
+      guard let hw else { return }
       player.release(hw: hw)
       log("logo light: the Bridge stops: the logo is macOS's")
     }
@@ -247,7 +274,7 @@ final class LogoLight {
   private func kick() { timer.schedule(deadline: .now(), leeway: .milliseconds(1)) }
 
   private func frame() {
-    guard !stopped else { return }
+    guard !stopped, let hw else { return }
     let next = player.frame(ProcessInfo.processInfo.systemUptime, want: want, hw: hw)
     // While a mode plays: a napping Bridge would stutter the fades and the
     // breath, and see a wake late (off lit after it for seconds).

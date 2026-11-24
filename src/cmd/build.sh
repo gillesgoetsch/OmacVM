@@ -166,7 +166,7 @@ fi
 i=$(feature_index battery)
 if [[ -z $BATTERY ]]; then [[ $(feature_default "$i") == on ]] && BATTERY=1 || BATTERY=0
 elif (( BATTERY )) && ! feature_available "$i"; then (( JSON )) || info "${FTITLE[$i]}: off ($REASON)"; BATTERY=0; fi
-# The Apple logo's light: on with a lit logo.
+# The Apple logo's light: opt-in, only with a lit logo.
 i=$(feature_index logo-light)
 if [[ -z $LOGO ]]; then [[ $(feature_default "$i") == on ]] && LOGO=1 || LOGO=0
 elif (( LOGO )) && ! feature_available "$i"; then (( JSON )) || info "${FTITLE[$i]}: off ($REASON)"; LOGO=0; fi

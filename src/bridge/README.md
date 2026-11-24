@@ -275,7 +275,10 @@ whose CoreBrightness lacks a part the Bridge uses.
 `GET /logo` → `{"mode": "auto"}`, `{"mode": "off"}`, `{"mode": "on",
 "percent": 50}` or `{"mode": "breathe", "rate": 15}`. `POST /logo` with one of
 those sets it: `percent` 1-100 and `rate` 6-30, whole JSON numbers, may be left
-out (50 and 15); any other word, number or key is `400`. `409` `off` while `logo_light` is false. In the VM, `omacvm-logo`
+out (50 and 15); any other word, number or key is `400`. `409` `off` while `logo_light` is false (the default: opt-in), `429` `busy`
+after 5 changes at once (then one every 0.5 s, `LogoChangeLimit`). The
+Bridge reads only the IORegistry while `logo_light` is false: the private
+CoreBrightness is loaded once it is switched on. In the VM, `omacvm-logo`
 (`guest/omacvm-logo`) says the same in words.
 
 ```bash

@@ -292,21 +292,29 @@ func audioControl(_ path: String, _ body: [String: Any]) throws -> String {
 /// (LogoMode.parse checks it); the Mac plays it.
 func logoRequest(_ fd: Int32, peer: String, method: String, body: Data) {
   guard let logo = logoLight else {
-    if let why = logoUnsupported { return respond(fd, 501, ["error": "the Bridge cannot play this Mac's lit Apple logo: \(why)", "code": "unsupported"]) }
     return respond(fd, 409, ["error": "this Mac has no lit Apple logo", "code": "no-logo"])
   }
   let off: [String: Any] = ["error": "the logo light is off on this Mac (logo_light in the Bridge's config.json): omacvm enable logo-light",
                             "code": "off"]
+  func unsupported(_ why: String?) -> [String: Any] {
+    ["error": "the Bridge cannot play this Mac's lit Apple logo: \(why ?? "CoreBrightness")", "code": "unsupported"]
+  }
+  let s = logo.state
   switch method {
   case "GET":
-    let s = logo.state
-    respond(fd, s.enabled ? 200 : 409, s.enabled ? s.mode.json : off)
+    if !s.enabled { return respond(fd, 409, off) }
+    if s.unsupported != nil { return respond(fd, 501, unsupported(s.unsupported)) }
+    respond(fd, 200, s.mode.json)
   case "POST":
     switch LogoMode.parse(body) {
     case .failure(let e): respond(fd, e.status, ["error": e.message, "code": e.code])
     case .success(let mode):
       switch logo.set(mode) {
       case .refused: return respond(fd, 409, off)
+      case .unsupported: return respond(fd, 501, unsupported(s.unsupported))
+      case .busy:
+        logRefusal("logo-busy \(peer)", "/logo from \(peer): too many changes, refused")
+        return respond(fd, 429, ["error": "too many changes: wait a moment", "code": "busy"])
       case .changed: log("/logo from \(peer): \(mode.words)")
       case .kept: break
       }
