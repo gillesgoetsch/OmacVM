@@ -36,6 +36,8 @@ final class StripPanel: NSPanel {
 /// Input from the strip, in bar coordinates (logical guest px == macOS points).
 protocol StripInputDelegate: AnyObject {
     func stripClicked(x: CGFloat, y: CGFloat, button: Int)
+    /// A left press, move or release (StripDrag.line): Omarchy's drag-to-reorder (#849).
+    func stripDrag(_ line: String)
     func stripScrolled(x: CGFloat, y: CGFloat, steps: Int)
     /// `exit`: where the pointer left the strip ("down" into the built-in
     /// display, "up" towards the display above) and at which x, if known.
@@ -73,6 +75,7 @@ final class StripView: NSView {
     var pointerCursor: NSCursor = .pointingHand
     private(set) var isHovered = false
     private var scrollAccumulator: CGFloat = 0
+    private var drag = StripDrag()
     private var trackingArea: NSTrackingArea?
 
     override init(frame: NSRect) {
@@ -110,7 +113,7 @@ final class StripView: NSView {
             CATransaction.setDisableActions(true)
             lockLayer.isHidden = !locked
             CATransaction.commit()
-            if locked { arrowCursor.set() }
+            if locked { arrowCursor.set(); cancelDrag() }
         }
     }
 
@@ -261,13 +264,31 @@ final class StripView: NSView {
 
     /// Called when the panel hides while the pointer may still be over it.
     func resetHover() {
+        cancelDrag()
         guard isHovered else { return }
         isHovered = false
         hover.left()
         input?.stripHoverChanged(false, exit: nil)
     }
 
-    override func mouseDown(with event: NSEvent) { click(event, button: 1) }
+    // Left: press, moves and release, so Omarchy's drag-to-reorder works
+    // (#849); the bar clicks on the release when nothing was dragged.
+    override func mouseDown(with event: NSEvent) {
+        guard !locked else { return }
+        drag.size = CGSize(width: barWidth, height: barHeight)
+        input?.stripDrag(StripDrag.line(drag.down(barPoint(event))))
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard !locked, let s = drag.moved(barPoint(event), now: event.timestamp) else { return }
+        input?.stripDrag(StripDrag.line(s))
+    }
+    override func mouseUp(with event: NSEvent) {
+        guard !locked else { return }
+        for s in drag.up(barPoint(event)) { input?.stripDrag(StripDrag.line(s)) }
+    }
+    private func cancelDrag() {
+        if let s = drag.cancel() { input?.stripDrag(StripDrag.line(s)) }
+    }
     override func rightMouseDown(with event: NSEvent) { click(event, button: 2) }
     override func otherMouseDown(with event: NSEvent) {
         if event.buttonNumber == 2 { click(event, button: 3) }
