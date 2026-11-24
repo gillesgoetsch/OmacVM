@@ -347,6 +347,10 @@ case "state":
   exit(0)
 default:
   modes(); curves(); breath(); player(); light(); rest()
+  // This Mac: the check for the logo is IOKit only; nothing above loaded CoreBrightness.
+  let cb = "/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness"
+  print("info this Mac: \(PWMLogo.present() ? "a lit logo" : "no lit logo")")
+  check(dlopen(cb, RTLD_NOLOAD) == nil, "PWMLogo.present() and the switch off: CoreBrightness not loaded")
 }
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("all passed")
