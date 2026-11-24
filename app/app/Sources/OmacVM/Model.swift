@@ -290,8 +290,8 @@ struct VMConfig: Equatable {
         try writeEnv(["CPUS": "\(cpus)", "MEM_MB": "\(memoryMB)"])
     }
 
-    /// These KEY=value lines in vm.env, every other line as it was (numbers
-    /// only: no quoting).
+    /// These KEY=value lines in vm.env, every other line as it was (written as
+    /// given: a value with a space comes quoted, MacKeyLayout.envValue).
     func writeEnv(_ values: [String: String]) throws {
         let url = folder.appendingPathComponent("vm.env")
         var lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")

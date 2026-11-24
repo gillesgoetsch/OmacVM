@@ -142,11 +142,14 @@ if (( ssh_ok )); then
 fi
 # OmacVM.app's VMs keep the layout chosen at setup (vm.env KEYBOARD, as the
 # app's own apply-vm.sh passes it): a switch from the control centre or the
-# command must not change it to the Mac's. Other VMs follow the Mac.
+# command must not change it to the Mac's. Other VMs follow the Mac, with
+# the PC layout they always had (a new VM's setup picks the Mac variant).
 if [[ -z $KB && $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM" 2>/dev/null); then
   KB=$(app_env "$d" KEYBOARD)
 fi
-[[ -n $KB ]] || KB=$("$R/src/keyboard/mac-layout.sh")
+[[ -n $KB ]] || KB=$("$R/src/keyboard/mac-layout.sh" --pc)
+# It goes into the VM's shell and Hyprland's config: an XKB name only.
+[[ $KB =~ ^[a-z]{2,8}( [A-Za-z0-9_-]{1,32})?$ ]] || die "keyboard layout '$KB' is no XKB \"LAYOUT [VARIANT]\" (pass --keyboard, e.g. \"de mac\")"
 probe=$(vm_probe "$IP")
 [[ -n $U ]] || U=$(sed -n 's/^OMACVM_USER=//p' <<<"$probe")
 [[ -n $U ]] || die "no desktop user in '$VM' (pass --user NAME)"
