@@ -623,6 +623,13 @@ Patches (all in `app/runtime/patches`, one per concern):
   memory) and leaves out COLOR_ATTACHMENT only where optimal tiling renders.
   `Tests/virgl/test-venus-image-limits.c` runs 101 cases through vkr's dispatch
   on the staged drivers at every runtime build.
+- `virgl-venus-linear-input-attachment.patch`: a LINEAR image with
+  INPUT_ATTACHMENT is refused (create, device image queries, both format
+  queries) unless the format's linear tiling has an attachment feature, also
+  under `VK_IMAGE_CREATE_EXTENDED_USAGE_BIT`, where KosmicKrisp's own query checks
+  no usage and says yes. Mesa 26.3's Zink asks that way for X11 windows (through
+  Xwayland), and Metal ended QEMU at the bind. Cases `zink-extended*` and
+  `linear-extended` in `test-venus-image-limits.c`.
 - `virgl-venus-missing-entries.patch`, `virgl-venus-guest-asserts.patch`,
   `virgl-venus-buffer-binds.patch` (ADR 0065's amendment, 3.2.15): what still
   ended QEMU in vkr itself (section 10). Proc table entries are never NULL: a
