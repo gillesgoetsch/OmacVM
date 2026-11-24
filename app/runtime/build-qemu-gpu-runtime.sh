@@ -1310,21 +1310,13 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hdr-follow.pa
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-depth-first.patch"
 "$native_dir/Tests/display/test-hdr-follow.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the depth hold, the first-frame hold or HDR only in full screen is not wired as tested (test-hdr-follow.sh)"
-# OmacVM: no App Nap while the VM runs: with its window out of sight (screen
-# locked, another Space) macOS slowed the whole VM to a few percent, and on
-# macOS 27 clamped it to Utility QoS despite the activity.
-patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
-grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep' "$source_dir/ui/cocoa.m" || \
-  die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
-grep -qF 'registerDefaults:@{ @"NSAppSleepDisabled": @YES }' "$source_dir/ui/cocoa.m" || \
-  die "ui/cocoa.m: QEMU's window process must opt out of App Nap (no-app-nap patch)"
 # OmacVM: touch on a touch display (#843): one recognizer per window takes
 # every direct touch at touch-down (AppKit's mouse emulation made a scroll a
 # drag, and taps misfired), the rules decide taps, scrolling, hold-drags and
 # right clicks; a pinch's two fingers go to the guest's touch screen
 # (virtio-multitouch, a touch screen only: no mouse's buttons, which took the
 # tablet's clicks). Its rules' test, a check that the wiring checks fail on
-# the code before, the wiring.
+# the code before, the wiring. Before no-app-nap.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-touch-logic.patch"
 "$native_dir/Tests/touch/test-touch.sh" || \
   die "touch on a touch display fails its test (test-touch.sh)"
@@ -1334,6 +1326,14 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-virtio-multitouch-t
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-touch.patch"
 "$native_dir/Tests/touch/test-touch.sh" "$source_dir/ui/cocoa.m" "$source_dir/hw/input/virtio-input-hid.c" || \
   die "ui/cocoa.m: touch on a touch display is not wired as tested (test-touch.sh)"
+# OmacVM: no App Nap while the VM runs: with its window out of sight (screen
+# locked, another Space) macOS slowed the whole VM to a few percent, and on
+# macOS 27 clamped it to Utility QoS despite the activity.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
+grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
+grep -qF 'registerDefaults:@{ @"NSAppSleepDisabled": @YES }' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: QEMU's window process must opt out of App Nap (no-app-nap patch)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"
