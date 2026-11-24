@@ -961,6 +961,9 @@ jobs:
       - name: OmacVM's edits of Omarchy's shell on Linux (GNU tools, as in the VM)
         run: src/tests/omarchy-shell.sh
 
+      - name: The audio panel's output list and its reads of macOS's Sound list on random orders of events (node)
+        run: src/tests/audio-panel-model.sh
+
       - name: Per-display workspaces step aside on Omarchy 4.5 on Linux (GNU awk, as in the VM)
         run: src/tests/workspaces-45.sh
 

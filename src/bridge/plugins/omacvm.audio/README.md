@@ -10,9 +10,20 @@ Omarchy's `omarchy.audio` (MIT, see `LICENSE`), driven by the Mac-side
   current input into the VM, so PipeWire's default source carries exactly what
   apps in the VM hear. It uses Omarchy's own `PwNodePeakMonitor`.
 
+- **AirPlay speakers**, the **modes of headphones** such as AirPods
+  (Listening Mode, Spatial Audio, Conversation Awareness, in macOS's words)
+  and the output's **balance** come from OmacVM.app, not the Bridge
+  (`Sound.qml`, `omacvm sound`; ADR 0076): the app reads and presses the
+  Sound list of the Mac's Control Center, which it opens off screen for
+  about a second. Control Center has the Mac's keyboard for that
+  second, so the panel asks for the list once when it opens, once more for
+  headphones that begin to play, and never on a timer.
+
 ## Guest requirements
 
 - `/usr/local/bin/omacvm-bridge` and `~/.config/omacvm-bridge/token`.
+- `/usr/local/bin/omacvm` (the control centre's command) for AirPlay, the
+  modes and the balance; without it, or with an older OmacVM.app, the panel is as before.
 - PipeWire with ALSA, PulseAudio and JACK support, which stock Omarchy
   expects anyway:
 
