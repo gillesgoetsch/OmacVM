@@ -72,6 +72,13 @@ func strictBool(_ v: Any?) -> Bool? {
   return n.boolValue
 }
 
+/// A whole JSON number in `range`: no bool, no 3.0, no "3".
+func strictInt(_ v: Any?, in range: ClosedRange<Int>) -> Int? {
+  guard let n = v as? NSNumber, CFGetTypeID(n) == CFNumberGetTypeID(), !CFNumberIsFloatType(n),
+        range.contains(n.intValue) else { return nil }
+  return n.intValue
+}
+
 /// Method + path + body -> one of the allowed requests, or why not.
 func controlRoute(method: String, path: String, body: Data, known: Set<String>) -> Result<ControlRoute, PolicyError> {
   do {
@@ -180,11 +187,7 @@ func controlRoute(method: String, path: String, body: Data, known: Set<String>) 
 let mouseSwipeChoices = [3, 4]
 
 /// A JSON 3 or 4: no bool, no 3.0, no "3".
-func strictFingers(_ v: Any?) -> Int? {
-  guard let n = v as? NSNumber, CFGetTypeID(n) == CFNumberGetTypeID(), !CFNumberIsFloatType(n),
-        mouseSwipeChoices.contains(n.intValue) else { return nil }
-  return n.intValue
-}
+func strictFingers(_ v: Any?) -> Int? { strictInt(v, in: 3...4) }
 
 /// What Gestures does with a stored value (mouseFingersOf in
 /// omacvm-gestures.c): 3 (number or text) is 3, anything else 4.

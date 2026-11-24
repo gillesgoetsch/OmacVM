@@ -287,6 +287,36 @@ func audioControl(_ path: String, _ body: [String: Any]) throws -> String {
   }
 }
 
+/// GET and POST /logo (feature logo-light, logo.swift): the mode the lit Apple
+/// logo on the lid plays, or a new one from a VM. The VM only names a mode
+/// (LogoMode.parse checks it); the Mac plays it.
+func logoRequest(_ fd: Int32, peer: String, method: String, body: Data) {
+  guard let logo = logoLight else {
+    if let why = logoUnsupported { return respond(fd, 501, ["error": "the Bridge cannot play this Mac's lit Apple logo: \(why)", "code": "unsupported"]) }
+    return respond(fd, 409, ["error": "this Mac has no lit Apple logo", "code": "no-logo"])
+  }
+  let off: [String: Any] = ["error": "the logo light is off on this Mac (logo_light in the Bridge's config.json): omacvm enable logo-light",
+                            "code": "off"]
+  switch method {
+  case "GET":
+    let s = logo.state
+    respond(fd, s.enabled ? 200 : 409, s.enabled ? s.mode.json : off)
+  case "POST":
+    switch LogoMode.parse(body) {
+    case .failure(let e): respond(fd, e.status, ["error": e.message, "code": e.code])
+    case .success(let mode):
+      switch logo.set(mode) {
+      case .refused: return respond(fd, 409, off)
+      case .changed: log("/logo from \(peer): \(mode.words)")
+      case .kept: break
+      }
+      respond(fd, 200, mode.json)
+    }
+  default:
+    respond(fd, 405, ["error": "method not allowed"])
+  }
+}
+
 /// GET or POST /display/external-brightness: the Mac display the VM (output)
 /// is on. Everything from the VM is checked: a box (x, y, width, height: an
 /// OmacVM.app output from its layout) only picks among the displays that show
@@ -495,6 +525,8 @@ func handle(_ fd: Int32, peer: String) {
     let r = MacNotifications.closeOnScreen()
     log("/notifications/dismiss from \(peer): closed \(r.closed) of \(r.found)")
     respond(fd, 200, ["closed": r.closed])
+  case (_, "/logo"):
+    logoRequest(fd, peer: peer, method: method, body: Data(body))
   case ("POST", "/power"), ("POST", "/join"), ("POST", "/disconnect"):
     respond(fd, 501, ["error": "Wi-Fi control is not implemented yet (stage 2)"])
   case (_, "/state"), (_, "/scan"), (_, "/audio"), (_, "/display"), (_, "/bluetooth"), (_, "/timezone"), (_, "/wifi/password"), (_, "/events"),

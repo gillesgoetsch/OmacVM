@@ -11,7 +11,7 @@ camera come through OmacVM.app's own ports.)
 | Mac app | `mac/*.swift` → `~/Applications/OmacVMBridge.app` (agent app, keyboard icon in the menu bar), LaunchAgent `org.omacvm.bridge`, log `~/Library/Logs/omacvm-bridge.log` |
 | Listens on | port 47831 of `127.0.0.1` (an OmacVM.app VM's `10.0.2.2`) and `192.168.77.1` (its fast network), never `0.0.0.0`. Waits for an address while its network is not up and re-binds after wake. On the retired routes' addresses it answers only that they are retired (below) |
 | Token | Mac `~/Library/Application Support/omacvm-bridge/token` (0600, made on first start); VM `~/.config/omacvm-bridge/token` (copied by `omacvm apply`) |
-| Config | `~/Library/Application Support/omacvm-bridge/config.json`: `capture_keys`, `menu_bar_icon`, `keyboard_low_steps`, `external_brightness`, `brightness_steps` (read again within 2 s of a change; `omacvm apply` sets it from the feature) |
+| Config | `~/Library/Application Support/omacvm-bridge/config.json`: `capture_keys`, `menu_bar_icon`, `keyboard_low_steps`, `external_brightness`, `brightness_steps`, `logo_light` (read again within 2 s of a change; `omacvm apply` sets `external_brightness` and `logo_light` from the features) |
 | VM client | `guest/omacvm-bridge` (bash + curl; the token never shows in `ps`, and goes only to a Bridge that proved it knows it, see API) |
 | VM popups | `guest/omacvm-bridge-osd`, user service: the Mac's volume/brightness changes as Omarchy's own OSD |
 | Shared event stream | `guest/omacvm-bridge-events`, user socket `omacvm-bridge-events.socket` (`$XDG_RUNTIME_DIR/omacvm-bridge-events.sock`): one `/events` connection to the Mac per VM; `omacvm-bridge events` reads from it, so the widgets and the OSD keep their interface (see Events) |
@@ -21,7 +21,7 @@ camera come through OmacVM.app's own ports.)
 Only Apple frameworks: CoreWLAN, CoreLocation, CoreAudio, IOBluetooth,
 CoreBluetooth (the permission), IOKit, AppKit, Security, and the private
 DisplayServices and CoreBrightness (brightness, Night Shift, True Tone,
-keyboard light), and IOKit's private IOAVService (DDC/CI to external
+keyboard light, the Apple logo's light), and IOKit's private IOAVService (DDC/CI to external
 displays, `external-brightness.swift`). Bluetooth power and forgetting a device use IOBluetooth's
 private `IOBluetoothPreferenceSetControllerPowerState` and
 `-[IOBluetoothDevice remove]` (as `blueutil` does), looked up at run time.
@@ -58,6 +58,7 @@ omacvm-bridge external | external-brightness [--output Virtual-N] [+5 | -5 | 40]
 omacvm-bridge password [ssid]
 omacvm-bridge bluetooth power toggle | connect AA:BB:CC:DD:EE:FF | disconnect … | forget … | settings
 omacvm-bridge notifications dismiss
+omacvm-bridge logo [JSON]                       # omacvm-logo is the VM's command for it
 ```
 
 ```bash
@@ -260,6 +261,68 @@ other name, so the Bridge reads the word from NotificationCenter's own bundle
 in the Mac's languages (macOS 15.4 and newer; before, only `Close`). Which
 elements, which action: `notifications-model.swift`, tested by
 `mac/test-models.sh`.
+
+### The Apple logo's light
+
+The lit Apple logo on the lid of newer MacBook Pros (feature `logo-light`;
+`logo.swift`, `logo-model.swift`): one white LED on a PWM of the SoC,
+`AppleARMPWMDevice` `bklb-backlight` (25 kHz, a period of 960 ticks of a
+24 MHz clock), which corebrightnessd drives from the display's brightness and
+the room's light. `ioreg -r -n bklb-backlight@0 -d 1` shows it; on a Mac
+without it `/logo` answers `409` `no-logo`, and `501` `unsupported` on a macOS
+whose CoreBrightness lacks a part the Bridge uses.
+
+`GET /logo` → `{"mode": "auto"}`, `{"mode": "off"}`, `{"mode": "on",
+"percent": 50}` or `{"mode": "breathe", "rate": 15}`. `POST /logo` with one of
+those sets it: `percent` 1-100 and `rate` 6-30, whole JSON numbers, may be left
+out (50 and 15); any other word, number or key is `400`. `409` `off` while `logo_light` is false. In the VM, `omacvm-logo`
+(`guest/omacvm-logo`) says the same in words.
+
+```bash
+curl "${H[@]}" -d '{"mode": "on", "percent": 30}' $B/logo
+```
+
+- **Whose mode.** The last one set. The Bridge watches its user's running
+  apps (`NSWorkspace` `runningApplications`, KVO): once no OmacVM.app VM of
+  this Bridge runs (`VMApp`), the logo is `auto` again.
+- **How it plays** (`LogoPlayer`). `on` and `breathe` write the duty
+  themselves, at most 60 times a second while it moves; `Breath` makes each
+  breath, from slow noise that drifts from one to the next. corebrightnessd writes its own level in
+  bursts of 1 to 7 s at about 120 Hz whenever the room's light or the
+  display's brightness changes, and fades the logo out while the display
+  sleeps or the lid is closed. So a readback (`high-period`) that is not the
+  Bridge's, a logo that went off, or corebrightnessd's fade factor below 1
+  (`LEPWMState`, read once a second too) means corebrightnessd took the logo:
+  the mode waits until its level stood still for 1 s with the factor at 1,
+  then fades back in from it. Every change fades over 3 s, from the level on
+  the lid.
+- **off** is corebrightnessd's own blank state (`BrightnessSystemClient`
+  `DisplayLogicalState` 1, with `LEPWMFactorFadeDuration` for the length of
+  its fade, set back to 0 after it), which holds the logo dark through its
+  changes. The keyboard backlight follows that state too, so each keyboard
+  hears straight after that the display is lit. A display that woke is lit
+  again in that state: `off` blanks again. A fade from `on` or `breathe` to
+  `off` ends on 1 tick, then duty 0 and a blank without a fade of its own. A fade to `auto`
+  ends on corebrightnessd's own level (`FinalNits` × `Factor` through its
+  `PWMCalibrationManager` for the node), then the logo is its own.
+- **The PWM.** `IORegistryEntrySetCFProperties` with `set-duty-cycle` (duty ×
+  2^32), `set-enabled` (a CFBoolean) and `set-hz` 25000: the driver takes a
+  duty only with all three, refuses one without `set-enabled` and switches the
+  logo off then; a duty of 0 switches it off. macOS's own setting
+  `LEBacklightMode` is never changed.
+- **When the Bridge stops.** SIGTERM (launchd), Quit and AppKit's quit (a
+  logout) hand the logo back to corebrightnessd at once and end a blank
+  first; then the Bridge ends as it would without it. A Bridge that is killed
+  leaves the logo as it was until corebrightnessd sets it again: its next
+  level for `on`, the display's next sleep and wake for `off`.
+- **Off** (`logo_light` false; `omacvm apply` sets it from the feature): the
+  logo is macOS's, and `/logo` answers `409` `off`.
+
+Tests: `src/tests/logo-light.sh`: the VM's `omacvm-logo` against a made-up
+client, then the modes, curves, breath and `LogoPlayer` against a made-up logo and
+corebrightnessd, and `LogoLight`'s switches; `--live` plays modes on this
+Mac's logo through the Bridge's own code. Measured and tested on a MacBook Pro
+Mac17,13 (M5 Pro, macOS 27.2).
 
 ### The retired routes' addresses
 

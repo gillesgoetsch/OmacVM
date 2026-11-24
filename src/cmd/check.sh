@@ -372,6 +372,17 @@ if [[ $BRIDGE == on ]]; then
       done < <(jq -r '.displays[] | [.name, .method, (.reason // "")] | @tsv' <<<"$ex")
     fi
   fi
+  # The Apple logo's light: the mode the Bridge plays on the lid.
+  FEATURE=logo-light
+  if [[ $(feat logo_light off) != on ]]; then skip "logo light" "off (omacvm enable logo-light)"
+  elif [[ $(mac_logo) != yes ]]; then skip "logo light" "this Mac has no lit Apple logo"
+  else
+    lg=""; declare -F bget >/dev/null && lg=$(bget /logo)
+    if lm=$(jq -er 'select(.mode) | [.mode, (.percent // .rate // empty | tostring)] | join(" ")' <<<"$lg" 2>/dev/null); then
+      ok "logo light" "plays $lm (omacvm-logo in the VM sets it)"
+    elif [[ $(jq -r '.code // empty' <<<"$lg" 2>/dev/null) == off ]]; then skip "logo light" "off on this Mac (logo_light in $c)"
+    else bad "logo light" "$(jq -er 'select(.code == "unsupported") | .error' <<<"$lg" 2>/dev/null || echo "the Bridge does not answer /logo") (omacvm update)"; fi
+  fi
   FEATURE=bridge
 else skip "Bridge" "off (chosen at setup)"; fi
 FEATURE=camera
