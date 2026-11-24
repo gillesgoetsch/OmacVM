@@ -9,8 +9,14 @@ in more words.
   the VM sets it: macOS's own (`auto`), `off`, steady (`on 1-100`, as bright as the eye sees it)
   or breathing (`breathe 6-30` breaths a minute, each breath a little different), every change a
   3 s fade. The Mac plays it through the Bridge: dark while the display sleeps
-  or the lid is closed, macOS's again once no VM runs. Feature `logo-light`, on by default on a
-  Mac with the lit logo; it comes with Update VM.
+  or the lid is closed, macOS's again once no VM runs. Feature `logo-light`, off by default: a
+  switch in the VM window's settings, shown only on a Mac with the lit logo (contributed by @rubas).
+- **Touch display (experimental).** On a Mac with a touch display, a new switch in the VM window's
+  settings (Input, off by default) passes it to the VM: a tap is a click, a touch that moves
+  scrolls and coasts after a flick, a touch held then moved drags, one held and lifted is a right
+  click, and a two-finger pinch zooms in apps that know touch screens (Chromium, Firefox, GTK 4).
+  Off, or on a Mac without one, nothing changes. Contributed by @mlamoure (#847). Needs the app
+  update; not tested on a touch display by us yet.
 
 ## 3.5.2
 

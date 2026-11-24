@@ -358,6 +358,20 @@ expect(!MissionControl.subtitle.lowercased().contains("xperimental") && MissionC
        ![MissionControl.needs45, MissionControl.needsGestures, MissionControl.onNote].contains(MissionControl.subtitle),
        "mission-control row text beside the picture: short, not experimental, none of the notes")
 
+// The Apple logo's light (logo-light, #844 #845): opt-in, off by default, shown
+// only on a Mac with a lit logo, or while it is on (to switch it off).
+expect(!LogoLight.isOn(features: nil) && !LogoLight.isOn(features: "bridge=on") &&
+       LogoLight.isOn(features: "bridge=on logo-light=on"), "logo-light: off without the record's word")
+expect(!LogoLight.shown(hasLogo: false, record: nil, pending: nil) &&
+       !LogoLight.shown(hasLogo: false, record: "logo-light=off", pending: "off\n"), "logo-light row: hidden on a Mac without a lit logo")
+expect(LogoLight.shown(hasLogo: true, record: nil, pending: nil), "logo-light row: shown on a Mac with a lit logo, off")
+expect(LogoLight.shown(hasLogo: false, record: "logo-light=on", pending: nil) &&
+       LogoLight.shown(hasLogo: false, record: nil, pending: "on\n"), "logo-light row: shown while on, so it can go off")
+expect(LogoLight.row(record: nil, pending: nil, running: false, busy: false, cli: false) == MacIME.Row(on: false, enabled: true, note: nil),
+       "logo-light row stopped: off, switched for the next start")
+expect(LogoLight.switchState.applyArguments(vm: "V", on: true).contains("logo-light=on") &&
+       !LogoLight.switchState.applyArguments(vm: "V", on: true).contains("--no-mac"), "logo-light at the start: apply with the Mac side (the Bridge's logo_light)")
+
 // Prefer VP9 on YouTube (youtube-vp9): experimental, off by default, shown
 // only on a Mac without AV1 decoding, or while it is on (to switch it off).
 expect(!YouTubeVP9.isOn(features: nil) && !YouTubeVP9.isOn(features: "bridge=on") &&

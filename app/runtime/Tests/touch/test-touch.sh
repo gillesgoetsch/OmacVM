@@ -63,7 +63,7 @@ checks() {
   chk "the rules are included" grep -q '#include "ui/omacvm-touch.h"' "$m"
   chk "the main view gets the recognizer" has "$main" 'omacvm_touch_install(self, 0);'
   chk "every other display's view gets it, with its output" has "$head" 'omacvm_touch_install(self, index);'
-  chk "OMACVM_TOUCH=0: no recognizer (AppKit's emulation as before)" \
+  chk "OMACVM_TOUCH not 1: no recognizer (AppKit's emulation as before)" \
     before "$install" 'if (omacvm_touch_off) {' 'addGestureRecognizer:'
   chk "the switches are read before the first view asks" has "$install" 'omacvm_touch_settings();'
   chk "the recognizer takes direct touches only (never a mouse or a trackpad)" \
@@ -102,7 +102,7 @@ checks() {
     has "$tscroll" 'qemu_input_queue_rel(dcl.con, INPUT_AXIS_HWHEEL, -frame.x);'
   chk "the mouse's place: the guard first, then the same mapping as a touch's" \
     before "$queue" 'omacvm_guarded_target(&view, &output, &p)' 'return [self omacvmQueuePlace:p view:view output:output];'
-  chk "qemu.log says at start whether touch is on" has "$pinit" '"AppKit'"'"'s mouse emulation (OMACVM_TOUCH=0)"'
+  chk "qemu.log says at start whether touch is on" has "$pinit" '"AppKit'"'"'s mouse emulation (OMACVM_TOUCH is not 1)"'
   chk "qemu.log says the scrolling's gain" has "$pinit" 'wheel units per point (OMACVM_TOUCH_SCROLL)'
   chk "two fingers landing go to the rules, after the touch-down" \
     before "$began" 'omacvm_touch_begin(&omacvm_touch, [event timestamp]' '[self two:now];'

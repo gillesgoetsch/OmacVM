@@ -207,6 +207,10 @@ struct SettingsSections: View {
                 if preview?.extraBrightness ?? Mac.hasExtraBrightnessDisplay {
                     ExtraBrightnessRow(tick: state.tick)
                 }
+                if LogoLight.shown(hasLogo: Mac.hasLitLogo, record: VMRecord.features(folder: state.config.folder),
+                                   pending: VMRecord.text(LogoLight.switchState.pendingFile, folder: state.config.folder)) {
+                    LogoLightRow(state: state)
+                }
                 PartialPresentRow(tick: state.tick)
                 EscapeRow(tick: state.tick)
                 if preview?.magicMouse ?? mouse.connected {
@@ -228,6 +232,9 @@ struct SettingsSections: View {
                 SwipeOutRow(tick: state.tick, gesturesOff: VMRecord.isOff("gestures", folder: state.config.folder))
                 MissionControlRow(state: state, gesturesOff: VMRecord.isOff("gestures", folder: state.config.folder))
                 ShareKeyboardRow(tick: state.tick)
+                if TouchDisplay.shown(setting: Settings.touchDisplay, connected: { Mac.hasTouchDisplay }) {
+                    TouchDisplayRow(tick: state.tick)
+                }
             }
         }
         .spySection("input")

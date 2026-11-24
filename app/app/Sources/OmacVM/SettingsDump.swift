@@ -22,6 +22,7 @@ enum SettingsDump {
             "audioThread": Settings.audioThread,
             "gpuOffMainLoop": Settings.gpuOffMainLoop,
             "shareKeyboard": Settings.shareKeyboard,
+            "touchDisplay": Settings.touchDisplay,
             "vkWindowsNoCopy": Settings.vkWindowsNoCopy,
             "hdr": Settings.hdr,
             "extraBrightness": Settings.extraBrightness,

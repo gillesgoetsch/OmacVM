@@ -459,10 +459,10 @@ Test: app/runtime/Tests/touch/test-touch.c.
 +    *sy = -dy * gain;
 +}
 +
-+/* OMACVM_TOUCH: unset or anything but "0" is on. */
++/* OMACVM_TOUCH: on only with "1" (the app's Touch display switch); fails closed. */
 +static inline bool omacvm_touch_off_env(const char *v)
 +{
-+    return v && !strcmp(v, "0");
++    return !v || strcmp(v, "1");
 +}
 +
 +/* OMACVM_TOUCH_SCROLL: wheel units per point, 0.25 to 8; else the default. */

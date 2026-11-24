@@ -827,6 +827,11 @@ enum Settings {
     /// there today. From the VM's next start.
     /// Hidden: defaults write org.omacvm.app macPointer -bool true
     static var macPointer: Bool { UserDefaults.standard.bool(forKey: "macPointer") }
+    /// Touch display (TouchDisplay, #843): experimental, off by default.
+    static var touchDisplay: Bool {
+        get { UserDefaults.standard.bool(forKey: TouchDisplay.key) }
+        set { UserDefaults.standard.set(newValue, forKey: TouchDisplay.key) }
+    }
 }
 
 extension GhosttyGPU.Driver {
@@ -840,6 +845,18 @@ extension GhosttyGPU.Driver {
 }
 
 extension Mac {
+    /// A lit Apple logo on the lid (newer MacBook Pros): its PWM, bklb-backlight,
+    /// in the IORegistry. IOKit only; asked once. The logo light's row (LogoLightRow).
+    static let hasLitLogo: Bool = {
+        let s = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceNameMatching("bklb-backlight"))
+        guard s != 0 else { return false }
+        IOObjectRelease(s)
+        return true
+    }()
+
+    /// A touch display (TouchDisplay.connected), asked once: the Touch display row.
+    static let hasTouchDisplay = TouchDisplay.connected()
+
     /// The built-in display has a camera notch. Asked at run time from the
     /// display itself (no model list); false with the lid closed, on a Mac
     /// without a notch, or at a resolution that ends below the notch.

@@ -365,8 +365,8 @@ int main(void)
     check(is(&o, "M D U"), "bad input: a lift without a time still ends the touch");
 
     /* The switches. */
-    check(!omacvm_touch_off_env(NULL) && !omacvm_touch_off_env("1") && omacvm_touch_off_env("0"),
-          "OMACVM_TOUCH: on unless 0");
+    check(omacvm_touch_off_env(NULL) && !omacvm_touch_off_env("1") && omacvm_touch_off_env("0") &&
+          omacvm_touch_off_env("") && omacvm_touch_off_env("yes"), "OMACVM_TOUCH: on only with 1");
     check(near(omacvm_touch_gain_env(NULL), 1.0) && near(omacvm_touch_gain_env("1.5"), 1.5) &&
           near(omacvm_touch_gain_env("9"), 1.0) && near(omacvm_touch_gain_env("x"), 1.0) &&
           near(omacvm_touch_gain_env("0.1"), 1.0) && near(omacvm_touch_gain_env("nan"), 1.0),

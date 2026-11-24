@@ -25,12 +25,13 @@ pinch sends nothing. The made-up contacts of a trackpad's magnification
 (qemu-cocoa-pinch-zoom.patch, for its virtio-pinch touchpad, which OmacVM
 does not attach) are not sent when the guest has a touch screen: they would
 land on it as two fingers on the screen's middle row.
-Nothing without a touch display. OMACVM_TOUCH=0: no recognizer, AppKit's
+Off unless the app sets OMACVM_TOUCH=1 (its Touch display switch,
+experimental, off by default, and a touch display): no recognizer, AppKit's
 emulation as before. qemu.log at start: "cocoa: touch: taps, scrolling,
 hold-drag and right click on a touch display", the scrolling's gain and
 "a two-finger pinch goes to the guest's touch screen (virtio-multitouch)"
 or "does nothing (the guest has no touch screen: no virtio-multitouch)", or
-"AppKit's mouse emulation (OMACVM_TOUCH=0)".
+"AppKit's mouse emulation (OMACVM_TOUCH is not 1)".
 
 Why: AppKit gives a view that overrides the mouse methods its generic mouse
 emulation, made inside the app (measured on the touch display, #843): a tap
@@ -100,7 +101,7 @@ patch).
 + * runs. The guest gets the rules' clicks, drags and scrolling, and a pinch's
 + * two fingers on its touch screen.
 + */
-+static bool omacvm_touch_off;            /* OMACVM_TOUCH=0 */
++static bool omacvm_touch_off;            /* OMACVM_TOUCH is not 1 */
 +static double omacvm_touch_gain = OMACVM_TOUCH_GAIN;   /* OMACVM_TOUCH_SCROLL */
 +/* The switches, read once: the views are made before the start's log lines. */
 +static void omacvm_touch_settings(void)
@@ -592,7 +593,7 @@ patch).
                  "its place to the guest (no grab, the keyboard stays with that app)");
 +    omacvm_touch_settings();
 +    info_report("cocoa: touch: %s", omacvm_touch_off ?
-+                "AppKit's mouse emulation (OMACVM_TOUCH=0)" :
++                "AppKit's mouse emulation (OMACVM_TOUCH is not 1)" :
 +                "taps, scrolling, hold-drag and right click on a touch display");
 +    if (!omacvm_touch_off) {
 +        info_report("cocoa: touch: scrolling %.2f wheel units per point (OMACVM_TOUCH_SCROLL)",

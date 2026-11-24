@@ -239,16 +239,19 @@ final class Runner {
         // and the read-only drop share after everything, the Mac folder too,
         // so turning it on or off moves no other device (DropPlan.finish).
         a = DropPlan.finish(arguments: a, on: links.dragDrop, folder: c.dropFolder.path, portSocket: q(c.dropPortSocket.path))
-        // A touch screen for the VM, only on a Mac with a touch display (#843):
-        // QEMU's window sends a pinch's two fingers to it (TouchDisplay). Last
-        // of all, so no other device moves with or without it; the VM finds
-        // it by what it is.
-        touchScreen = TouchDisplay.wanted()
+        // A touch screen for the VM, only with the Touch display switch
+        // (experimental, off by default) on a Mac with one (#843): QEMU's
+        // window sends a pinch's two fingers to it (TouchDisplay). Last of
+        // all, so no other device moves with or without it; the VM finds it
+        // by what it is.
+        touchSetting = Settings.touchDisplay
+        touchScreen = TouchDisplay.wanted(setting: touchSetting)
         return a + TouchDisplay.arguments(on: touchScreen)
     }
 
     /// The VM's touch screen at this start (TouchDisplay).
     private(set) var touchScreen = false
+    private var touchSetting = false
 
     /// The USB switch at this start (USBSwitch), and its qemu.log record.
     private(set) var usbOn = false
@@ -463,6 +466,8 @@ final class Runner {
         let missionControlPending = MissionControl.switchState.prepareStart(folder: c.folder)
         // Fewer animations switched in the window while it was stopped: the same way.
         let animationsPending = FewerAnimations.switchState.prepareStart(folder: c.folder)
+        // The Apple logo's light switched in the window while it was stopped: the same way.
+        let logoPending = LogoLight.switchState.prepareStart(folder: c.folder)
         // What of the Mac this start may use (its features), read once.
         links = MacLinks.load(folder: c.folder)
         // The strip beside the notch (NotchArea, #339): FullPanel only with the
@@ -540,6 +545,7 @@ final class Runner {
         if Settings.macShortcuts { env["OMACVM_MAC_SHORTCUTS"] = "1" }
         if !Settings.pointerStart { env["OMACVM_POINTER_START"] = "0" }
         if Settings.macPointer { env["OMACVM_HW_CURSOR"] = "1" }
+        env["OMACVM_TOUCH"] = TouchDisplay.environment(on: touchScreen)   // after arguments(), which decides it
         if !Settings.globeKeyToVM { env["OMACVM_GLOBE_KEY"] = "mac" }
         // Keyboard sharing apps see the keys before QEMU's tap (#350, omacvm-cocoa-keys-last.patch).
         ShareKeyboard.apply(Settings.shareKeyboard, to: &env)
@@ -705,7 +711,7 @@ final class Runner {
         if let n = sizeNote { log.write(Data("OmacVM: resources: \(c.cpus) CPUs, \(c.memoryMB) MB for this start: \(n)\n".utf8)) }
         if let g = graphics { log.write(Data("OmacVM: graphics: \(g.record)\n".utf8)) }
         log.write(Data("OmacVM: USB devices: \(usbRecord)\n".utf8))
-        log.write(Data("OmacVM: touch screen: \(TouchDisplay.record(on: touchScreen))\n".utf8))
+        log.write(Data("OmacVM: touch screen: \(TouchDisplay.record(on: touchScreen, setting: touchSetting))\n".utf8))
         log.write(Data("OmacVM: media controls: \(Settings.mediaControls ? "on" : "off") (the app's switch AirPods and media controls)\n".utf8))
         if Settings.firmwareWait > 0 {
             log.write(Data("OmacVM: the firmware waits \(Settings.firmwareWait) s for a key (firmwareWait)\n".utf8))
@@ -875,6 +881,12 @@ final class Runner {
             }
             if let on = animationsPending {
                 FeatureStart.run(config: c, switch: FewerAnimations.switchState, what: "Fewer animations", on: on, agentPath: agentPath,
+                                 until: agentDeadline, running: { kill(pid, 0) == 0 }) { [weak self] line in
+                    Task { @MainActor in self?.appendLog(line) }
+                }
+            }
+            if let on = logoPending {
+                FeatureStart.run(config: c, switch: LogoLight.switchState, what: "The Apple logo's light", on: on, agentPath: agentPath,
                                  until: agentDeadline, running: { kill(pid, 0) == 0 }) { [weak self] line in
                     Task { @MainActor in self?.appendLog(line) }
                 }
