@@ -1939,6 +1939,12 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-map-alignmen
 [[ $(grep -c 'minMemoryMapAlignment > VKR_GUEST_MAP_ALIGNMENT' "$virgl_source/src/venus/vkr_physical_device.c") == 2 ]] && \
   grep -qx '#define VKR_GUEST_MAP_ALIGNMENT 4096' "$virgl_source/src/venus/vkr_physical_device.c" || \
   die "vkr_physical_device.c: the guest is told the host driver's minMemoryMapAlignment (map-alignment patch)"
+# A linear image with INPUT_ATTACHMENT is refused also under EXTENDED_USAGE, where KosmicKrisp's
+# own query says yes and Metal then ends QEMU at the bind (Mesa 26.3's Zink on X11).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-linear-input-attachment.patch"
+[[ $(grep -c 'vkr_physical_device_linear_input_ok(' "$virgl_source/src/venus/vkr_physical_device.c") == 3 ]] && \
+  grep -q 'if (!vkr_physical_device_linear_input_ok(physical_dev, info->format, info->tiling,' "$virgl_source/src/venus/vkr_image.c" || \
+  die "vkr: a linear image with INPUT_ATTACHMENT is not refused (linear-input-attachment patch)"
 # A device the Mac's driver lost holds new Venus devices back for a while, so a VM app that is
 # started again and again after a lost device does not go straight back to the driver. Its
 # rules on their own first; made against the fully patched tree, so it comes last.

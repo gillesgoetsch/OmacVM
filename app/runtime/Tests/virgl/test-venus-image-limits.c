@@ -245,7 +245,7 @@ static int create_case(VkImageCreateInfo info)
 }
 
 /* the emulated LINEAR DRM modifier with a dma-buf, as Mesa's WSI and Zink ask for it */
-static int modifier_case(VkImageUsageFlags usage)
+static int modifier_case_flags(VkImageUsageFlags usage, VkImageCreateFlags flags)
 {
    static const uint64_t linear = 0; /* DRM_FORMAT_MOD_LINEAR */
    VkImageDrmFormatModifierListCreateInfoEXT list = {
@@ -256,7 +256,13 @@ static int modifier_case(VkImageUsageFlags usage)
       .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT };
    VkImageCreateInfo info = image_info(BGRA, DRM, usage);
    info.pNext = &ext;
+   info.flags = flags;
    return create_case(info);
+}
+
+static int modifier_case(VkImageUsageFlags usage)
+{
+   return modifier_case_flags(usage, 0);
 }
 
 /* the host's own limits for a format (the maximum passes, one more is refused) */
@@ -879,6 +885,12 @@ static const struct test_case cases[] = {
    /* the bug and the root cause (#598): Zink's linear render target */
    { "zink-linear", E_REFUSED_KK },
    { "zink-query", E_REFUSED_KK },
+   /* the same with EXTENDED_USAGE (Mesa 26.3's Zink, X11 windows): KosmicKrisp's own query
+    * skips its usage checks and says yes (virgl-venus-linear-input-attachment.patch) */
+   { "zink-extended", E_REFUSED_KK },
+   { "zink-extended-modifier", E_REFUSED_KK },
+   { "zink-extended-query", E_REFUSED_KK },
+   { "linear-extended", E_WORKS },
    /* must keep working: window buffers, plain linear colour images */
    { "wsi-linear", E_WORKS },
    { "linear-ca", E_WORKS },
@@ -1032,6 +1044,46 @@ static int run_case(const char *name)
       return modifier_case(S | TS | TD | CA | IA);
    if (IS("zink-query"))
       return zink_query_case();
+   if (IS("zink-extended")) {
+      info = image_info(BGRA, LIN, S | TS | TD | CA | IA);
+      info.flags = VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+      return create_case(info);
+   }
+   if (IS("zink-extended-modifier"))
+      return modifier_case_flags(S | TS | TD | CA | IA,
+                                 VK_IMAGE_CREATE_EXTENDED_USAGE_BIT |
+                                    VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
+   if (IS("zink-extended-query")) {
+      VkPhysicalDeviceImageFormatInfo2 q = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = BGRA,
+         .type = VK_IMAGE_TYPE_2D, .tiling = LIN, .usage = S | TS | TD | CA | IA,
+         .flags = VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT };
+      VkImageFormatProperties2 out = { .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
+      struct vn_command_vkGetPhysicalDeviceImageFormatProperties2 a = {
+         .physicalDevice = (VkPhysicalDevice)pdev, .pImageFormatInfo = &q,
+         .pImageFormatProperties = &out };
+      D->dispatch_vkGetPhysicalDeviceImageFormatProperties2(D, &a);
+      printf("vkGetPhysicalDeviceImageFormatProperties2 = %d\n", a.ret);
+      struct vn_command_vkGetPhysicalDeviceImageFormatProperties a1 = {
+         .physicalDevice = (VkPhysicalDevice)pdev, .format = BGRA, .type = VK_IMAGE_TYPE_2D,
+         .tiling = LIN, .usage = q.usage, .flags = q.flags,
+         .pImageFormatProperties = &out.imageFormatProperties };
+      D->dispatch_vkGetPhysicalDeviceImageFormatProperties(D, &a1);
+      printf("vkGetPhysicalDeviceImageFormatProperties = %d\n", a1.ret);
+      if (vkr_context_get_fatal(ctx))
+         return FATAL;
+      /* both versions give the answer vkCreateImage's check gives */
+      return a.ret == VK_SUCCESS && a1.ret == VK_SUCCESS ? WORKS
+             : a.ret == VK_ERROR_FORMAT_NOT_SUPPORTED && a1.ret == VK_ERROR_FORMAT_NOT_SUPPORTED
+                ? REFUSED
+                : BROKEN;
+   }
+   /* EXTENDED_USAGE alone keeps a plain linear image (no input attachment) */
+   if (IS("linear-extended")) {
+      info = image_info(BGRA, LIN, S | TS | TD);
+      info.flags = VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+      return create_case(info);
+   }
    if (IS("wsi-linear"))
       return modifier_case(S | TS | TD | CA);
    if (IS("linear-ca"))
