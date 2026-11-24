@@ -298,6 +298,9 @@ run_test("test-vulkan-window-restride", "vrend_blitter.c")
 run_test("test-vulkan-window-handover", "vrend_blitter.c", envs=(None, {"OMACVM_TEST_BIND": "once"}))
 run_api_test("test-empty-framebuffer")
 run_api_test("test-sampler-limit")
+# No capset bit the guest's Mesa reads as a GBM query this build cannot answer (Mesa 26.3's
+# bit 19), and its layout command refused cleanly (virgl-caps-format-modifier-bit.patch).
+run_api_test("test-caps-format-modifier")
 run_api_test("test-set-type-no-egl")
 run_api_test("test-program-binds")
 run_api_test("test-program-binds", env={"OMACVM_VIRGL_PROGRAM_CACHE": "0"})

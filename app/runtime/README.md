@@ -167,6 +167,15 @@ commit 82927e9. Changes here:
   program whose tessellation shader had an output ("too many output components
   (4 > 0)") before it reached the Mac. #589; checked by
   `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-caps-format-modifier-bit.patch`: the guest is no longer told
+  capset bit 19. The macOS tap set it for its own CORE_PROFILE_ONLY, which no
+  guest reads; upstream gave bit 19 to QUERY_FORMAT_MODIFIER (GBM hosts only),
+  and Mesa 26.3's virgl driver then sent GET_PIPE_RESOURCE_LAYOUT for every
+  shared texture. This build has no GBM and refuses that command, so Hyprland,
+  Xwayland and quickshell lost their GL contexts at every start on a VM updated
+  to Mesa 26.3. Checked by `Tests/virgl/test-caps-format-modifier.c` (bits 18,
+  19 and 20..29 clear; the command in Mesa 26.3's and malformed forms refused
+  without a write to the guest's buffer)
 - `patches/virgl-shader-separable-patch-varyings.patch`: a patch varying of a
   separable program (tessellation control to evaluation shader) takes no layout
   location on desktop GL (#589). Apple's GL refuses one and, without it, gives
