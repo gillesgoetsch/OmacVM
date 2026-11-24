@@ -8,7 +8,7 @@ to CRTC_X and CRTC_Y, for a new image and for a move). The two properties
 were in aquamarine's table (Props.cpp) and never written.
 
 Why: since Linux 6.8 a virtual GPU (DRIVER_CURSOR_HOTSPOT: virtio-gpu,
-vmwgfx, qxl) hides its cursor plane from an atomic client that does not set
+qxl, ...) hides its cursor plane from an atomic client that does not set
 that cap (drm_mode_getplane_res), because its host shows the pointer itself
 and has to know where in the image it points. Without the cap Hyprland sees
 only the primary plane and draws the pointer into its frames. With it
@@ -48,7 +48,7 @@ index 0a9b765..2e66bd6 100644
          drmProps.supportsAsyncCommit = drmGetCap(gpu->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) == 0 && cap == 1;
          atomic                       = true;
 +
-+        // A virtual GPU (virtio-gpu, vmwgfx, qxl, ...) hides its cursor plane from an atomic client that
++        // A virtual GPU (virtio-gpu, qxl, ...) hides its cursor plane from an atomic client that
 +        // does not send cursor hotspots: its host shows the pointer itself and has to know where in the
 +        // image it points. We send them (CDRMAtomicRequest::planePropsHotspot), so ask for the plane.
 +        // Other drivers, and kernels before 6.8, refuse the cap, and nothing changes there.
