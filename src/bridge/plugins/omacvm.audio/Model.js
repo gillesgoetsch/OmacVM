@@ -2,19 +2,6 @@
 // helpers below map omacvm-bridge audio payloads (the Mac's CoreAudio devices)
 // onto the native widget's labels and glyphs.
 
-function outputVolumeName(volume, muted) {
-  if (muted) return "Muted"
-  var p = Math.round(volume * 100)
-  if (p === 0) return "Silenced"
-  if (p >= 100) return "Concert hall"
-  if (p >= 85) return "Party mode"
-  if (p >= 70) return "Cranked up"
-  if (p >= 50) return "Steady groove"
-  if (p >= 30) return "Easy listening"
-  if (p >= 15) return "Murmur"
-  return "Whisper"
-}
-
 function deviceBlob(device) {
   if (!device) return ""
   return String([device.name, device.transport, device.uid].join(" ")).toLowerCase()
@@ -236,7 +223,6 @@ function clamp01(v) {
 
 if (typeof module !== "undefined") {
   module.exports = {
-    outputVolumeName: outputVolumeName,
     isHeadphones: isHeadphones,
     sinkGlyph: sinkGlyph,
     sourceGlyph: sourceGlyph,

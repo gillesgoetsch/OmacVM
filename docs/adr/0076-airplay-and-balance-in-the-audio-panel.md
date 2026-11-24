@@ -126,8 +126,9 @@ refused.
 
 In the VM, `omacvm sound [read | press NAME | mode NAME GROUP OPTION |
 balance PERCENT [OUTPUT] | allow] --json` asks the app, and the panel
-(`Sound.qml`) runs it. Like the Sound module of Control Center, the panel
-has one output list:
+(`Sound.qml`) runs it. The panel is as calm as the Sound module of Control
+Center: no status line under its title, no numbers beside the sliders, and
+one output list:
 
 - CoreAudio's outputs as before, then after a divider what macOS lists
   beyond them: AirPlay speakers. A paired Bluetooth headset that is not
@@ -165,6 +166,9 @@ has one output list:
   the headphones may have switched since the read: it costs a session and
   presses nothing when macOS has it selected. The press on its way is the
   group's spinner, at the rows' checkmarks.
+  With AirPods Pro the list is 505 px high (413 px without modes), so
+  nothing scrolls under Omarchy's cap (528 px of list); Spatial Audio shown
+  made it 551 px, and the AirPods' microphone went below the fold.
   Tried as renders against Control Center's own vertical list (every option
   a row: about 230 px for the three groups, and the input's slider below
   the fold), bordered cells of equal width (Omarchy's power profiles: "Noise

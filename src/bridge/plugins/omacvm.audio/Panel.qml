@@ -16,8 +16,9 @@
 // the AirPlay speakers of macOS's own Sound list, the modes of headphones such
 // as AirPods, and the output's balance.
 //
-// One output list: the Mac's outputs, and after a divider the AirPlay
-// speakers, as in the Sound module of the Mac's Control Center.
+// As calm as the Sound module of the Mac's Control Center: no status line
+// and no numbers beside the sliders, and one output list, the Mac's outputs
+// and after a divider the AirPlay speakers.
 //
 // The volume popup is not shown from here: omacvm-bridge-osd already shows
 // Omarchy's OSD for every volume change the helper reports.
@@ -362,11 +363,6 @@ Panel {
     return "󰖁"
   }
 
-  function outputVolumeName(volume, muted) {
-    if (!available) return "Waiting for the Mac"
-    return Model.outputVolumeName(volume, muted)
-  }
-
   function percent(v) {
     return String(Math.round(Model.clamp01(v) * 100))
   }
@@ -535,7 +531,7 @@ Panel {
           Item {
             id: heroItem
             width: parent.width
-            implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, powerSwitch.implicitHeight)
+            implicitHeight: Math.max(heroIcon.implicitHeight, heroTitle.implicitHeight, powerSwitch.implicitHeight)
 
             Text {
               id: heroIcon
@@ -567,40 +563,19 @@ Panel {
               }
             }
 
-            Column {
-              id: heroLabels
+            Text {
+              id: heroTitle
+              text: root.available ? "Audio" : "Mac unavailable"
+              color: root.barFg
+              font.family: root.barFont
+              font.pixelSize: Style.font.title
+              font.bold: true
+              elide: Text.ElideRight
               anchors.left: heroIcon.right
               anchors.leftMargin: Style.space(14)
               anchors.right: parent.right
               anchors.rightMargin: powerSwitch.width + Style.space(12)
               anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(2)
-
-              Text {
-                text: root.available ? "Audio" : "Mac unavailable"
-                color: root.barFg
-                font.family: root.barFont
-                font.pixelSize: Style.font.title
-                font.bold: true
-                elide: Text.ElideRight
-                width: parent.width
-              }
-
-              Text {
-                id: heroLabel
-                textFormat: Text.PlainText
-                text: root.outputVolumeName(
-                  outputSlider.dragging ? outputSlider.liveValue : root.outputVolume,
-                  root.outputMuted
-                ).toUpperCase()
-                color: Qt.darker(root.barFg, 1.4)
-                font.family: root.barFont
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                font.letterSpacing: 1.2
-                elide: Text.ElideRight
-                width: parent.width
-              }
             }
           }
 
@@ -615,34 +590,10 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
 
-            Item {
-              width: parent.width
-              implicitHeight: Math.max(outputHeader.implicitHeight, outputPercent.implicitHeight)
-
-              PanelSectionHeader {
-                id: outputHeader
-                text: "OUTPUT"
-                foreground: root.barFg
-                fontFamily: root.barFont
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              Text {
-                id: outputPercent
-                textFormat: Text.PlainText
-                text: root.outputAdjustable
-                  ? Math.round((outputSlider.dragging ? outputSlider.liveValue : root.outputVolume) * 100) + "%"
-                  : "FIXED"
-                color: Qt.darker(root.barFg, 1.4)
-                font.family: root.barFont
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(6)
-                anchors.verticalCenter: parent.verticalCenter
-                opacity: root.outputMuted ? 0.5 : 1.0
-              }
+            PanelSectionHeader {
+              text: "OUTPUT"
+              foreground: root.barFg
+              fontFamily: root.barFont
             }
 
             CursorSurface {
@@ -801,34 +752,10 @@ Panel {
             spacing: Style.space(6)
             visible: root.available && (root.displayInputs.length > 0 || root.hasInput)
 
-            Item {
-              width: parent.width
-              implicitHeight: Math.max(microphoneHeader.implicitHeight, microphonePercent.implicitHeight)
-
-              PanelSectionHeader {
-                id: microphoneHeader
-                text: "INPUT"
-                foreground: root.barFg
-                fontFamily: root.barFont
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              Text {
-                id: microphonePercent
-                textFormat: Text.PlainText
-                text: root.inputAdjustable
-                  ? Math.round((inputSlider.dragging ? inputSlider.liveValue : root.inputVolume) * 100) + "%"
-                  : "FIXED"
-                color: Qt.darker(root.barFg, 1.4)
-                font.family: root.barFont
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(6)
-                anchors.verticalCenter: parent.verticalCenter
-                opacity: root.inputMuted ? 0.5 : 1.0
-              }
+            PanelSectionHeader {
+              text: "INPUT"
+              foreground: root.barFg
+              fontFamily: root.barFont
             }
 
             CursorSurface {

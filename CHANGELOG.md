@@ -20,6 +20,8 @@ in more words.
   to switch, or pick with h and l and press Enter. It uses the same Control Center access as
   AirPlay, with the same permission and the same second without keys. Needs the app update and
   Update VM.
+- **A calmer Audio panel**, as the Mac's Sound module: no status line under its title and no
+  numbers beside the sliders. Needs Update VM.
 
 ## 3.6.0
 
