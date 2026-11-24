@@ -310,7 +310,19 @@ final class MediaKeys {
     // user switching): a tap of this session must never hold theirs (#290).
     for (name, on) in [(NSWorkspace.willSleepNotification, false), (NSWorkspace.didWakeNotification, true),
                        (NSWorkspace.sessionDidResignActiveNotification, false), (NSWorkspace.sessionDidBecomeActiveNotification, true)] {
-      ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.active = on; self?.check() }
+      ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
+        self?.active = on; self?.brightnessKeys.reset(n.name.rawValue); self?.check()
+      }
+    }
+    // A key-up can be lost while a display sleeps or wakes and at the lock
+    // screen: no held brightness key, fn, Shift or Option outlives them.
+    for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification] {
+      ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in self?.brightnessKeys.reset(n.name.rawValue) }
+    }
+    for name in ["com.apple.screenIsLocked", "com.apple.screenIsUnlocked"] {
+      DistributedNotificationCenter.default().addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
+        self?.brightnessKeys.reset(name)
+      }
     }
     // macOS's Accessibility list changed (a permission taken away, #192, or
     // granted again): look now, and once more when it has settled.
@@ -468,7 +480,7 @@ final class MediaKeys {
                                  macBrightness: brightness ? Brightness.displayID : nil,
                                  external: brightness ? externalState(vm) : .unknown,
                                  keyboardLight: [.keyboardUp, .keyboardDown, .keyboardToggle].contains(key) && KeyboardLight.get() != nil,
-                                 command: command)
+                                 command: command, displayAsleep: brightness && CGDisplayIsAsleep(vm.display) != 0)
     return (vm, key, route, option)
   }
 

@@ -32,10 +32,13 @@ final class BrightnessKeys {
 
   // A held key repeats at macOS's key repeat speed (Keyboard settings): HID
   // sends one press and one release, no repeats. Stops on release, on another
-  // brightness press, or after `maxRepeats` (a release that never came).
+  // brightness press, when the keyboard reads the key up (a release that never
+  // came: KeyHeldCheck), on sleep, wake and the lock screen (reset), or after
+  // `maxRepeats`.
   static let maxRepeats = 64
-  private var held: (device: UInt64, usage: UInt32, key: MediaKey, mods: KeyMods)?
+  private var held: (device: UInt64, usage: UInt32, key: MediaKey, mods: KeyMods, check: KeyHeldCheck)?
   private var holdID = 0
+  private var repeats = 0
   var repeatTimes: () -> (delay: Double, interval: Double) = { (NSEvent.keyRepeatDelay, NSEvent.keyRepeatInterval) }
   var after: (Double, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }
 
@@ -129,9 +132,27 @@ final class BrightnessKeys {
     let id = Self.registryID(service)
     let copy = Self.copy(device)
     ids[copy] = id
-    input(device: id, copy: copy, usage: usage, pressed: IOHIDValueGetIntegerValue(v) != 0, fnState: Self.fnState()) {
+    let pressed = IOHIDValueGetIntegerValue(v) != 0
+    // Whether this key still reads as down on its keyboard, for a held key's
+    // repeats (KeyHeldCheck).
+    let read: () -> Bool? = pressed ? { Self.reads(device, e) } : { nil }
+    input(device: id, copy: copy, usage: usage, pressed: pressed, fnState: Self.fnState(), down: read) {
       Self.fnMap(device, service)
     }
+  }
+
+  /// The element's last reported value (without an update: nothing is sent to
+  /// the keyboard, so a Bluetooth keyboard never holds up the main thread):
+  /// true down, false up, nil when it cannot be read.
+  static func reads(_ device: IOHIDDevice, _ element: IOHIDElement) -> Bool? {
+    var raw: UnsafeMutableRawPointer?
+    let r = withUnsafeMutablePointer(to: &raw) {
+      $0.withMemoryRebound(to: Unmanaged<IOHIDValue>.self, capacity: 1) {
+        IOHIDDeviceGetValueWithOptions(device, element, $0, IOHIDDeviceGetValueOptions.withoutUpdate.rawValue)
+      }
+    }
+    guard r == kIOReturnSuccess, let raw else { return nil }
+    return IOHIDValueGetIntegerValue(Unmanaged<IOHIDValue>.fromOpaque(raw).takeUnretainedValue()) != 0
   }
 
   /// A keyboard went away (unplugged, Bluetooth off): nothing of it stays held.
@@ -149,21 +170,23 @@ final class BrightnessKeys {
   /// One key value of one keyboard (test-hid.sh drives this with made-up
   /// keyboards); its map is read once per keyboard. `copy`: which IOHIDDevice
   /// copy of the keyboard it came from (only the first one seen is read).
-  func input(device id: UInt64, copy: Int = 0, usage: UInt32, pressed: Bool, fnState: Bool, map read: () -> [UInt32: UInt32]) {
+  /// `down`: whether the key reads as down on the keyboard now (KeyHeldCheck).
+  func input(device id: UInt64, copy: Int = 0, usage: UInt32, pressed: Bool, fnState: Bool,
+             down: @escaping () -> Bool? = { nil }, map read: () -> [UInt32: UInt32]) {
     guard copies.take(device: id, copy: copy) else { return }
     let map = maps[id] ?? {
       let m = read()
       maps[id] = m
       return m
     }()
-    if !pressed, let h = held, h.device == id, h.usage == usage { held = nil }
+    if !pressed, let h = held, h.device == id, h.usage == usage { endHold() }
     guard let key = keyboards.value(device: id, usage: usage, pressed: pressed, map: map, fnState: fnState) else { return }
     let mods = keyboards.mods
     onKey?(key, mods)
-    holdID += 1
-    held = (id, usage, key, mods)
+    endHold()
+    held = (id, usage, key, mods, KeyHeldCheck(atPress: down(), read: down))
     let hold = holdID
-    after(max(0.05, repeatTimes().delay)) { [weak self] in self?.repeatKey(hold, 0) }
+    after(max(0.05, repeatTimes().delay)) { [weak self] in self?.repeatKey(hold) }
   }
 
   /// A keyboard went away: its copies, held keys and modifiers are forgotten.
@@ -171,15 +194,40 @@ final class BrightnessKeys {
     copies.removed(device: id)
     keyboards.removed(device: id)
     maps[id] = nil
-    if held?.device == id { held = nil }
+    if held?.device == id { endHold() }
+  }
+
+  /// The Mac slept or woke, a display slept or woke, the lock screen came or
+  /// went (MediaKeys): a key-up can be lost across these, so a held key ends
+  /// and fn, Shift and Option count as up until they are pressed again.
+  func reset(_ why: String) {
+    if let h = held { log("brightness keys: \(why): the held \(h.key) ended after \(repeats) repeats") }
+    endHold()
+    keyboards.releaseAll()
+  }
+
+  private func endHold() {
+    held = nil
+    holdID += 1
+    repeats = 0
   }
 
   /// A held key's repeat: what its first press meant, whatever Shift and
-  /// Option do meanwhile (as KeyHold does for the tap's repeats).
-  private func repeatKey(_ hold: Int, _ n: Int) {
-    guard hold == holdID, let h = held, n < Self.maxRepeats else { return }
+  /// Option do meanwhile (as KeyHold does for the tap's repeats); only while
+  /// the keyboard still reads the key down (KeyHeldCheck).
+  private func repeatKey(_ hold: Int) {
+    guard hold == holdID, let h = held else { return }
+    guard repeats < Self.maxRepeats else {
+      log("brightness keys: \(h.key) held for \(repeats) repeats with no key-up: repeats ended")
+      endHold(); return
+    }
+    guard h.check.stillDown() else {
+      log("brightness keys: no key-up came for \(h.key), but the keyboard reads it up (or no longer answers): repeats ended after \(repeats)")
+      endHold(); return
+    }
+    repeats += 1
     onKey?(h.key, h.mods)
-    after(max(0.015, repeatTimes().interval)) { [weak self] in self?.repeatKey(hold, n + 1) }
+    after(max(0.015, repeatTimes().interval)) { [weak self] in self?.repeatKey(hold) }
   }
 
   /// The keyboard's own F-key map (on its event driver, below the device);

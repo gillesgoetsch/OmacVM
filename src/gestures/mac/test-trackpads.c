@@ -31,10 +31,10 @@
 
 // A device as MultitouchSupport hands it out: a CF object (here a CFData, so
 // the helper may hold it with CFRetain) whose bytes say what it is.
-typedef struct { uint64_t id, entry; int builtIn, w, h, family, running, starts, stops, callbacks; } Dev;
+typedef struct { uint64_t id, entry; int builtIn, w, h, family, touchScreen, running, starts, stops, callbacks; } Dev;
 static Dev *D(MTDeviceRef d) { return (Dev *)CFDataGetMutableBytePtr((CFMutableDataRef)d); }
 // The hardware macOS lists now (its IORegistry entries).
-static Dev hw[4];
+static Dev hw[5];
 static int nHw, lists;
 // Every device object handed out, kept here too, so the test can look at one
 // the helper let go of (and count who else holds it).
@@ -71,8 +71,30 @@ bool fakeIsRunning(MTDeviceRef d) { return D(d)->running; }
 int fakeFamilyID(MTDeviceRef d, int *f) { *f = D(d)->family; return 0; }
 io_service_t fakeService(MTDeviceRef d) { return (io_service_t)D(d)->entry; }
 kern_return_t fakeEntryID(io_registry_entry_t s, uint64_t *e) { *e = s; return s ? KERN_SUCCESS : KERN_INVALID_ARGUMENT; }
+// The IORegistry's DeviceUsagePairs as macOS 27 shows them (ioreg): a touch
+// display's are a touch screen (0x0D, 0x04) and a vendor pair, the built-in
+// trackpad's a mouse, a pointer, a touch pad (0x0D, 0x05) and vendor pairs.
+static CFDictionaryRef usagePair(int page, int usage) {
+  CFNumberRef p = CFNumberCreate(NULL, kCFNumberIntType, &page), u = CFNumberCreate(NULL, kCFNumberIntType, &usage);
+  const void *k[] = { CFSTR("DeviceUsagePage"), CFSTR("DeviceUsage") }, *v[] = { p, u };
+  CFDictionaryRef d = CFDictionaryCreate(NULL, k, v, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+  CFRelease(p); CFRelease(u);
+  return d;
+}
 CFTypeRef fakeSearch(io_registry_entry_t s, const io_name_t plane, CFStringRef key, CFAllocatorRef a, IOOptionBits o) {
-  (void)s; (void)plane; (void)key; (void)a; (void)o; return NULL;
+  (void)plane; (void)a; (void)o;
+  if (CFStringCompare(key, CFSTR("DeviceUsagePairs"), 0) != kCFCompareEqualTo) return NULL;
+  for (int i = 0; i < nHw; i++) {
+    if (hw[i].entry != s) continue;
+    CFMutableArrayRef l = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+    int pairs[][2] = { { 0x0D, 0x04 }, { 0xFF00, 0x23 }, { 1, 2 }, { 1, 1 }, { 0x0D, 0x05 } };
+    for (int k = hw[i].touchScreen ? 0 : 2; k < (hw[i].touchScreen ? 2 : 5); k++) {
+      CFDictionaryRef d = usagePair(pairs[k][0], pairs[k][1]);
+      CFArrayAppendValue(l, d); CFRelease(d);
+    }
+    return l;
+  }
+  return NULL;
 }
 
 static int fail, peer;
@@ -106,12 +128,15 @@ static void drain(int *f, int *a) {
 // time) to whoever started the device macOS has for it now (hw[0]'s entry).
 // A device object of an entry that is gone gets nothing, though it still says
 // it runs: as on the M1 Max. dev: to that object instead (a stray frame).
-static float step;
+// touchState, touchZ: each finger's state and pressure (a finger in contact
+// with pressure, unless a test says otherwise).
+static float step, touchZ = 0.5f;
+static int touchState = 4;
 static void touch(MTDeviceRef dev, int n) {
   MTTouch t[5]; memset(t, 0, sizeof t);
   step += 0.002f;
   for (int i = 0; i < n; i++) {
-    t[i].state = 4; t[i].zTotal = 0.5f; t[i].pathIndex = i + 1;
+    t[i].state = touchState; t[i].zTotal = touchZ; t[i].pathIndex = i + 1;
     t[i].normalized.pos.x = 0.3f + 0.1f * (float)i + step; t[i].normalized.pos.y = 0.5f;
   }
   if (dev) { frameCb(dev, t, n, 0, 0); return; }
@@ -286,6 +311,29 @@ int main(void) {
   check(nPads == 2 && D(padDev())->entry == 0x1e00, "a wake beside a Magic Trackpad: the built-in one's new device taken");
   check(swipeWidth(NULL) == 12400, "... touched next, the guest scales for the built-in one again (124 mm)");
   check(swipeWidth(magic) == 16000, "... and for the Magic Trackpad when it is touched again");
+
+  // The M5 MacBook Pro's trackpad: most fingers in contact read zTotal 0
+  // (#838). They count; a hovering finger without pressure does not.
+  touchZ = 0.0f;
+  check(swipeWidth(NULL) == 12400, "fingers in contact with zTotal 0 (the M5's trackpad): a four-finger swipe reaches the guest");
+  touchState = 2;
+  check(swipe() == 0, "hovering fingers with zTotal 0: not counted");
+  touchState = 4; touchZ = 0.5f;
+  swipeWidth(magic);   // the Magic Trackpad touched last again, as the touch display's check expects
+
+  // The MacBook Pro's touch display (macOS 27): MultitouchSupport lists it,
+  // built in and 346 x 226 mm ("Kiwi", family 1), its HID usage a touch screen.
+  // Not a trackpad and not a Magic Mouse: never taken (taken, it was the
+  // built-in trackpad in use until the trackpad was touched), and the guest
+  // keeps the built-in trackpad's size.
+  hw[3] = (Dev){ .id = 0x66, .entry = 0x4000, .builtIn = 1, .w = 34633, .h = 22603, .family = 1, .touchScreen = 1 };
+  nHw = 4;
+  startTrackpads(); startTrackpads();
+  int screenTaken = 0;
+  for (int i = 0; i < nPads; i++) screenTaken |= D(pads[i].dev)->id == 0x66;
+  for (int i = 0; i < nMice; i++) screenTaken |= D(mice[i].dev)->id == 0x66;
+  check(nPads == 2 && nMice == 1 && !screenTaken, "a touch display (its HID usage a touch screen): not taken as a trackpad or mouse");
+  check(swipeWidth(NULL) == 12400, "... the guest keeps scaling for the built-in trackpad (124 mm)");
 
   printf("%s\n", fail ? "FAIL trackpads" : "ok   trackpads: a device macOS made anew (a wake) is taken, the old one let go");
   return fail;

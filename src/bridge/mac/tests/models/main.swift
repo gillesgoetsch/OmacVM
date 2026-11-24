@@ -257,6 +257,15 @@ check(route(.brightnessUp, extFull, mac: 1, external: .works) == .external(2), "
 check(route(.brightnessUp, extFull, mac: 1, external: .no("no DDC")) == .macOS("no DDC"), "MacBook, Pi-X9 without DDC: macOS, with why")
 check(route(.brightnessUp, extFull, mac: 1, external: .off) != .mac, "MacBook: the built-in is never set for a VM on the external")
 check(route(.keyboardUp, builtinFull, light: true) == .mac, "MacBook: Shift+brightness, the keyboard light")
+// A sleeping display: a brightness key wakes it (macOS's) and steps nothing; other keys as before.
+func asleep(_ k: MediaKey, _ vm: FrontVM, external: ExternalState = .unknown) -> KeyRoute {
+  MediaRoute.route(k, vm: vm, volumeSettable: true, muteSettable: true, macBrightness: 1, external: external,
+                   keyboardLight: true, displayAsleep: true)
+}
+check(asleep(.brightnessUp, builtinFull) == .macOS(nil) && asleep(.brightnessDown, builtinWin) == .macOS(nil),
+      "display asleep: the built-in's brightness keys are macOS's (wake), the Bridge steps nothing")
+check(asleep(.brightnessUp, extFull, external: .works) == .macOS(nil), "display asleep: an external one's too (no DDC/CI step)")
+check(asleep(.volumeUp, builtinFull) == .mac && asleep(.play, builtinFull) == .vm("audioplay"), "display asleep: volume and play unchanged")
 check(route(.volumeUp, builtinWin) == .mac, "MacBook windowed: volume, the Mac's (with the VM's popup)")
 // Command + a volume key (Cmd+F10/F11/F12 on Apple keyboards): Omarchy's
 // screenshot keys (Super + mute/volume down/volume up), whatever the output.

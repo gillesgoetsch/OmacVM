@@ -131,6 +131,13 @@ cf.on()
 t("on, the user has it already: not added again", user().count(THR) == 1)
 cf.off()
 t("off: the user's own switch stays", f"--disable-features={THR}\n" in user())
+# Scroll momentum puts its feature into the same last switch: into ours too.
+setup(omarchy)
+cf.on()
+text = user().replace(f"--disable-features={THR}\n", f"--disable-features={THR},Glide\n")
+open(cf.USER_FILE, "w").write(text)
+cf.off()
+t("off, another value in the line it made: ours goes, that one stays", user() == omarchy + "--disable-features=Glide\n")
 
 # Commented lines are the user's: left alone.
 setup(f"# --load-extension={OLD}\n" + omarchy)

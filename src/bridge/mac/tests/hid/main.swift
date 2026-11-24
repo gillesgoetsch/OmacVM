@@ -23,11 +23,13 @@ b.repeatTimes = { (0.25, 0.03) }
 b.after = { timers.append(($0, $1)) }
 func runTimers(_ n: Int) { for _ in 0..<n where !timers.isEmpty { timers.removeFirst().run() } }
 var reads: [UInt64: Int] = [:]
+let shiftL0: UInt32 = 0xE1
 let macbook: [UInt32: UInt32] = [HIDUsage.f1: 0x00FF_0005, HIDUsage.f2: 0x00FF_0004, 0x0007_0044: 0x000C_00EA]
-func key(_ dev: UInt64, _ page: UInt32, _ usage: UInt32, _ down: Bool, map: [UInt32: UInt32], fnState: Bool = false, copies: [Int] = [0]) {
+func key(_ dev: UInt64, _ page: UInt32, _ usage: UInt32, _ down: Bool, map: [UInt32: UInt32], fnState: Bool = false, copies: [Int] = [0],
+         reads read: @escaping () -> Bool? = { nil }) {
   let u = HIDUsage.of(page: page, usage: usage)
   guard BrightnessKeys.wanted(u) else { return }   // as the IOKit callback filters
-  for c in copies { b.input(device: dev, copy: c, usage: u, pressed: down, fnState: fnState) { reads[dev, default: 0] += 1; return map } }
+  for c in copies { b.input(device: dev, copy: c, usage: u, pressed: down, fnState: fnState, down: read) { reads[dev, default: 0] += 1; return map } }
 }
 func tap(_ dev: UInt64, _ page: UInt32, _ usage: UInt32, map: [UInt32: UInt32], fnState: Bool = false) {
   key(dev, page, usage, true, map: map, fnState: fnState); key(dev, page, usage, false, map: map, fnState: fnState)
@@ -86,7 +88,56 @@ timers = []; got = []
 key(4, 7, 0x3B, true, map: btMap); runTimers(500)
 check(got.count == 1 + BrightnessKeys.maxRepeats && timers.isEmpty, "a release that never comes: the repeats stop after \(BrightnessKeys.maxRepeats)")
 key(4, 7, 0x3B, false, map: btMap)
+
+// ---- a key-up that never comes (3.5.1: full bright / full dark after a wake) ----
+// The keyboard reads F2 down at the press and up from the 3rd repeat on; its key-up value is lost.
 timers = []; got = []
+var f2Down = true, readsAsked = 0
+key(4, 7, 0x3B, true, map: btMap, reads: { readsAsked += 1; return f2Down })
+runTimers(2); f2Down = false; runTimers(500)
+check(got.count == 3 && timers.isEmpty, "key-up lost, the keyboard reads F2 up: 2 repeats, then none (was \(1 + BrightnessKeys.maxRepeats): 0 -> 1) (\(got.count) steps)")
+// The same with the old reader's whole range: from the middle of 32 steps, no more than the 3 steps it was held for.
+var lvl = 16
+b.onKey = { k, _ in lvl = max(0, min(32, lvl + (k == .brightnessUp ? 1 : -1))) }
+f2Down = true; timers = []
+key(4, 7, 0x3A, true, map: btMap, reads: { f2Down })
+runTimers(2); f2Down = false; runTimers(500)
+check(lvl == 13, "key-up lost on F1 at 50 %: 3 steps down and it stays there (\(lvl)/32), not 0")
+b.onKey = { got.append($0); gotMods.append($1) }
+// A keyboard that reads nothing back (or reads the key up already at the press): repeats as before, until the key-up.
+timers = []; got = []
+key(4, 7, 0x3B, true, map: btMap, reads: { nil }); runTimers(5)
+key(4, 7, 0x3B, false, map: btMap); runTimers(5)
+check(got.count == 6 && timers.isEmpty, "no read: 5 repeats until the key-up, as before (\(got.count))")
+timers = []; got = []
+key(4, 7, 0x3B, true, map: btMap, reads: { false }); runTimers(5)
+key(4, 7, 0x3B, false, map: btMap); runTimers(5)
+check(got.count == 6, "reads up already at the press (values that do not read back): not trusted, repeats until the key-up (\(got.count))")
+// A held key that reads down the whole time: every repeat, then the key-up ends it.
+timers = []; got = []
+key(4, 7, 0x3B, true, map: btMap, reads: { true }); runTimers(20)
+key(4, 7, 0x3B, false, map: btMap); runTimers(5)
+check(got.count == 21 && timers.isEmpty, "held and read down: 20 repeats, then its key-up (\(got.count))")
+// The keyboard stops answering mid-hold (gone): the repeats end.
+timers = []; got = []
+var answers = true
+key(4, 7, 0x3B, true, map: btMap, reads: { answers ? true : nil }); runTimers(2); answers = false; runTimers(50)
+check(got.count == 3 && timers.isEmpty, "the keyboard stops answering mid-hold: the repeats end (\(got.count))")
+key(4, 7, 0x3B, false, map: btMap)
+// Sleep, wake, the lock screen: reset ends a hold even with no read, and Shift held before it is up after it.
+timers = []; got = []; gotMods = []
+key(4, 7, 0x3B, true, map: btMap); runTimers(2)
+b.reset("test wake"); runTimers(50)
+check(got.count == 3 && timers.isEmpty, "reset (sleep/wake/lock): the held key's repeats end (\(got.count))")
+timers = []; got = []; gotMods = []
+key(4, 7, shiftL0, true, map: btMap); b.reset("test lock")
+tap(4, 7, 0x3B, map: btMap)
+check(gotMods == [KeyMods()], "reset: a Shift whose key-up was lost is up again: F2 is the display, not the keyboard light")
+timers = []; got = []; gotMods = []
+key(4, 0xFF, 0x03, true, map: btMap); b.reset("test sleep")
+tap(4, 7, 0x3A, map: btMap)
+check(got == [.brightnessDown], "reset: an fn whose key-up was lost is up again: F1 is brightness down")
+timers = []; got = []; gotMods = []
 tap(4, 7, 0x04, map: btMap)
 check(got.isEmpty && timers.isEmpty, "a letter: nothing, no repeat")
 timers = []

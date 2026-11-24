@@ -200,6 +200,13 @@ static const char *escKeys = "ctrl-opt";
 #define PINCH_RATIO 1.3f            // ... and it must exceed the centroid movement by this much
 
 static volatile int frontIsVM, escaped, capturing;
+// A swipe from macOS into a full-screen VM's Space (main thread): macOS says
+// the Space changed, and puts the VM in front, only once its slide has stopped,
+// and every swipe until then is macOS's (at the last Space it only bounces:
+// swipes on into the VM's workspaces stuck until the fingers rested). So the
+// capture comes on at the lift, while macOS still slides: the VM's Space on
+// that display, and until when the capture holds without the VM in front.
+static struct { uint64_t space; CGDirectDisplayID display; double until; } swipeIn;
 // The escape combo's way out and back: the last app in front that was no VM
 // app, and the last full-screen VM, each with its front window.
 static pid_t otherPid, vmPid, appPid;   // appPid: the app in front at the last check
@@ -252,6 +259,11 @@ static int tpW = 15600, tpH = 9600;   // built-in trackpad, 1/100 mm
 static FILE *rec;                 // --record: trackpad frames and macOS's scroll, for analysis
 static double unixNow(void) { return CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970; }
 static volatile int fingers;      // contacts in the touching trackpad's last frame
+// Touches of three or more fingers begun on a trackpad, captured or not (a
+// swipe out's look asks whether one came after it), and whether every finger
+// has lifted since the last one counted.
+static volatile int padSwipes;
+static int padLifted = 1;
 // macOS's Three Finger Drag as last read (threeDragLook): 1 = three fingers on
 // a trackpad drag in macOS, so a three-finger touch stays macOS's.
 static volatile int threeDrag;
@@ -414,7 +426,12 @@ static int forwarding;          // last frame sent to the guest had fingers
 static int pinchArmed, pinch;   // 2-finger gesture tracking
 static float d0, cx0, cy0;
 
-static int touching(const MTTouch *t) { return t->state >= 1 && t->state <= 5 && t->zTotal > 0.0f; }
+// A finger in contact (state 3 or 4) counts whatever its pressure: the M5
+// MacBook Pro's trackpad reports most touching fingers with zTotal 0 (#838).
+// The other states count only with pressure.
+static int touching(const MTTouch *t) {
+  return (t->state >= 3 && t->state <= 4) || (t->state >= 1 && t->state <= 5 && t->zTotal > 0.0f);
+}
 
 // Swipe out that follows the fingers (below, with the swipe out): what
 // becomes of this trackpad frame (TK_*), and the frames held back meanwhile.
@@ -448,6 +465,8 @@ static int frameCb(MTDeviceRef dev, MTTouch *touches, int n, double ts, int fram
 
   int send = 0;
   if (k != 2) pinchSent = 0;
+  if (!k) padLifted = 1;
+  else if (k >= 3 && padLifted) { padSwipes++; padLifted = 0; }
   fingers = k;
   if (rec && k > 0) {
     float sx = 0, sy = 0;
@@ -955,6 +974,7 @@ static void rearmTap(const char *why) {
 // that window's title, the window, and whether the app is one the escape
 // combo may go back to (other). Main thread.
 static void noteCameFrom(int changed);
+static int swipeInHolds(int front);
 static void frontChanged(pid_t pid, int net, int front, const char *title, CGWindowID win, int other) {
   // The last full-screen VM in front with no window on this Space (win 0):
   // still full screen, on its own Space, which is not shown. The combo goes
@@ -997,6 +1017,8 @@ static void frontChanged(pid_t pid, int net, int front, const char *title, CGWin
   frontIsVM = front;
   // No capture without the tap and trackpads (a permission taken away).
   int now = front && !escaped && !inputPaused;
+  // Taken at a swipe in's lift: held while macOS still slides to the VM.
+  if (swipeInHolds(front) && !now && capturing) now = 1;
   if (now != capturing) {
     capturing = now;
     logf_("capture %s", now ? "ON" : "off");
@@ -1249,10 +1271,12 @@ static void updateCapture(CFRunLoopTimerRef t, void *info) {
   takeLook();   // where a swipe out would go (only while it may)
   replayLook();
   if (t) {
-    // Every 0.2 s while a VM app is in front, else every 2 s; the slow look
-    // may come up to 0.5 s late so macOS can batch it with other wake-ups.
-    CFRunLoopTimerSetTolerance(t, net >= 0 ? 0.02 : 0.5);
-    CFRunLoopTimerSetNextFireDate(t, CFAbsoluteTimeGetCurrent() + (net >= 0 ? 0.2 : 2.0));
+    // Every 0.2 s while a VM app is in front (or a swipe into one is held),
+    // else every 2 s; the slow look may come up to 0.5 s late so macOS can
+    // batch it with other wake-ups.
+    int fast = net >= 0 || swipeIn.until > 0;
+    CFRunLoopTimerSetTolerance(t, fast ? 0.02 : 0.5);
+    CFRunLoopTimerSetNextFireDate(t, CFAbsoluteTimeGetCurrent() + (fast ? 0.2 : 2.0));
   }
 }
 
@@ -2823,6 +2847,7 @@ typedef struct {
   double began, unit;       // unit: the Dock's progress for one Space there
   CGPoint at;
   TakeDisplay d;
+  int swipes;               // padSwipes at its end
 } TakeRun;
 static TakeDisplay takeDisp;
 static TakeRun takeRun;
@@ -2872,9 +2897,12 @@ static void takeLook(void) {
     CGPoint p = pointerFn();
     for (int i = 0; i < nd; i++) {
       const DisplaySpaces *d = &ds[i];
-      int at = spaceIndex(d, d->current);
+      // While macOS still slides into it after a swipe in, its Space is not
+      // the current one yet: its neighbours count.
+      uint64_t here = swipeIn.until > 0 && d->id == swipeIn.display ? swipeIn.space : d->current;
+      int at = spaceIndex(d, here);
       if (at < 0 || !CGRectContainsPoint(d->bounds, p) || !showsVM(d, wins, nw)) continue;
-      t = (TakeDisplay){ 1, d->n, at > 0, at + 1 < d->n, d->id, d->bounds, d->current };
+      t = (TakeDisplay){ 1, d->n, at > 0, at + 1 < d->n, d->id, d->bounds, here };
       break;
     }
   }
@@ -2983,6 +3011,15 @@ static void takeLanded(TakeRun r, int looks) {
     if (!leaveToward(r.toward, r.d.id)) focusPointerDisplay();   // with "all" the other displays follow
     return;
   }
+  // Another swipe began before this look: the person moved on (or back
+  // into the VM) with macOS's own swipe. A step now would move them again,
+  // the wrong way. No step, and no miss; still in the VM's Space, the
+  // capture check takes it again.
+  if (padSwipes != r.swipes) {
+    logf_("swipe out: another swipe before macOS was seen to finish this one: no step");
+    escaped = 0;
+    return;
+  }
   takeMissed("a finished swipe did not change the Space");
   leaveToward(r.toward, 0);
 }
@@ -3021,6 +3058,7 @@ static void takeAct(SwipeTake *s, int tk, const char *who) {
     int commit = takeRun.follows ? s->commit : s->along >= TAKE_STEP_MIN && s->speed > TAKE_BACK;
     if (takeRun.follows) dockPostFn(commit ? kSwipeEnded : kSwipeCancelled, takeUnits(s->progress), takeUnits(s->speed), takeRun.at);
     takeQuietUntil = monoNow() + TAKE_QUIET;
+    takeRun.swipes = padSwipes;
     TakeRun r = takeRun;
     double progress = s->progress, speed = s->speed;
     dispatch_async(dispatch_get_main_queue(), ^{ takeEnded(r, commit, progress, speed); });
@@ -3061,6 +3099,109 @@ static void flushKept(void) {
 static void dropKept(void) { keptLen = 0; }
 static void takePadPass(void) { padTake.state = TAKE_PASS; }
 
+// ---- Swipe into the VM ----
+// A swipe from macOS into a full-screen VM's Space: macOS says the Space
+// changed, and puts the VM in front, only once its slide has stopped (the
+// M5 MacBook Pro, 2026-11-20: 3 s after the lift, while four more swipes came,
+// each one macOS's, bouncing at the VM's Space, the last). So at the lift of an
+// uncaptured swipe that macOS finishes (the swipe out's rule, takeCommit) into
+// the VM's Space, beside or further along that way, with the VM's window on
+// screen there (macOS slides it in), the capture comes on at once: the next
+// swipe is the guest's workspace swipe, or a swipe out back to macOS. It holds
+// without the VM in front until macOS has put it there, at most swipeInWait,
+// and only while its window still shows (macOS slid it back: off again).
+#define SWIPE_IN_LOOK 0.06   // s after the lift: the trackpad's own end of macOS's swipe reaches the Dock first
+static double swipeInWait = 2.0;   // s (the offline test sets less)
+static uint64_t vmSpaceOn(const DisplaySpaces *d, CGWindowID *win);
+static void swipeInLook(int way, double progress, double speed);
+
+// The uncaptured touch of three or more fingers so far (the trackpad's thread).
+static struct { int on, most, nh; double dx, dy; struct { double t, x; } hist[TAKE_HIST]; } padIn;
+static void swipeInDrop(void) { padIn.on = 0; }
+
+// A trackpad frame while not captured: k fingers, moved by ddx, ddy (trackpad
+// widths) since the last one. At the lift of a sideways swipe, the look.
+static void swipeInFrame(int k, double ddx, double ddy) {
+  double now = takeClock();
+  if (k >= 3) {
+    if (!padIn.on) { memset(&padIn, 0, sizeof padIn); padIn.on = 1; }
+    if (k > padIn.most) padIn.most = k;
+    padIn.dx += ddx; padIn.dy += ddy;
+    if (padIn.nh == TAKE_HIST) { memmove(padIn.hist, padIn.hist + 1, sizeof padIn.hist[0] * (TAKE_HIST - 1)); padIn.nh--; }
+    padIn.hist[padIn.nh].t = now; padIn.hist[padIn.nh].x = padIn.dx; padIn.nh++;
+    return;
+  }
+  if (!padIn.on) return;
+  padIn.on = 0;
+  if (padIn.most == 3 && threeDrag) return;   // macOS's drag
+  double ax = fabs(padIn.dx);
+  if (ax < TAKE_MIN || ax < TAKE_RATIO * fabs(padIn.dy)) return;   // no sideways swipe
+  int way = padIn.dx < 0 ? -1 : 1;
+  double travel = takeTravel > 0 ? takeTravel : TAKE_TRAVEL, speed = 0;
+  // Spaces/s along its way over the last TAKE_VEL_TIME, as takeSpeed.
+  int i = padIn.nh - 2;
+  while (i > 0 && padIn.hist[padIn.nh - 1].t - padIn.hist[i].t < TAKE_VEL_TIME) i--;
+  double dt = i >= 0 ? padIn.hist[padIn.nh - 1].t - padIn.hist[i].t : 0;
+  if (dt > 0.004) speed = way * (padIn.hist[padIn.nh - 1].x - padIn.hist[i].x) / dt / travel;
+  double progress = ax / travel;
+  pendingSteps++;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(SWIPE_IN_LOOK * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    pendingSteps--;
+    swipeInLook(way, progress, speed);
+  });
+}
+
+// The look (main thread): way, the fingers' (-1 left: macOS shows the Space
+// on the right); progress in Spaces, speed in Spaces/s along it.
+static void swipeInLook(int way, double progress, double speed) {
+  // Captured already, a swipe out still being looked at, another swipe begun
+  // (its lift looks again), no VM to go into, or one without gestures.
+  if (capturing || inputPaused || takeOn() || fingers >= 3 || !vmPid || !gesturesOn()) return;
+  if (!takeCommit(progress, speed)) return;   // macOS slides back
+  DisplaySpaces ds[MAX_DISPLAYS]; int nd = spacesFn(ds, MAX_DISPLAYS);
+  CGRect wins[MAX_DISPLAYS]; int nw = vmWindowsFn(vmPid, wins, MAX_DISPLAYS);
+  CGPoint p = pointerFn();
+  int step = way < 0 ? 1 : -1;
+  for (int i = 0; i < nd; i++) {
+    const DisplaySpaces *d = &ds[i];
+    if (!CGRectContainsPoint(d->bounds, p)) continue;
+    CGWindowID w = 0;
+    uint64_t s = vmSpaceOn(d, &w);
+    int at = spaceIndex(d, d->current), vi = s ? spaceIndex(d, s) : -1;
+    // macOS's current Space is still the one the slide began on (and stays
+    // so through swipes chained across Spaces): the VM's is along the way.
+    if (at < 0 || vi < 0 || (vi - at) * step <= 0 || !fullOn(d, wins, nw)) return;
+    swipeIn.space = s; swipeIn.display = d->id; swipeIn.until = monoNow() + swipeInWait;
+    escaped = 0; capturing = 1;
+    logf_("swipe in: macOS slides into the VM's Space (%.2f of a Space, %.1f Spaces/s): capture ON before it lands", progress, speed);
+    if (rec) fprintf(rec, "C\t%.4f\t%d\n", unixNow(), 1);
+    sendState("on");
+    takeLook();
+    if (captureTimer) CFRunLoopTimerSetNextFireDate(captureTimer, CFAbsoluteTimeGetCurrent() + 0.2);
+    return;
+  }
+}
+
+// The capture check (frontChanged, main thread): whether a swipe in's capture
+// still holds. The VM in front: it landed, nothing more to hold.
+static int swipeInHolds(int front) {
+  if (swipeIn.until <= 0) return 0;
+  const char *why = NULL;
+  if (front) why = NULL;
+  else if (inputPaused) why = "input paused";
+  else if (monoNow() >= swipeIn.until) why = "macOS did not land on the VM's Space in time";
+  else {
+    DisplaySpaces ds[MAX_DISPLAYS]; int nd = spacesFn(ds, MAX_DISPLAYS);
+    CGRect wins[MAX_DISPLAYS]; int nw = vmWindowsFn(vmPid, wins, MAX_DISPLAYS);
+    const DisplaySpaces *d = displayIn(ds, nd, swipeIn.display);
+    if (!d || !fullOn(d, wins, nw)) why = "macOS slid the VM's Space away";
+    else return 1;
+  }
+  swipeIn.until = 0;
+  if (why && capturing) logf_("swipe in: %s", why);
+  return 0;
+}
+
 // A trackpad frame (frameCb): its fingers' movement since the last frame
 // (those in both), into the model.
 static int takePadFrame(MTTouch **c, int k) {
@@ -3073,6 +3214,8 @@ static int takePadFrame(MTTouch **c, int k) {
   if (common) { ddx /= common; ddy = ddy / common * (tpW > 0 ? (double)tpH / tpW : 0.6); }   // up/down in trackpad widths too
   nLast = k;
   for (int i = 0; i < k; i++) { last[i].id = c[i]->pathIndex; last[i].x = c[i]->normalized.pos.x; last[i].y = c[i]->normalized.pos.y; }
+  if (!capturing) swipeInFrame(k, ddx, ddy);
+  else swipeInDrop();
   if (!(capturing && gesturesOn())) { dropKept(); return takeAbort(&padTake, k); }
   // How far apart the fingers are (in trackpad widths): a pinch or spread
   // while the way is not clear is no swipe.
@@ -3738,9 +3881,10 @@ static void *serverThread(void *arg) {
 }
 
 // ---- the trackpads (the built-in one, every Magic Trackpad) and Magic Mice ----
-// MultitouchSupport lists every multi-touch surface, the Magic Mouse's too; a
-// trackpad is told apart by its size (a Magic Trackpad is 160 x 115 mm, a Magic
-// Mouse's surface well under 100 mm wide), a Magic Mouse by its family id or
+// MultitouchSupport lists every multi-touch surface, the Magic Mouse's and a
+// touch display's too; a trackpad is told apart by its size (a Magic Trackpad
+// is 160 x 115 mm, a Magic Mouse's surface well under 100 mm wide), a touch
+// display by its HID usage (mtTouchScreen), a Magic Mouse by its family id or
 // HID product (isMagicMouseKind). Looked for again every 10 s, and 1 s after
 // macOS adds a multi-touch device (watchMultitouch), so a Magic Trackpad or
 // Magic Mouse connected later (or again) is taken too.
@@ -3842,8 +3986,48 @@ static void startMouse(MTDeviceRef d, int w, int h, int family, int product) {
         "one-finger flick = back/forward; scrolling as before)", renewed ? " again" : "", family, product, mw / 100, mh / 100);
 }
 
+// A touch display (the MacBook Pro with the touch screen, macOS 27) is a
+// multi-touch surface too, built in and 346 mm wide, but no trackpad: its HID
+// usage is a touch screen (Digitizer page 0x0D, usage 0x04), a trackpad's a
+// touch pad (0x0D, 0x05). No frame of it ever comes here (measured: taps,
+// pinches, fingers held 5 s; its touches reach only the app touched, and the VM
+// app takes them, #843). Taken for a trackpad it was held as a second built-in
+// one, and listed after the trackpad it was the one in use: the guest was told
+// a touchpad 346 mm wide from the helper's start (and whenever macOS made the
+// display's device anew) until the trackpad was touched.
+static int mtTouchScreen(MTDeviceRef d) {
+  io_service_t svc = MTDeviceGetService(d);
+  if (!svc) return 0;
+  int found = 0;
+  CFTypeRef v = IORegistryEntrySearchCFProperty(svc, kIOServicePlane, CFSTR("DeviceUsagePairs"), NULL,
+                                                kIORegistryIterateRecursively | kIORegistryIterateParents);
+  if (v && CFGetTypeID(v) == CFArrayGetTypeID()) {
+    for (CFIndex i = 0; !found && i < CFArrayGetCount((CFArrayRef)v); i++) {
+      CFTypeRef pair = CFArrayGetValueAtIndex((CFArrayRef)v, i);
+      if (CFGetTypeID(pair) != CFDictionaryGetTypeID()) continue;
+      CFTypeRef pg = CFDictionaryGetValue((CFDictionaryRef)pair, CFSTR("DeviceUsagePage"));
+      CFTypeRef us = CFDictionaryGetValue((CFDictionaryRef)pair, CFSTR("DeviceUsage"));
+      int page = 0, usage = 0;
+      if (pg && CFGetTypeID(pg) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)pg, kCFNumberIntType, &page);
+      if (us && CFGetTypeID(us) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)us, kCFNumberIntType, &usage);
+      found = page == 0x0D && usage == 0x04;
+    }
+  }
+  if (v) CFRelease(v);
+  return found;
+}
+
 static int isTrackpad(MTDeviceRef d, int *w, int *h) {
   if (MTDeviceGetSensorSurfaceDimensions(d, w, h) != 0) *w = *h = 0;
+  if (mtTouchScreen(d)) {
+    static uint64_t said;   // once per device (the 10 s look lists it again)
+    uint64_t entry = mtEntry(d);
+    if (entry != said) {
+      said = entry;
+      logf_("touch display: %d x %d mm, not a trackpad (the VM app takes its touches)", *w / 100, *h / 100);
+    }
+    return 0;
+  }
   return MTDeviceIsBuiltIn(d) || *w >= 10000;
 }
 

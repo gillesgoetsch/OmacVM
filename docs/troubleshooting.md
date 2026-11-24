@@ -238,7 +238,7 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   read the keyboard (IOHIDManagerOpen: 0xe00002c5)" means another app holds
   a keyboard for itself (Karabiner-Elements does with its own rules); the
   Bridge tries again after 2 s, then waits twice as long each time, up to
-  5 minutes (before 3.5.0 it tried every 2 s, and each try kept about
+  5 minutes (before 3.5.1 it tried every 2 s, and each try kept about
   0.4 MB, #813).
 - **A mouse scrolls on after the wheel stops, or jumps**: scroll momentum is
   for trackpads only and passes every mouse's scrolling one to one; this was

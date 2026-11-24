@@ -1,0 +1,56 @@
+virglrenderer: do not tell the guest upstream's capability bit 19
+
+What: capset bit 19 (capability_bits_v2) is no longer set. The macOS tap
+(virglrenderer-macos-unified.patch) used it for its own
+VIRGL_CAP_V2_CORE_PROFILE_ONLY, which no guest Mesa reads. Upstream gave the same
+bit to VIRGL_CAP_V2_QUERY_FORMAT_MODIFIER (virglrenderer 652e8d8b "vrend: Support
+tiled gbm allocation", Mesa c1ca2c89 "virgl: Support tiled gbm modifiers", in Mesa
+26.3), which upstream sets only on a renderer with GBM and Venus interop. The
+define now carries upstream's name; the tap's advertisement is gone.
+Why: Mesa 26.3's virgl driver reads bit 19 as "the host answers the modifier
+queries": it sends QUERY_GBM_FORMAT_MODIFIER (command 64) once per screen and
+GET_PIPE_RESOURCE_LAYOUT (command 63) for every shared texture. This build has
+no GBM, so command 63 is refused (EINVAL, upstream's non-GBM path) and the
+context is lost: on Omarchy 4.0 VMs updated to Mesa 26.3.1 (Arch Linux ARM,
+2026-11) Hyprland, Xwayland and quickshell lost their GL contexts at every start
+("failed to dispatch GET_PIPE_RESOURCE_LAYOUT: 22", "Illegal command buffer
+131135"). Without bit 19 Mesa 26.3 sends neither command, as on a GBM-less Linux
+host. Mesa 26.2 and older never read bit 19. Command 64 is OmacVM's
+VIRGL_CCMD_SET_RESET_STATUS_BUFFER here (virgl-context-loss-report.patch), sent
+only by OmacVM's own guest Mesa build when bit 30 is set; upstream's
+QUERY_GBM_FORMAT_MODIFIER has the same number, which a later virglrenderer pin
+has to sort out (the patch would not apply over it).
+Upstream status: not needed upstream (upstream never set bit 19 without GBM);
+the tap's bit is a downstream choice, reported nowhere.
+Tests: Tests/virgl/test-caps-format-modifier.c (bit 19, bit 18 and 20..29 clear,
+bit 30 set; GET_PIPE_RESOURCE_LAYOUT as Mesa 26.3 sends it and in malformed forms
+is refused without a write to the guest's buffer; fails without this patch);
+fuzz-regressions/seed-mesa263-layout; a 4.0 VM on Mesa 26.3.1 starts its desktop
+with no lost context.
+--- a/src/virgl_hw.h
++++ b/src/virgl_hw.h
+@@ -629,7 +629,10 @@ enum virgl_formats {
+ #define VIRGL_CAP_V2_MIRROR_CLAMP         (1u << 17)
+ #define VIRGL_CAP_V2_RESOURCE_LAYOUT      (1u << 18)
+ 
+-#define VIRGL_CAP_V2_CORE_PROFILE_ONLY    (1u << 19)
++/* Upstream's bit (virglrenderer 652e8d8b, Mesa 26.3): set only by a renderer with GBM and Venus
++ * interop. The macOS tap used it for CORE_PROFILE_ONLY, which no guest reads; with it set, Mesa
++ * 26.3 sent GET_PIPE_RESOURCE_LAYOUT for every shared texture and lost its context. */
++#define VIRGL_CAP_V2_QUERY_FORMAT_MODIFIER (1u << 19)
+ /* VIRGL_CCMD_SET_RESET_STATUS_BUFFER is understood (OmacVM). */
+ #define VIRGL_CAP_V2_RESET_STATUS_BUFFER  (1u << 30)
+ /* virgl bind flags - these are compatible with mesa 10.5 gallium.
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -17202,10 +17202,6 @@ angle_done:
+    // we can pass "1" as size on drm path, but not on vtest.
+    caps->v2.capability_bits_v2 |= VIRGL_CAP_V2_COPY_TRANSFER_BOTH_DIRECTIONS;
+ 
+-   /* On Core Profile hosts, advertise this so guest can cap compatibility level */
+-   if (vrend_state.use_core_profile)
+-      caps->v2.capability_bits_v2 |= VIRGL_CAP_V2_CORE_PROFILE_ONLY;
+-
+    if (has_feature(feat_anisotropic_filter)) {
+       float max_aniso;
+       glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &max_aniso);

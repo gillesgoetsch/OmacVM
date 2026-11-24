@@ -132,29 +132,73 @@ hl.on("monitor.focused", function(m)
   end, { timeout = 1, type = "oneshot" })
 end)
 
--- Right above the built-in display, NOTCH is that display's neighbour "up":
--- a window moved up off its top edge would land on the hidden output. It goes
--- back to the built-in display's workspace at once.
+-- No window belongs on NOTCH: it is never seen. Right above the built-in
+-- display, NOTCH is that display's neighbour "up", so a window moved up off
+-- its top edge lands there, and a workspace moved to the monitor above (or
+-- left there when a display goes) takes its windows along (#848: three windows
+-- on a numbered workspace 11 on NOTCH, gone from sight). So it is told by the
+-- output, not by the workspace's name: a window on NOTCH goes back to the
+-- built-in display's workspace at once.
+-- Hyprland 0.56 hands out its windows, workspaces and monitors as userdata,
+-- not tables: a field is read with field(), which never raises for one that
+-- is not there.
+local function field(o, k)
+  if o == nil then return nil end
+  local ok, v = pcall(function() return o[k] end)
+  if ok then return v end
+end
+
+local function notch_workspace(ws)
+  local name = field(ws, "name") or field(ws, "config_name")
+  if name == "notch" or name == "name:notch" then return true end
+  return field(field(ws, "monitor"), "name") == NOTCH_OUTPUT
+end
+
+local function builtin_workspace()
+  for _, m in ipairs(hl.get_monitors()) do
+    if m.name == builtin_output() then
+      local aw = field(m, "active_workspace") or field(m, "activeWorkspace")
+      return field(aw, "name") or field(aw, "id")
+    end
+  end
+end
+
+local function send_back(address, target)
+  hl.dispatch(hl.dsp.window.move({ window = "address:" .. address, workspace = tostring(target), follow = false }))
+end
+
 hl.on("window.move_to_workspace", function(a, b)
   pcall(function()
     local win, ws = a, b
-    if type(win) == "table" and win.window then win, ws = win.window, win.workspace end
-    if not win or not win.address then return end
-    ws = ws or win.workspace
-    local name = ws and (ws.name or ws.config_name)
-    if name ~= "notch" and name ~= "name:notch" then return end
-    local target
-    for _, m in ipairs(hl.get_monitors()) do
-      if m.name == builtin_output() then
-        local aw = m.active_workspace or m.activeWorkspace
-        target = aw and (aw.name or aw.id)
-      end
-    end
-    if target then
-      hl.dispatch(hl.dsp.window.move({ window = "address:" .. win.address, workspace = tostring(target), follow = false }))
-    end
+    if field(win, "window") then win, ws = field(win, "window"), field(win, "workspace") end
+    local address = field(win, "address")
+    if not address then return end
+    if not notch_workspace(ws or field(win, "workspace")) then return end
+    local target = builtin_workspace()
+    if target then send_back(address, target) end
   end)
 end)
+
+-- Every window on NOTCH, wherever it came from (a workspace moved there, a
+-- window opened there): back to the built-in display's workspace. Looked at
+-- after the event, when Hyprland has placed everything.
+local function bring_back()
+  pcall(function()
+    local target
+    for _, w in ipairs(hl.get_windows() or {}) do
+      local address = field(w, "address")
+      if address and (field(field(w, "monitor"), "name") == NOTCH_OUTPUT or notch_workspace(field(w, "workspace"))) then
+        target = target or builtin_workspace()
+        if not target then return end
+        send_back(address, target)
+      end
+    end
+  end)
+end
+local function bring_back_soon() hl.timer(bring_back, { timeout = 1, type = "oneshot" }) end
+hl.on("window.open", bring_back_soon)
+hl.on("workspace.active", bring_back_soon)
+hl.on("workspace.move_to_monitor", bring_back_soon)
 
 -- The overlap with the built-in display is deliberate (see above), but
 -- Hyprland warns about any overlapping monitors after every layout change
@@ -172,6 +216,7 @@ end
 
 local function on_layout_event()
   dismiss_notch_overlap_warning()
+  bring_back_soon()
   for _, ms in ipairs({ 16, 50, 150, 500, 1500 }) do
     hl.timer(dismiss_notch_overlap_warning, { timeout = ms, type = "oneshot" })
   end

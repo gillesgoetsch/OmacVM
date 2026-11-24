@@ -132,7 +132,7 @@ for f in hyprland.lua input.lua autostart.lua monitor_workspaces.lua omacvm_glid
 done
 plant "$H/.config/hypr/bindings.lua" "$S/secret"
 plant "$H/.config/hypr/monitors.lua" "$S/secret"
-for f in glide-flags pending-plugins pending-plugins-off pending-clock restart-shell; do plant "$H/.local/state/omacvm/$f" "$S/file"; done
+for f in glide-flags glide-features.json pending-plugins pending-plugins-off pending-clock restart-shell; do plant "$H/.local/state/omacvm/$f" "$S/file"; done
 plant "$H/.config/chromium-flags.conf" "$S/file"
 plant "$H/.config/omarchy/shell.json" "$S/json"
 plant "$H/.config/omacvm/clock-before.json" "$S/secret"
@@ -182,8 +182,8 @@ OMACVM_MAC_FOLDER_USER=$LU bash "$G/app/guest/omacvm-mac-folder" --stop >/dev/nu
 owner() { stat -c '%U' "$1" 2>/dev/null; }
 expect "plain home: per-display workspaces in bindings.lua" 1 "$(grep -c 'require("hypr.monitor_workspaces")' "$H/.config/hypr/bindings.lua")"
 expect "... keyboard layout in input.lua, the user's file" "1 $LU" "$(grep -c 'kb_layout = "us"' "$H/.config/hypr/input.lua") $(owner "$H/.config/hypr/input.lua")"
-expect "... Glide in hyprland.lua and the flags file" "1 1" \
-  "$(grep -c 'require("hypr.omacvm_glide")' "$H/.config/hypr/hyprland.lua") $(grep -c -- '--disable-smooth-scrolling' "$H/.config/chromium-flags.conf")"
+expect "... Glide in hyprland.lua and the flags file" "1 1 1" \
+  "$(grep -c 'require("hypr.omacvm_glide")' "$H/.config/hypr/hyprland.lua") $(grep -c -- '--disable-smooth-scrolling' "$H/.config/chromium-flags.conf") $(grep -c -- '--disable-features=.*WaylandUnscaledTouchpadScrolling' "$H/.config/chromium-flags.conf")"
 expect "... OmacVM's Hyprland settings in hyprland.lua, the user's file" "1 $LU" \
   "$(grep -c 'require("hypr.omacvm_vm")' "$H/.config/hypr/hyprland.lua") $(owner "$H/.config/hypr/omacvm_vm.lua")"
 expect "... the clock moved in shell.json, the user's" "1 $LU" "$(jq '.bar.layout.right[-1].format == "HH:mm"' "$H/.config/omarchy/shell.json" | grep -c true) $(owner "$H/.config/omarchy/shell.json")"

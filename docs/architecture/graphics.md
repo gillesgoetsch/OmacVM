@@ -487,6 +487,7 @@ one patch each, each with a build-time test that compiles or runs on the Mac's G
 | no cull distances: vrend wrote no clip distances (a shader writing gl_ClipDistance refused, user clip planes and the clip distances of tessellation and geometry shaders ignored), and a last tessellation evaluation shader lost its y prescale (upside down in a window) and its transform feedback (#589) | `virgl-shader-clip-distances.patch` (clip distances on every desktop GL; the user clip planes' stores in a variant for planes on: key bit `ucp_enabled` for the last vertex or evaluation shader, `gs.emit_clip_distance` for the geometry shader; a vertex shader still never declares gl_CullDistance; transform feedback from a last evaluation shader runs on Apple's software vertex path: "Fallback to SW vertex processing for EVAL_PROG TF" once in qemu.log) | `test-whole-program-shapes.c` |
 | `GL_ARB_arrays_of_arrays` asked for by a geometry or tessellation shader with a varying array, without checking the host (#589) | `virgl-shader-arrays-of-arrays.patch` (only where the GL has it; interface blocks otherwise, as vrend already declared them) | `test-whole-program-shapes.c` |
 | guest told 0 tessellation shader outputs (asked only on a GL with atomic counters): the guest's Mesa refused every whole program whose tessellation shader had an output (#589) | `virgl-caps-tess-outputs.patch` (the per-vertex limits, on every GL with tessellation) | `test-whole-program-shapes.c` |
+| guest told capset bit 19 (the tap's CORE_PROFILE_ONLY, upstream's QUERY_FORMAT_MODIFIER since Mesa 26.3): Mesa 26.3 sent GET_PIPE_RESOURCE_LAYOUT for every shared texture, refused without GBM, and the desktop's GL contexts were lost at every start | `virgl-caps-format-modifier-bit.patch` (bit 19 not set; upstream sets it only with GBM and Venus interop) | `test-caps-format-modifier.c`, fuzz seed `seed-mesa263-layout` |
 | clip distances between tessellation shaders (`gl_ClipDistance` in the control shader's `gl_out[]` or the evaluation shader's `gl_in[]`, also from a vertex shader straight into an evaluation shader with no control shader): Apple's Metal pipeline build failed ("Fallback to SW vertex processing because buildPipelineState failed"), the draws ran on its CPU vertex path and its shader compiler crashed; Apple's software renderer has no such failure (#589) | `virgl-shader-tess-clip-varyings.patch` (plain per-vertex varyings `omacvm_clip0[]`/`omacvm_clip1[]` without a location, named in the control shader's variable info and the evaluation shader's key; gl_PerVertex as before with cull distances or no free varying slot); `virgl-shader-vs-tes-clip-varyings.patch` (the same from a vertex shader with no control shader: `omacvm_clip0`/`omacvm_clip1`, the evaluation shader's key from the vertex shader) | `test-core-glsl-shaders.c` (text), `test-whole-program-shapes.c` |
 | a temp indexed at run time without an ARRAY declaration (`TEMP[ADDR[0].x+18]`; the VM's Mesa sends clip distances written in a loop that way, virgl_tgsi.c): vrend wrote `temp18[i].x` on a plain `vec4`, "Swizzle of non-vector primitive float", the shader was refused and its draws skipped; an indexed read gave one component in all four (#589). | `virgl-shader-indirect-temps.patch` (the declaration from its lowest indexed register on is one array; other temps and shaders without indexed temps unchanged; indexed writes use their own address register) | `test-core-glsl-shaders.c` (text, compile), `test-whole-program-shapes.c` (L rows) |
 | in that looped form the VM's Mesa copies only the first temp (distances 0..3) back to the output, `MOV OUT[1], TEMP[18]`, so 4..7 were undefined: a negative distance 5 did not clip on the M4, the M1 Max dropped the draw (#692; virgl_tgsi.c, the same in Mesa 26.2.6 and main) | `virgl-shader-clip-copyback.patch` (after that copy, from a temp indexed at run time, the GLSL also sets `clip_dist_temp[1]` from the next temp, while the shader never writes the second clip distance register itself; the same copy as the guest Mesa patch `src/app/guest/mesa/mesa-virgl-tgsi-clip-copyback.patch`, #694, which no VM gets) | `test-core-glsl-shaders.c` (text, compile; no copy for 1-4 distances or a shader that writes OUT[2]) |
@@ -623,6 +624,13 @@ Patches (all in `app/runtime/patches`, one per concern):
   memory) and leaves out COLOR_ATTACHMENT only where optimal tiling renders.
   `Tests/virgl/test-venus-image-limits.c` runs 101 cases through vkr's dispatch
   on the staged drivers at every runtime build.
+- `virgl-venus-linear-input-attachment.patch`: a LINEAR image with
+  INPUT_ATTACHMENT is refused (create, device image queries, both format
+  queries) unless the format's linear tiling has an attachment feature, also
+  under `VK_IMAGE_CREATE_EXTENDED_USAGE_BIT`, where KosmicKrisp's own query checks
+  no usage and says yes. Mesa 26.3's Zink asks that way for X11 windows (through
+  Xwayland), and Metal ended QEMU at the bind. Cases `zink-extended*` and
+  `linear-extended` in `test-venus-image-limits.c`.
 - `virgl-venus-missing-entries.patch`, `virgl-venus-guest-asserts.patch`,
   `virgl-venus-buffer-binds.patch` (ADR 0065's amendment, 3.2.15): what still
   ended QEMU in vkr itself (section 10). Proc table entries are never NULL: a
@@ -1187,7 +1195,10 @@ bench lock and are indications only):
   frame into surfaces of the other colour: in the surfaces' hold-off such a
   frame is held until the right ones are made (also without the switch, with
   HDR). While SDR the guest is told the PQ headroom it had (or the display's
-  most), not the ~1 the panel falls to without EDR.
+  most), not the ~1 the panel falls to without EDR. Hyprland's format change
+  scans out a buffer it has not drawn yet and draws into it one frame later,
+  so a new depth's first frame is held until the guest's next one (at most
+  200 ms; `omacvm-cocoa-present-depth-first.patch`, ADR 0074's addendum).
 - **HDR clients**: an app must hand Hyprland a PQ image description
   (`wp_color_manager_v1`). GStreamer's `waylandsink` does; mpv 0.41 with
   `--gpu-api=opengl` does not (mpv's master does, with `vo=gpu-next`; app
