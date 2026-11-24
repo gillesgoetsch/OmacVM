@@ -559,7 +559,8 @@ the VM's SSH on `127.0.0.1:<port>`.
   (Linux 6.8, DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT), and Omarchy's aquamarine
   (0.15.1, 0.16.0) does not. So the VM builds that aquamarine again with one
   patch (`src/app/guest/aquamarine/`: Omarchy's own recipe of the installed
-  version, `aquamarine-cursor-plane-hotspot.patch` on top, as a user id of
+  version, pinned by commit and sha256 in `recipes`,
+  `aquamarine-cursor-plane-hotspot.patch` on top, as a user id of
   its own; 3 to 10 minutes), keeps only the library in
   `/usr/local/lib/omacvm/aquamarine/<version>/`, and `omacvm-app-host` hands
   it to Hyprland only in a start that asks (`/run/omacvm/mac-pointer.env`,
@@ -567,9 +568,11 @@ the VM's SSH on `127.0.0.1:<port>`.
   `no_hardware_cursors` off). Omarchy's package stays as it is. To switch
   it on: the setting, a start of the VM, Update VM (`omacvm apply` builds
   the library in a start that asks; or `sudo omacvm-aquamarine-build` in the
-  VM before), and one more start. A pacman hook builds again after an
-  aquamarine update. Without a current build (not built yet, the build
-  failed, a version Omarchy's recipes do not have) the start runs Omarchy's
+  VM before), and one more start. After an aquamarine update the next
+  Update VM builds again (no pacman hook); once Omarchy's own aquamarine
+  sends the hotspots (omacom/omarchy-pkgs#2973) nothing is built and the
+  Mac pointer runs on it. Without a current build (not built yet, the build
+  failed, a version without a pin) the start runs Omarchy's
   aquamarine and Hyprland draws the pointer itself, also with "Pointer on
   its own layer" on: the two do not go together. `omacvm check` says which
   ("Mac pointer"). Until the guest's first image after a reset and with a

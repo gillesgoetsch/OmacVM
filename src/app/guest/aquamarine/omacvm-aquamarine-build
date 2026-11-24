@@ -3,29 +3,35 @@
 # "Mac pointer for the VM" (the hidden macPointer setting;
 # aquamarine-cursor-plane-hotspot.patch says what it changes and why).
 # Omarchy's aquamarine package stays as it is. This builds the same package
-# again, from Omarchy's own recipe of the installed version
-# (github.com/omacom/omarchy-pkgs: its PKGBUILD, its patches, its sources,
-# checked by the recipe's sha256 sums, built by makepkg with this VM's
-# makepkg.conf), with the one patch on top, and keeps only the library:
+# again, from Omarchy's own recipe of the installed version, with the one
+# patch on top, and keeps only the library:
 # /usr/local/lib/omacvm/aquamarine/<package version>/libaquamarine.so.N,
 # where ld.so does not look. omacvm-app-host hands that folder to Hyprland
 # (LD_LIBRARY_PATH of the compositor's unit) only in a start that asks for
 # the Mac pointer, and only a build of the installed package version from
-# this patch; every other start, and any failure, runs Omarchy's library.
-# Built on request (a VM that never asks needs no build): by hand, and by
-# omacvm apply in a start that asks. Once a build is there the pacman hook
-# builds again after an aquamarine update. Download, patch and build run as a
-# user id of their own (no account, nothing else runs as it); root only
-# checks and installs the result: the library must have the installed one's
-# soname and every symbol it has, so Hyprland loads it as it loads Omarchy's.
+# this patch and this recipe; every other start, and any failure, runs
+# Omarchy's library.
+# The recipe is pinned: `recipes` (next to this file) names, per package
+# version, the omarchy-pkgs commit and the sha256 of every recipe file; the
+# recipe's own sha256 sums pin its sources. A version not listed there is not
+# built (Omarchy's library, until an OmacVM release lists it). Once Omarchy's
+# own library sends the hotspots (omacom/omarchy-pkgs#2973), nothing is built
+# and the Mac pointer runs on Omarchy's library.
+# Built on request (a VM that never asks needs none): by omacvm apply in a
+# start that asks, and by hand. Download, patch and build run as a user id of
+# their own (no account, nothing else runs as it); root only checks and
+# installs the result: the library must have the installed one's soname and
+# every symbol it has, so Hyprland loads it as it loads Omarchy's.
 # Usage (root):
-#   omacvm-aquamarine-build            build for the installed aquamarine
-#   omacvm-aquamarine-build --hook     build again if a build was there;
+#   omacvm-aquamarine-build            build for the installed aquamarine;
 #                                      drops the builds of other versions
+#   omacvm-aquamarine-build --env      the Mac pointer's environment for the
+#                                      compositor (exit 1 and nothing: none)
 #   omacvm-aquamarine-build --lib      prints the folder of the current build
 #                                      (exit 1 and nothing: there is none)
-#   omacvm-aquamarine-build --status   one line: built for the installed
-#                                      aquamarine or why not (exit 1)
+#   omacvm-aquamarine-build --status   one line: what the Mac pointer runs on
+#                                      for the installed aquamarine, or why
+#                                      it does not (exit 1)
 #   omacvm-aquamarine-build --remove   the builds go
 set -euo pipefail
 # Tests only: a made-up file system under this folder, stand-ins on the PATH.
@@ -34,15 +40,18 @@ P=${OMACVM_AQUAMARINE_TEST_ROOT:-}
 self=$(readlink -f "$0")
 root=$P/usr/local/lib/omacvm/aquamarine
 patch_file=$root/aquamarine-cursor-plane-hotspot.patch
+recipes_file=$root/recipes
 system_lib=$P/usr/lib/libaquamarine.so
-# Omarchy's recipes: every version it published is in this repository's history.
-recipes=${OMACVM_AQUAMARINE_RECIPES:-https://github.com/omacom/omarchy-pkgs.git}
+# Where the pinned recipe files come from (https only; tests: a file:// copy).
+recipes_url=https://raw.githubusercontent.com/omacom/omarchy-pkgs
+proto='=https'
+if [[ -n $P ]]; then recipes_url=${OMACVM_AQUAMARINE_RECIPES:-$recipes_url}; proto='=https,file'; fi
 recipe_path=pkgbuilds/aquamarine
 # The build's own user id: no account, no other process runs as it (the
 # virtio-gpu driver's build has another).
 builder=64918
 own=(-o root -g root); [[ -z $P ]] || own=()
-budget=900   # seconds: the pacman hook holds the update for it
+budget=900   # seconds: omacvm apply waits for the build
 work="" stage=""
 trap 'rm -rf ${work:+"$work"} ${stage:+"$stage"}' EXIT
 
@@ -50,7 +59,15 @@ say() { echo "omacvm-aquamarine: $*"; }
 
 installed() { pacman -Q aquamarine 2>/dev/null | awk '{ print $2 }' || true; }
 
-stamp_for() { echo "$(sha256sum < "$patch_file" 2>/dev/null | cut -d' ' -f1) $1"; }
+# The pinned recipe of VERSION: "COMMIT FILE=SHA256 ..." ("" = none).
+recipe_for() {
+  [[ -n $1 ]] || return 0
+  awk -v v="$1" '$1 == v { $1 = ""; sub(/^ /, ""); print; exit }' "$recipes_file" 2>/dev/null || true
+}
+
+stamp_for() {
+  echo "$(sha256sum < "$patch_file" 2>/dev/null | cut -d' ' -f1) $(recipe_for "$1" | sha256sum | cut -c1-16) $1"
+}
 
 has_lib() {   # VERSION: a library file is there
   local f
@@ -60,8 +77,15 @@ has_lib() {   # VERSION: a library file is there
   return 1
 }
 
-current() {   # VERSION: built, for this version and from this patch
+current() {   # VERSION: built, for this version, from this patch and recipe
   [[ -n $1 ]] && has_lib "$1" && [[ $(cat "$root/$1/stamp" 2>/dev/null) == "$(stamp_for "$1")" ]]
+}
+
+# Omarchy's own library sends the hotspots (#2973 or the same change upstream:
+# the patch's function name in its symbols).
+stock_sends() {
+  local sys
+  sys=$(readlink -f "$system_lib" 2>/dev/null) && [[ -f $sys ]] && grep -aq planePropsHotspot "$sys"
 }
 
 failed() {   # VERSION WHY: said, and kept for --status
@@ -74,26 +98,27 @@ soname() { objdump -p "$1" 2>/dev/null | awk '$1 == "SONAME" { print $2 }' || tr
 
 symbols() { nm -D --defined-only "$1" 2>/dev/null | awk '{ print $NF }' | sort -u || true; }
 
-# pkgver-pkgrel of a PKGBUILD on stdin (read, never run).
-recipe_version() {
-  awk -F= '$1 == "pkgver" && !v { v = $2 } $1 == "pkgrel" && !r { r = $2 } END { if (v && r) print v "-" r }' | tr -d "\"'"
-}
-
-# As the build's own user id, in its own WORK folder: Omarchy's recipe of
-# VERSION, the patch on top, makepkg. The library goes to stdout, everything
-# else to stderr.
+# As the build's own user id, in its own WORK folder: the pinned recipe of
+# VERSION (every file checked by its sha256), the patch on top, makepkg. The
+# library goes to stdout, everything else to stderr.
 fetch_and_make() {   # VERSION WORK
-  local version=$1 w=$2 c recipe="" lib
+  local version=$1 w=$2 pin commit entry f sum lib
   exec 3>&1 1>&2
-  cd "$w"
-  # Without the files: only the recipe's own are fetched, for the commits looked at.
-  git clone --quiet --filter=blob:none --no-checkout "$recipes" recipes
-  for c in $(git -C recipes log --format=%H -- "$recipe_path/PKGBUILD"); do
-    if [[ $(git -C recipes show "$c:$recipe_path/PKGBUILD" | recipe_version) == "$version" ]]; then recipe=$c; break; fi
+  pin=$(recipe_for "$version")
+  [[ -n $pin ]] || { echo "omacvm-aquamarine: no pinned recipe for aquamarine $version"; return 1; }
+  read -r commit pin <<< "$pin"
+  [[ $commit =~ ^[0-9a-f]{40}$ ]] || { echo "omacvm-aquamarine: not a commit: $commit"; return 1; }
+  mkdir -p "$w/$recipe_path"
+  cd "$w/$recipe_path"
+  for entry in $pin; do
+    f=${entry%%=*} sum=${entry#*=}
+    [[ $f =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $sum =~ ^[0-9a-f]{64}$ ]] ||
+      { echo "omacvm-aquamarine: not a pinned file: $entry"; return 1; }
+    curl -fsSL --proto "$proto" --max-filesize 1048576 --retry 2 -o "$f" "$recipes_url/$commit/$recipe_path/$f"
+    [[ $(sha256sum < "$f" | cut -d' ' -f1) == "$sum" ]] ||
+      { echo "omacvm-aquamarine: $f of Omarchy's recipe $commit does not match its pinned sha256"; return 1; }
   done
-  [[ -n $recipe ]] || { echo "omacvm-aquamarine: no build: Omarchy's recipes have no aquamarine $version"; return 1; }
-  git -C recipes archive "$recipe" "$recipe_path" | tar -x
-  cd "$recipe_path"
+  [[ -f PKGBUILD ]] || { echo "omacvm-aquamarine: the pinned recipe has no PKGBUILD"; return 1; }
   cp "$patch_file" omacvm-hotspot.patch
   # The patch after the recipe's own prepare (its patches), with no fuzz:
   # each hunk's context must fit exactly, so on a newer aquamarine it either
@@ -120,21 +145,27 @@ EOF
 # What the build needs and this VM lacks ("" = nothing).
 tools() {
   local t missing=""
-  for t in git makepkg fakeroot cmake hyprwayland-scanner g++ objdump nm patch; do
+  for t in curl makepkg fakeroot cmake hyprwayland-scanner g++ objdump nm patch; do
     command -v "$t" > /dev/null 2>&1 || missing+=" $t"
   done
   echo "${missing# }"
 }
 
-build() {   # 0 = built or current; 1 = failed
+build() {   # 0 = built, current or not needed; 1 = failed
   local version left rc=0 v keep why missing sys ours
   version=$(installed)
   [[ -n $version ]] || { say "no aquamarine package in this VM"; return 1; }
   # No ":" (an epoch): the folder's name goes into LD_LIBRARY_PATH, where a
   # colon ends an entry and the rest would be a path relative to any folder.
   [[ $version =~ ^[A-Za-z0-9._+-]+$ && $version != .* ]] || { say "not a package version: $version"; return 1; }
+  if stock_sends; then
+    rm -rf "${root:?}/$version"
+    say "$version: Omarchy's aquamarine sends cursor hotspots itself: nothing to build"; return 0
+  fi
   if current "$version"; then say "$version: up to date"; return 0; fi
   [[ -f $patch_file ]] || { failed "$version" "no $patch_file"; return 1; }
+  [[ -n $(recipe_for "$version") ]] ||
+    { failed "$version" "no pinned recipe for this version (a later OmacVM adds it; Hyprland runs Omarchy's library)"; return 1; }
   sys=$(readlink -f "$system_lib" 2>/dev/null) && [[ -f $sys ]] || { failed "$version" "no $system_lib"; return 1; }
   missing=$(tools)
   [[ -z $missing ]] ||
@@ -194,19 +225,21 @@ status() {
   local v why
   v=$(installed)
   [[ -n $v ]] || { echo "no aquamarine package in this VM"; return 1; }
+  if stock_sends; then echo "Omarchy's aquamarine $v sends cursor hotspots (nothing to build)"; return 0; fi
   if current "$v"; then echo "built for aquamarine $v"; return 0; fi
   if [[ -s $root/$v/error ]]; then why="build failed: $(head -n1 "$root/$v/error")"
-  elif has_lib "$v"; then why="out of date (another patch)"
+  elif has_lib "$v"; then why="out of date (another patch or recipe)"
+  elif [[ -z $(recipe_for "$v") ]]; then why="no pinned recipe for this version yet"
   else why="not built yet"; fi
   echo "not built for aquamarine $v: $why"
   return 1
 }
 
 case ${1:-} in
-  --status|--lib|--unprivileged) ;;
+  --status|--lib|--env|--unprivileged) ;;
   *) [[ $EUID == 0 || -n $P ]] || { echo "omacvm-aquamarine: run as root" >&2; exit 2; }
-     # One at a time: omacvm apply and the pacman hook can come together, and
-     # each takes the other's library and stamp away before it writes its own.
+     # One at a time: two applies can come together, and each takes the
+     # other's library and stamp away before it writes its own.
      mkdir -p "$root" && exec 9> "$root/lock" && flock -w "$budget" 9 ||
        { echo "omacvm-aquamarine: another build holds $root/lock" >&2; exit 1; } ;;
 esac
@@ -219,17 +252,16 @@ case ${1:-} in
     current "$v" || exit 1
     echo "$root/$v"
     ;;
+  --env)
+    # Omarchy's library first: once it sends the hotspots, ours is never loaded.
+    v=$(installed)
+    if [[ -n $v ]] && stock_sends; then echo "OMACVM_MAC_POINTER=omarchy"
+    elif current "$v"; then echo "LD_LIBRARY_PATH=$root/$v"
+    else exit 1; fi
+    ;;
   --remove)
     for d in "$root"/*/; do [[ -d $d ]] && rm -rf "$d"; done
     say "removed; Hyprland runs Omarchy's aquamarine from the next start"
-    ;;
-  --hook)
-    # Only a VM that has a build (it uses the Mac pointer) builds again.
-    had=""
-    for d in "$root"/*/; do [[ -d $d ]] && had=1; done
-    drop_old
-    [[ -z $had ]] || build || true
-    exit 0   # never fails the update
     ;;
   "")
     drop_old
@@ -240,7 +272,7 @@ case ${1:-} in
     fetch_and_make "$2" "$3"
     ;;
   *)
-    echo "usage: omacvm-aquamarine-build [--hook | --lib | --status | --remove]" >&2
+    echo "usage: omacvm-aquamarine-build [--env | --lib | --status | --remove]" >&2
     exit 2
     ;;
 esac

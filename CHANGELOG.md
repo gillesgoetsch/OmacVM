@@ -195,9 +195,6 @@ x86 apps switch on in 3 GB VMs, and HDR holds after a quick re-login and in Hypr
 - **Docs**: troubleshooting 66 says why YouTube's Ambient mode makes the Mac work harder (about
   0.9 W on a MacBook Air M2) and where to turn it off; a new entry says why a top hot corner can
   still fire over the strip beside the notch (it is the Mac's menu-bar area, not the VM's).
-  macPointer -bool true`). The setting has been in the app since 3.2 and did nothing, because
-  aquamarine again with a patch that sends the pointer's hotspot, and uses it only in a start with
-  windows follow the pointer a little later than before. `omacvm check` has a "Mac pointer" line;
 
 ## 3.4.6
 
