@@ -5,9 +5,16 @@ in more words.
 
 ## 3.5.2
 
-No flash at the HDR switch, brightness that stays put after sleep, a login fix for new VMs, and
-gesture fixes for the newest MacBook Pros.
+A desktop fix for Omarchy 4.0 VMs after their next system update, no flash at the HDR switch,
+brightness that stays put after sleep, a login fix for new VMs, and gesture fixes for the newest
+MacBook Pros.
 
+- **Omarchy 4.0 VMs keep their desktop after a system update that brings Mesa 26.3** (#857, #858).
+  Mesa 26.3 asks the Mac for the memory layout of shared images, but only when the Mac says it can
+  give one. OmacVM said so by mistake and then refused the question, so the desktop's GPU contexts
+  were lost at every start and the screen stayed black. OmacVM no longer says so. Forcing Zink on
+  X11 under Mesa 26.3 could also stop the VM; that app now gets an error and the VM keeps running.
+  Needs the app update.
 - **HDR only in full screen: no flash at the switch.** When the VM's display switched between SDR
   and HDR (leaving or entering full screen), one black frame showed: Hyprland's first frame after
   the switch was not drawn yet. OmacVM now keeps the last picture until the VM's next frame (at
