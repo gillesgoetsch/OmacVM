@@ -193,6 +193,9 @@ jobs:
           src/omanotch/mac/test.sh
           src/omanotch/guest/tests/test.sh
 
+      - name: Keyboard layouts (Mac variants for new VMs, PC layout kept for VMs before, XKB names only; offline)
+        run: src/keyboard/test.sh
+
       - name: External display brightness offline tests (Bridge and VM side)
         run: |
           src/bridge/mac/test.sh
@@ -371,6 +374,9 @@ jobs:
 
       - name: Magic Mouse swipe setting (3 or 4 fingers) and its row, only with a Magic Mouse
         run: src/tests/app-mouse-swipe.sh
+
+      - name: The VM's touch screen (a pinch's fingers), only on a Mac with a touch display (#843)
+        run: src/tests/app-touch-display.sh
 
       - name: Tests that build the app's SwiftUI sources take a toolchain with SwiftUI's macro plugins (Xcode's when a CLT swiftc comes first)
         run: src/tests/swift-macros.sh
@@ -627,6 +633,10 @@ jobs:
         run: |
           app/runtime/Tests/display/test-pointer-hover.sh
           app/runtime/Tests/display/test-pointer-hover.sh --self-test
+      - name: Touch on a touch display, taps, scrolling, hold-drag and right click (#843; the rules, the checks catch code without it)
+        run: |
+          app/runtime/Tests/touch/test-touch.sh
+          app/runtime/Tests/touch/test-touch.sh --self-test
       - name: Tiled present, only the changed tiles to WindowServer; every tile drawn equals the whole frame (the checks catch code without it)
         run: |
           app/runtime/Tests/display/test-present-tiles.sh
@@ -658,6 +668,9 @@ jobs:
 
       - name: Keyboard light steps (offline)
         run: src/tests/keyboard-light.sh
+
+      - name: The Apple logo's light (offline, a made-up logo)
+        run: src/tests/logo-light.sh
 
       - name: A feature that is off is off on every route (VM side, checks, Mac side)
         run: src/tests/features-off.sh
@@ -750,6 +763,9 @@ jobs:
 
       - name: OmacVM's virtio-gpu driver loads only when a start asks (a switch), else the stock one (loader, modprobe rule, builder; offline)
         run: src/tests/virtio-gpu-load.sh
+
+      - name: OmacVM's aquamarine for the Mac pointer is named only for the installed version, installed only as Hyprland loads it (builder, hook, start; offline)
+        run: src/tests/aquamarine-build.sh
 
       - name: Chromium's no-AV1 extension survives an apply of other features (its place, 3.1.4's path moved, check)
         run: src/tests/chromium-no-av1.sh
@@ -970,6 +986,12 @@ jobs:
 
       - name: OmacVM's virtio-gpu driver's loader and builder on Linux (GNU tools, as in the VM)
         run: src/tests/virtio-gpu-load.sh
+
+      - name: OmacVM's aquamarine builder on Linux (GNU tools, as in the VM)
+        run: src/tests/aquamarine-build.sh
+
+      - name: Keyboard layouts on Linux (each Mac variant's level 3 key in xkeyboard-config, when installed)
+        run: src/keyboard/test.sh
 
       - name: OmacVM's virtio-gpu patches with GNU patch, as the builder in the VM (no fuzz)
         run: src/tests/virtio-gpu-patches.sh

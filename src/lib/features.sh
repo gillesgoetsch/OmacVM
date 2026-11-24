@@ -6,6 +6,7 @@
 #                                 name (idle-lock on = no-idle-lock off)
 #   feature_has_tag INDEX TAG
 #   feature_default INDEX        on|off on this Mac (NOTCH, TYPE)
+#   mac_battery, mac_logo         yes|no: this Mac has a battery, a lit Apple logo
 #   feature_available INDEX      status 1 + REASON when this Mac or VM type cannot have it
 #   features_read_env ENV_TEXT    FV (on|off per index) from a VM's /etc/omacvm/env;
 #                                 defaults for what it does not name
@@ -72,6 +73,9 @@ feature_slow_hint() { echo "a build in the VM to switch it on, then a restart: m
 
 # Does this Mac have a battery? yes|no (MacBooks: yes).
 mac_battery() { pmset -g batt 2>/dev/null | grep -q InternalBattery && echo yes || echo no; }
+# A lit Apple logo on its lid? yes|no: its PWM, bklb-backlight, in the IORegistry
+# (newer MacBook Pros; ioreg prints nothing on a Mac without it).
+mac_logo() { [[ -n $(ioreg -r -n bklb-backlight@0 -d 1 2>/dev/null) ]] && echo yes || echo no; }
 
 # The default of feature INDEX on this Mac (NOTCH = notch|none) for a VM of
 # TYPE (empty: not known yet).
@@ -124,6 +128,7 @@ feature_available() {
     mac_av1_load
     [[ $MAC_AV1 != hw ]] || { REASON="needs a Mac without an AV1 decoder (this one decodes AV1 itself)"; return 1; }
   fi
+  if feature_has_tag "$1" logo && [[ $(mac_logo) != yes ]]; then REASON="needs a MacBook Pro with a lit Apple logo"; return 1; fi
   if feature_has_tag "$1" app-only && [[ -n ${TYPE:-} && $TYPE != app ]]; then REASON="OmacVM.app only"; return 1; fi
   return 0
 }

@@ -1,0 +1,607 @@
+From: OmacVM
+Subject: [PATCH] cocoa: touch on a touch display: taps, scrolling, drags, right clicks, pinch
+
+What: one gesture recognizer on the main view and on every other display's
+view takes every direct touch (a touch display's, a Sidecar iPad's; never a
+mouse or a trackpad, those keep the views' own methods) and begins at
+touch-down. It hands the rules (ui/omacvm-touch.h) the fingers' centre and
+their own movement (the mean over the fingers in both frames), with the
+events' times, and the guest gets what they decide: the pointer to the
+finger (omacvmQueuePlace: the mapping omacvmQueuePointer used, now after
+its guard), buttons, scrolling on the precise-scroll path (its own
+remainder; OMACVM_TOUCH_SCROLL wheel units per point, 1 by default), and a
+coast on a timer in the common run loop modes (AppKit tracks touches in
+the event-tracking mode) that the next touch stops. A touch with another
+app in front brings OmacVM forward and takes the pointer, as a click does.
+While exactly two fingers touch the rules also get both, the same one first
+every time; a pinch's two fingers go to the guest's touch screen
+(virtio-multitouch, which the app attaches on a Mac with a touch display;
+omacvm-virtio-multitouch-touch-only.patch) as contacts 0 and 1, each at its
+share of the output touched (omacvmShare: the mapping's first half, shared
+with omacvmQueuePlace). The guest's compositor puts a touch screen on its
+focused output: the rules send the pointer between the fingers when the
+second lands, which makes that the output touched. Without the device a
+pinch sends nothing. The made-up contacts of a trackpad's magnification
+(qemu-cocoa-pinch-zoom.patch, for its virtio-pinch touchpad, which OmacVM
+does not attach) are not sent when the guest has a touch screen: they would
+land on it as two fingers on the screen's middle row.
+Off unless the app sets OMACVM_TOUCH=1 (its Touch display switch,
+experimental, off by default, and a touch display): no recognizer, AppKit's
+emulation as before. qemu.log at start: "cocoa: touch: taps, scrolling,
+hold-drag and right click on a touch display", the scrolling's gain and
+"a two-finger pinch goes to the guest's touch screen (virtio-multitouch)"
+or "does nothing (the guest has no touch screen: no virtio-multitouch)", or
+"AppKit's mouse emulation (OMACVM_TOUCH is not 1)".
+
+Why: AppKit gives a view that overrides the mouse methods its generic mouse
+emulation, made inside the app (measured on the touch display, #843): a tap
+is entered, moved, down and up 0.2 ms apart at the lift, then exited; a
+touch that moves is mouseDown at once, then a left drag (no scroll events
+ever: a scroll selected text, a tap that slid tore a browser tab off); one
+held about 730 ms is the right button. The real cursor never moves: the
+emulated mouseMoved carries the jump from it to the finger, so in full
+screen the corner guard moved the guest's pointer by that delta from its
+own place and taps landed off by up to the zone's 200 points. A
+recognizer that begins at touch-down takes the touch from the emulation
+(none of its events came); AppKit's own press recognizer waited for the
+click recognizer to fail and lost to the emulation's right button, hence
+one recognizer deciding everything. Direct touches reach an app only
+through recognizers (not event taps or monitors: TN3212), so this is the
+only place for it.
+
+Why a touch screen for the pinch (#843): Linux has two ways to a pinch. A
+touchpad's goes through libinput's gesture recognition to the app under the
+pointer; a touch screen's contacts go to the app under the fingers, which
+recognizes the pinch itself and zooms between them, as macOS does on its
+touch display. Chromium, Firefox and GTK 4 do (Chromium 153 on Hyprland
+0.56.2, measured with a uinput touch screen: 1.0 to 3.9 and back, two
+fingers moving together nothing). A touch display's touches reach only the
+app touched, never OmacVM's Gestures helper, so its way (the fingers to the
+guest's virtual trackpad) is not open here. One-finger touches stay on the
+tablet and the wheel: apps without touch support keep working, and the
+guest sees a touch only while two fingers pinch.
+
+Upstream: not applicable (OmacVM's display windows); the idea would suit
+QEMU's cocoa UI too.
+Test: app/runtime/Tests/touch/test-touch.sh (the rules; with the patched
+ui/cocoa.m the wiring; --self-test: every wiring check fails without the
+patch).
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -65,6 +65,7 @@
+ #include "ui/omacvm-pointer-bright.h"
+ #include "ui/omacvm-pointer-heads.h"
+ #include "ui/omacvm-pointer-hover.h"
++#include "ui/omacvm-touch.h"
+ #include "ui/omacvm-present-tiles.h"
+ #include "ui/omacvm-present-damage.h"
+ #include "ui/omacvm-present-volatile.h"
+@@ -604,6 +605,11 @@
+                     button:(int)button;
+ - (void) omacvmHover:(NSEvent *)event view:(NSView *)view output:(int)output;
+ - (void) omacvmHoverMain:(NSEvent *)event;
++- (bool) omacvmShare:(NSPoint)p view:(NSView *)view u:(double *)u v:(double *)v;
++- (bool) omacvmQueuePlace:(NSPoint)p view:(NSView *)view output:(int)output;
++- (void) omacvmTouch:(const OmacVMTouchActions *)acts view:(NSView *)view output:(int)output;
++- (void) omacvmTouchScroll:(double)dx dy:(double)dy;
++- (void) omacvmTouchContact:(int)slot type:(InputMultiTouchType)type u:(double)u v:(double)v;
+ - (void) omacvmUngrabAfterDrag;
+ - (void) omacvmParkInNotch:(NSEvent *)event view:(NSView *)view output:(int)output;
+ - (void) omacvmGuestAtTop:(bool)top;
+@@ -1151,6 +1157,58 @@
+ @interface OmacVMHoverWatch : NSObject
+ @end
+ static OmacVMHoverWatch *omacvm_hover_watch;
++/*
++ * OmacVM: touch on a touch display (ui/omacvm-touch.h, #843; main thread).
++ * One recognizer per window's view takes every direct touch at touch-down,
++ * so AppKit's mouse emulation (a drag for a scroll, a click at the lift, a
++ * right button at ~730 ms; the guard's deltas from the held cursor) never
++ * runs. The guest gets the rules' clicks, drags and scrolling, and a pinch's
++ * two fingers on its touch screen.
++ */
++static bool omacvm_touch_off;            /* OMACVM_TOUCH is not 1 */
++static double omacvm_touch_gain = OMACVM_TOUCH_GAIN;   /* OMACVM_TOUCH_SCROLL */
++/* The switches, read once: the views are made before the start's log lines. */
++static void omacvm_touch_settings(void)
++{
++    static bool read;
++
++    if (!read) {
++        read = true;
++        omacvm_touch_off = omacvm_touch_off_env(getenv("OMACVM_TOUCH"));
++        omacvm_touch_gain = omacvm_touch_gain_env(getenv("OMACVM_TOUCH_SCROLL"));
++    }
++}
++/*
++ * The guest's touch screen (virtio-multitouch: OmacVM attaches it on a Mac
++ * with a touch display), where a pinch's fingers go. Looked up once, after
++ * the devices were made.
++ */
++static bool omacvm_touch_screen(void)
++{
++    static int have = -1;
++
++    if (have < 0) {
++        have = bool_with_bql(^bool{
++            return object_resolve_path_type("", "virtio-multitouch-device", NULL) != NULL;
++        });
++    }
++    return have;
++}
++static OmacVMTouch omacvm_touch;
++static CocoaScroll omacvm_touch_scroll;  /* the wheel's remainder (precise-scroll's) */
++static NSTimer *omacvm_coast_timer;
++static double omacvm_coast_vx, omacvm_coast_vy, omacvm_coast_last;
++@interface OmacVMTouchRecognizer : NSGestureRecognizer
++{
++    int output;
++    NSMutableDictionary *fingers;        /* touch identity -> its last place */
++    id first;                            /* of two fingers, the one the rules get first */
++    NSPoint centre;
++}
++- (instancetype)initWithOutput:(int)index;
++@end
++static void omacvm_touch_install(NSView *view, int output);
++static void omacvm_coast_stop(void);
+ /* The displays and our windows the guard last saw (main thread). */
+ static OmacVMGuardScreens omacvm_guard_scr;
+ static OmacVMRect omacvm_guard_displays[16];
+@@ -1340,6 +1398,14 @@
+ /* Called under the same BQL as normal Cocoa input. */
+ static void cocoa_pinch_send_frame(void *opaque, const CocoaPinchFrame *frame)
+ {
++    /*
++     * OmacVM (#843): these made-up contacts are a pinch touchpad's
++     * (virtio-pinch), never the guest's touch screen: there a trackpad's
++     * pinch would be two fingers on the screen's middle row.
++     */
++    if (omacvm_touch_screen()) {
++        return;
++    }
+     for (int slot = 0; slot < 2; slot++) {
+         qemu_input_queue_mtt(dcl.con,
+                             frame->down ? INPUT_MULTI_TOUCH_TYPE_UPDATE :
+@@ -1397,6 +1463,7 @@
+                                         userInfo:nil];
+         [self addTrackingArea:hoverArea];
+         [hoverArea release];
++        omacvm_touch_install(self, 0);
+         screen.width = frameRect.size.width;
+         screen.height = frameRect.size.height;
+         colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+@@ -3250,8 +3317,6 @@
+ - (bool) omacvmQueuePointer:(NSEvent *)event view:(NSView *)view output:(int)output
+ {
+     NSPoint p = [view convertPoint:[event locationInWindow] fromView:nil];
+-    NSSize size;
+-    double nx, ny;
+ 
+     /*
+      * The cursor detached: this event's location is where it was, not where
+@@ -3261,7 +3326,17 @@
+     if (omacvm_guarded_target(&view, &output, &p) < 0) {
+         return true;
+     }
+-    size = [view bounds].size;
++    return [self omacvmQueuePlace:p view:view output:output];
++}
++
++/*
++ * OmacVM: p (view's points) as its share of the view's output (0..1 from the
++ * left and from the top; outside the view, outside that).
++ */
++- (bool) omacvmShare:(NSPoint)p view:(NSView *)view u:(double *)u v:(double *)v
++{
++    NSSize size = [view bounds].size;
++
+     if (view == self) {
+         /* The guest is the top part; the black rows below are its last row. */
+         CGFloat black = [self omacvmBlackRows];
+@@ -3269,10 +3344,25 @@
+         size.height -= black;
+         p.y = MAX(0, p.y - black);
+     }
++    if (size.width <= 0 || size.height <= 0) {
++        return false;
++    }
++    *u = p.x / size.width;
++    *v = 1.0 - p.y / size.height;
++    return true;
++}
++
++/*
++ * OmacVM: the guest's pointer to p (view's points) in view, the window of
++ * output. With the BQL. A touch comes here directly: its place is the
++ * finger's, never the guard's.
++ */
++- (bool) omacvmQueuePlace:(NSPoint)p view:(NSView *)view output:(int)output
++{
++    double u, v, nx, ny;
+ 
+-    if (size.width <= 0 || size.height <= 0 ||
+-        !omacvm_map_pointer(output, p.x / size.width, 1.0 - p.y / size.height,
+-                            &nx, &ny)) {
++    if (![self omacvmShare:p view:view u:&u v:&v] ||
++        !omacvm_map_pointer(output, u, v, &nx, &ny)) {
+         return false;
+     }
+     qemu_input_queue_abs(dcl.con, INPUT_AXIS_X, lround(nx * INPUT_EVENT_ABS_MAX),
+@@ -3383,8 +3473,350 @@
+         qemu_input_event_sync();
+     });
+ }
++
++/*
++ * OmacVM: the guest gets what the touch rules decided (ui/omacvm-touch.h),
++ * in order, each with its own sync: the pointer to the finger, buttons,
++ * scrolling on the precise-scroll path, a coast. Never through the mouse
++ * path or the corner guard: the place is the finger's. A touch on the VM
++ * while another app is in front brings OmacVM forward and takes the pointer,
++ * as a click does. A pinch's two fingers go to the guest's touch screen
++ * (virtio-multitouch) as contacts 0 and 1, each at its share of the output
++ * touched: the guest's compositor puts them on its focused output, which is
++ * that one (the rules sent the pointer between the fingers first), and its
++ * apps zoom between them. Without that device nothing is sent. Main thread.
++ */
++- (void) omacvmTouch:(const OmacVMTouchActions *)acts view:(NSView *)view output:(int)output
++{
++    bool guest = false;
++
++    for (int i = 0; i < acts->n; i++) {
++        int k = acts->a[i].kind;
++        guest |= k != OMACVM_TA_STOP_COAST && k != OMACVM_TA_COAST;
++        if (k == OMACVM_TA_STOP_COAST) {
++            omacvm_coast_stop();
++        }
++    }
++    /* No tablet yet (the firmware's menu, the boot): nothing to place. */
++    if (!isAbsoluteEnabled) {
++        return;
++    }
++    if (guest && ![NSApp isActive]) {
++        [NSApp activate];
++    }
++    if (guest && !isMouseGrabbed) {
++        [self grabMouse];
++    }
++    for (int i = 0; i < acts->n; i++) {
++        const OmacVMTouchAction *a = &acts->a[i];
++        switch (a->kind) {
++        case OMACVM_TA_MOVE:
++            with_bql(^{
++                if ([self omacvmQueuePlace:NSMakePoint(a->x, a->y) view:view output:output]) {
++                    qemu_input_event_sync();
++                }
++            });
++            break;
++        case OMACVM_TA_LEFT_DOWN:
++        case OMACVM_TA_LEFT_UP:
++        case OMACVM_TA_RIGHT_DOWN:
++        case OMACVM_TA_RIGHT_UP: {
++            InputButton b = (a->kind == OMACVM_TA_LEFT_DOWN || a->kind == OMACVM_TA_LEFT_UP) ?
++                            INPUT_BUTTON_LEFT : INPUT_BUTTON_RIGHT;
++            bool down = a->kind == OMACVM_TA_LEFT_DOWN || a->kind == OMACVM_TA_RIGHT_DOWN;
++            with_bql(^{
++                qemu_input_queue_btn(dcl.con, b, down);
++                qemu_input_event_sync();
++            });
++            break;
++        }
++        case OMACVM_TA_SCROLL:
++            [self omacvmTouchScroll:a->dx dy:a->dy];
++            break;
++        case OMACVM_TA_PINCH_BEGIN:
++        case OMACVM_TA_PINCH_MOVE: {
++            InputMultiTouchType type = a->kind == OMACVM_TA_PINCH_BEGIN ?
++                                       INPUT_MULTI_TOUCH_TYPE_BEGIN : INPUT_MULTI_TOUCH_TYPE_UPDATE;
++            double u0, v0, u1, v1;
++
++            if (!omacvm_touch_screen() ||
++                ![self omacvmShare:NSMakePoint(a->x, a->y) view:view u:&u0 v:&v0] ||
++                ![self omacvmShare:NSMakePoint(a->dx, a->dy) view:view u:&u1 v:&v1]) {
++                break;
++            }
++            with_bql(^{
++                [self omacvmTouchContact:0 type:type u:u0 v:v0];
++                [self omacvmTouchContact:1 type:type u:u1 v:v1];
++                qemu_input_event_sync();
++            });
++            break;
++        }
++        case OMACVM_TA_PINCH_END:
++            if (!omacvm_touch_screen()) {
++                break;
++            }
++            with_bql(^{
++                qemu_input_queue_mtt(dcl.con, INPUT_MULTI_TOUCH_TYPE_END, 0, -1);
++                qemu_input_queue_mtt(dcl.con, INPUT_MULTI_TOUCH_TYPE_END, 1, -1);
++                qemu_input_event_sync();
++            });
++            break;
++        case OMACVM_TA_COAST:
++            omacvm_coast_stop();
++            omacvm_coast_vx = a->dx;
++            omacvm_coast_vy = a->dy;
++            omacvm_coast_last = CACurrentMediaTime();
++            /* The run loop holds the timer until it is invalidated (omacvm_coast_stop). */
++            omacvm_coast_timer = [NSTimer timerWithTimeInterval:1.0 / 120 repeats:YES
++                                                          block:^(NSTimer *t) {
++                double now = CACurrentMediaTime(), dx, dy;
++                (void)t;
++                bool on = omacvm_touch_coast_step(&omacvm_coast_vx, &omacvm_coast_vy,
++                                                  now - omacvm_coast_last, &dx, &dy);
++                omacvm_coast_last = now;
++                [self omacvmTouchScroll:dx dy:dy];
++                if (!on) {
++                    omacvm_coast_stop();
++                }
++            }];
++            /* Common modes: AppKit tracks touches in the event-tracking mode. */
++            [[NSRunLoop mainRunLoop] addTimer:omacvm_coast_timer forMode:NSRunLoopCommonModes];
++            break;
++        default:
++            break;
++        }
++    }
++}
++
++/*
++ * OmacVM: one finger of a pinch on the guest's touch screen: its contact
++ * (the slot, then its place: the device sends the place to the slot named
++ * last), at (u, v) of the output, kept on it. With the BQL; the caller syncs.
++ */
++- (void) omacvmTouchContact:(int)slot type:(InputMultiTouchType)type u:(double)u v:(double)v
++{
++    qemu_input_queue_mtt(dcl.con, type, slot, slot);
++    qemu_input_queue_mtt_abs(dcl.con, INPUT_AXIS_X,
++                             lround(MIN(1.0, MAX(0.0, u)) * INPUT_EVENT_ABS_MAX),
++                             0, INPUT_EVENT_ABS_MAX, slot, slot);
++    qemu_input_queue_mtt_abs(dcl.con, INPUT_AXIS_Y,
++                             lround(MIN(1.0, MAX(0.0, v)) * INPUT_EVENT_ABS_MAX),
++                             0, INPUT_EVENT_ABS_MAX, slot, slot);
++}
++
++/* OmacVM: the content moves (dx, dy) points under a touch: wheel units on the precise-scroll path. */
++- (void) omacvmTouchScroll:(double)dx dy:(double)dy
++{
++    double sx, sy;
++
++    omacvm_touch_scroll_deltas(dx, dy, omacvm_touch_gain, &sx, &sy);
++    CocoaScrollFrame frame = cocoa_scroll_update(&omacvm_touch_scroll, sx, sy);
++    if (!frame.x && !frame.y) {
++        return;
++    }
++    with_bql(^{
++        /* Cocoa's positive X means left; Linux REL_HWHEEL is right. */
++        if (frame.x) {
++            qemu_input_queue_rel(dcl.con, INPUT_AXIS_HWHEEL, -frame.x);
++        }
++        if (frame.y) {
++            qemu_input_queue_rel(dcl.con, INPUT_AXIS_WHEEL, frame.y);
++        }
++        qemu_input_event_sync();
++    });
++}
++@end
++
++static void omacvm_coast_stop(void)
++{
++    [omacvm_coast_timer invalidate];   /* the run loop lets go of it; also from its own block */
++    omacvm_coast_timer = nil;
++}
++
++/*
++ * OmacVM: the touch recognizer (#843). Direct touches only, never a mouse or
++ * a trackpad: those keep the view's own mouse methods. It begins at
++ * touch-down, which takes the touch from AppKit's mouse emulation, and hands
++ * the fingers to the rules: their centre, and their own movement (the mean
++ * over the fingers in both frames: a finger landing or lifting moves the
++ * centre, not the content); while exactly two touch, also the two fingers,
++ * the same one first every time (a pinch: each keeps its contact in the
++ * guest). The rules decide from the events' times.
++ */
++@implementation OmacVMTouchRecognizer
++- (instancetype)initWithOutput:(int)index
++{
++    self = [super initWithTarget:nil action:NULL];
++    if (self) {
++        output = index;
++        fingers = [[NSMutableDictionary alloc] init];
++        [self setAllowedTouchTypes:NSTouchTypeMaskDirect];
++        [self setDelaysPrimaryMouseButtonEvents:NO];
++        [self setDelaysSecondaryMouseButtonEvents:NO];
++        [self setDelaysOtherMouseButtonEvents:NO];
++        [self setDelaysKeyEvents:NO];
++        [self setDelaysMagnificationEvents:NO];
++        [self setDelaysRotationEvents:NO];
++    }
++    return self;
++}
++
++- (void)dealloc
++{
++    [fingers release];
++    [first release];
++    [super dealloc];
++}
++
++/* The direct touches touching now: identity -> place (view's points). */
++- (NSMutableDictionary *)touching:(NSEvent *)event
++{
++    NSMutableDictionary *now = [NSMutableDictionary dictionary];
++    for (NSTouch *t in [event touchesMatchingPhase:NSTouchPhaseTouching inView:[self view]]) {
++        if ([t type] == NSTouchTypeDirect) {
++            now[[t identity]] = [NSValue valueWithPoint:[t locationInView:[self view]]];
++        }
++    }
++    return now;
++}
++
++- (NSPoint)centreOf:(NSDictionary *)now
++{
++    double x = 0, y = 0;
++    for (NSValue *v in [now allValues]) {
++        x += [v pointValue].x;
++        y += [v pointValue].y;
++    }
++    return [now count] ? NSMakePoint(x / [now count], y / [now count]) : centre;
++}
++
++- (void)send:(const OmacVMTouchActions *)acts
++{
++    if (acts->n) {
++        [cocoaView omacvmTouch:acts view:[self view] output:output];
++    }
++}
++
++/* Exactly two fingers touch: both to the rules, the same one first every time. */
++- (void)two:(NSDictionary *)now
++{
++    OmacVMTouchActions acts;
++    NSArray *ids = [now allKeys];
++    NSPoint a, b;
++
++    if ([ids count] != 2) {
++        return;
++    }
++    if (!first || !now[first]) {
++        [first release];
++        first = [ids[0] retain];
++    }
++    a = [now[first] pointValue];
++    b = [now[[ids[0] isEqual:first] ? ids[1] : ids[0]] pointValue];
++    omacvm_touch_two(&omacvm_touch, a.x, a.y, b.x, b.y, &acts);
++    [self send:&acts];
++}
++
++- (void)touchesBeganWithEvent:(NSEvent *)event
++{
++    NSMutableDictionary *now = [self touching:event];
++    OmacVMTouchActions acts;
++
++    if (![now count]) {
++        return;
++    }
++    centre = [self centreOf:now];
++    if ([self state] == NSGestureRecognizerStatePossible) {
++        [self setState:NSGestureRecognizerStateBegan];
++    }
++    omacvm_touch_begin(&omacvm_touch, [event timestamp], centre.x, centre.y, (int)[now count], &acts);
++    [fingers setDictionary:now];
++    [self send:&acts];
++    [self two:now];
++}
++
++- (void)touchesMovedWithEvent:(NSEvent *)event
++{
++    NSMutableDictionary *now = [self touching:event];
++    OmacVMTouchActions acts;
++    double dx = 0, dy = 0;
++    int n = 0;
++
++    if (![now count]) {
++        return;
++    }
++    for (id k in now) {
++        NSValue *was = fingers[k];
++        if (was) {
++            dx += [now[k] pointValue].x - [was pointValue].x;
++            dy += [now[k] pointValue].y - [was pointValue].y;
++            n++;
++        }
++    }
++    centre = [self centreOf:now];
++    [fingers setDictionary:now];
++    omacvm_touch_move(&omacvm_touch, [event timestamp], centre.x, centre.y,
++                      n ? dx / n : 0, n ? dy / n : 0, &acts);
++    [self send:&acts];
++    [self two:now];
++    [self setState:NSGestureRecognizerStateChanged];
++}
++
++- (void)touchesEndedWithEvent:(NSEvent *)event
++{
++    NSMutableDictionary *now = [self touching:event];
++    OmacVMTouchActions acts;
++
++    omacvm_touch_lift(&omacvm_touch, [event timestamp], (int)[now count], &acts);
++    [fingers setDictionary:now];
++    [self send:&acts];
++    if (![now count]) {
++        [self setState:NSGestureRecognizerStateEnded];
++    }
++}
++
++- (void)touchesCancelledWithEvent:(NSEvent *)event
++{
++    OmacVMTouchActions acts;
++
++    omacvm_touch_cancel(&omacvm_touch, &acts);
++    [fingers removeAllObjects];
++    [self send:&acts];
++    [self setState:NSGestureRecognizerStateCancelled];
++}
++
++/* A mouse or a trackpad click is never ours: the view's own methods take it. */
++- (void)mouseDown:(NSEvent *)click { [self setState:NSGestureRecognizerStateFailed]; }
++- (void)rightMouseDown:(NSEvent *)click { [self setState:NSGestureRecognizerStateFailed]; }
++- (void)otherMouseDown:(NSEvent *)click { [self setState:NSGestureRecognizerStateFailed]; }
++
++/* The macOS 27 SDK's AppKit wants a subclass's own location. */
++- (NSPoint)locationInView:(NSView *)view
++{
++    NSView *mine = [self view];
++    return view && mine ? [view convertPoint:centre fromView:mine] : centre;
++}
++
++- (void)reset
++{
++    [super reset];
++    [fingers removeAllObjects];
++    [first release];
++    first = nil;
++}
+ @end
+ 
++static void omacvm_touch_install(NSView *view, int output)
++{
++    omacvm_touch_settings();
++    if (omacvm_touch_off) {
++        return;
++    }
++    OmacVMTouchRecognizer *r = [[OmacVMTouchRecognizer alloc] initWithOutput:output];
++    [view addGestureRecognizer:r];
++    [r release];
++}
++
+ /* OmacVM: the owner of the main view's second tracking area (omacvmHoverMain). */
+ @implementation OmacVMHoverWatch
+ - (void)mouseMoved:(NSEvent *)e { [cocoaView omacvmHoverMain:e]; }
+@@ -12695,6 +13127,7 @@
+     if (self) {
+         output = index;
+         omacvm_drop_register(self);
++        omacvm_touch_install(self, index);
+         NSTrackingArea *area = [[NSTrackingArea alloc]
+             initWithRect:CGRectZero
+                  options:NSTrackingActiveAlways | NSTrackingMouseEnteredAndExited |
+@@ -15945,6 +16378,17 @@
+     info_report("cocoa: pointer: a move over the VM on two or more displays while another app "
+                 "is in front: %s", omacvm_hover_off ? "dropped (OMACVM_POINTER_HOVER=0)" :
+                 "its place to the guest (no grab, the keyboard stays with that app)");
++    omacvm_touch_settings();
++    info_report("cocoa: touch: %s", omacvm_touch_off ?
++                "AppKit's mouse emulation (OMACVM_TOUCH is not 1)" :
++                "taps, scrolling, hold-drag and right click on a touch display");
++    if (!omacvm_touch_off) {
++        info_report("cocoa: touch: scrolling %.2f wheel units per point (OMACVM_TOUCH_SCROLL)",
++                    omacvm_touch_gain);
++        info_report("cocoa: touch: a two-finger pinch %s", omacvm_touch_screen() ?
++                    "goes to the guest's touch screen (virtio-multitouch)" :
++                    "does nothing (the guest has no touch screen: no virtio-multitouch)");
++    }
+     if (omacvm_hwc.on) {
+         info_report("cocoa: pointer: the Mac's cursor carries the guest's pointer once the "
+                     "guest puts it on the cursor plane (OMACVM_HW_CURSOR=1, experimental)");

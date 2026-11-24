@@ -108,7 +108,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 43
+VERSION = 44
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -119,6 +119,7 @@ VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 COMMON = [
     "  function notchRoleFor(s) {\n",                                       # 1. state and roles
     '    target: "notchbar"\n',                                              # 2. IPC and watchdog
+    "  function notchDragPress(x, y) {\n",                                    # 2. a drag from the strip (#849)
     "    readonly property string notchRole: root.notchRoleFor(screen)\n",  # 3. parking per window
     '      top: barWindow.parked && root.position === "top" ? -barWindow.parkedSize : 0\n',
     '    implicitHeight: root.vertical ? 0 : (barWindow.notchRole === "" ? ',
@@ -1217,6 +1218,84 @@ def main():
       if (x >= icons[j][1][0] && x < icons[j][1][0] + icons[j][1][1]) return notchTrayTarget(icons[j][0])
     return null
   }
+  // A drag from the strip (#849): Omarchy 4.5's own reorder, the steps its
+  // module pointer takes, on the NOTCH bar Omanotch shows (its ghost and room
+  // show in the strip; the new order is the shell config's, so every bar has
+  // it). Press, moves past Omarchy's threshold, release: a release without a
+  // drag clicks as the strip always did. From the strip a drag only
+  // reorders: removing a widget stays a drag in the VM's own bar. A bar
+  // without the reorder (before 4.5) only clicks.
+  property var notchDragSlot: null
+  property real notchDragX: 0
+  property real notchDragY: 0
+  property bool notchDragging: false
+  function notchDragCan() {
+    return typeof beginBarDrag === "function" && typeof moduleDropAtScene === "function" &&
+      typeof settleBarDrag === "function" && !!shell && typeof shell.mutateShellConfig === "function"
+  }
+  function notchDragPress(x, y) {
+    notchDragLetGo()
+    if (barHidden || notchFullscreen || !notchDragCan()) return "miss"
+    var shown = notchShownSlots(true)
+    for (var i = 0; i < shown.length; i++) {
+      var s = shown[i][0], lx = x - shown[i][1]
+      if (lx < 0 || lx >= s.width) continue
+      var ly = Math.max(0, Math.min(y, s.height - 1))
+      // The tray's drawer belongs to its widgets' own slots (as in Omarchy).
+      if (typeof s.traySectionContains === "function" && s.traySectionContains(lx, ly)) return "miss"
+      notchDragSlot = s
+      notchDragX = lx
+      notchDragY = ly
+      return "held"
+    }
+    return "miss"
+  }
+  function notchDragMove(x, y) {
+    var s = notchDragSlot
+    if (!s) return "miss"
+    var w = slotWindow(s)
+    if (!w || !w.contentItem) { notchDragLetGo(); return "miss" }
+    var o = s.mapToItem(w.contentItem, 0, 0), lx = x - o.x, ly = y - o.y
+    if (!notchDragging) {
+      var step = typeof Style !== "undefined" && typeof Style.space === "function" ? Style.space(4) : 4
+      if (Math.abs(lx - notchDragX) + Math.abs(ly - notchDragY) < step) return "held"
+      if (typeof finishBarSettle === "function") finishBarSettle()
+      clearBarDrag()
+      beginBarDrag(s, notchDragX, notchDragY)
+      notchDragging = true
+      if (typeof hideTooltip === "function") hideTooltip(s.activeItem)
+    }
+    // Let go of from elsewhere (Omarchy's onLayoutWidgetsChanged): stays so.
+    if (barDragSource !== s) return "let-go"
+    var scene = s.mapToItem(null, lx, ly), screen = barDragScreenPoint(scene)
+    barDragSceneX = scene.x
+    barDragSceneY = scene.y
+    barDragScreenX = screen.x
+    barDragScreenY = screen.y
+    var drop = moduleDropAtScene(scene, s)
+    barDragTarget = drop
+    moveDragRoom(drop)
+    setBarDragRemoveArmed(false)
+    return "drag"
+  }
+  // "dropped" (a drag ended) or "click" (none: the caller clicks there).
+  function notchDragRelease(x, y) {
+    var s = notchDragSlot, was = notchDragging
+    if (was && s) notchDragMove(x, y)
+    notchDragSlot = null
+    notchDragging = false
+    if (!was) return "click"
+    if (barDragSource === s) settleBarDrag(s)
+    else clearBarDrag()
+    return "dropped"
+  }
+  // The strip went away while held: a drag goes back where it was.
+  function notchDragLetGo() {
+    var was = notchDragging && barDragSource === notchDragSlot
+    notchDragSlot = null
+    notchDragging = false
+    if (was) clearBarDrag()
+  }
   function notchTargetRects() {
     var out = []
     for (var i = 0; i < clickTargets.length; i++) {
@@ -1579,6 +1658,19 @@ def main():
       if (button !== 2 && button !== 3 && root.notchTrayToggle(t)) return "ok"
       t.triggerPress(button === 3 ? Qt.MiddleButton : button === 2 ? Qt.RightButton : Qt.LeftButton)
       return "ok"
+    }
+    // The strip's left button (#849): press, drag, release; a release
+    // without a drag is the click it always was. (-1, -1): let go.
+    function press(x: real, y: real): string {
+      return root.notchDragPress(x, y)
+    }
+    function drag(x: real, y: real): string {
+      return root.notchDragMove(x, y)
+    }
+    function release(x: real, y: real): string {
+      if (x < 0 && y < 0) { root.notchDragLetGo(); return "let-go" }
+      var r = root.notchDragRelease(x, y)
+      return r === "click" ? click(x, y, 1) : r
     }
     function wheel(x: real, y: real, delta: int): string {
       if (root.barHidden || root.notchFullscreen) return "miss"

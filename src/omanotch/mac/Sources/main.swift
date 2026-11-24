@@ -480,6 +480,14 @@ final class Controller: NSObject, NSApplicationDelegate, StripInputDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.send("targets") }
     }
 
+    func stripDrag(_ line: String) {
+        send(line)
+        // A release clicked or moved a widget: its places changed.
+        if line.hasPrefix("release") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.send("targets") }
+        }
+    }
+
     func stripPointer(x: CGFloat) {
         send(String(format: "hover %.1f", max(x, 0)))
         // A reveal widens the indicators: the hand cursor needs their new places.

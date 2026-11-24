@@ -8,6 +8,8 @@ cc -std=c11 -Wall -Wextra -Werror -I../notchcast -o "$out/notch-place-test" notc
 "$out/notch-place-test"
 cc -std=c11 -Wall -Wextra -Werror -I../notchcast -o "$out/test_notchrule" test_notchrule.c -lm
 "$out/test_notchrule"
+cc -std=c11 -Wall -Wextra -Werror -I../notchcast -o "$out/test_notchqueue" test_notchqueue.c
+"$out/test_notchqueue"
 python3 test_bar_patch.py
 python3 test_copies.py
 bash start-limit.sh

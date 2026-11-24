@@ -3,6 +3,34 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.6.0
+
+The Mac's own pointer on Omarchy, Mac key layouts for new VMs, dragging icons in the notch strip,
+and two new switches for Macs that have the hardware: the Apple logo's light and touch displays.
+All need the app update; the guest parts come with Update VM.
+
+- **The Mac's own cursor as the VM's pointer** (#821, by @rubas; hidden, off: `defaults write
+  org.omacvm.app macPointer -bool true`). With it on, Update VM builds Omarchy's aquamarine with a
+  patch that sends the pointer's hotspot (Omarchy's recipe, pinned by commit and checksum), and the
+  pointer moves exactly as the Mac's cursor does. A system update never breaks the desktop: the VM
+  runs Omarchy's own library until the next Update VM, and nothing is built once Omarchy's own
+  aquamarine has the fix. `omacvm check` has a "Mac pointer" line.
+- **Mac key layouts** (#784, reported by @epicoun): a new VM on a German, Swiss, French, British,
+  Italian, Dutch, Portuguese, Swedish, Danish, Finnish or Icelandic Mac types with the Mac's own
+  layout (Option-L for @ on German). The left Option key stays Alt for Omarchy's shortcuts.
+  Existing VMs type as before; the new "Mac key layout" row under Input switches them at the next
+  Update VM.
+- **Omanotch: drag icons along the strip** (#849, reported by @dandomin): on Omarchy 4.5, hold an
+  icon in the strip beside the notch and drag it to reorder it, as on the bar itself.
+- **The Apple logo's light** (#844, #845, by @rubas): on a MacBook Pro with a lit Apple logo,
+  `omacvm-logo` in the VM sets it to macOS's own (`auto`), `off`, steady (`on 1-100`) or breathing
+  (`breathe 6-30` a minute). Dark while the display sleeps, macOS's again once no VM runs. Off by
+  default; the switch under Display shows only on a Mac with the lit logo.
+- **Touch display (experimental)** (#847, by @mlamoure): on a Mac with a touch display, a switch
+  under Input passes it to the VM: tap to click, move to scroll, hold and move to drag, hold and
+  lift for a right click, pinch to zoom in apps that know touch screens. Off by default; shown only
+  on a Mac with a touch display. Not tested on a touch display by us yet.
+
 ## 3.5.2
 
 A desktop fix for Omarchy 4.0 VMs after their next system update, no flash at the HDR switch,

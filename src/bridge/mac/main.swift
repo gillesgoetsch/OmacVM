@@ -34,6 +34,9 @@
 //   GET  /timezone         {"zone": "Europe/Zurich"}: the Mac's time zone, which the VM follows (omacvm-timezone)
 //   POST /notifications/dismiss  the Mac's banners and alerts on screen close, while an OmacVM.app
 //                          VM is in front: {"closed": N} (notifications.swift)
+//   GET  /logo             the mode the lit Apple logo on the lid plays: {"mode": "auto"|"off"},
+//                          {"mode": "on", "percent": 1-100} or {"mode": "breathe", "rate": 6-30}
+//   POST /logo             one of those from a VM; auto again once no VM runs (logo.swift)
 //   /omacvm/...            the control centre's requests (control.swift, docs/adr/0031): hello, status,
 //                          updates, updates/check, settings/update-checks, jobs, jobs/<id>; OmacVM.app
 //                          relays its VMs' ones on the Unix socket omacvm-bridge/relay.sock (owner only)
@@ -174,6 +177,19 @@ let externalBrightness = ExternalBrightness(unsafeFile: supportDir + "/ddc-unsaf
 let menuBar = MenuBar()
 
 log("starting (pid \(getpid()), token \(tokenPath))")
+// The lit Apple logo on the lid of a MacBook Pro that has one (logo.swift); nil
+// elsewhere. Its private CoreBrightness is loaded only once logo_light is on.
+let logoLight: LogoLight? = {
+  guard PWMLogo.present() else { log("logo light: none on this Mac"); return nil }
+  log("logo light: this Mac has one (logo_light=\(config.logoLight))")
+  return LogoLight(enabled: config.logoLight) {
+    PWMLogo.find().map { hw in
+      hw.onNote = { event, _ in if event == "blank" || event == "unblank" { log("logo light: \(event)") } }
+      log("logo light: found (\(hw.keyboardCount) keyboard\(hw.keyboardCount == 1 ? "" : "s") follow its blank state)")
+      return hw as LogoHardware
+    }
+  }
+}()
 location.onChange = { hub.changed("wifi", why: "location") }
 wifi.onEvent = { why in why == "scan-cache" ? scanner.cacheUpdated() : hub.changed("wifi", why: why) }
 audio.onChange = { why in hub.changed("audio", why: why); osdEvents.audioChanged() }
@@ -199,6 +215,16 @@ if config.menuBarIcon { menuBar.show() }
 log("config \(config.path): capture_keys=\(config.captureKeys) menu_bar_icon=\(config.menuBarIcon) keyboard_low_steps=\(config.keyboardLowSteps) external_brightness=\(config.externalBrightness) brightness_steps=\(config.brightnessSteps)")
 // A Mac mini, iMac or Studio has no keyboard light: Shift + brightness stays macOS's.
 log("keyboard light: \(KeyboardLight.get() != nil ? "found" : "none on this Mac")")
+config.onLogoLight = { logoLight?.setEnabled(config.logoLight) }
+// The logo goes back to macOS when the Bridge stops: launchd's SIGTERM, Quit, or AppKit's quit (a logout).
+logoLight?.stopOnSIGTERM()
+NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in logoLight?.stop() }
+// And when no VM of ours runs any more. KVO, as a test VM (Accessory) posts no didTerminate.
+let logoVMWatch = logoLight.map { logo in
+  NSWorkspace.shared.observe(\.runningApplications) { ws, _ in
+    if !ws.runningApplications.contains(where: { VMApp.of($0) != nil }) { logo.vmsGone() }
+  }
+}
 let listenerTimer = DispatchSource.makeTimerSource(queue: .main)
 listenerTimer.schedule(deadline: .now() + tickSeconds, repeating: tickSeconds, leeway: .seconds(1))
 listenerTimer.setEventHandler { (servers + retiredServers).forEach { $0.check() }; relaySocket.check() }

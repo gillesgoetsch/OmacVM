@@ -7,6 +7,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 U=${1:?usage: install.sh <desktop-user> <layout> [variant]}; L=${2:?layout}; V=${3:-}
+# They go into Hyprland's config: XKB names only.
+[[ $L =~ ^[a-z]{2,8}$ && $V =~ ^[A-Za-z0-9_-]{0,32}$ ]] || { echo "keyboard: not an XKB layout: '$L' '$V'" >&2; exit 2; }
 H=$(getent passwd "$U" | cut -d: -f6)
 source ../../guest/home-files.sh   # the home is written as the user
 

@@ -155,6 +155,7 @@ GLIDE=${OMACVM_FEATURE_scroll_momentum:-${OMACVM_FEATURE_glide:-off}}; OMANOTCH=
 CONTROL=${OMACVM_FEATURE_control_centre:-off}
 MAC_CLOCK=${OMACVM_FEATURE_mac_clock:-off}; CAMERA=${OMACVM_FEATURE_camera:-off}; BATTERY=${OMACVM_FEATURE_battery:-off}
 EXT_BRIGHTNESS=${OMACVM_FEATURE_external_brightness:-off}
+LOGO_LIGHT=${OMACVM_FEATURE_logo_light:-off}
 TOUCH_ID=${OMACVM_FEATURE_touch_id:-off}
 CHROMIUM_VIDEO=${OMACVM_FEATURE_chromium_video:-on}
 
@@ -405,6 +406,18 @@ if [[ $BRIDGE == on ]]; then
       elif (.displays | length) == 0 then "no external display on the Mac now"
       else [.displays[] | "\(.name): \(if .method == "ddc" then "DDC/CI" elif .method == "apple" then "its own control" else "not settable" end)"] | join(", ") end' <<<"$ex")"
   else bad "external brightness" "the Bridge does not answer /display/external (an older Bridge: omacvm update on the Mac)"; fi
+  # The Apple logo's light: omacvm-logo asks the Mac's Bridge which mode plays.
+  FEATURE=logo-light
+  if [[ $LOGO_LIGHT != on ]]; then skip "logo light" "off (omacvm enable logo-light)"
+  elif [[ ! -x /usr/local/bin/omacvm-logo ]]; then bad "logo light" "/usr/local/bin/omacvm-logo is missing (omacvm apply)"
+  else
+    lm=$(as_user omacvm-logo 2>&1); lrc=$?
+    case $lrc in
+      0) ok "logo light" "plays $lm (omacvm-logo)" ;;
+      3) skip "logo light" "${lm#omacvm-logo: }" ;;
+      *) bad "logo light" "${lm#omacvm-logo: }" ;;
+    esac
+  fi
   # Touch ID (ADR 0041): the keys, the PAM lines and the polkit rule. The
   # Mac's side shows only with a finger, so not asked here.
   FEATURE=touch-id
@@ -1084,6 +1097,30 @@ app)
       warn "Pointer layer" "the cursor plane is there, but Hyprland draws the pointer (cursor:no_hardware_cursors ${hw:-unknown}: an own setting in the Hyprland config?)"
     else
       ok "Pointer layer" "on the cursor plane (experimental): pointer moves do not redraw the screen"
+    fi
+  fi
+  # Mac pointer for the VM (the app's hidden macPointer): this start asked for
+  # it (omacvm.hwcursor=1). It runs when Omarchy's aquamarine sends cursor
+  # hotspots, or OmacVM's is built for the installed package (omacvm-app-host
+  # then wrote mac-pointer.env, with LD_LIBRARY_PATH for OmacVM's and the
+  # running Hyprland loaded it), and Hyprland puts the pointer on the cursor
+  # plane; else Hyprland draws the pointer as without the setting.
+  if grep -qx 'OMACVM_HWCURSOR=1' /run/omacvm/host.env 2>/dev/null; then
+    aqok=1
+    aq=$(/usr/local/lib/omacvm/aquamarine/omacvm-aquamarine-build --status 2>/dev/null) || aqok=0
+    hw=$(as_user hyprctl getoption cursor:no_hardware_cursors -j 2>/dev/null | jq -r '.int' 2>/dev/null)
+    hp=$(pgrep -x Hyprland | head -n1)
+    if [[ ! -f /run/omacvm/mac-pointer.env && $aqok == 1 ]]; then
+      warn "Mac pointer" "macPointer is on, but Hyprland draws the pointer: aquamarine with cursor hotspots came after this start (restart the VM)"
+    elif [[ ! -f /run/omacvm/mac-pointer.env ]]; then
+      warn "Mac pointer" "macPointer is on, but Hyprland draws the pointer: aquamarine with cursor hotspots is ${aq:-not installed (omacvm apply)} (sudo omacvm-aquamarine-build, then restart the VM)"
+    elif grep -q '^LD_LIBRARY_PATH=' /run/omacvm/mac-pointer.env &&
+         { [[ -z $hp ]] || ! grep -q ' /usr/local/lib/omacvm/aquamarine/' "/proc/$hp/maps" 2>/dev/null; }; then
+      warn "Mac pointer" "macPointer is on, but the running Hyprland has Omarchy's aquamarine (restart the VM)"
+    elif [[ $hw != 0 ]]; then
+      warn "Mac pointer" "the cursor plane is there, but Hyprland draws the pointer (cursor:no_hardware_cursors ${hw:-unknown}: an own setting in the Hyprland config?)"
+    else
+      ok "Mac pointer" "the Mac's own cursor shows the pointer (experimental; $aq)"
     fi
   fi
   # Video decoding on the Mac's media engine (an app with it lists decoders).

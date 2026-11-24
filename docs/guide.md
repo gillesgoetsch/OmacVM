@@ -39,6 +39,7 @@ confirm):
    | macOS-native scroll momentum *(experimental)*: a trackpad's scrolling only, mice scroll one to one | on |
    | Omanotch, on a MacBook with a notch | on |
    | The Mac's battery: its charge and charging state in Omarchy's bar | on with a battery |
+   | The Apple logo's light: `omacvm-logo` sets the lit Apple logo on the MacBook's lid: macOS's own, off, steady or breathing (needs the Bridge) | off (offered only with a lit logo) |
    | The Mac's clock: at the far right of the bar, in your Mac's menu bar format | on |
    | The Mac's camera as *Mac Camera*, on only while a Linux app uses it | on |
    | External display brightness: the brightness keys (and Omarchy's own) set the external display the VM is on, over DDC/CI (needs the Bridge) | on |

@@ -13,7 +13,7 @@
 #   --resources low|balanced|high|best   --cpus N   --memory-gb N   --disk-gb N
 #   --user NAME   --full-name "NAME"
 #   --feature NAME=on|off, or --FEATURE / --no-FEATURE (omacvm features lists
-#   them: bridge wallpaper gestures scroll-momentum omanotch mac-clock camera battery external-brightness no-idle-lock autologin thp-kernel
+#   them: bridge wallpaper gestures scroll-momentum omanotch mac-clock camera battery logo-light external-brightness no-idle-lock autologin thp-kernel
 #   x86-apps; idle-lock, its name before 3.0.1, the other way round)
 # The keyboard layout, timezone and language come from this Mac. Needs Apple
 # Silicon and macOS 15 or newer; OmacVM.app is installed after asking when it
@@ -46,7 +46,7 @@ linux_name() {
 }
 TYPE=app; VM="Omarchy"; RES=""; CPUS=""; MEM_GB=""; DISK_GB=""; U=$(linux_name "$(id -un)"); FULL=""; HOST="omarchy"
 [[ -n $U ]] || U=omarchy
-BRIDGE=1; WALLPAPER=1; GESTURES=1; GLIDE=1; OMANOTCH=""; MAC_CLOCK=1; CAMERA=1; BATTERY=""; EXT_BRIGHTNESS=1; CHROMIUM_VIDEO=1; GPU_COMPUTE=1; NO_IDLE_LOCK=0; AUTOLOGIN=0; THP=0; CONTROL=1; X86=0
+BRIDGE=1; WALLPAPER=1; GESTURES=1; GLIDE=1; OMANOTCH=""; MAC_CLOCK=1; CAMERA=1; BATTERY=""; LOGO=""; EXT_BRIGHTNESS=1; CHROMIUM_VIDEO=1; GPU_COMPUTE=1; NO_IDLE_LOCK=0; AUTOLOGIN=0; THP=0; CONTROL=1; X86=0
 YES=0; DRY=0; PLAN=0; JSON=0; IMAGE=0; SOURCE=""
 usage() { echo "omacvm build: $*" >&2; exit 2; }
 needs_person() { printf '\033[1;31mneeds you:\033[0m %s\n' "$*" >&2; exit 3; }
@@ -55,7 +55,7 @@ feature_flag() {   # NAME on|off
   case $1 in
     idle-lock) [[ $2 == on || $2 == off ]] || usage "--feature $1=$2: on or off"
                feature_flag no-idle-lock "$( [[ $2 == on ]] && echo off || echo on)"; return ;;   # its name before 3.0.1
-    bridge) BRIDGE=$v; (( v )) || { WALLPAPER=0; EXT_BRIGHTNESS=0; } ;;
+    bridge) BRIDGE=$v; (( v )) || { WALLPAPER=0; EXT_BRIGHTNESS=0; LOGO=0; } ;;
     wallpaper) WALLPAPER=$v ;;
     gestures) GESTURES=$v ;;
     scroll-momentum) GLIDE=$v ;;
@@ -63,6 +63,7 @@ feature_flag() {   # NAME on|off
     mac-clock) MAC_CLOCK=$v ;;
     camera) CAMERA=$v ;;
     battery) BATTERY=$v ;;
+    logo-light) LOGO=$v ;;
     external-brightness) EXT_BRIGHTNESS=$v ;;
     chromium-video) CHROMIUM_VIDEO=$v ;;
     gpu-compute) GPU_COMPUTE=$v ;;
@@ -165,6 +166,10 @@ fi
 i=$(feature_index battery)
 if [[ -z $BATTERY ]]; then [[ $(feature_default "$i") == on ]] && BATTERY=1 || BATTERY=0
 elif (( BATTERY )) && ! feature_available "$i"; then (( JSON )) || info "${FTITLE[$i]}: off ($REASON)"; BATTERY=0; fi
+# The Apple logo's light: opt-in, only with a lit logo.
+i=$(feature_index logo-light)
+if [[ -z $LOGO ]]; then [[ $(feature_default "$i") == on ]] && LOGO=1 || LOGO=0
+elif (( LOGO )) && ! feature_available "$i"; then (( JSON )) || info "${FTITLE[$i]}: off ($REASON)"; LOGO=0; fi
 # ---------- build it here, or download a prebuilt VM ----------
 build_minutes() { echo "10 to 30"; }
 PB_OK=0
@@ -289,7 +294,7 @@ fvar() {
   case $1 in
     bridge) echo BRIDGE ;; wallpaper) echo WALLPAPER ;; gestures) echo GESTURES ;;
     scroll-momentum) echo GLIDE ;; omanotch) echo OMANOTCH ;; mac-clock) echo MAC_CLOCK ;; camera) echo CAMERA ;; no-idle-lock) echo NO_IDLE_LOCK ;;
-    battery) echo BATTERY ;; external-brightness) echo EXT_BRIGHTNESS ;; chromium-video) echo CHROMIUM_VIDEO ;; gpu-compute) echo GPU_COMPUTE ;;
+    battery) echo BATTERY ;; logo-light) echo LOGO ;; external-brightness) echo EXT_BRIGHTNESS ;; chromium-video) echo CHROMIUM_VIDEO ;; gpu-compute) echo GPU_COMPUTE ;;
     autologin) echo AUTOLOGIN ;; thp-kernel) echo THP ;; control-centre) echo CONTROL ;;
     x86-apps) echo X86 ;;
   esac
@@ -305,7 +310,7 @@ explain_features() {
     state=$( ((v)) && echo on || echo off)
     [[ ${FN[$i]} == no-idle-lock ]] && state=$( ((v)) && echo "on, the Mac's lock" || echo "off, Omarchy's own")
     [[ ${FN[$i]} == omanotch && $NOTCH != notch ]] && state="off (no notch)"
-    feature_has_tag "$i" laptop && ! feature_available "$i" && state="off ($REASON)"
+    { feature_has_tag "$i" laptop || feature_has_tag "$i" logo; } && ! feature_available "$i" && state="off ($REASON)"
     printf '    %-48s %s%s\n' "${FTITLE[$i]}" "$state" "$(feature_has_tag "$i" experimental && echo "  (experimental)")"
   done
 }
@@ -327,7 +332,7 @@ if (( ! YES )); then
   for ((i = 0; i < ${#UI_KEYS[@]}; i++)); do fput "${UI_KEYS[$i]}" "${UI_ON[$i]}"; done
 fi
 (( GESTURES )) || GLIDE=0
-(( BRIDGE )) || { WALLPAPER=0; EXT_BRIGHTNESS=0; }
+(( BRIDGE )) || { WALLPAPER=0; EXT_BRIGHTNESS=0; LOGO=0; }
 
 # ---------- 4. you ----------
 : "${FULL:=$(id -F 2>/dev/null || echo "$U")}"
@@ -355,7 +360,7 @@ esac
 (( IMAGE )) && { KB=us; KB_NOTE=""; KB_SHOWN=us; TZ_MAC=UTC; LANG_VM=en_US.UTF-8; }
 
 FEATS=(bridge "$BRIDGE" wallpaper "$WALLPAPER" gestures "$GESTURES" scroll-momentum "$GLIDE" omanotch "$OMANOTCH"
-       mac-clock "$MAC_CLOCK" camera "$CAMERA" battery "$BATTERY" external-brightness "$EXT_BRIGHTNESS" chromium-video "$CHROMIUM_VIDEO" gpu-compute "$GPU_COMPUTE" no-idle-lock "$NO_IDLE_LOCK" autologin "$AUTOLOGIN" thp-kernel "$THP"
+       mac-clock "$MAC_CLOCK" camera "$CAMERA" battery "$BATTERY" logo-light "$LOGO" external-brightness "$EXT_BRIGHTNESS" chromium-video "$CHROMIUM_VIDEO" gpu-compute "$GPU_COMPUTE" no-idle-lock "$NO_IDLE_LOCK" autologin "$AUTOLOGIN" thp-kernel "$THP"
        control-centre "$CONTROL" x86-apps "$X86")
 # The one-time steps only a person can do on the Mac, one per line.
 human_steps() {

@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 43)
+        self.assertEqual(V, 44)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -3818,6 +3818,113 @@ out.push([t.moves.slice(), t.notchAppearing]);
         self.assertEqual(during, [[], False])
         self.assertEqual(end, [[[570, 580, True]], False])
 
+
+
+class StripDrag(unittest.TestCase):
+    """#849: a drag from the strip runs Omarchy 4.5's own reorder on the NOTCH
+    bar (its module pointer's steps), a release without one clicks, a drag
+    from the strip never removes a widget, and a bar without the reorder
+    only clicks."""
+
+    def patched_45(self):
+        stock = next(b.read_text() for b in SHELLS if is_45(b.read_text()))
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        f = d / "Bar.qml"
+        f.write_text(stock)
+        self.assertEqual(patch_file(f).returncode, 0)
+        return f.read_text()
+
+    def test_the_ipc_has_press_drag_release(self):
+        full = self.patched_45()
+        for fn in ("press(x: real, y: real)", "drag(x: real, y: real)", "release(x: real, y: real)"):
+            self.assertIn("    function %s: string {" % fn, full)
+        self.assertIn('return r === "click" ? click(x, y, 1) : r', full)
+        # Omarchy's own steps, by the names its module pointer calls.
+        for name in ("beginBarDrag", "moduleDropAtScene", "moveDragRoom", "settleBarDrag", "barDragScreenPoint"):
+            self.assertIn("function %s(" % name, full)
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_press_move_release(self):
+        full = self.patched_45()
+        fns = {n: function(full, n) for n in ("notchDragCan", "notchDragPress", "notchDragMove",
+                                              "notchDragRelease", "notchDragLetGo")}
+        release = function(full, "release")
+        js = r"""
+var calls = [];
+function slot(name, x, w) { return { name: name, width: w, height: 26, activeItem: name, ox: x,
+  mapToItem: function(to, a, b) { return { x: (to ? this.ox : this.ox + 1000) + a, y: b } },
+  traySectionContains: function(a, b) { return this.name === "tray" && a < 10 } } }
+var A = slot("clock", 100, 40), B = slot("battery", 200, 30), T = slot("tray", 300, 50);
+var root = {
+  barHidden: false, notchFullscreen: false, shell: { mutateShellConfig: function() {} },
+  notchDragSlot: null, notchDragX: 0, notchDragY: 0, notchDragging: false,
+  barDragSource: null, barDragTarget: null, barDragSceneX: 0, barDragSceneY: 0, barDragScreenX: 0, barDragScreenY: 0,
+  notchShownSlots: function(onNotch) { calls.push("shown " + onNotch); return [[A, 100], [B, 200], [T, 300]] },
+  slotWindow: function(s) { return { contentItem: {} } },
+  finishBarSettle: function() { calls.push("finish") },
+  clearBarDrag: function() { calls.push("clear"); this.barDragSource = null },
+  beginBarDrag: function(s, x, y) { calls.push("begin " + s.name + " " + x + " " + y); this.barDragSource = s },
+  hideTooltip: function(i) { calls.push("tooltip " + i) },
+  barDragScreenPoint: function(p) { return { x: p.x, y: p.y + 5000 } },
+  moduleDropAtScene: function(p, s) { calls.push("drop@" + p.x); return p.x > 1250 ? "after-battery" : null },
+  moveDragRoom: function(d) { calls.push("room " + d) },
+  setBarDragRemoveArmed: function(a) { calls.push("remove " + a) },
+  settleBarDrag: function(s) { calls.push("settle " + s.name) },
+};
+with (root) {
+  root.notchDragCan = function() { FN_CAN };
+  root.notchDragPress = function(x, y) { FN_PRESS };
+  root.notchDragMove = function(x, y) { FN_MOVE };
+  root.notchDragRelease = function(x, y) { FN_RELEASE };
+  root.notchDragLetGo = function() { FN_LETGO };
+}
+var ipc = { click: function(x, y, b) { calls.push("click " + x + " " + y + " " + b); return "ok" } };
+with (ipc) { ipc.release = function(x, y) { FN_IPC_RELEASE }; }
+var out = {};
+function step(name, f) { calls = []; var r = f(); out[name] = [r, calls]; }
+step("press", function() { return root.notchDragPress(110, 12) });
+step("small", function() { return root.notchDragMove(112, 12) });
+step("move", function() { return root.notchDragMove(130, 12) });
+step("further", function() { return root.notchDragMove(260, 40) });
+step("drop", function() { return ipc.release(260, 12) });
+step("press2", function() { return root.notchDragPress(205, 3) });
+step("click", function() { return ipc.release(206, 3) });
+step("miss", function() { return root.notchDragPress(50, 3) });
+step("missclick", function() { return ipc.release(50, 3) });
+step("tray", function() { return root.notchDragPress(305, 3) });
+step("press3", function() { return root.notchDragPress(110, 12) });
+step("move3", function() { return root.notchDragMove(140, 12) });
+step("letgo", function() { return ipc.release(-1, -1) });
+step("after", function() { return root.notchDragMove(150, 12) });
+root.shell = null;
+step("old", function() { return root.notchDragPress(110, 12) });
+step("oldclick", function() { return ipc.release(110, 12) });
+console.log(JSON.stringify(out));
+"""
+        for k, v in (("FN_CAN", fns["notchDragCan"]), ("FN_PRESS", fns["notchDragPress"]), ("FN_MOVE", fns["notchDragMove"]),
+                     ("FN_RELEASE", fns["notchDragRelease"]), ("FN_LETGO", fns["notchDragLetGo"]), ("FN_IPC_RELEASE", release)):
+            js = js.replace(k, v.replace("root.", "root."))
+        r = json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+        self.assertEqual(r["press"][0], "held")
+        self.assertEqual(r["small"], ["held", []], "under Omarchy's threshold: nothing yet")
+        self.assertEqual(r["move"][0], "drag")
+        self.assertEqual(r["move"][1][:4], ["finish", "clear", "begin clock 10 12", "tooltip clock"])
+        self.assertIn("remove false", r["move"][1], "never armed to remove from the strip")
+        self.assertIn("room after-battery", r["further"][1])
+        self.assertEqual(r["drop"][0], "dropped")
+        self.assertEqual(r["drop"][1][-1], "settle clock")
+        self.assertNotIn("click", " ".join(r["drop"][1]))
+        self.assertEqual(r["press2"][0], "held")
+        self.assertEqual(r["click"], ["ok", ["click 206 3 1"]], "a release without a drag clicks")
+        self.assertEqual(r["miss"][0], "miss")
+        self.assertEqual(r["missclick"], ["ok", ["click 50 3 1"]], "a press beside every widget: a click as before")
+        self.assertEqual(r["tray"][0], "miss", "the tray's drawer: its own widgets, not a drag")
+        self.assertEqual(r["move3"][0], "drag")
+        self.assertEqual(r["letgo"], ["let-go", ["clear"]], "let go: the drag goes back, no click")
+        self.assertEqual(r["after"], ["miss", []])
+        self.assertEqual(r["old"][0], "miss", "a bar without Omarchy's reorder: no drag")
+        self.assertEqual(r["oldclick"], ["ok", ["click 110 12 1"]], "... and the click as before")
 
 
 WSPATCH = ROOT / "src/omanotch/guest/bar/workspaces-patch.py"
