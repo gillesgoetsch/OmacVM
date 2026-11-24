@@ -18,7 +18,7 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # ---------- every feature is covered ----------
 # name: how off is made sure of (tested below, or why there is nothing to test)
 covered="
-bridge:off.sh bridge_off; no Bridge port from OmacVM.app
+bridge:off.sh bridge_off; no Bridge port from OmacVM.app, and the app answers /omacvm/app/sound as one without it (404)
 wallpaper:off.sh wallpaper_off (its watcher talks to the Bridge)
 gestures:off.sh gestures_off; apply skips Gestures; no Gestures port from OmacVM.app
 scroll-momentum:inside the gestures daemon; needs gestures (features_fix)

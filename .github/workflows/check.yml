@@ -162,6 +162,9 @@ jobs:
       - name: OmacVM.app sound delay for the VM (QEMU's part, the Mac's output, limits)
         working-directory: app/app
         run: swift run audio-tests
+      - name: OmacVM.app the Mac's sound for the VM (Control Center's lists as recorded, AirPods' modes too, the route's rules)
+        working-directory: app/app
+        run: swift run sound-tests
       - name: OmacVM.app AirPods and media controls (the port's lines, when the VM is Now Playing, a fuzz)
         working-directory: app/app
         run: swift run media-tests

@@ -1290,11 +1290,14 @@ final class Runner {
         // GPU safe mode, not today's setting (that counts from the next start).
         let safeMode = !ExtraBrightness.start(on: true, display: true, gpuSafeMode: Settings.gpuSafeMode,
                                               layerPresent: ProcessInfo.processInfo.environment["OMACVM_GL_PRESENT"] == "layer").on
+        let front: @MainActor () -> Bool = { [weak self] in (self?.qemuIsActive ?? false) || Self.testAnyWindow }
+        let folder = config.folder
         let app = NativeControlBridge.AppSide(
-            extraBrightness: { [weak self] in
+            front: front,
+            bridgeOn: { MacLinks.load(folder: folder).bridge },
+            extraBrightness: {
                 ExtraBrightnessGuest.Context(display: Mac.hasExtraBrightnessDisplay, safeMode: safeMode,
-                                             front: (self?.qemuIsActive ?? false) || Self.testAnyWindow,
-                                             on: Settings.extraBrightness)
+                                             front: front(), on: Settings.extraBrightness)
             },
             setExtraBrightness: { [weak self] on in
                 guard on != Settings.extraBrightness else { return }

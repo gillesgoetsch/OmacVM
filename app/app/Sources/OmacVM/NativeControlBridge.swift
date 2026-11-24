@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import OmacVMAuth
+import OmacVMSound
 import OmacVMUpdate
 import OmacVMWindow
 
@@ -24,7 +25,9 @@ import OmacVMWindow
 ///
 /// /omacvm/app/... is the app's own and never goes to the Bridge: the VM's
 /// Extra brightness switch (ExtraBrightnessGuest, its Display panel),
-/// answered on the main thread.
+/// answered on the main thread, and the Mac's AirPlay speakers and balance
+/// for its audio panel (SoundGuest), answered on the request's own thread,
+/// as a press waits for macOS to connect the speaker.
 final class NativeControlBridge: @unchecked Sendable {
     static let maximumLineBytes = 8192
     /// The Bridge's port (OMACVM_BRIDGE_PORT as for the Bridge itself: tests).
@@ -42,10 +45,15 @@ final class NativeControlBridge: @unchecked Sendable {
     /// The app's own answers (Runner): what it knows now and the switch.
     /// Both are called on the main thread.
     struct AppSide {
+        /// This VM's window (its QEMU) is the app in front.
+        let front: @MainActor () -> Bool
+        /// The VM's feature bridge is on now (the Mac's sound belongs to it).
+        let bridgeOn: () -> Bool
         let extraBrightness: @MainActor () -> ExtraBrightnessGuest.Context
         let setExtraBrightness: @MainActor (Bool) -> Void
     }
     private let app: AppSide?
+    private let sound = SoundService { fputs("[sound] \($0)\n", stderr) }
     private var writes = WriteRate()   // main thread only
 
     init(socketPath: String, vmName: String, gpuMemoryFile: URL? = nil, app: AppSide? = nil) throws {
@@ -132,12 +140,23 @@ final class NativeControlBridge: @unchecked Sendable {
         slots.wait()   // in step with the reads: a VM that floods waits for its answers
         DispatchQueue.global(qos: .utility).async { [self] in
             defer { slots.signal() }
-            let (status, body) = ExtraBrightnessGuest.isApp(r.path) ? answerApp(r) : relay(r)
+            let (status, body) = r.path == SoundGuest.path ? answerSound(r) : ExtraBrightnessGuest.isApp(r.path) ? answerApp(r) : relay(r)
             var answer = Data((try? JSONSerialization.data(withJSONObject: ["id": r.id, "status": status, "body": body])) ?? Data("{}".utf8))
             answer.append(0x0A)
             writeLock.lock(); defer { writeLock.unlock() }
             do { try NativeBridgeSocket.writeAll(answer, to: descriptor, label: "control") }
             catch { fputs("[control] \(error.localizedDescription)\n", stderr) }
+        }
+    }
+
+    /// The Mac's sound (SoundGuest), for a VM with the feature bridge on: off
+    /// is off on every route, and the answer is the one of an app without
+    /// it. Only the question whether this VM is in front goes to the main
+    /// thread: Control Center takes a second or more.
+    private func answerSound(_ r: Request) -> (Int, [String: Any]) {
+        guard let app, app.bridgeOn() else { return (404, ["code": "not-found", "error": ExtraBrightnessGuest.error("not-found")]) }
+        return sound.answer(method: r.method, body: r.body) {
+            DispatchQueue.main.sync { MainActor.assumeIsolated { app.front() } }
         }
     }
 
