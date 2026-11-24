@@ -402,7 +402,9 @@ echo "desktop up after $(( $(date +%s) - start )) s"
 gssh 'for u in omacvm-gestures omacvm-notchcast; do systemctl disable --now $u >/dev/null 2>&1; done; true'
 QPID=$(pgrep -f -- "$PAT" | head -1)
 
-# --hw-cursor: this tree's omacvm_app.lua (it reads host.env), then a config reload.
+# --hw-cursor: this tree's omacvm_app.lua, then a config reload. (The VM copy needs OmacVM's
+# aquamarine built and this tree's omacvm-app-host, which writes the mac-pointer.env the file reads:
+# omacvm apply in a start with macPointer on, before the copy.)
 if ((HWC)); then
   gssh 'source /etc/omacvm/env 2>/dev/null; U=${OMACVM_USER:-$(id -nu 1000)}
         install -o "$U" -g "$U" -m644 /dev/stdin "$(getent passwd "$U" | cut -d: -f6)/.config/hypr/omacvm_app.lua"

@@ -3,6 +3,27 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## Unreleased
+
+- **The Mac's own cursor as the VM's pointer** (#821, by @rubas; hidden, off: `defaults write
+  org.omacvm.app macPointer -bool true`). The setting did nothing on Omarchy, because Hyprland could
+  not put its pointer on a virtual GPU's cursor plane. With it on, Update VM now builds Omarchy's
+  aquamarine again with a patch that sends the pointer's hotspot, from Omarchy's recipe pinned by
+  commit and checksum, and the VM uses it only in a start with the setting. The pointer then moves
+  as the Mac's cursor does. A system update that brings another aquamarine never breaks the
+  desktop: the next start runs Omarchy's own library until Update VM builds again, and once
+  Omarchy's aquamarine sends the hotspot itself nothing is built. `omacvm check` has a "Mac
+  pointer" line.
+- **Mac key layouts** (#784, reported by @epicoun): a new VM on a German, Swiss, French, British,
+  Italian, Dutch, Portuguese, Swedish, Danish, Finnish or Icelandic Mac types like the Mac's own
+  layout (right Option-L for @ on German). The left Option key stays Alt for Omarchy's shortcuts.
+  Existing VMs type as before; the new "Mac key layout" row under Input switches them, from the
+  next Update VM.
+- **Omanotch: drag icons along the strip** (#849, reported by @dandomin): on Omarchy 4.5, holding a
+  bar widget in the strip beside the notch and dragging it reorders it, as on the bar itself.
+  Clicks work as before; removing a widget by dragging it off stays on the VM's own bar. Needs the
+  app update and Update VM.
+
 ## 3.5.2
 
 A desktop fix for Omarchy 4.0 VMs after their next system update, no flash at the HDR switch,

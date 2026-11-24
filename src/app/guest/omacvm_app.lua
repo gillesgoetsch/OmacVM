@@ -1,18 +1,16 @@
 -- OmacVM.app: Hyprland draws the pointer (Omarchy's cursor) into the picture;
 -- QEMU hides the Mac's over the VM window. Software cursor: the default.
 -- With the app's experimental "Mac pointer for the VM" (OEM string
--- omacvm.hwcursor=1 -> /run/omacvm/host.env) the pointer goes on virtio-gpu's
--- cursor plane and the Mac's own cursor shows it (no frame to wait for).
+-- omacvm.hwcursor=1) the pointer goes on virtio-gpu's cursor plane and the
+-- Mac's own cursor shows it (no frame to wait for). The plane shows only to
+-- OmacVM's aquamarine, which sends the pointer's hotspot: omacvm-app-host
+-- writes /run/omacvm/mac-pointer.env when this start asks and runs it.
 -- Written by OmacVM; changes here are overwritten.
 local function mac_pointer()
-  local ok, f = pcall(function() return io.open("/run/omacvm/host.env") end)
+  local ok, f = pcall(function() return io.open("/run/omacvm/mac-pointer.env") end)
   if not ok or not f then return false end
-  local on = false
-  for l in f:lines() do
-    if l == "OMACVM_HWCURSOR=1" then on = true end
-  end
   f:close()
-  return on
+  return true
 end
 local mac = mac_pointer()
 -- The app's experimental "Pointer on its own layer" (omacvm.pointerplane=2):

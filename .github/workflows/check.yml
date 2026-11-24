@@ -193,6 +193,9 @@ jobs:
           src/omanotch/mac/test.sh
           src/omanotch/guest/tests/test.sh
 
+      - name: Keyboard layouts (Mac variants for new VMs, PC layout kept for VMs before, XKB names only; offline)
+        run: src/keyboard/test.sh
+
       - name: External display brightness offline tests (Bridge and VM side)
         run: |
           src/bridge/mac/test.sh
@@ -751,6 +754,9 @@ jobs:
       - name: OmacVM's virtio-gpu driver loads only when a start asks (a switch), else the stock one (loader, modprobe rule, builder; offline)
         run: src/tests/virtio-gpu-load.sh
 
+      - name: OmacVM's aquamarine for the Mac pointer is named only for the installed version, installed only as Hyprland loads it (builder, hook, start; offline)
+        run: src/tests/aquamarine-build.sh
+
       - name: Chromium's no-AV1 extension survives an apply of other features (its place, 3.1.4's path moved, check)
         run: src/tests/chromium-no-av1.sh
 
@@ -970,6 +976,12 @@ jobs:
 
       - name: OmacVM's virtio-gpu driver's loader and builder on Linux (GNU tools, as in the VM)
         run: src/tests/virtio-gpu-load.sh
+
+      - name: OmacVM's aquamarine builder on Linux (GNU tools, as in the VM)
+        run: src/tests/aquamarine-build.sh
+
+      - name: Keyboard layouts on Linux (each Mac variant's level 3 key in xkeyboard-config, when installed)
+        run: src/keyboard/test.sh
 
       - name: OmacVM's virtio-gpu patches with GNU patch, as the builder in the VM (no fuzz)
         run: src/tests/virtio-gpu-patches.sh

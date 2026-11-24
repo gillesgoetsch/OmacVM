@@ -189,6 +189,12 @@ VM — `systemctl --user edit notchcast`, `Environment=…`:
   the strip does what the bar does: the indicators open on their own places
   (and left of the notch where they sit there); under the notch they only
   stay open once they are.
+- Dragging a widget along the strip reorders it, as on Omarchy 4.5's own
+  bar (#849): the strip passes the left button's press, moves and release to
+  the bar copy, which runs Omarchy's own reorder; a left click is pressed
+  when the button comes up, as on the bar. A drag from the strip never
+  removes a widget (on the bar a drag off it does): that stays a drag on the
+  VM's own bar. Older bars without the reorder only take the click.
 - Omarchy's tray works in the strip (#662): its icons take left, right and
   middle clicks and scrolling as on the bar itself, and a left click on the
   drawer's arrow opens or closes the drawer (on the bar it opens on hover,

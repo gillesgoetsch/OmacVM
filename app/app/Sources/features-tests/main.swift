@@ -280,6 +280,24 @@ if let d = UserDefaults(suiteName: "org.omacvm.test.features-menubar.\(getpid())
 
 shareKeyboardTests()
 isoKeyboardTests()
+
+// #784: the Mac key layout row's two ways.
+typealias MK = MacKeyLayout
+expect(MK.hasChoice("de") && MK.hasChoice("de mac") && MK.hasChoice("ch de_mac") && MK.hasChoice(" ch  fr "),
+       "mac key layout: a choice for the layouts with a Mac variant, either way")
+expect(!MK.hasChoice("us") && !MK.hasChoice("es") && !MK.hasChoice("no") && !MK.hasChoice("ch") && !MK.hasChoice(""),
+       "mac key layout: none for us, es, no (no usable Mac variant) or a bare ch")
+expect(MK.keyboard("de", mac: true) == "de mac" && MK.keyboard("de mac", mac: false) == "de",
+       "mac key layout: de <-> de mac")
+expect(MK.keyboard("ch de", mac: true) == "ch de_mac" && MK.keyboard("ch fr_mac", mac: false) == "ch fr",
+       "mac key layout: Swiss German and French")
+expect(MK.keyboard("de mac", mac: true) == "de mac" && MK.keyboard("us", mac: true) == nil,
+       "mac key layout: already on stays; no choice: nil")
+expect(MK.isMac("se mac") && !MK.isMac("se"), "mac key layout: on for a Mac variant only")
+expect(MK.envValue("ch de_mac") == "'ch de_mac'", "mac key layout: vm.env's KEYBOARD quoted as VMConfig writes it")
+expect(MK.pairs.count == 12 && Set(MK.pairs.map(\.pc)).count == 12, "mac key layout: twelve layouts, each once")
+expect(MK.info.contains("left Option key stays Alt") && MK.info.contains("Update VM"),
+       "mac key layout: the (i) says the left Option stays Alt and when it counts")
 macSetupTests()
 
 // WebGPU and GPU compute (gpu-compute): on by default, also for a record without the word.

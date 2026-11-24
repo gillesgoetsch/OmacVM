@@ -399,13 +399,14 @@ class Copies(unittest.TestCase):
 
     def test_a_45_copy_from_an_older_bar_patch_with_your_edit_becomes_the_current_one(self):
         # 3.4.2's patch (v41) or #765's (v42) made a 4.5 VM's copy, which has
-        # an edit of the owner's; this patch (v43: the NOTCH bar's workspaces
-        # from the copy, #760; v42's indicators' peek, #763 #764) merges in,
+        # an edit of the owner's; this patch (v44: a drag from the strip, #849;
+        # v43: the NOTCH bar's workspaces from the copy, #760; v42's
+        # indicators' peek, #763 #764) merges in,
         # the edit stays, the widget stays patched, and patching again
         # changes nothing.
         real = (self.lib / "bar/apply-patch.py").read_text()
         cur = int(re.search(r"^VERSION = (\d+)$", real, re.M).group(1))
-        self.assertEqual(cur, 43)
+        self.assertEqual(cur, 44)
         for version in (41, 42):
             with self.subTest(version=version):
                 (self.lib / "bar/apply-patch.py").write_text(self.older_patcher(real, version))

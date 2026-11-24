@@ -1,0 +1,8 @@
+# Omarchy's aquamarine recipes OmacVM builds the Mac pointer's library from
+# (omacvm-aquamarine-build). One line per package version:
+#   VERSION  OMARCHY-PKGS-COMMIT  FILE=SHA256 ...
+# every file of github.com/omacom/omarchy-pkgs/pkgbuilds/aquamarine at that
+# commit that the PKGBUILD's source=() names, plus the PKGBUILD; the PKGBUILD's
+# own sha256sums pin the source tarball. A version not here is not built.
+# New line: read the recipe at the commit, then the sums of its files.
+0.16.0-1.1 edba40f9377edd538b668882f833bc713f8ffbd9 PKGBUILD=3daae38ed7f808d4e81878efe64033970de0f056548836a9ac14ec64278cbbd0 0001-drm-re-read-possible-CRTCs-when-rescanning-connectors.patch=50e9e38ff915b18074dc9b5dd1d07d7f24e340e99f254476d6abe578eece7864 0004-drm-reconnect-an-output-whose-connector-gained-modes.patch=7fe7620c222d9f323b6a424301b98176f798f41a97945282ec71b361e742511a

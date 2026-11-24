@@ -1381,10 +1381,10 @@ window on the same display (`nativelat.swift`), the floor macOS itself sets.
   move waits for a whole guest frame and its present (about 25 ms at 60 Hz;
   the Mac's own cursor is not in a frame at all). The Mac pointer setting
   (`omacvm-cocoa-hw-cursor.patch`, hidden, off) makes the guest's cursor
-  plane image the Mac's cursor; Hyprland 0.56.2 does not use the cursor
-  plane on virtio-gpu yet (Linux hides a virtual GPU's cursor plane from
-  atomic clients without DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT, and
-  aquamarine does not ask for it), so it waits for the guest side.
+  plane image the Mac's cursor. Linux hides a virtual GPU's cursor plane
+  from atomic clients without DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT, and
+  Omarchy's aquamarine does not ask for it, so a start with the setting
+  runs OmacVM's build of that aquamarine with cursor hotspots (ADR 0075).
 - The pointer on its own layer (`pointerPlane`, experimental, ADR 0054):
   OmacVM's virtio-gpu build shows the cursor plane anyway (module option
   `cursor_plane=1` clears `DRIVER_CURSOR_HOTSPOT`; every output keeps its
@@ -1399,8 +1399,9 @@ window on the same display (`nativelat.swift`), the floor macOS itself sets.
   nothing in the guest; Hyprland still commits a frame per move (aquamarine's
   atomic `moveCursor` schedules one), so QEMU still presents the unchanged
   frame. Mini, 3024x1896@60, pointer circles 60/s: QEMU GPU 84-94 -> 23-38
-  ms/s. The Mac pointer setting still needs the hotspot (aquamarine with
-  hotspots, or its legacy path) and stays as it was. On an 8-bit start the
+  ms/s. The Mac pointer setting needs the hotspot, which this plane does
+  not get: it runs on the stock plane with OmacVM's aquamarine (ADR 0075),
+  never together with this option. On an 8-bit start the
   driver offers the stock formats (10-bit only with `deep_color=1`, HDR).
   With Extra brightness the layer's image gets the frames' gain (half
   floats, extended linear sRGB, EDR: `omacvm-cocoa-pointer-bright*.patch`).
@@ -1452,8 +1453,13 @@ At 120 Hz: key 15-18, keys while the pointer moves 22-24, pointer 14-16.
   MotionMark (median of 3: 39.6 vs 38.5 fps, 3007 vs 3016) and the key and
   pointer rows stayed the same, for 5-19 % more wake-ups. The doubled naps
   stay.
-- The Mac pointer setting (`macPointer`) still gives nothing: no cursor
-  command reaches QEMU with Hyprland 0.56.2 and aquamarine 0.15.1.
+- The Mac pointer setting (`macPointer`) takes the pointer out of this path:
+  with OmacVM's aquamarine (cursor hotspots, ADR 0075) the guest's image is
+  the Mac's own cursor, which macOS moves without the VM. The guest still
+  answers each move with a cursor command (1.2-2.0 ms after QEMU queued the
+  move, 95 % within 14 ms: a test VM on a Mac mini at background priority,
+  traces input_event_abs to virtio_gpu_update_cursor, the same with the
+  pointer layer), which then only says where the pointer hides or changes.
 
 ## 13. Merging the tracks
 

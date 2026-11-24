@@ -645,6 +645,43 @@ struct KeyboardRow: View {
     }
 }
 
+/// Mac key layout (#784, MacKeyLayout): XKB's Mac variant of this VM's
+/// layout or the PC one, in vm.env's KEYBOARD, which omacvm apply reads at
+/// the next Update VM. Shown only for a layout that has both.
+struct MacKeyLayoutRow: View {
+    @ObservedObject var state: AppState
+    @State private var error: String?
+    /// The layout this row wrote while the VM runs: it counts from the next Update VM.
+    @State private var changed = false
+
+    var body: some View {
+        if MacKeyLayout.hasChoice(state.config.keyboard) {
+            SettingRow(title: MacKeyLayout.title,
+                       subtitle: error ?? (changed ? MacKeyLayout.pending : MacKeyLayout.subtitle),
+                       subtitleIsError: error != nil, subtitleIsNote: error == nil && changed,
+                       info: MacKeyLayout.info, probe: "mac-key-layout") {
+                RowSwitch(title: MacKeyLayout.title,
+                          isOn: Binding(get: { MacKeyLayout.isMac(state.config.keyboard) }, set: set))
+            }
+            .onChange(of: state.config.folder) { _, _ in error = nil; changed = false }
+        }
+    }
+
+    private func set(_ mac: Bool) {
+        guard let kb = MacKeyLayout.keyboard(state.config.keyboard, mac: mac), kb != state.config.keyboard else { return }
+        var c = state.config
+        c.keyboard = kb
+        do {
+            try c.writeEnv(["KEYBOARD": MacKeyLayout.envValue(kb)])
+            state.config = c
+            changed = true
+            error = nil
+        } catch {
+            self.error = "Could not save: \(error.localizedDescription)"
+        }
+    }
+}
+
 /// Swipe out to macOS (org.omacvm.gestures SwipeOut, off by default): past
 /// the first or the last workspace, a swipe goes on to the macOS Space beside
 /// the VM. OmacVM Gestures reads it.

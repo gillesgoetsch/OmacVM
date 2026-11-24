@@ -56,6 +56,7 @@
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "notch-place.h"
 #include "notchrule.h"
+#include "notchqueue.h"
 
 #define FRAME_MAGIC 0x4843544eu  // "NTCH" little-endian
 #define TEXT_MAGIC 0x5458544eu   // "NTXT"
@@ -1152,6 +1153,10 @@ static void handle_command(char *line) {
         }
     } else if (!strcmp(c, "click") && argc == 4 && is_number(argv[1]) && is_number(argv[2]) && is_number(argv[3])) {
         free(ipc_call(0, "click", argv[1], argv[2], argv[3]));
+    } else if (nq_is_drag_command(c) && argc == 3 && is_number(argv[1]) && is_number(argv[2])) {
+        // The strip's left button (#849): the bar copy presses, drags
+        // (Omarchy's reorder) and releases; a release without a drag clicks.
+        free(ipc_call(0, c, argv[1], argv[2], NULL));
     } else if (!strcmp(c, "wheel") && argc == 4 && is_number(argv[1]) && is_number(argv[2]) && is_number(argv[3])) {
         free(ipc_call(0, "wheel", argv[1], argv[2], argv[3]));
     } else if (!strcmp(c, "hover") && argc == 2 && is_number(argv[1])) {
@@ -1200,7 +1205,10 @@ static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 
 static void enqueue_command(const char *line) {
     pthread_mutex_lock(&queue_lock);
-    if (queue_len < QUEUE_MAX) {
+    if (queue_len > 0 && nq_replaces(queue_items[queue_len - 1], line)) {
+        char *copy = strdup(line);
+        if (copy) { free(queue_items[queue_len - 1]); queue_items[queue_len - 1] = copy; }
+    } else if (queue_len < QUEUE_MAX) {
         queue_items[queue_len++] = strdup(line);
         pthread_cond_signal(&queue_cond);
     } else {
