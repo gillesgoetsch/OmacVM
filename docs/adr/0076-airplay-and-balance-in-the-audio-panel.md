@@ -120,9 +120,10 @@ opens Control Center, and refuses a request that comes while a session runs,
 for any VM ("busy"), instead of queueing it: a queue would run on after the
 person left the VM. The route is the feature bridge's: with it off the app
 answers as one without the route. There is no rate limit: a VM in front
-that asks in a loop takes the keys from itself, until the person clicks
-anywhere, which closes Control Center, and a VM in the background is
-refused.
+that asks in a loop takes the keys from itself for as long as the person
+stays in it. A click closes each session, and a VM in the background is
+refused. Whether ⌃⌥ Esc gets through while Control Center has the keyboard
+is untested.
 
 In the VM, `omacvm sound [read | press NAME | mode NAME GROUP OPTION |
 balance PERCENT [OUTPUT] | allow] --json` asks the app, and the panel
