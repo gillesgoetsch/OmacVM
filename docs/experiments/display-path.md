@@ -272,7 +272,7 @@ A B B A, a fresh VM per arm, 20 s windows. QEMU GPU ms/s, means over the rounds 
 | The same in HDR (10-bit PQ), one output, no Venus | virtual | 3 | 495 | 456 | 39 ms/s (4, 43, 71) |
 | Page scroll in Chromium | panel | 2 | 461 | 386 | 75 ms/s (71, 79) |
 | | virtual | 2 | 382 | 348 | 34 ms/s (0, 68) |
-| 4K60 video in mpv | panel | 2 | 457 | 487 | -30 ms/s (-15, -46) |
+| 4K60 video in mpv | panel | 2 | 474 | 487 | -13 ms/s (a drawn arm beside other load left out) |
 | | virtual | 2 | 404 | 371 | 33 ms/s (54, 12) |
 | Busy terminal (foot, 120 lines/s), per frame shown | panel | 2 | 3.80 ms | 3.09 ms | 0.71 ms |
 | | virtual | 2 | 3.72 ms | 3.29 ms | 0.43 ms |
@@ -282,8 +282,10 @@ session. WindowServer used no GPU time on the panel in either arm (the panel sho
 without a composite), and 12 to 38 ms/s on the virtual display. The whole Mac (the SMC's system power)
 drew 0.84 W less on the canvas on the virtual display (9.69 against 8.84 W) and 0.8 to 0.9 W less on the
 panel's canvas and scroll; the GPU's own counter (IOReport) fell 0.17 to 0.21 W. On the panel the video's
-GPU time rose while its GPU energy and the whole Mac fell (16.1 against 15.6 W); its link ticked at 60 to
-97 Hz, differently in each arm.
+GPU time rose a little while its GPU energy and the whole Mac fell (16.1 against 15.6 W); its link ticked
+at 60 to 97 Hz, differently in each arm. These runs used the two patches on an earlier base with the same
+QEMU and virglrenderer sources; on this base the runtime build, its wiring tests, the frame check on the
+virtual display and the depth switch test below ran.
 
 The guest's frames come late a little more often: Chrome's rAF intervals over 1.5 refreshes rose from
 0.31 % to 0.48 % of its frames on the virtual display and from 0.54 % to 0.90 % on the panel, and QEMU's
@@ -293,9 +295,16 @@ brought the late frames back to the drawn level (0.29 % against 0.68 % in one ru
 found no cheap way to keep the guest's frames on time, so the direct present trades one more late frame
 every 2 to 5 s at 120 fps for about 0.8 W.
 
-QEMU read each whole frame back from its surface as it went up (`OMACVM_TEST_PACE_CHECK=1`): on both
-displays and in every workload, and through HDR, the damage driver, a resize, a reboot and a burst's end,
-no frame was written while on the window, and none of the canvas's frames was torn. GPU safe mode
+QEMU read each whole frame back from its surface as it went up (`OMACVM_TEST_PACE_CHECK=1`): in the four
+workloads on both displays (on the panel while WindowServer composited the window), and through HDR, the
+damage driver, a resize, a reboot and a burst's end on the virtual display, no frame was written while on
+the window, and none of the canvas's frames was torn.
+
+At a depth switch (8 <-> 10 bit) Hyprland scans out a buffer of its new swapchain it has not drawn yet.
+The depth hold (`omacvm-cocoa-present-depth-first.patch`) counts the direct frame on the layer as surfaces
+of its depth, so that buffer is held as a drawn frame would be. Frame log (`OMACVM_TEST_FRAME_LOG=1`), four
+switches on the virtual display: with `OMACVM_GL_DEPTH_FIRST=0` the first frame of each new depth went up
+black (9 of 9 probe points); with the hold it was held each time, and none of the 21 direct frames was black. GPU safe mode
 (CAOpenGLLayer), the boot logo's probe, the hardware cursor and second outputs read the IOSurface's
 RECTANGLE texture.
 
