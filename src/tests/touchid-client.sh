@@ -72,6 +72,9 @@ run no-not-front; expect "VM not in front: password" 1 "$rc"
 expect "VM not in front: said" "Touch ID not available (VM not in front), use your password" "$(tail -1 "$T/out")"
 journaled "VM not in front: in the journal" "sudo for vincent: the password (VM not in front)"
 run no-locked; expect "Mac locked: said" "Touch ID not available (Mac locked), use your password" "$(tail -1 "$T/out")"
+run no-lid-closed; expect "lid closed, no watch: password" 1 "$rc"
+expect "lid closed, no watch: said" "Touch ID not available (Mac lid closed, no Apple Watch ready), use your password" "$(tail -1 "$T/out")"
+journaled "lid closed, no watch: in the journal" "sudo for vincent: the password (Mac lid closed, no Apple Watch ready)"
 # sudo -v, then pkexec at once: the Bridge says "rate" (2 s between a VM's requests), the client asks once more.
 rm -f "$T/bridge/rated"; s=$(ms); OMACVM_TOUCHID_RATE_WAIT=0.3 run rate-once; took=$(( $(ms) - s ))
 expect "rate once: asked again, let in" 0 "$rc"

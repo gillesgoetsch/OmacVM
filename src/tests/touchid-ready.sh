@@ -82,7 +82,7 @@ expect "check, app with the port: ready, and this VM's last request" \
   "ok: the VM's key, OmacVM Bridge and 2 fingerprint(s) ready; last request 06:52: 409 unknown-vm" "$(mac_check app on)"
 printf '#!/bin/sh\necho "User 501:\t0 biometric template(s)"\n' > "$T/bin/bioutil"
 expect "check: no fingerprint on the Mac: for the person" \
-  "fail: no fingerprint in this Mac's Touch ID (or no sensor): System Settings › Touch ID & Password; until then the VM asks for the password (person)" \
+  "fail: no fingerprint in this Mac's Touch ID (or no sensor): System Settings › Touch ID & Password; until then the VM asks for the password, unless an Apple Watch approves for this Mac (person)" \
   "$(mac_check other on)"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/bioutil"; : > "$T/bridge.log"
 expect "check: bioutil says nothing: no claim about fingerprints" "ok: the VM's key, OmacVM Bridge ready" "$(mac_check other on)"
