@@ -45,8 +45,11 @@ struct TouchIDRequest: Equatable {
 }
 
 /// Why the answer is no. The VM shows the fast ones (TouchIDNo.fast).
+/// no-touch-id: neither the Mac's sensor nor an Apple Watch can answer;
+/// lid-closed: the same with the MacBook's lid closed, which turns its sensor off.
 enum TouchIDNo: String {
-  case cancelled, failed, timeout, busy, rate, locked, notFront = "not-front", noTouchID = "no-touch-id", lockout, off
+  case cancelled, failed, timeout, busy, rate, locked, notFront = "not-front", noTouchID = "no-touch-id",
+       lidClosed = "lid-closed", lockout, off
 }
 
 private func matches(_ s: String, first: (UInt8) -> Bool, rest: (UInt8) -> Bool, max: Int) -> Bool {
@@ -218,10 +221,16 @@ struct TouchIDPrompt {
 /// and gives the outcome, or nil when it could not show (macOS's dialog then).
 typealias TouchIDAppPanel = (_ p: TouchIDPrompt, _ timeout: Double, _ gone: @escaping () -> Bool) -> TouchIDOutcome?
 
+/// Who can answer a dialog now, as LocalAuthentication says without asking.
+enum TouchIDAnswerer: Equatable {
+  case touchID                  // the Mac's sensor (an Apple Watch nearby may answer too)
+  case watch                    // not the sensor (the lid closed, none): an Apple Watch, or the password fallback
+  case unavailable(TouchIDNo)   // no one (no-touch-id) or locked out (lockout)
+}
+
 /// LocalAuthentication, or a mock.
 protocol TouchIDAuthenticator {
-  /// Nil when a dialog can be shown; else why not (no-touch-id, lockout).
-  func unavailable(passwordFallback: Bool) -> TouchIDNo?
+  func answerer(passwordFallback: Bool) -> TouchIDAnswerer
   /// Shows the dialog; a fresh context each time. `gone` is asked about every
   /// quarter second: true (the VM's client went away) cancels the dialog.
   func evaluate(_ p: TouchIDPrompt, passwordFallback: Bool, timeout: Double, gone: @escaping () -> Bool) -> TouchIDOutcome
@@ -231,6 +240,7 @@ protocol TouchIDAuthenticator {
 protocol TouchIDMacState {
   var locked: Bool { get }          // screen locked or display asleep
   var frontType: String? { get }    // the VM app type in front (vmTypeOfExecutable), nil for another app
+  var lidClosed: Bool { get }       // the MacBook's lid closed (external displays only)
 }
 
 /// The checks in order, and the dialog. Thread-safe: requests come on their own threads.
@@ -250,15 +260,21 @@ final class TouchIDDecider {
               gone: @escaping () -> Bool = { false }) -> TouchIDOutcome {
     guard on else { return .no(.off) }
     if let n = locked({ limits.admit(vm, now: now) }) { return .no(n) }
-    let outcome: TouchIDOutcome
+    var outcome: TouchIDOutcome
     if mac.locked { outcome = .no(.locked) }
     else if mac.frontType != type { outcome = .no(.notFront) }
-    else if let n = auth.unavailable(passwordFallback: passwordFallback) { outcome = .no(n) }
     else {
-      let p = TouchIDPrompt(reason: touchIDReason(request, vm: vmLabel), request: request, vmLabel: vmLabel, vmType: type, theme: theme,
-                            appPanel: appPanel)
-      outcome = auth.evaluate(p, passwordFallback: passwordFallback, timeout: timeout, gone: gone)
+      switch auth.answerer(passwordFallback: passwordFallback) {
+      case .unavailable(let n): outcome = .no(n)
+      case let who:
+        // OmacVM.app's panel is Touch ID's (the fingerprint, "Touch ID or Esc"):
+        // with only a watch to answer, macOS's own dialog asks, which says how.
+        let p = TouchIDPrompt(reason: touchIDReason(request, vm: vmLabel), request: request, vmLabel: vmLabel, vmType: type, theme: theme,
+                              appPanel: who == .touchID ? appPanel : nil)
+        outcome = auth.evaluate(p, passwordFallback: passwordFallback, timeout: timeout, gone: gone)
+      }
     }
+    if outcome == .no(.noTouchID) && mac.lidClosed { outcome = .no(.lidClosed) }
     // The pause after misses counts from the request's time (tests give it).
     locked {
       if case .no(let n) = outcome { limits.finished(vm, yes: false, no: n, now: now) } else { limits.finished(vm, yes: true, no: nil, now: now) }
@@ -299,8 +315,8 @@ func touchIDTestAnswer(_ text: String?) -> TouchIDOutcome? {
 struct TouchIDTestAuth: TouchIDAuthenticator {
   let real: TouchIDAuthenticator
   let answer: () -> TouchIDOutcome?
-  func unavailable(passwordFallback: Bool) -> TouchIDNo? {
-    answer() != nil ? nil : real.unavailable(passwordFallback: passwordFallback)
+  func answerer(passwordFallback: Bool) -> TouchIDAnswerer {
+    answer() != nil ? .touchID : real.answerer(passwordFallback: passwordFallback)
   }
   func evaluate(_ p: TouchIDPrompt, passwordFallback: Bool, timeout: Double, gone: @escaping () -> Bool) -> TouchIDOutcome {
     answer() ?? real.evaluate(p, passwordFallback: passwordFallback, timeout: timeout, gone: gone)
@@ -314,4 +330,5 @@ struct TouchIDTestMac: TouchIDMacState {
   let frontWhenTesting: String
   var locked: Bool { answer() != nil ? false : real.locked }
   var frontType: String? { answer() != nil ? frontWhenTesting : real.frontType }
+  var lidClosed: Bool { answer() != nil ? false : real.lidClosed }
 }

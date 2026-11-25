@@ -10,12 +10,12 @@ func check(_ ok: Bool, _ what: String, line: Int = #line) {
 }
 
 final class MockAuth: TouchIDAuthenticator {
-  var notThere: TouchIDNo?
+  var who = TouchIDAnswerer.touchID
   var answer: TouchIDOutcome = .yes
   var waits = false              // never answers: only timeout or gone end it
   var asked: [String] = []
   var fallbacks: [Bool] = []
-  func unavailable(passwordFallback: Bool) -> TouchIDNo? { notThere }
+  func answerer(passwordFallback: Bool) -> TouchIDAnswerer { who }
   var prompts: [TouchIDPrompt] = []
   func evaluate(_ p: TouchIDPrompt, passwordFallback: Bool, timeout: Double, gone: @escaping () -> Bool) -> TouchIDOutcome {
     asked.append(p.reason); fallbacks.append(passwordFallback); prompts.append(p)
@@ -32,6 +32,7 @@ final class MockAuth: TouchIDAuthenticator {
 struct MockMac: TouchIDMacState {
   var locked = false
   var frontType: String? = "app"
+  var lidClosed = false
 }
 
 func json(_ o: Any) -> String {
@@ -129,10 +130,30 @@ func value(_ r: Result<TouchIDRequest, PolicyError>) -> TouchIDRequest? { if cas
     check(decide(a, MockMac(locked: true), at: t0) == .no(.locked) && a.asked.isEmpty, "locked: no dialog")
     check(decide(a, MockMac(frontType: nil), at: t0) == .no(.notFront) && a.asked.isEmpty, "another app in front: no dialog")
     check(decide(a, MockMac(frontType: "other"), at: t0) == .no(.notFront) && a.asked.isEmpty, "another VM app in front: no dialog")
-    a.notThere = .noTouchID
+    a.who = .unavailable(.noTouchID)
     check(decide(a, at: t0) == .no(.noTouchID) && a.asked.isEmpty, "no sensor: no dialog")
-    a.notThere = .lockout
+    a.who = .unavailable(.lockout)
     check(decide(a, at: t0) == .no(.lockout) && a.asked.isEmpty, "lockout: no dialog")
+
+    // ---- the lid closed: the sensor is off, an Apple Watch may answer ----
+    let panel: TouchIDAppPanel = { _, _, _ in .yes }
+    func withPanel(_ a: MockAuth, lid: Bool) -> TouchIDOutcome {
+      TouchIDDecider(auth: a, mac: MockMac(lidClosed: lid)).decide(vm: "app/A", type: "app", on: true, request: sudo!, vmLabel: nil,
+                                                                    passwordFallback: false, appPanel: panel, now: t0)
+    }
+    a = MockAuth()
+    check(withPanel(a, lid: false) == .yes && a.prompts.count == 1 && a.prompts[0].appPanel != nil, "the sensor can answer: the panel")
+    a = MockAuth(); a.who = .watch
+    check(withPanel(a, lid: true) == .yes && a.prompts.count == 1 && a.prompts[0].appPanel == nil,
+          "only a watch can answer: macOS's dialog, never the Touch ID panel")
+    a = MockAuth(); a.who = .unavailable(.noTouchID)
+    check(withPanel(a, lid: true) == .no(.lidClosed) && a.asked.isEmpty, "lid closed, no watch: lid-closed, no dialog")
+    check(withPanel(a, lid: false) == .no(.noTouchID), "lid open, no sensor, no watch: no-touch-id")
+    a.who = .unavailable(.lockout)
+    check(withPanel(a, lid: true) == .no(.lockout), "lid closed, locked out: lockout")
+    a = MockAuth(); a.who = .watch; a.answer = .no(.noTouchID)
+    check(withPanel(a, lid: true) == .no(.lidClosed), "lid closed, the watch gone during its dialog: lid-closed")
+    check(json(touchIDAnswer(.no(.lidClosed))) == #"{"reason":"lid-closed","result":"no"}"#, "lid-closed body")
 
     // ---- limits ----
     a = MockAuth()
@@ -176,11 +197,18 @@ func value(_ r: Result<TouchIDRequest, PolicyError>) -> TouchIDRequest? { if cas
     at = at.addingTimeInterval(300 + 3700); three()
     check(decide(a, at: at.addingTimeInterval(61), d: d7) != .no(.rate), "an hour later: 60 s again")
 
-    a = MockAuth(); a.notThere = .noTouchID
+    a = MockAuth(); a.who = .unavailable(.noTouchID)
     let d3 = TouchIDDecider(auth: a, mac: MockMac())
     for i in 0..<4 { _ = decide(a, at: t0.addingTimeInterval(Double(i * 3)), d: d3) }
-    a.notThere = nil
+    a.who = .touchID
     check(decide(a, at: t0.addingTimeInterval(15), d: d3) == .yes, "fast noes do not pause")
+    // A closed lid is no one's miss: it never pauses the VM's Touch ID.
+    a = MockAuth(); a.who = .unavailable(.noTouchID)
+    let d8 = TouchIDDecider(auth: a, mac: MockMac(lidClosed: true))
+    var lids = 0
+    for i in 0..<4 where decide(a, at: t0.addingTimeInterval(Double(i * 3)), d: d8) == .no(.lidClosed) { lids += 1 }
+    a.who = .touchID
+    check(lids == 4 && decide(a, at: t0.addingTimeInterval(15), d: d8) == .yes, "lid-closed noes do not pause")
 
     var lim = TouchIDLimiter()
     check(lim.admit("x", now: t0) == nil, "admitted")
@@ -235,7 +263,7 @@ func value(_ r: Result<TouchIDRequest, PolicyError>) -> TouchIDRequest? { if cas
     check(touchIDTestAnswer(nil) == nil && touchIDTestAnswer("") == nil && touchIDTestAnswer("YES") == nil
           && touchIDTestAnswer("yes please") == nil, "stand-in: no file or another word = the real dialog")
     var standIn: TouchIDOutcome? = .yes
-    let realAuth = MockAuth(); realAuth.notThere = .noTouchID
+    let realAuth = MockAuth(); realAuth.who = .unavailable(.noTouchID)
     let lockedMac = MockMac(locked: true, frontType: nil)
     let ds = TouchIDDecider(auth: TouchIDTestAuth(real: realAuth, answer: { standIn }),
                             mac: TouchIDTestMac(real: lockedMac, answer: { standIn }, frontWhenTesting: "app"))

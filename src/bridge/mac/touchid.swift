@@ -4,12 +4,16 @@
 // LocalAuthentication gives the Bridge success or an error code, no more.
 import AppKit
 import Darwin
+import IOKit
 import LocalAuthentication
 
 /// LocalAuthentication: a fresh LAContext per request, never reused.
 final class LATouchID: TouchIDAuthenticator {
+  /// The Mac's sensor, or an Apple Watch when the sensor cannot (the lid
+  /// closed): never the Mac's password unless the person set the fallback.
+  /// (...OrCompanion, its name from macOS 15, once the Bridge targets 15.)
   private func policy(_ fallback: Bool) -> LAPolicy {
-    fallback ? .deviceOwnerAuthentication : .deviceOwnerAuthenticationWithBiometrics
+    fallback ? .deviceOwnerAuthentication : .deviceOwnerAuthenticationWithBiometricsOrWatch
   }
 
   static func no(_ e: Error?) -> TouchIDNo {
@@ -17,17 +21,21 @@ final class LATouchID: TouchIDAuthenticator {
     switch e.code {
     case .userCancel, .appCancel, .systemCancel, .userFallback: return .cancelled
     case .biometryLockout: return .lockout
-    case .biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet: return .noTouchID
+    case .biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet, .watchNotAvailable: return .noTouchID
     default: return .failed
     }
   }
 
-  func unavailable(passwordFallback: Bool) -> TouchIDNo? {
+  /// canEvaluatePolicy false means no one can answer now, whatever its code:
+  /// with the lid closed macOS says systemCancel, which no person did.
+  func answerer(passwordFallback: Bool) -> TouchIDAnswerer {
     let c = LAContext()
     defer { c.invalidate() }
     var e: NSError?
-    if c.canEvaluatePolicy(policy(passwordFallback), error: &e) { return nil }
-    return LATouchID.no(e)
+    guard c.canEvaluatePolicy(policy(passwordFallback), error: &e) else {
+      return .unavailable((e as? LAError)?.code == .biometryLockout ? .lockout : .noTouchID)
+    }
+    return c.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) ? .touchID : .watch
   }
 
   func evaluate(_ p: TouchIDPrompt, passwordFallback: Bool, timeout: Double, gone: @escaping () -> Bool) -> TouchIDOutcome {
@@ -121,6 +129,13 @@ struct LiveMacState: TouchIDMacState {
       guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
       return vmTypeOfFront(kernelPath: pidPath(app.processIdentifier), launchServicesPath: app.executableURL?.path)
     }
+  }
+  /// IOPMrootDomain's AppleClamshellState (no such key on a Mac without a lid).
+  var lidClosed: Bool {
+    let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+    defer { IOObjectRelease(root) }
+    return IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?
+      .takeRetainedValue() as? Bool == true
   }
 }
 
