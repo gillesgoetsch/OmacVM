@@ -247,6 +247,73 @@ the flip's completion until the IOSurface is no longer in use. Size L, risk high
 Gain: the present's draw, +0.19 W at 60 and +0.47 W at 120 frames a second on the Air (table above); partial
 present (and the tiled present on WindowServer's side) takes most of that already while little changes.
 
+### Scanout zero copy: the direct present (2026-11-25)
+
+Since `virgl-scanout-iosurface.patch` and `omacvm-cocoa-present-direct.patch`, the guest's 8-bit and
+10-bit scanout buffers are IOSurfaces, and QEMU puts the buffer the guest flipped to on the window as it
+is: the present's draw is gone (0.60 ms a frame at 5120x2880). Apple's GL binds an IOSurface only as
+`GL_TEXTURE_RECTANGLE` (`CGLTexImageIOSurface2D` with `GL_TEXTURE_2D` returns `kCGLBadValue`), so guest
+samplers read a 2D shadow copy, made only when a draw samples a scanout (screenshots, screen sharing).
+10-bit buffers are `'l10r'` IOSurfaces; with HDR on they are tagged PQ and the layer shows them with EDR.
+
+The guest's page flip completes on its own vblank without waiting for the Mac, so a buffer can still be
+queued in QEMU, on the window, or held by WindowServer when Hyprland draws into it again. virgl checks
+every write into a scanout buffer; the first write after QEMU took it for the screen moves a busy buffer
+to a spare IOSurface with a GPU copy. A plain wait instead stalled every third frame and halved the frame
+rate. QEMU sends a buffer the guest flushed twice only once.
+
+A test VM full screen at 5120x2880 with Venus, five outputs, the tiled present and the pointer plane on,
+A B B A, a fresh VM per arm, 20 s windows. QEMU GPU ms/s, means over the rounds (the gain of each round):
+
+| Workload | Display | Rounds | Drawn | Direct | Gain |
+|---|---|---|---|---|---|
+| Canvas redrawing the whole frame at 120 fps | panel | 3 | 507 | 455 | 52 ms/s (73, 65, 19) |
+| | virtual | 3 | 481 | 415 | 66 ms/s (122, 19, 58) |
+| The same in HDR (10-bit PQ), one output, no Venus | virtual | 3 | 495 | 456 | 39 ms/s (4, 43, 71) |
+| Page scroll in Chromium | panel | 2 | 461 | 386 | 75 ms/s (71, 79) |
+| | virtual | 2 | 382 | 348 | 34 ms/s (0, 68) |
+| 4K60 video in mpv | panel | 2 | 474 | 487 | -13 ms/s (a drawn arm beside other load left out) |
+| | virtual | 2 | 404 | 371 | 33 ms/s (54, 12) |
+| Busy terminal (foot, 120 lines/s), per frame shown | panel | 2 | 3.80 ms | 3.09 ms | 0.71 ms |
+| | virtual | 2 | 3.72 ms | 3.29 ms | 0.43 ms |
+
+The panel is a 5K XDR display at 120 Hz in SDR; the virtual display is Screen Sharing's in a second login
+session. WindowServer used no GPU time on the panel in either arm (the panel shows the full-screen layer
+without a composite), and 12 to 38 ms/s on the virtual display. The whole Mac (the SMC's system power)
+drew 0.84 W less on the canvas on the virtual display (9.69 against 8.84 W) and 0.8 to 0.9 W less on the
+panel's canvas and scroll; the GPU's own counter (IOReport) fell 0.17 to 0.21 W. On the panel the video's
+GPU time rose a little while its GPU energy and the whole Mac fell (16.1 against 15.6 W); its link ticked
+at 60 to 97 Hz, differently in each arm. These runs used the two patches on an earlier base with the same
+QEMU and virglrenderer sources; on this base the runtime build, its wiring tests, the frame check on the
+virtual display and the depth switch test below ran.
+
+The guest's frames come late a little more often: Chrome's rAF intervals over 1.5 refreshes rose from
+0.31 % to 0.48 % of its frames on the virtual display and from 0.54 % to 0.90 % on the panel, and QEMU's
+refreshes without a new frame follow them. Without the draw the GPU idles more (busy 49-56 % of the time
+instead of 61-69 %). A lab build that copied each direct frame into a scratch texture and threw it away
+brought the late frames back to the drawn level (0.29 % against 0.68 % in one run), for 1.2 W more. We
+found no cheap way to keep the guest's frames on time, so the direct present trades one more late frame
+every 2 to 5 s at 120 fps for about 0.8 W.
+
+QEMU read each whole frame back from its surface as it went up (`OMACVM_TEST_PACE_CHECK=1`): in the four
+workloads on both displays (on the panel while WindowServer composited the window), and through HDR, the
+damage driver, a resize, a reboot and a burst's end on the virtual display, no frame was written while on
+the window, and none of the canvas's frames was torn.
+
+At a depth switch (8 <-> 10 bit) Hyprland scans out a buffer of its new swapchain it has not drawn yet.
+The depth hold (`omacvm-cocoa-present-depth-first.patch`) counts the direct frame on the layer as surfaces
+of its depth, so that buffer is held as a drawn frame would be. Frame log (`OMACVM_TEST_FRAME_LOG=1`), four
+switches on the virtual display: with `OMACVM_GL_DEPTH_FIRST=0` the first frame of each new depth went up
+black (9 of 9 probe points); with the hold it was held each time, and none of the 21 direct frames was black. GPU safe mode
+(CAOpenGLLayer), the boot logo's probe, the hardware cursor and second outputs read the IOSurface's
+RECTANGLE texture.
+
+Known limit: on the panel moves come in bursts, up to 452 per 20 s (40 % of the writes for 10 s), all of
+buffers WindowServer still held. Spares were never short, so another spare would not stop them; each move
+is a copy of a buffer the guest writes again while the panel still holds it, about 20 ms/s in the worst
+arm. A move without the copy would need to know that the guest overwrites the whole buffer. The qemu.log
+line "scanout IOSurfaces, last 5 s" counts the moves.
+
 ### Cheaper ways to the same passes
 
 - **Hyprland direct scanout** for a full-screen client (render:direct_scanout 1): the client's buffer goes to

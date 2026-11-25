@@ -1326,6 +1326,9 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-virtio-multitouch-t
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-touch.patch"
 "$native_dir/Tests/touch/test-touch.sh" "$source_dir/ui/cocoa.m" "$source_dir/hw/input/virtio-input-hid.c" || \
   die "ui/cocoa.m: touch on a touch display is not wired as tested (test-touch.sh)"
+# OmacVM: direct present: the guest's scanout IOSurface (virgl-scanout-iosurface.patch) as the
+# layer's contents, without the present's draw.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-direct.patch"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent, and on
 # macOS 27 clamped it to Utility QoS despite the activity.
@@ -1985,6 +1988,9 @@ if grep -rnE --include='*.[ch]' --exclude=vkr_allocator.c --exclude-dir=venus-pr
      "$virgl_source/src/venus"; then
   die "src/venus: a proc table entry tested against NULL; entries are never NULL, use VKR_MISSING (missing-entries patch)"
 fi
+# OmacVM: 8-bit and 10-bit scanout buffers as IOSurfaces, for QEMU's direct present
+# (omacvm-cocoa-present-direct.patch).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-scanout-iosurface.patch"
 # SPIRV-Tools' validator for Venus (virgl-venus-spirv-validate.patch): a static library with
 # hidden symbols, so libvirglrenderer exports none of them (MoltenVK carries a private copy of
 # its own), spirv-tools-*.patch applied; once more with AddressSanitizer for the CPU test.
