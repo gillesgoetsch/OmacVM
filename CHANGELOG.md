@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.6.1 (unreleased)
+
+- **Touch ID takes your Apple Watch, also with the lid closed.** sudo, polkit and 1Password in the VM
+  now also accept a double-click on an Apple Watch that may approve for the Mac (System Settings →
+  Touch ID & Password → Apple Watch). With the MacBook's lid closed, macOS turns Touch ID off, so the
+  watch answers alone, in macOS's own dialog. Before, the request went to the password and the VM
+  said nothing, as if you had cancelled. With the lid closed and no watch, the VM now says "Touch ID
+  not available (Mac lid closed, no Apple Watch ready), use your password". It needs the app update
+  and Update VM.
+
 ## 3.6.0
 
 The Mac's own pointer on Omarchy, Mac key layouts for new VMs, dragging icons in the notch strip,
