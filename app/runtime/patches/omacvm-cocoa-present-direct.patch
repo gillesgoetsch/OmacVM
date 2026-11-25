@@ -25,10 +25,16 @@ its surface (plain surfaces only) and counts frames written while shown (a 16 x 
 grid of pixels changed after the frame went up); with tests/graphics/pacing's page
 and a second counter strip at its bottom also torn frames, the counter's steps, and
 the marker's flips for key latency.
+A new scanout depth's first frame is held as a drawn one is
+(omacvm-cocoa-present-depth-first.patch): the direct frame on the layer
+counts as surfaces of its depth, so Hyprland's undrawn buffer of a format
+change never goes up; with OMACVM_TEST_FRAME_LOG=1 each direct frame gets
+its line too ("direct"), read from the RECTANGLE texture.
 Why: the present's draw cost 0.60 ms of GPU a frame at 5120x2880.
 Upstream: not sent (OmacVM's IOSurface present).
 Tests: VM A/B and the frame check in docs/experiments/display-path.md.
-Applies before omacvm-cocoa-no-app-nap.patch (the last cocoa patch), with
+Applies after omacvm-cocoa-present-depth-first.patch and the touch
+patches, before omacvm-cocoa-no-app-nap.patch (the last cocoa patch), with
 virgl-scanout-iosurface.patch.
 diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
 index de2019d..4d44af4 100644
@@ -94,10 +100,10 @@ index 6919ece..bf61982 100644
  
  typedef struct ScanoutTexture {
 diff --git a/ui/cocoa.m b/ui/cocoa.m
-index e4e6fbd..b840d8a 100644
+index 6218ad7..6d6cf91 100644
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -314,6 +314,13 @@ static void cocoa_gl_render(void);
+@@ -315,6 +315,13 @@ static void cocoa_gl_switch(DisplayChangeListener *dcl,
  static void omacvm_splash_view_size(uint32_t w, uint32_t h);
  static void present_tiles_hide(void);
  static void present_tiles_whole_shown(CALayer *layer, IOSurfaceRef surf);
@@ -111,7 +117,7 @@ index e4e6fbd..b840d8a 100644
  /* GL frames are shown as IOSurfaces (the view's layer is a plain CALayer). */
  static bool cocoa_gl_present_on(void);
  
-@@ -1904,6 +1911,7 @@ static bool omacvm_present_layer(void)
+@@ -1971,6 +1978,7 @@ - (void) omacvmGuestAtTop:(bool)top
       */
      if (omacvm_present_layer()) {
          with_bql(^{
@@ -119,7 +125,7 @@ index e4e6fbd..b840d8a 100644
              gl_dirty = true;
              cocoa_refresh_activity();
          });
-@@ -7733,7 +7741,8 @@ static void omacvm_splash_update(void)
+@@ -8114,7 +8122,8 @@ static void omacvm_splash_update(void)
   * from the bottom) into px as 0xAARRGGBB. False if it cannot be read (said
   * once; the logo then waits for the display agent or the time limit).
   */
@@ -129,7 +135,7 @@ index e4e6fbd..b840d8a 100644
  {
      static GLuint fb;
      static bool said;
-@@ -7746,7 +7755,7 @@ static bool omacvm_splash_read(GLuint tex, int x, int y, int w, int h, uint32_t
+@@ -8127,7 +8136,7 @@ static bool omacvm_splash_read(GLuint tex, int x, int y, int w, int h, uint32_t
          /* not ours */
      }
      glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
@@ -138,7 +144,7 @@ index e4e6fbd..b840d8a 100644
      status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
      if (status == GL_FRAMEBUFFER_COMPLETE) {
          glPixelStorei(GL_PACK_ALIGNMENT, 4);
-@@ -7754,7 +7763,7 @@ static bool omacvm_splash_read(GLuint tex, int x, int y, int w, int h, uint32_t
+@@ -8135,7 +8144,7 @@ static bool omacvm_splash_read(GLuint tex, int x, int y, int w, int h, uint32_t
          glReadPixels(x, y, w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, px);
      }
      err = glGetError();
@@ -147,7 +153,7 @@ index e4e6fbd..b840d8a 100644
      glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
      if (status != GL_FRAMEBUFFER_COMPLETE || err != GL_NO_ERROR) {
          if (!said) {
-@@ -7790,9 +7799,12 @@ static bool omacvm_splash_sees_desktop(void)
+@@ -8171,9 +8180,12 @@ static bool omacvm_splash_sees_desktop(void)
              return false;
          }
          with_gl_view_ctx(^{
@@ -161,7 +167,7 @@ index e4e6fbd..b840d8a 100644
                                          gl_scanout_w, 1, line);
                  for (int c = 0; ok && c < SPLASH_PROBE_COLS; c++) {
                      px[r * SPLASH_PROBE_COLS + c] =
-@@ -8578,31 +8590,37 @@ static void cocoa_gl_render(void)
+@@ -8959,31 +8971,37 @@ static void cocoa_gl_render(void)
              cocoa_gl_log("before bind borrow fb=%d fb_status=0x%x tex=%u", fb, fbs, texture.id);
          }
  
@@ -221,7 +227,7 @@ index e4e6fbd..b840d8a 100644
          if (cocoa_gl_trace_enabled()) {
              GLenum blit_err = glGetError();
              GLint fb = 0;
-@@ -9735,7 +9753,7 @@ static CGColorSpaceRef cocoa_gl_present_colorspace(bool deep, bool linear)
+@@ -10127,7 +10145,7 @@ static CGColorSpaceRef cocoa_gl_present_colorspace(bool deep, bool linear)
  static void cocoa_gl_layer_follow(CALayer *layer, IOSurfaceRef surf, bool linear)
  {
      OSType fmt = IOSurfaceGetPixelFormat(surf);
@@ -230,8 +236,34 @@ index e4e6fbd..b840d8a 100644
                 present_color == 1 && (cocoa_gl_present_hdr_wanted() || linear);
      if ([layer wantsExtendedDynamicRangeContent] != hdr) {
          [layer setWantsExtendedDynamicRangeContent:hdr];
-@@ -10219,6 +10237,510 @@ static int cocoa_gl_present_tiles(GLuint src, bool flip)
+@@ -10611,6 +10629,9 @@ static int cocoa_gl_present_tiles(GLuint src, bool flip)
      return nt;
+ }
+ 
++/* OmacVM, direct present: the frame log reads the IOSurface's RECTANGLE texture */
++static GLenum omacvm_frame_log_target = GL_TEXTURE_2D;
++
+ /*
+  * OmacVM test hook OMACVM_TEST_FRAME_LOG=1: a qemu.log line per frame the
+  * present decides on: the guest's flush, its scanout, depth, what was done,
+@@ -10637,7 +10658,7 @@ static void omacvm_frame_log(GLuint src, uint32_t w, uint32_t h, bool deep, cons
+     GLint old = 0;
+     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &old);
+     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src, 0);
++    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, omacvm_frame_log_target, src, 0);
+     double sum = 0;
+     int black = 0;
+     for (int j = 1; j <= 5; j += 2) {
+@@ -10648,12 +10669,518 @@ static void omacvm_frame_log(GLuint src, uint32_t w, uint32_t h, bool deep, cons
+             black += px[0] < 0.004f && px[1] < 0.004f && px[2] < 0.004f;
+         }
+     }
+-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
++    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, omacvm_frame_log_target, 0, 0);
+     glBindFramebuffer(GL_READ_FRAMEBUFFER, old);
+     info_report("cocoa: frame: flush %" PRIu64 " scanout %u %s, %s, probe mean %.4f black %d/9",
+                 present_flushes, gl_scanout_id, deep ? "10-bit" : "8-bit", what, sum / 9, black);
  }
  
 +/*
@@ -252,6 +284,8 @@ index e4e6fbd..b840d8a 100644
 +/* QEMU thread: the IOSurface sent to the layer last, as it is (NULL after a drawn frame) */
 +static IOSurfaceRef present_direct_last;
 +static int present_direct_last_how;
++/* QEMU thread: the depth of the direct frame on the layer, for the depth hold; -1 after a drawn one */
++static int present_direct_deep = -1;
 +static uint64_t present_direct_n[PD_N];
 +static int64_t present_direct_log_ns;
 +
@@ -741,7 +775,7 @@ index e4e6fbd..b840d8a 100644
  /* QEMU thread, BQL held. Returns false when nothing could be shown. */
  static bool cocoa_gl_present(void)
  {
-@@ -10254,8 +10776,11 @@ static bool cocoa_gl_present(void)
+@@ -10689,8 +11216,11 @@ static bool cocoa_gl_present(void)
          return true;
      }
  
@@ -754,7 +788,7 @@ index e4e6fbd..b840d8a 100644
          if (!texture.id) {
              return false;
          }
-@@ -10264,6 +10789,7 @@ static bool cocoa_gl_present(void)
+@@ -10699,6 +11229,7 @@ static bool cocoa_gl_present(void)
          h = texture.height;
          /* The surface's first row is the top of the window. */
          flip = !texture.y_0_top;
@@ -762,20 +796,34 @@ index e4e6fbd..b840d8a 100644
      } else if (omacvm_splash_wanted(NULL, surface)) {
          /* No picture of the guest's: the boot logo (or black), view-sized. */
          splash = true;
-@@ -10289,7 +10815,9 @@ static bool cocoa_gl_present(void)
+@@ -10724,7 +11255,10 @@ static bool cocoa_gl_present(void)
  
      /* A 10-bit scanout keeps its depth: half-float surfaces. */
      GLint ifmt = 0;
 -    if (src) {
++    omacvm_frame_log_target = gsurf ? GL_TEXTURE_RECTANGLE : GL_TEXTURE_2D;
 +    if (gsurf) {
 +        ifmt = IOSurfaceGetPixelFormat(gsurf) == 'l10r' ? GL_RGB10_A2 : GL_RGBA8;
 +    } else if (src) {
          glBindTexture(GL_TEXTURE_2D, src);
          glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &ifmt);
          glBindTexture(GL_TEXTURE_2D, 0);
-@@ -10319,6 +10847,33 @@ static bool cocoa_gl_present(void)
-                     pq ? ", HDR (PQ)" : linear ? ", extra brightness" : "");
-         deep_logged = deep + 2 * linear;
+@@ -10771,8 +11305,10 @@ static bool cocoa_gl_present(void)
+     }
+     if (src && present_first_on) {
+         int64_t fnow = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+-        int first = omacvm_hf_first(&present_first, present_surf[0] != NULL, present_deep, deep,
+-                                    present_flushes, fnow);
++        /* the frame on the layer: the guest's own buffer (direct present) or the surfaces' */
++        bool shown = present_direct_deep >= 0 || present_surf[0] != NULL;
++        bool shown_deep = present_direct_deep >= 0 ? present_direct_deep : present_deep;
++        int first = omacvm_hf_first(&present_first, shown, shown_deep, deep, present_flushes, fnow);
+         if (first == OMACVM_HF_FIRST_HOLD) {
+             if (present_first.since == fnow &&
+                 (++present_first_holds == 1 || present_first_holds % 100 == 0)) {
+@@ -10790,6 +11326,36 @@ static bool cocoa_gl_present(void)
+                         (int)(OMACVM_HF_FIRST_MAX_NS / SCALE_MS));
+         }
      }
 +    if (gsurf) {
 +        /* its depth is the IOSurface's own (half-float surfaces are for drawn frames) */
@@ -800,14 +848,17 @@ index e4e6fbd..b840d8a 100644
 +        if (why == PD_DIRECT) {
 +            present_direct_last = gsurf;
 +            present_direct_last_how = how;
++            present_direct_deep = gdeep;
++            omacvm_frame_log(src, w, h, gdeep, "direct");
 +            return cocoa_gl_present_direct(&texture, gsurf, gdeep, gpq, filter, prev);
 +        }
 +    }
 +    present_direct_last = NULL;
++    present_direct_deep = -1;
      if (!cocoa_gl_present_alloc(w, h, deep, linear)) {
          if (!(deep || linear) || !cocoa_gl_present_alloc(w, h, false, false)) {
              CGLSetCurrentContext(prev);
-@@ -10441,7 +10996,7 @@ static bool cocoa_gl_present(void)
+@@ -10914,7 +11480,7 @@ static bool cocoa_gl_present(void)
       * OmacVM: the tiled present (present_tiles_on). Before surface n is
       * taken: a frame in tiles leaves it untouched for the next whole frame.
       */
@@ -816,7 +867,7 @@ index e4e6fbd..b840d8a 100644
          !present_pd_unflushed && !splash && !boost && gl_scanout_borrow &&
          w == present_w && h == present_h &&
          gl_scanout_x == 0 && gl_scanout_y == 0 &&
-@@ -10502,6 +11057,8 @@ static bool cocoa_gl_present(void)
+@@ -10975,6 +11541,8 @@ static bool cocoa_gl_present(void)
                      pd.w, pd.h, w, h);
      }
  
@@ -825,7 +876,7 @@ index e4e6fbd..b840d8a 100644
      glBindFramebuffer(GL_FRAMEBUFFER, present_fbo);
      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                             GL_TEXTURE_RECTANGLE, present_tex[n], 0);
-@@ -10534,7 +11091,24 @@ static bool cocoa_gl_present(void)
+@@ -11007,7 +11575,24 @@ static bool cocoa_gl_present(void)
                                                                 : GL_LINEAR;
          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, blit_filter);
          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, blit_filter);
@@ -851,7 +902,7 @@ index e4e6fbd..b840d8a 100644
              qemu_gl_run_texture_blit(present_gls, flip);
          }
          if (!gl_scanout_borrow && omacvm_console_check_on()) {
-@@ -10543,79 +11117,32 @@ static bool cocoa_gl_present(void)
+@@ -11016,79 +11601,32 @@ static bool cocoa_gl_present(void)
      }
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
      glDisable(GL_SCISSOR_TEST);
@@ -942,7 +993,7 @@ index e4e6fbd..b840d8a 100644
      return true;
  }
  
-@@ -10954,6 +11481,7 @@ static void present_frame_show(PresentFrame *f)
+@@ -11427,6 +11965,7 @@ static void present_frame_show(PresentFrame *f)
          cocoa_gl_present_show_tiles(f);
      } else if (f->surf) {
          cocoa_gl_present_show(f->surf, f->filter, f->flushed, f->linear);
@@ -950,7 +1001,7 @@ index e4e6fbd..b840d8a 100644
      }
  }
  
-@@ -12594,10 +13122,16 @@ static void omacvm_head_render(OmacVMHead *hd, NSSize size)
+@@ -13068,10 +13607,16 @@ static void omacvm_head_render(OmacVMHead *hd, NSSize size)
      if (hd->borrow) {
          DisplayGLTexture texture = hd->borrow(hd->scanout_id);
  
