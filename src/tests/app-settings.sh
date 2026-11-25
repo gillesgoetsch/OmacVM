@@ -26,10 +26,15 @@ expect() {   # WHAT WANT GOT
 
 # The app's modules, then its sources with this test's main, as an app of its own id.
 mkdir -p "$T/mods"
-for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMAuth OmacVMBuildProgress OmacVMWindow OmacVMDesktop OmacVMAudio OmacVMIcon OmacVMMedia OmacVMDrop; do
+# The app's modules, in the order Package.swift lists them for the OmacVM target.
+mods=$(sed -n 's/.*executableTarget(name: "OmacVM", dependencies: \[\(.*\)\]).*/\1/p' "$R/app/app/Package.swift" | tr -d '"' | tr ',' ' ')
+[ -n "$mods" ] || { echo "FAIL no module list for the OmacVM target in Package.swift"; exit 1; }
+libs=()
+for m in $mods; do
   swiftc -swift-version 5 -parse-as-library -module-cache-path "$T/mc" -I "$T/mods" -module-name $m -emit-module \
     -emit-module-path "$T/mods/$m.swiftmodule" -emit-library -static -o "$T/lib$m.a" "$R"/app/app/Sources/$m/*.swift 2>"$T/cc.log" ||
     { cat "$T/cc.log"; echo "FAIL $m does not build"; exit 1; }
+  libs+=(-l$m)
 done
 srcs=()
 for f in "$R"/app/app/Sources/OmacVM/*.swift; do
@@ -43,8 +48,7 @@ cat > "$T/Info.plist" <<PLIST
 <key>OmacVMGesturesDomain</key><string>$G</string>
 </dict></plist>
 PLIST
-swiftc -swift-version 5 -module-cache-path "$T/mc" -I "$T/mods" -L "$T" -lOmacVMUpdate -lOmacVMNet -lOmacVMUSB -lOmacVMFolder \
-  -lOmacVMFeatures -lOmacVMAuth -lOmacVMBuildProgress -lOmacVMWindow -lOmacVMDesktop -lOmacVMAudio -lOmacVMIcon -lOmacVMMedia -lOmacVMDrop \
+swiftc -swift-version 5 -module-cache-path "$T/mc" -I "$T/mods" -L "$T" "${libs[@]}" \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$T/Info.plist" \
   -o "$T/t" "${srcs[@]}" "$R/src/tests/app-settings/main.swift" 2>"$T/cc.log" || { cat "$T/cc.log"; echo "FAIL the test app does not build"; exit 1; }
 

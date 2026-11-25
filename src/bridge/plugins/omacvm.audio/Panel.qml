@@ -12,6 +12,14 @@
 // carries exactly what apps in the VM hear. It shows once PipeWire has that
 // source (pipewire-alsa/-pulse installed) and is left out otherwise.
 //
+// What omacvm-bridge's audio does not have comes from OmacVM.app (Sound.qml):
+// the AirPlay speakers of macOS's own Sound list, the modes of headphones such
+// as AirPods, and the output's balance.
+//
+// As calm as the Sound module of the Mac's Control Center: no status line
+// and no numbers beside the sliders, and one output list, the Mac's outputs
+// and after a divider the AirPlay speakers.
+//
 // The volume popup is not shown from here: omacvm-bridge-osd already shows
 // Omarchy's OSD for every volume change the helper reports.
 import QtQuick
@@ -31,12 +39,14 @@ Panel {
   ipcTarget: "omarchy.audio"
 
   Bridge { id: bridge }
+  Sound { id: sound }
 
   // `bar` is null while there is no bar: Omarchy's bar sets it from outside,
   // and when the shell reloads a plugin in place (a widget or the bar copy
   // written, Update VM) the old bar goes before its widgets. Then Omarchy's
   // own bar colours and font, so no binding reads a property of null.
   readonly property color barFg: bar ? bar.foreground : Commons.Color.bar.text
+  readonly property color barUrgent: bar ? bar.urgent : Commons.Color.bar.active
   readonly property string barFont: bar ? bar.fontFamily : Style.font.family
 
   readonly property bool available: bridge.available && !!bridge.audio
@@ -68,18 +78,37 @@ Panel {
   readonly property var meterSource: Pipewire.defaultAudioSource
   readonly property bool hasMeter: !!(meterSource && meterSource.audio)
 
+  // The output list: the Mac's outputs, then what only macOS's Sound list
+  // offers (AirPlay speakers, or the row that says how to allow them). One
+  // list for the cursor (outputStops): each row, and under the output that
+  // plays each group of its modes, such as AirPods' Listening Mode.
   property var displayOutputs: []
+  property var displayAirplay: []
   property var displayInputs: []
+  property var outputStops: []
+  // On a group of modes: the option under the cursor (h/l), pressed by Enter.
+  property int optionIndex: -1
+
+  // The output the panel last read macOS's Sound list for in this opening,
+  // "" when its list may lack the modes of headphones, or null before its
+  // first read (Model.listRead, Model.listAnswered).
+  property var listOutput: null
+  // The balance the app read for the output that plays now.
+  readonly property bool showBalance: available && sound.available && !!sound.balance && !!output && output.uid === sound.output
+  readonly property bool balanceAdjustable: showBalance && sound.balance.settable === true
 
   // Carry sub-notch touchpad deltas between wheel events.
   property real wheelAccumulator: 0
 
   // Single cursor model shared by keyboard and mouse. Sections:
   //   "output"  — output slider + output device list
+  //   "balance" — balance slider
   //   "input"   — input slider + input device list
   // selectedIndex semantics within a section:
-  //   -1            → on the slider row (h/l adjusts volume, m/Enter mute)
-  //   0..N-1        → on the Nth device row
+  //   -1            → on the slider row (h/l adjusts, m/Enter mute, Enter
+  //                   centres the balance)
+  //   0..N-1        → on the Nth device row (output: the Nth of outputStops,
+  //                   a row or a group of modes)
   property string focusSection: "output"
   property int selectedIndex: -1
   property bool cursorActive: false
@@ -101,38 +130,83 @@ Panel {
     function onAudioChanged() {
       if (!outputVolumeSend.running && !outputVolumeProc.running) root.pendingOutputVolume = -1
       if (!inputVolumeSend.running && !inputVolumeProc.running) root.pendingInputVolume = -1
+      // Another output has another balance, or none, and its modes are read
+      // only once the app names it too.
+      if (root.opened && sound.available && root.output && root.output.uid !== sound.output) sound.refresh()
       root.refreshDisplayModels()
+      // Headphones that play now may have modes, which only a read has.
+      root.askForList()
     }
+    function onBluetoothChanged() { root.refreshDisplayModels() }
+  }
+
+  Connections {
+    target: sound
+    function onAnswered(request) {
+      root.listOutput = Model.listAnswered(root.listOutput, request, sound.output)
+      // An answer may name the output from before the Bridge's last report.
+      if (request !== "" && root.opened && root.output && root.output.uid !== sound.output) sound.refresh()
+      root.refreshDisplayModels()
+      root.askForList()
+    }
+    function onReadingChanged() { root.refreshDisplayModels() }
+    // Also when the app is free again: onAnswered starts the read only while
+    // Quickshell ends a process before the handler of its output runs, as
+    // 0.3.2 does. A second ask is harmless, as Sound.read refuses while busy.
+    function onBusyChanged() { root.askForList() }
   }
 
   function refreshDisplayModels() {
-    displayOutputs = Model.deviceRows(bridge.audio, true)
+    var lists = Model.outputLists(bridge.audio, bridge.bluetooth, available && sound.available ? sound : null)
+    // The cursor stays on its row or group when rows come or go above it, as
+    // when a read adds the modes of AirPods, so Enter acts on what it shows.
+    var was = focusSection === "output" && selectedIndex >= 0 ? outputStops[selectedIndex] : null
+    var option = optionIndex
+    outputStops = Model.outputStops(lists.outputs, lists.airplay)
+    displayOutputs = lists.outputs
+    displayAirplay = lists.airplay
     displayInputs = Model.deviceRows(bridge.audio, false)
+    var at = was ? Model.stopIndex(outputStops, was) : -1
+    if (at >= 0) selectedIndex = at
     clampCursor()
+    var group = cursorGroup()
+    if (group) optionIndex = Model.optionCursor(group, at >= 0 ? option : optionIndex, 0)
+  }
+
+  // Once per opening, as the Mac's own Sound module does when it opens, and
+  // once more for headphones that begin to play (Model.listRead). The app
+  // opens Control Center on the Mac for it, which takes the Mac's keyboard
+  // for about a second; until it answers, the panel shows the list of the
+  // last opening.
+  function askForList() {
+    if (!opened || !available || !sound.available || !sound.accessibility) return
+    var uid = Model.listRead(listOutput, output, sound.output)
+    if (uid !== null && sound.read()) listOutput = uid
   }
 
   function sectionCount(section) {
-    if (section === "output") return displayOutputs.length
+    if (section === "output") return outputStops.length
     if (section === "input") return displayInputs.length
     return 0
   }
 
   function sectionVisible(section) {
     if (section === "output") return true
+    if (section === "balance") return showBalance
     if (section === "input") return displayInputs.length > 0 || hasInput
     return false
   }
 
   function sectionHasSlider(section) {
-    if (section === "output") return true
+    if (section === "output" || section === "balance") return true
     if (section === "input") return hasInput
     return false
   }
 
   readonly property var visibleSections: {
     var list = []
-    if (sectionVisible("output")) list.push("output")
-    if (sectionVisible("input")) list.push("input")
+    var all = ["output", "balance", "input"]
+    for (var i = 0; i < all.length; i++) if (sectionVisible(all[i])) list.push(all[i])
     return list
   }
 
@@ -169,6 +243,16 @@ Panel {
     }
   }
 
+  // The group of modes under the cursor, or null.
+  function cursorGroup() {
+    var stop = focusSection === "output" && selectedIndex >= 0 ? outputStops[selectedIndex] : null
+    return stop ? stop.group : null
+  }
+
+  // Arriving on a group of modes, the cursor is on the option macOS selected.
+  onSelectedIndexChanged: optionIndex = Model.optionCursor(cursorGroup(), -1, 0)
+  onFocusSectionChanged: optionIndex = Model.optionCursor(cursorGroup(), -1, 0)
+
   function setHeaderCursor() {
     cursorActive = true
     focusSection = "header"
@@ -176,8 +260,17 @@ Panel {
   }
 
   function adjustVolume(delta) {
+    var group = cursorGroup()
+    if (group) {
+      optionIndex = Model.optionCursor(group, optionIndex, delta > 0 ? 1 : -1)
+      return
+    }
     if (focusSection === "output" && selectedIndex === -1) {
       setOutputVolume(outputVolume + delta)
+      return
+    }
+    if (focusSection === "balance") {
+      sound.setBalance(sound.balanceValue + delta)
       return
     }
     if (focusSection === "input" && selectedIndex === -1) {
@@ -189,10 +282,12 @@ Panel {
     if (focusSection === "header") { toggleAllMuted(); return }
     if (focusSection === "output") {
       if (selectedIndex === -1) { toggleOutputMute(); return }
-      var out = displayOutputs[selectedIndex]
-      if (out) setDefaultOutput(out)
+      var stop = outputStops[selectedIndex]
+      if (stop && stop.group) setMode(stop.row, stop.group, optionIndex)
+      else if (stop) setDefaultOutput(stop.row)
       return
     }
+    if (focusSection === "balance") { sound.setBalance(0.5); return }
     if (focusSection === "input") {
       if (selectedIndex === -1) { toggleInputMute(); return }
       var src = displayInputs[selectedIndex]
@@ -202,6 +297,12 @@ Panel {
 
   onOpenedChanged: {
     if (opened) {
+      listOutput = null
+      // A list's answer has the state too. The state alone is asked while
+      // the app is not known to answer or to be allowed, which may have
+      // changed since.
+      if (sound.available && sound.accessibility) askForList()
+      else sound.refresh()
       refreshDisplayModels()
       focusSection = "output"
       selectedIndex = -1
@@ -262,11 +363,6 @@ Panel {
     return "󰖁"
   }
 
-  function outputVolumeName(volume, muted) {
-    if (!available) return "Waiting for the Mac"
-    return Model.outputVolumeName(volume, muted)
-  }
-
   function percent(v) {
     return String(Math.round(Model.clamp01(v) * 100))
   }
@@ -301,8 +397,24 @@ Panel {
     if (inputMutable) Quickshell.execDetached(["omacvm-bridge", "mic-mute", state])
   }
 
+  // An output CoreAudio knows is switched by its uid. One that only macOS's
+  // Sound list offers is pressed there, as a click on the Mac would: an
+  // AirPlay speaker that plays stops, another one starts, also next to the
+  // ones that play. The row that says how to allow AirPlay opens the Mac's
+  // settings for it.
   function setDefaultOutput(row) {
-    if (row && row.uid && !row.active) Quickshell.execDetached(["omacvm-bridge", "output", row.uid])
+    if (!row) return
+    if (row.allow) { sound.allow(); return }
+    if (row.picker) { sound.press(row.name); return }
+    if (row.uid && !row.active) Quickshell.execDetached(["omacvm-bridge", "output", row.uid])
+  }
+
+  // macOS's own press of a mode's option, as a click in Control Center. Also
+  // one the panel shows as selected: the headphones may have switched since
+  // the list was read, and the app presses only what macOS has not selected.
+  function setMode(row, group, index) {
+    var option = group && group.options[index]
+    if (option && option.enabled) sound.mode(row.name, group.title, option.title)
   }
 
   function setDefaultInput(row) {
@@ -419,7 +531,7 @@ Panel {
           Item {
             id: heroItem
             width: parent.width
-            implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, powerSwitch.implicitHeight)
+            implicitHeight: Math.max(heroIcon.implicitHeight, heroTitle.implicitHeight, powerSwitch.implicitHeight)
 
             Text {
               id: heroIcon
@@ -451,40 +563,19 @@ Panel {
               }
             }
 
-            Column {
-              id: heroLabels
+            Text {
+              id: heroTitle
+              text: root.available ? "Audio" : "Mac unavailable"
+              color: root.barFg
+              font.family: root.barFont
+              font.pixelSize: Style.font.title
+              font.bold: true
+              elide: Text.ElideRight
               anchors.left: heroIcon.right
               anchors.leftMargin: Style.space(14)
               anchors.right: parent.right
               anchors.rightMargin: powerSwitch.width + Style.space(12)
               anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(2)
-
-              Text {
-                text: root.available ? "Audio" : "Mac unavailable"
-                color: root.barFg
-                font.family: root.barFont
-                font.pixelSize: Style.font.title
-                font.bold: true
-                elide: Text.ElideRight
-                width: parent.width
-              }
-
-              Text {
-                id: heroLabel
-                textFormat: Text.PlainText
-                text: root.outputVolumeName(
-                  outputSlider.dragging ? outputSlider.liveValue : root.outputVolume,
-                  root.outputMuted
-                ).toUpperCase()
-                color: Qt.darker(root.barFg, 1.4)
-                font.family: root.barFont
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                font.letterSpacing: 1.2
-                elide: Text.ElideRight
-                width: parent.width
-              }
             }
           }
 
@@ -499,34 +590,10 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
 
-            Item {
-              width: parent.width
-              implicitHeight: Math.max(outputHeader.implicitHeight, outputPercent.implicitHeight)
-
-              PanelSectionHeader {
-                id: outputHeader
-                text: "OUTPUT"
-                foreground: root.barFg
-                fontFamily: root.barFont
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              Text {
-                id: outputPercent
-                textFormat: Text.PlainText
-                text: root.outputAdjustable
-                  ? Math.round((outputSlider.dragging ? outputSlider.liveValue : root.outputVolume) * 100) + "%"
-                  : "FIXED"
-                color: Qt.darker(root.barFg, 1.4)
-                font.family: root.barFont
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(6)
-                anchors.verticalCenter: parent.verticalCenter
-                opacity: root.outputMuted ? 0.5 : 1.0
-              }
+            PanelSectionHeader {
+              text: "OUTPUT"
+              foreground: root.barFg
+              fontFamily: root.barFont
             }
 
             CursorSurface {
@@ -564,15 +631,112 @@ Panel {
               }
             }
 
+            // The output that plays has its modes under its row.
             Repeater {
               model: root.displayOutputs
 
+              Column {
+                id: outputItem
+                required property var modelData
+                width: panelColumn.width
+                spacing: Style.space(6)
+
+                SinkRow {
+                  width: parent.width
+                  device: outputItem.modelData
+                  rowIndex: outputItem.modelData.stop
+                }
+
+                Repeater {
+                  model: outputItem.modelData.modes || []
+
+                  ModeGroup {
+                    required property var modelData
+                    width: parent.width
+                    device: outputItem.modelData
+                    group: modelData
+                  }
+                }
+              }
+            }
+
+            // What only macOS's Sound list offers: AirPlay speakers.
+            PanelSeparator {
+              visible: root.displayAirplay.length > 0
+              foreground: root.barFg
+            }
+
+            Repeater {
+              model: root.displayAirplay
+
               SinkRow {
                 required property var modelData
-                required property int index
                 width: panelColumn.width
                 device: modelData
-                rowIndex: index
+                rowIndex: modelData.stop
+              }
+            }
+
+            Text {
+              visible: sound.failure !== ""
+              width: parent.width
+              leftPadding: Style.space(6)
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              text: Model.soundFailureText(sound.failure)
+              color: root.barUrgent
+              font.family: root.barFont
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          // ---- Balance of the output, where it has one ----
+          Column {
+            visible: root.showBalance
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: "BALANCE"
+              foreground: root.barFg
+              fontFamily: root.barFont
+            }
+
+            CursorSurface {
+              id: balanceSliderRow
+              width: parent.width
+              height: balanceSlider.implicitHeight + Style.spacing.controlGap
+              hasCursor: root.cursorActive && root.focusSection === "balance"
+              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(balanceSliderRow)
+              foreground: root.barFg
+              outline: true
+
+              // No fill: a balance is a place between left and right, not a level.
+              PanelSlider {
+                id: balanceSlider
+                bar: root.bar
+                anchors.fill: parent
+                anchors.leftMargin: Style.space(6)
+                anchors.rightMargin: Style.space(6)
+                minimum: 0
+                maximum: 1
+                step: 0.05
+                tickCount: 3
+                fillColor: "transparent"
+                value: sound.balanceValue
+                opacity: root.balanceAdjustable ? 1.0 : 0.5
+                enabled: root.balanceAdjustable
+
+                onMoved: function(v) { sound.setBalance(v) }
+                onRightClicked: sound.setBalance(0.5)
+              }
+
+              HoverHandler {
+                onHoveredChanged: if (hovered) {
+                  root.cursorActive = true
+                  root.focusSection = "balance"
+                  root.selectedIndex = -1
+                }
               }
             }
           }
@@ -588,34 +752,10 @@ Panel {
             spacing: Style.space(6)
             visible: root.available && (root.displayInputs.length > 0 || root.hasInput)
 
-            Item {
-              width: parent.width
-              implicitHeight: Math.max(microphoneHeader.implicitHeight, microphonePercent.implicitHeight)
-
-              PanelSectionHeader {
-                id: microphoneHeader
-                text: "INPUT"
-                foreground: root.barFg
-                fontFamily: root.barFont
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              Text {
-                id: microphonePercent
-                textFormat: Text.PlainText
-                text: root.inputAdjustable
-                  ? Math.round((inputSlider.dragging ? inputSlider.liveValue : root.inputVolume) * 100) + "%"
-                  : "FIXED"
-                color: Qt.darker(root.barFg, 1.4)
-                font.family: root.barFont
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(6)
-                anchors.verticalCenter: parent.verticalCenter
-                opacity: root.inputMuted ? 0.5 : 1.0
-              }
+            PanelSectionHeader {
+              text: "INPUT"
+              foreground: root.barFg
+              fontFamily: root.barFont
             }
 
             CursorSurface {
@@ -694,6 +834,52 @@ Panel {
 
   // ---- Reusable inline components ----
 
+  // What a device row ends with: macOS's checkmark on the one that plays, and
+  // a spinner while macOS connects it.
+  component RowMark: Item {
+    property bool active: false
+    property bool busy: false
+    width: Style.space(22)
+    height: mark.implicitHeight
+    anchors.verticalCenter: parent.verticalCenter
+
+    Text {
+      id: mark
+      visible: parent.active && !parent.busy
+      textFormat: Text.PlainText
+      text: "󰄬"
+      color: root.barFg
+      font.family: root.barFont
+      font.pixelSize: Style.font.title
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Spinner {
+      visible: parent.busy
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+    }
+  }
+
+  component Spinner: Text {
+    id: spinner
+    textFormat: Text.PlainText
+    text: ""
+    color: root.barFg
+    font.family: root.barFont
+    font.pixelSize: Style.font.title
+    transformOrigin: Item.Center
+
+    RotationAnimation on rotation {
+      from: 0
+      to: 360
+      duration: Style.duration(900)
+      loops: Animation.Infinite
+      running: root.opened && spinner.visible && Style.duration(900) > 0
+    }
+  }
+
   // Output device row — cursor target inside the "output" section.
   component SinkRow: CursorSurface {
     id: sinkRow
@@ -701,6 +887,8 @@ Panel {
     required property int rowIndex
 
     readonly property bool isActive: !!(device && device.active)
+    // The press of this device is on its way: macOS connects it.
+    readonly property bool isBusy: !!(device && device.picker && sound.pressing === device.name)
     hasCursor: root.cursorActive && root.focusSection === "output" && root.selectedIndex === rowIndex
     onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(sinkRow)
     current: isActive
@@ -737,8 +925,13 @@ Panel {
         font.pixelSize: Style.font.body
         font.bold: sinkRow.isActive
         elide: Text.ElideRight
-        width: parent.width - Style.space(22) - Style.space(8)
+        width: parent.width - 2 * (Style.space(22) + Style.space(8))
         anchors.verticalCenter: parent.verticalCenter
+      }
+
+      RowMark {
+        active: sinkRow.isActive
+        busy: sinkRow.isBusy
       }
     }
 
@@ -752,6 +945,83 @@ Panel {
         root.selectedIndex = sinkRow.rowIndex
       }
       onClicked: root.setDefaultOutput(sinkRow.device)
+    }
+  }
+
+  // A group of the modes of the output that plays, under its row: macOS's
+  // title for it, quiet, and its options in one line, as a segmented control
+  // without borders (Omarchy's Button), wrapped when they do not fit. Title
+  // and options start on the edge of the row's name. The selected option has
+  // the fill and the weight of the output that plays; an option macOS shows
+  // but does not offer is dimmed and takes no press. One
+  // cursor stop: h/l walks the options, Enter or a click presses one, as a
+  // click in Control Center. The press on its way is the group's spinner, at
+  // the rows' checkmarks; the selection is macOS's word.
+  component ModeGroup: Item {
+    id: modeGroup
+    required property var device
+    required property var group
+
+    readonly property bool hasCursor: root.cursorActive && root.focusSection === "output" && root.selectedIndex === group.stop
+    readonly property bool busy: !!sound.switching && sound.switching.device === device.name && sound.switching.group === group.title
+    // The rows' name edge, and an option's text on it: its fill reaches out by its padding.
+    readonly property real inset: Style.space(6) + Style.space(22) + Style.space(8)
+    readonly property real optionPadding: Style.space(6)
+    onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(modeGroup)
+    implicitHeight: options.y + options.implicitHeight
+
+    Text {
+      id: groupTitle
+      x: modeGroup.inset
+      width: modeGroup.width - x - Style.space(6) - Style.space(22) - Style.space(8)
+      textFormat: Text.PlainText
+      text: modeGroup.group.title
+      color: root.barFg
+      opacity: 0.6
+      font.family: root.barFont
+      font.pixelSize: Style.font.bodySmall
+      elide: Text.ElideRight
+    }
+
+    Spinner {
+      visible: modeGroup.busy
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(6)
+      anchors.verticalCenter: groupTitle.verticalCenter
+    }
+
+    Flow {
+      id: options
+      x: modeGroup.inset - modeGroup.optionPadding
+      y: groupTitle.implicitHeight + Style.space(2)
+      width: modeGroup.width - x - Style.space(6)
+
+      Repeater {
+        model: modeGroup.group.options
+
+        Button {
+          required property var modelData
+          required property int index
+          text: modelData.title
+          fontSize: Style.font.bodySmall
+          foreground: root.barFg
+          fontFamily: root.barFont
+          horizontalPadding: modeGroup.optionPadding
+          verticalPadding: Style.space(3)
+          selected: modelData.selected && modelData.enabled
+          enabled: modelData.enabled
+          opacity: modelData.enabled ? 1.0 : 0.5
+          hasCursor: modeGroup.hasCursor && root.optionIndex === index
+          onClicked: root.setMode(modeGroup.device, modeGroup.group, index)
+          onHovered: function(h) {
+            if (!h) return
+            root.cursorActive = true
+            root.focusSection = "output"
+            root.selectedIndex = modeGroup.group.stop
+            root.optionIndex = index
+          }
+        }
+      }
     }
   }
 
@@ -798,9 +1068,11 @@ Panel {
         font.pixelSize: Style.font.body
         font.bold: sourceRow.isActive
         elide: Text.ElideRight
-        width: parent.width - Style.space(22) - Style.space(8)
+        width: parent.width - 2 * (Style.space(22) + Style.space(8))
         anchors.verticalCenter: parent.verticalCenter
       }
+
+      RowMark { active: sourceRow.isActive }
     }
 
     MouseArea {

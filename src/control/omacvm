@@ -16,6 +16,17 @@
                              OmacVM.app on a Mac with an XDR display: the VM's
                              main window up to 2x as bright (the Display panel's
                              switch); use with care: much more battery
+  omacvm sound [read | press NAME | mode NAME GROUP OPTION | balance PERCENT [OUTPUT] | allow] [--json]
+                             OmacVM.app: the Mac's sound outputs as macOS lists
+                             them, AirPlay speakers too, and the modes of
+                             headphones such as AirPods (read), a switch to one
+                             or, for an AirPlay speaker that plays, away from it
+                             (press), a mode such as Noise Cancellation of
+                             Listening Mode, in macOS's words (mode), the
+                             balance of the output, or of OUTPUT (its CoreAudio
+                             UID) only while it plays (0 left, 50 centre, 100 right),
+                             and the Mac's settings where OmacVM is allowed to
+                             read that list (allow); the audio panel runs it
   omacvm --version
   omacvm --window            what the menu, the bar item and the launcher run:
                              as omacvm, and the window waits for Return before
@@ -144,6 +155,108 @@ def extra_brightness(args: list) -> int:
     else:
         print(f"Extra brightness: {'on' if state['on'] else 'off'}")
     return 0
+
+
+def sound(args: list) -> int:
+    """The Mac's sound beyond OmacVM Bridge's /audio (the audio panel runs
+    this): the outputs macOS lists, AirPlay speakers too, with the modes of
+    headphones that offer them, a press of a device or of a mode, the
+    output's balance, and the Mac's Accessibility settings (allow). The app answers on this VM's control port; nothing
+    goes to the Bridge. For a read or a press the app opens Control Center on
+    the Mac (off screen) for about a second, and a press waits until macOS
+    has connected the speaker or selected the mode. Exit 0 done, 1 no answer or an app without it,
+    2 usage, 3 not an OmacVM.app VM (or no control port), 4 the app said no
+    (OmacVM not allowed under Accessibility, Control Center open on the Mac,
+    the VM's window not in front, no such device or option, macOS did not
+    switch, no balance)."""
+    import json
+
+    usage = "omacvm sound [read | press NAME | mode NAME GROUP OPTION | balance PERCENT [OUTPUT] | allow] [--json]"
+    as_json = args[-1:] == ["--json"]   # last, so a device may have any name
+    words = args[:-1] if as_json else list(args)
+    body, timeout = None, 3.0
+    if words == ["read"]:
+        body, timeout = {"read": True}, 10.0
+    elif words == ["allow"]:
+        body = {"allow": True}
+    elif len(words) == 2 and words[0] == "press" and words[1]:
+        body, timeout = {"press": words[1]}, 25.0
+    elif len(words) == 4 and words[0] == "mode" and all(words[1:]):
+        body, timeout = {"mode": dict(zip(("device", "group", "option"), words[1:]))}, 15.0
+    elif len(words) in (2, 3) and words[0] == "balance":
+        try:
+            percent = float(words[1])
+        except ValueError:
+            percent = -1.0
+        if not 0 <= percent <= 100 or words[2:] == [""]:
+            print(usage, file=sys.stderr)
+            return 2
+        body = {"balance": {"value": round(percent / 100, 3), "output": "".join(words[2:])}}
+    elif words:
+        print(usage, file=sys.stderr)
+        return 2
+    from omacvm_cc import local
+    from omacvm_cc import state as S
+    from omacvm_cc.bridge import Bridge, BridgeError
+
+    env = S.parse_env(local.read(local.env_file()))
+    b = Bridge(env, local.read(os.path.join(local.share(), "VERSION")).strip())
+    if env.get("OMACVM_VM_TYPE") != "app" or not b.port_path:
+        print("omacvm sound: only in an OmacVM.app VM (its control port)", file=sys.stderr)
+        return 3
+    try:
+        if body and body.get("balance", {}).get("output") == "":
+            # Without OUTPUT, the output that plays now.
+            body["balance"]["output"] = b.sound(None, timeout).get("output") or ""
+        a = b.sound(body, timeout)
+    except BridgeError as e:
+        if e.status in (400, 403, 409, 501):
+            if as_json:
+                print(json.dumps({"error": str(e), "code": e.code}))
+            print(f"omacvm sound: {e}", file=sys.stderr)
+            return 4
+        print(f"omacvm sound: {e} (a newer OmacVM.app answers this)", file=sys.stderr)
+        return 1
+    # Whatever the answer holds, the panel gets these types.
+    balance = a.get("balance")
+    number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    state = {"accessibility": a.get("accessibility") is True,
+             "output": a["output"] if isinstance(a.get("output"), str) else None,
+             "balance": {"value": min(1.0, max(0.0, float(balance["value"]))), "settable": balance.get("settable") is True}
+             if isinstance(balance, dict) and number(balance.get("value")) else None}
+    if isinstance(a.get("devices"), list):
+        state["devices"] = [sound_device(d) for d in a["devices"] if isinstance(d, dict) and isinstance(d.get("name"), str) and d["name"]]
+    if as_json:
+        print(json.dumps(state))
+        return 0
+    if not state["accessibility"]:
+        print("AirPlay speakers: OmacVM is not allowed under Accessibility on the Mac")
+    for d in state.get("devices", []):
+        print(f"{'*' if d['selected'] else ' '} {d['name']}")
+        for m in d.get("modes", []):
+            options = "  ".join(("*" if o["selected"] else "") + o["title"] + ("" if o["enabled"] else " (not offered)") for o in m["options"])
+            print(f"    {m['title']}: {options}")
+    if state["balance"]:
+        print(f"Balance: {round(state['balance']['value'] * 100)}")
+    else:
+        print("Balance: this output has none")
+    return 0
+
+
+def sound_device(d: dict) -> dict:
+    """A device of the app's list with the types the panel expects: its
+    modes only when it has some, each group and option with its title."""
+    titled = lambda v: isinstance(v, dict) and isinstance(v.get("title"), str) and v["title"] != ""
+    out = {"name": d["name"], "selected": d.get("selected") is True}
+    modes = []
+    for m in d.get("modes") if isinstance(d.get("modes"), list) else []:
+        options = [{"title": o["title"], "selected": o.get("selected") is True, "enabled": o.get("enabled") is True}
+                   for o in (m.get("options") if titled(m) and isinstance(m.get("options"), list) else []) if titled(o)]
+        if options:
+            modes.append({"title": m["title"], "options": options})
+    if modes:
+        out["modes"] = modes
+    return out
 
 
 def notify() -> int:
@@ -276,6 +389,8 @@ def main(args: list) -> int:
         return plain.status("--json" in args)
     if cmd == "extra-brightness":
         return extra_brightness(args[1:])
+    if cmd == "sound":
+        return sound(args[1:])
     if cmd == "update-system":
         from omacvm_cc import system
         rc = system.run(yes="--yes" in args)

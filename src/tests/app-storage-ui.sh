@@ -29,8 +29,11 @@ srcs=()
 for f in "$R"/app/app/Sources/OmacVM/*.swift; do
   case $(basename "$f") in main.swift|RenderUpdateUI.swift) ;; *) srcs+=("$f") ;; esac
 done
+# The app's modules, in the order Package.swift lists them for the OmacVM target.
+mods=$(sed -n 's/.*executableTarget(name: "OmacVM", dependencies: \[\(.*\)\]).*/\1/p' "$R/app/app/Package.swift" | tr -d '"' | tr ',' ' ')
+[ -n "$mods" ] || { echo "FAIL no module list for the OmacVM target in Package.swift"; exit 1; }
 libs=()
-for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMAuth OmacVMBuildProgress OmacVMWindow OmacVMDesktop OmacVMAudio OmacVMIcon OmacVMMedia OmacVMDrop; do   # the app's library targets (Package.swift)
+for m in $mods; do
   swiftc -swift-version 5 -parse-as-library -static -emit-library -emit-module -I "$T" -module-name $m \
     -emit-module-path "$T/$m.swiftmodule" -o "$T/lib$m.a" "$R"/app/app/Sources/$m/*.swift
   libs+=(-l$m)

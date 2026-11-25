@@ -14,7 +14,7 @@ let package = Package(
         .library(name: "OmacVMDockTile", type: .dynamic, targets: ["OmacVMDockTile"]),
     ],
     targets: [
-        .executableTarget(name: "OmacVM", dependencies: ["OmacVMUpdate", "OmacVMNet", "OmacVMUSB", "OmacVMFolder", "OmacVMFeatures", "OmacVMAuth", "OmacVMBuildProgress", "OmacVMWindow", "OmacVMDesktop", "OmacVMAudio", "OmacVMIcon", "OmacVMMedia", "OmacVMDrop"]),
+        .executableTarget(name: "OmacVM", dependencies: ["OmacVMUpdate", "OmacVMNet", "OmacVMUSB", "OmacVMFolder", "OmacVMFeatures", "OmacVMAuth", "OmacVMBuildProgress", "OmacVMWindow", "OmacVMDesktop", "OmacVMAudio", "OmacVMIcon", "OmacVMMedia", "OmacVMDrop", "OmacVMSound"]),
         // The self-update's checks, apart from the UI so they can be tested
         // without Xcode: `swift run update-tests`.
         .target(name: "OmacVMUpdate"),
@@ -79,6 +79,11 @@ let package = Package(
         .target(name: "OmacVMDrop"),
         .executableTarget(name: "drop-tests", dependencies: ["OmacVMDrop", "OmacVMFeatures"]),
         .executableTarget(name: "drop-serve", dependencies: ["OmacVMDrop"]),
+        // The Mac's sound for the VM's audio panel (/omacvm/app/sound): the
+        // route's rules and what Control Center's Sound list says, on recorded
+        // lists, without Control Center: `swift run sound-tests`.
+        .target(name: "OmacVMSound"),
+        .executableTarget(name: "sound-tests", dependencies: ["OmacVMSound"]),
     ],
     swiftLanguageModes: [.v5]
 )

@@ -1,6 +1,7 @@
 import AppKit
 import OmacVMUpdate
 import OmacVMFeatures
+import OmacVMSound
 import OmacVMWindow
 import SwiftUI
 
@@ -1028,6 +1029,27 @@ if CommandLine.arguments.dropFirst().first == "--notch" {
     MainActor.assumeIsolated {
         let n = Mac.notch
         print([n.word, n.geometry?.text].compactMap { $0 }.joined(separator: " "))
+    }
+    exit(0)
+}
+
+// `OmacVM --sound GET`, `--sound POST BODY`: what a VM gets from this Mac on
+// /omacvm/app/sound (SoundGuest), as if its window were in front, as one JSON
+// line. `--sound tree`: Control Center's Sound list as Accessibility gives
+// it, to send along when a macOS shows a list the app cannot read. macOS asks
+// about the program that runs this (a terminal), not about OmacVM. No window.
+if CommandLine.arguments.dropFirst().first == "--sound" {
+    let args = Array(CommandLine.arguments.dropFirst(2))
+    let sound = SoundService { fputs("[sound] \($0)\n", stderr) }
+    if args == ["tree"] {
+        print(sound.tree())
+    } else if let method = args.first, args.count <= 2 {
+        let (status, body) = sound.answer(method: method, body: args.count == 2 ? Data(args[1].utf8) : nil) { true }
+        let answer = (try? JSONSerialization.data(withJSONObject: ["status": status, "body": body], options: [.sortedKeys])) ?? Data("{}".utf8)
+        print(String(decoding: answer, as: UTF8.self))
+    } else {
+        fputs("OmacVM --sound GET | POST BODY | tree\n", stderr)
+        exit(2)
     }
     exit(0)
 }

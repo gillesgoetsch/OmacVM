@@ -162,6 +162,9 @@ jobs:
       - name: OmacVM.app sound delay for the VM (QEMU's part, the Mac's output, limits)
         working-directory: app/app
         run: swift run audio-tests
+      - name: OmacVM.app the Mac's sound for the VM (Control Center's lists as recorded, AirPods' modes too, the route's rules)
+        working-directory: app/app
+        run: swift run sound-tests
       - name: OmacVM.app AirPods and media controls (the port's lines, when the VM is Now Playing, a fuzz)
         working-directory: app/app
         run: swift run media-tests
@@ -957,6 +960,9 @@ jobs:
 
       - name: OmacVM's edits of Omarchy's shell on Linux (GNU tools, as in the VM)
         run: src/tests/omarchy-shell.sh
+
+      - name: The audio panel's output list and its reads of macOS's Sound list on random orders of events (node)
+        run: src/tests/audio-panel-model.sh
 
       - name: Per-display workspaces step aside on Omarchy 4.5 on Linux (GNU awk, as in the VM)
         run: src/tests/workspaces-45.sh

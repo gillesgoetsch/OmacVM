@@ -12,7 +12,7 @@ The short version is the grid at the top of the [README](../README.md).
 | **Mission Control** *(off by default, Omarchy 4.5)* | Four fingers up in the full-screen VM and the windows of each display spread out under your fingers, with its workspaces along the top as live previews; four fingers down close it. While it is open, four fingers sideways go through the workspaces (two fingers on a Magic Mouse); click a window to go to it, drag it onto a workspace to move it there. The [Mac Mission Control](https://github.com/gillesgoetsch/omarchy-mac-mission-control) plugin by [@gillesgoetsch](https://github.com/gillesgoetsch) (MIT). **Input > Mission Control** in the app's VM window, the control centre, or `omacvm enable mission-control` ([details](#mission-control)) |
 | **The Mac's Wi-Fi in the bar** | Real network name and signal, nearby networks, and Omarchy's QR card to share the password (macOS asks you first). Joining a network and switching Wi-Fi stay on the Mac for now |
 | **The Mac's Bluetooth in the bar** | Omarchy's own Bluetooth panel for the Mac's devices: connect and disconnect them, battery levels (AirPods left, right and case), Bluetooth on and off, forget a device. Pairing a new one opens the Mac's Bluetooth settings |
-| **The Mac's audio in the bar** | Volume, mute, microphone, switching outputs (AirPods show up when they connect), with Omarchy's input meter |
+| **The Mac's audio in the bar** | Volume, mute, microphone, switching outputs (AirPods show up when they connect), with Omarchy's input meter. AirPlay speakers and TVs, the modes of AirPods and the balance, as in the Mac's Sound module ([details](#the-audio-panel-airplay-modes-and-balance)) |
 | **The Mac's camera** | Linux apps and video calls in the browser see the Mac's camera as *Mac Camera*. It is on, green light included, only while one of them uses it. OmacVM.app passes it to the VM ([how](how-it-works.md#the-mac-and-the-vm)) |
 | **External display brightness** | With the VM in front on an external display, the brightness keys set *that* display, over DDC/CI, in 32 steps (twice as fine as macOS's; Option: finer still), with Omarchy's popup. So do Omarchy's own brightness keys, `omarchy brightness display` and its monitor panel in the VM, whose brightness slider also sets the MacBook's own display (through macOS, as the keys). A Studio Display, Pro Display XDR or LG UltraFine goes through macOS's own control. Also in a window. On the built-in display the keys work as before. Some displays and connections have no DDC/CI (some Macs' HDMI ports, or DDC/CI switched off in the display's own menu): there the keys do what they did before, and `omacvm check` says so. Off: `omacvm disable external-brightness` ([how it works](#external-display-brightness)) |
 | **Media keys, Omarchy's popup** | Volume, mute and brightness keys drive the Mac and Omarchy shows its own on-screen display instead of macOS's. Shift with the brightness keys sets the Mac's keyboard light, with four dimmer steps below macOS's lowest (for night work), Option takes small steps, as in Omarchy |
@@ -312,6 +312,24 @@ macOS asks only when you click Allow…: starting a VM never brings up macOS's
 <p align="center">
   <img src="images/capture.svg" alt="A MacBook shows Omarchy full screen, marked as captured with a lock. Three fingers swipe and Omarchy changes workspace while macOS's Spaces swipe is blocked; Command+Space opens Omarchy's launcher. Control+Option+Escape opens the lock and moves the monitor one Space over to macOS with macOS's own animation; the VM stays full screen in its Space and the trackpad and keys belong to macOS. Pressed again, the monitor moves back into the VM, captured again. A setting chooses the monitor under the pointer or all monitors. A panel shows where trackpad gestures, Command shortcuts and media keys go in each moment." width="100%">
 </p>
+
+## The audio panel: AirPlay, modes and balance
+
+The audio panel in Omarchy's bar lists what the Mac's own Sound module in
+Control Center lists: after the Mac's outputs, its AirPlay speakers and TVs.
+Click one to play there; a spinner shows until macOS has connected it. Under
+the row of headphones that play, such as AirPods, are their modes in macOS's
+words (Listening Mode, Conversation Awareness), and BALANCE shows for an
+output that has one.
+
+Only Control Center switches these: macOS has no way for other apps. So OmacVM.app
+opens Control Center out of sight for about a second, when the panel opens
+and when you switch, and reads or presses its list through Accessibility,
+the permission the VM's keyboard already asks for. Keys typed in that
+second do not reach the VM. Without that permission the panel has one row,
+*Allow Accessibility for OmacVM*, that opens the Mac's settings for it. In
+the VM's terminal: `omacvm sound`. How it works: [ADR
+0076](adr/0076-airplay-and-balance-in-the-audio-panel.md).
 
 ## External display brightness
 

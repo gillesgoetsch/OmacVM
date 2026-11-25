@@ -3,6 +3,26 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## Unreleased
+
+- **AirPlay and balance in the Audio panel.** The Audio panel in Omarchy's bar now lists the Mac's
+  AirPlay speakers and TVs after the Mac's own outputs, so you can click to switch. When the Mac's
+  output supports it, such as headphones, the panel also shows a left/right Balance slider. AirPlay
+  needs OmacVM allowed under Accessibility on the Mac (System Settings › Privacy & Security ›
+  Accessibility), the same permission Keyboard access already uses. Because macOS offers no other
+  way, OmacVM opens Control Center out of sight for about a second to read the list or switch, and
+  keys typed during that second do not reach the VM. The panel reads the list each time it opens.
+  Needs the app update and Update VM.
+- **Headphone modes in the Audio panel.** When AirPods or other headphones with modes are the Mac's
+  output, the Audio panel shows their macOS modes under their row, in the Mac's own words and
+  language. On AirPods Pro: Listening Mode (Transparency, Adaptive, Noise Cancellation), Spatial
+  Audio and Conversation Awareness. A group shows only while macOS offers one of its options. Click
+  to switch, or pick with h and l and press Enter. It uses the same Control Center access as
+  AirPlay, with the same permission and the same second without keys. Needs the app update and
+  Update VM.
+- **A calmer Audio panel**, as the Mac's Sound module: no status line under its title and no
+  numbers beside the sliders. Needs Update VM.
+
 ## 3.6.0
 
 The Mac's own pointer on Omarchy, Mac key layouts for new VMs, dragging icons in the notch strip,

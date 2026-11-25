@@ -173,6 +173,7 @@ The VM is a normal install: `omarchy update` and snapshots work.
 | `scripts/update-swap.sh` | swaps in an update, puts the old app back if the new one does not start |
 | `app/Sources/OmacVMUpdate` | the update's checks (feed, signatures, schedule), tested by `update-tests` |
 | `app/Sources/OmacVMMedia` | AirPods and media controls: the `org.omacvm.media` port's lines and when the app is the Mac's Now Playing for the VM, tested by `media-tests` |
+| `app/Sources/OmacVMSound` | the Mac's sound for the VM's audio panel (`/omacvm/app/sound`): AirPlay speakers and the modes of headphones from Control Center's Sound list, through Accessibility, and the output's balance, tested by `sound-tests` |
 | `../src` | OmacVM: the installers and the VM side, `app` route |
 
 Licences: `THIRD_PARTY_NOTICES.md`. QEMU is GPL-2.0: its build scripts and

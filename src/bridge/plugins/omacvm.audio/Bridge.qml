@@ -3,7 +3,7 @@ import Quickshell
 import Quickshell.Io
 
 // Live state from the Mac helper (omacvm-bridge). One long-running
-// `omacvm-bridge events` process feeds the latest wifi/audio/scan payloads; the
+// `omacvm-bridge events` process feeds the latest wifi/audio/bluetooth/scan payloads; the
 // client resolves OMACVM_BRIDGE_URL and the token file itself, so nothing about
 // the user, home or address is hard-coded here.
 //
@@ -17,6 +17,7 @@ Item {
   property bool available: false
   property var wifi: null
   property var audio: null
+  property var bluetooth: null
   property var scan: null
 
   property string currentEvent: ""
@@ -45,6 +46,7 @@ Item {
     available = true
     if (currentEvent === "wifi") wifi = payload
     else if (currentEvent === "audio") audio = payload
+    else if (currentEvent === "bluetooth") bluetooth = payload
     else if (currentEvent === "scan") scan = payload
   }
 

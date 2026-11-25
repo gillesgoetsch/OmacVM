@@ -317,6 +317,19 @@ class Bridge:
             return self.call("GET", path, timeout=timeout)
         return self.call("POST", path, {"on": bool(on)}, timeout=timeout)
 
+    def sound(self, body: dict | None = None, timeout: float = 3.0) -> dict:
+        """The Mac's sound for the audio panel, answered by OmacVM.app itself
+        (never the Bridge): {"accessibility", "output", "balance"}; body: {"read": True}
+        or {"press": NAME} add "devices", the outputs macOS lists, AirPlay
+        speakers too (the app opens Control Center for it, and a press waits
+        for the speaker: a longer timeout); {"balance": {"value": 0..1,
+        "output": UID}} sets it while that output plays;
+        {"allow": True} opens the Mac's settings where OmacVM is allowed."""
+        path = "/omacvm/app/sound"
+        if body is None:
+            return self.call("GET", path, timeout=timeout)
+        return self.call("POST", path, body, timeout=timeout)
+
     def start_job(self, action: str, features: list[str] | tuple[str, ...] = ()) -> dict:
         body: dict = {"action": action}
         if action == "graphics":
