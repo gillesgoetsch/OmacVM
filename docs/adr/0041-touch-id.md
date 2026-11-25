@@ -245,7 +245,8 @@ Answer, signed with `X-OmacVM-Answer` (nonce, status, body hash):
 ```json
 {"result": "yes"}
 {"result": "no", "reason": "cancelled" | "failed" | "timeout" | "busy"
-   | "rate" | "locked" | "not-front" | "no-touch-id" | "lockout" | "off"}
+   | "rate" | "locked" | "not-front" | "no-touch-id" | "lid-closed" | "lockout"
+   | "off"}
 ```
 
 The client exits 0 only on a 200 with `result: "yes"`, a valid answer
@@ -262,11 +263,14 @@ off".
 - Fast no, before any dialog: feature off (`off`), Mac screen locked or
   display asleep (`locked`), the VM's app (OmacVM.app, Parallels, UTM,
   Fusion) not the frontmost app (`not-front`), `canEvaluatePolicy` false:
-  no sensor, no finger enrolled, lid closed without a Touch ID keyboard
-  (`no-touch-id`), too many failed tries (`lockout`).
+  neither the sensor (none, no finger enrolled) nor an Apple Watch can
+  answer (`no-touch-id`), the same with the MacBook's lid closed
+  (`lid-closed`), too many failed tries (`lockout`).
 - The dialog: a fresh `LAContext` per request, never reused or kept
   (`touchIDAuthenticationAllowableReuseDuration` 0), invalidated at the
-  end. Policy `.deviceOwnerAuthenticationWithBiometrics` with no fallback
+  end. Policy `.deviceOwnerAuthenticationWithBiometricsOrWatch` (the
+  sensor, or an Apple Watch where the sensor cannot answer; addendum "The
+  Apple Watch") with no fallback
   button (`localizedFallbackTitle = ""`). The Mac password as fallback
   only when the person turns on `touch_id_password_fallback` in the
   Bridge's `config.json` (then `.deviceOwnerAuthentication`).
@@ -981,3 +985,47 @@ a VM that runs across the update keeps the old place until it is shut down.
   - FullPanel did not engage on the virtual displays (no camera housing):
     those two rows ran as plain full screen.
   - No permission prompt (tccd), no other app's window moved.
+
+## Addendum: the Apple Watch, also with the lid closed
+
+Status: built (2026-11-25).
+
+### Context
+
+With the MacBook's lid closed, macOS turns its Touch ID sensor off:
+`canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics)` gives
+`systemCancel` ("Touch ID is not available in closed clamshell mode"). The
+Bridge read that code as the person's own cancel, so the VM's prompt said
+nothing and the journal said "Touch ID cancelled on the Mac", and three
+such requests paused the VM's Touch ID as three misses. A Mac with a paired
+Apple Watch can approve with the watch instead (System Settings > Touch ID &
+Password > Apple Watch), as macOS's own prompts do.
+
+### Decision
+
+- Every evaluation takes the sensor or a watch: the Bridge
+  `.deviceOwnerAuthenticationWithBiometricsOrWatch` (its target is macOS
+  13), the panel `.deviceOwnerAuthenticationWithBiometricsOrCompanion`
+  (macOS 15, the same policy under its new name). Never the Mac's password
+  unless `touch_id_password_fallback` is on, as before.
+- The Bridge asks who can answer before a dialog (`TouchIDAnswerer`). The
+  sensor: the panel as before (a watch nearby may answer too). Only a watch:
+  macOS's own dialog, and the watch asks for a double-click of its side
+  button (`LAContext.h`). The panel is Touch ID's (the fingerprint, "Touch
+  ID or Esc"), and the panel of an app from before this change refuses a
+  watch alone (`no-touch-id`).
+- `canEvaluatePolicy` false is never `cancelled`: `lockout` for a lockout,
+  else `no-touch-id`. A `no-touch-id` (also a watch gone during its
+  dialog) is `lid-closed` while IOPMrootDomain's `AppleClamshellState` says
+  the lid is closed. Neither counts as a miss.
+  The VM says "Touch ID not available (Mac lid closed, no Apple Watch ready), use
+  your password" and puts the same in the journal; an older client says
+  "the Mac said lid-closed".
+
+### Tests
+
+`src/bridge/mac/tests/touchid_tests.swift`: the panel for the sensor and
+macOS's dialog for a watch alone, `lid-closed` and `no-touch-id`, a lockout
+with the lid closed, and four lid-closed noes in a row without a pause.
+`src/tests/touchid-client.sh`: the client's line and journal for
+`lid-closed`.

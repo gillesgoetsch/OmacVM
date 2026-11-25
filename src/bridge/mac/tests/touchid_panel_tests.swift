@@ -17,12 +17,12 @@ func refusal(_ o: Any) -> String? { refusal(body(o)) }
 
 final class PromptAuth: TouchIDAuthenticator {
   var prompts: [TouchIDPrompt] = []
-  func unavailable(passwordFallback: Bool) -> TouchIDNo? { nil }
+  func answerer(passwordFallback: Bool) -> TouchIDAnswerer { .touchID }
   func evaluate(_ p: TouchIDPrompt, passwordFallback: Bool, timeout: Double, gone: @escaping () -> Bool) -> TouchIDOutcome {
     prompts.append(p); return .yes
   }
 }
-struct FrontMac: TouchIDMacState { var locked = false; var frontType: String? = "app" }
+struct FrontMac: TouchIDMacState { var locked = false; var frontType: String? = "app"; var lidClosed = false }
 
 @main struct TouchIDPanelTests {
   static func main() {

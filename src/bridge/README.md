@@ -449,11 +449,12 @@ signed with the VM's Touch ID key (`vm-keys/<vm>.touchid` on the Mac,
 `omacvm-touchid-request 1`; the answer, signed back
 (`omacvm-touchid-answer 1`), is `{"result": "yes"}` or `{"result": "no",
 "reason": ...}`. No key on the Mac: 403 `off`, no dialog. The Bridge asks
-macOS with a fresh `LAContext` each time, biometrics only;
+macOS with a fresh `LAContext` each time: Touch ID, or an Apple Watch when
+the sensor cannot answer (the lid closed), never the Mac's password;
 `"touch_id_password_fallback": true` in `config.json` also offers the Mac's
-password (macOS then also takes an Apple Watch's approval). It says no
-without a dialog when the Mac is locked, the VM's app is not in front or
-the Mac has no Touch ID; one dialog at a time, per VM one request every
+password. It says no without a dialog when the Mac is locked, the VM's app
+is not in front, or neither Touch ID nor a watch can answer (`lid-closed`
+with the lid closed); one dialog at a time, per VM one request every
 2 s and 10 a minute; after 3 misses (cancelled, failed, not answered) no
 for 60 s, then 5 min, then 30 min, until a yes. The log has the VM, the
 kind and the result, never the command. In the VM the client asks only

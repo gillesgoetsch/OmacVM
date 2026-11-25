@@ -70,7 +70,8 @@ COMMAND_MAX = 120      # sudo: longer commands are not shown cut, the password c
 UID_MIN = int(E.get("OMACVM_TOUCHID_UID_MIN", "1000"))   # people, not system users or root
 USER_RE = r"[A-Za-z_][A-Za-z0-9_.-]{0,31}"
 ACTION_RE = r"[A-Za-z0-9._-]{1,128}"
-WHY = {"locked": "Mac locked", "not-front": "VM not in front", "no-touch-id": "no Touch ID",
+WHY = {"locked": "Mac locked", "not-front": "VM not in front", "no-touch-id": "no Touch ID or Apple Watch",
+       "lid-closed": "Mac lid closed, no Apple Watch ready",
        "lockout": "too many tries", "rate": "too many tries", "busy": "another Touch ID prompt is open",
        "off": "Touch ID off", "clock": "VM clock off",
        "restart": "shut the VM down and start it again once", "app": "OmacVM.app does not answer",

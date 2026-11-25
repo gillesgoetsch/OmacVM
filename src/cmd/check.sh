@@ -983,7 +983,7 @@ if [[ $(feat touch_id off) == on ]]; then
     # Started by OmacVM.app 3.0.3 or older, which added the port only with touch-id on at the start.
     skip "Touch ID (Mac)" "on from the VM's next start: shut it down, then start it again (OmacVM.app adds its Touch ID port at the start)" human
   elif [[ $tn == 0 ]]; then
-    bad "Touch ID (Mac)" "no fingerprint in this Mac's Touch ID (or no sensor): System Settings › Touch ID & Password; until then the VM asks for the password" human
+    bad "Touch ID (Mac)" "no fingerprint in this Mac's Touch ID (or no sensor): System Settings › Touch ID & Password; until then the VM asks for the password, unless an Apple Watch approves for this Mac" human
   else ok "Touch ID (Mac)" "the VM's key, OmacVM Bridge$( [[ -n $tn ]] && echo " and $tn fingerprint(s)") ready$tl"; fi
 fi
 FEATURE=omanotch   # the Mac links row below, as before
