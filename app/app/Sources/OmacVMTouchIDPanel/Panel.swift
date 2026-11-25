@@ -344,8 +344,11 @@ protocol PanelEvaluator: AnyObject {
     func invalidate()
 }
 
-/// LocalAuthentication: a fresh context per request, biometrics only.
+/// LocalAuthentication: a fresh context per request, the Mac's sensor or an
+/// Apple Watch (never the Mac's password). The Bridge asks the panel only
+/// when the sensor can answer; a watch nearby may answer too.
 final class LAPanelEvaluator: PanelEvaluator {
+    private let policy = LAPolicy.deviceOwnerAuthenticationWithBiometricsOrCompanion
     private let context = LAContext()
     private lazy var authView = LAAuthenticationView(context: context, controlSize: .regular)
 
@@ -356,21 +359,21 @@ final class LAPanelEvaluator: PanelEvaluator {
 
     func unavailable() -> PanelLAEnd? {
         var e: NSError?
-        guard !context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &e) else { return nil }
+        guard !context.canEvaluatePolicy(policy, error: &e) else { return nil }
         return (e as? LAError)?.code == .biometryLockout ? .lockout : .notAvailable
     }
 
     var view: NSView? { authView }
 
     func evaluate(reason: String, _ done: @escaping (PanelLAEnd) -> Void) {
-        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { ok, err in
+        context.evaluatePolicy(policy, localizedReason: reason) { ok, err in
             let end: PanelLAEnd
             if ok { end = .yes } else {
                 switch (err as? LAError)?.code {
                 case .userCancel?, .appCancel?, .systemCancel?, .userFallback?: end = .cancelled
                 case .authenticationFailed?: end = .failed
                 case .biometryLockout?: end = .lockout
-                case .biometryNotAvailable?, .biometryNotEnrolled?, .passcodeNotSet?: end = .notAvailable
+                case .biometryNotAvailable?, .biometryNotEnrolled?, .passcodeNotSet?, .companionNotAvailable?: end = .notAvailable
                 default: end = .other
                 }
             }
