@@ -1,0 +1,73 @@
+From: OmacVM
+Subject: [PATCH] cocoa: a frame the vsync queue skips last goes on the layer at the next tick
+
+What: the vsync tick's trims (the quarter-second one, OMACVM_GL_TRIM=quarter, and the
+once-a-second one) skip the frame left over after a tick, also when it is the only
+one queued, which makes it the guest's newest. Such a frame now waits in
+present_pend, with or without the tiled present, and the next tick that finds
+nothing queued puts it on the layer. A frame that comes before that tick takes it
+over, as before, so the trim still saves its refresh. While a frame waits there,
+the tick does not end the link.
+Why: nothing showed that frame. The tiled present parked it in present_pend for
+the guest's next frame, and without the tiled present the tick dropped it. Its
+draw had cleared gl_dirty, so present_bh asked for no present: at the end of a
+scroll that a trim cut off, the window stayed one frame behind until the guest
+drew again.
+Upstream: OmacVM only (the present code is ours).
+Test: app/runtime/Tests/display/test-present-skip.sh runs the queue's own code: a
+scroll of drawn frames to the quarter-second trim, with the tiled present on and
+off, with and without a frame after it, and a first tick a second late
+(--self-test: it fails on the code without this patch).
+Applies after omacvm-cocoa-present-tiles.patch and qemu-cocoa-gl-present-trim.patch,
+before omacvm-cocoa-no-app-nap.patch.
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index 6218ad7..62a9861 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -11228,16 +11228,16 @@ static void present_frame_absorb(PresentFrame *newer, PresentFrame *older)
+ }
+ 
+ /*
+- * present_lock held: OLDER is skipped. With the tiled present its updates
+- * go into NEXT (the frame after it), or, when none is queued yet, wait in
+- * present_pend for the next frame that comes. Else it just goes.
++ * present_lock held: OLDER is skipped. Its updates go into NEXT (the frame
++ * after it; a whole one lets OLDER go), or, when none is queued yet, OLDER
++ * waits in present_pend: the next frame that comes takes it over (a tile
++ * frame may lie over it), or else the next tick shows it, as it is the
++ * guest's newest.
+  */
+ static PresentFrame present_pend;
+ static void present_frame_skip(PresentFrame *older, PresentFrame *next)
+ {
+-    if (present_tiles_on <= 0) {
+-        present_frame_put(older);
+-    } else if (next) {
++    if (next) {
+         present_frame_absorb(next, older);
+     } else {
+         present_frame_absorb(older, &present_pend);
+@@ -11692,6 +11692,11 @@ static bool cocoa_gl_present_vsync(double T)
+     }
+     present_sync.win_ticks++;
+     present_sync.ticks++;
++    /* OmacVM: a frame skipped at the last tick that no newer one took over: it goes now. */
++    if (!present_sync.queued && (present_pend.surf || present_pend.pt)) {
++        present_sync.queue[present_sync.queued++] = present_pend;
++        present_pend = (PresentFrame){ 0 };
++    }
+     if (present_sync.queued) {
+         /*
+          * Input is coming: frames that wait behind a newer one are old news
+@@ -11785,8 +11790,9 @@ static bool cocoa_gl_present_vsync(double T)
+         present_sync.merge =
+             present_sync.win_flushes > present_sync.win_ticks * 5 / 4;
+         if (!present_fixed && present_sync.win_gap2 >= PRESENT_CLOSE_S &&
+-            !present_sync.queued && !present_sync.inflight) {
+-            /* Frames came one at a time for a second: no link. */
++            !present_sync.queued && !present_sync.inflight &&
++            !present_pend.surf && !present_pend.pt) {
++            /* Frames came one at a time for a second: no link, once no frame waits for a tick. */
+             present_sync.linked = false;
+             present_sync.close_frames = 0;
+             present_sync.merge = false;
