@@ -1326,6 +1326,14 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-virtio-multitouch-t
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-touch.patch"
 "$native_dir/Tests/touch/test-touch.sh" "$source_dir/ui/cocoa.m" "$source_dir/hw/input/virtio-input-hid.c" || \
   die "ui/cocoa.m: touch on a touch display is not wired as tested (test-touch.sh)"
+# OmacVM: a drawn frame that a tick of the vsync queue skips with none queued after it (a trim)
+# goes on the layer at the next tick, unless a newer frame took it over: a scroll that a trim
+# cuts off ends on screen too. The queue test fails on the code before, then passes.
+"$native_dir/Tests/display/test-present-skip.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the queue test passes without the patch (test-present-skip.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-skipped-last.patch"
+"$native_dir/Tests/display/test-present-skip.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a frame skipped last does not go on the layer as tested (test-present-skip.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent, and on
 # macOS 27 clamped it to Utility QoS despite the activity.

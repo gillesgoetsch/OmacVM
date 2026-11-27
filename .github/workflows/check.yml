@@ -643,6 +643,8 @@ jobs:
           app/runtime/Tests/display/test-present-tiles.sh --self-test
       - name: Tiled present also when frames are shown when drawn (hidden test windows; the checks catch code without it)
         run: app/runtime/Tests/display/test-present-tiles-direct.sh --self-test
+      - name: A drawn frame that the vsync queue skips last goes on the layer at the next tick (the queue test catches code without it)
+        run: app/runtime/Tests/display/test-present-skip.sh --self-test
 
       - name: Extra brightness's gain, shader and omacvm check line (ADR 0050; the checks catch code without it)
         run: |
