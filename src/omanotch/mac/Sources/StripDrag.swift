@@ -48,13 +48,15 @@ struct StripDrag {
         return .drag(q.x, q.y)
     }
 
-    /// The button came up: a move not sent yet first, then the release.
+    /// The button came up: a move not sent yet first, then the release. The
+    /// move goes also when the release is at the same point: the bar starts a
+    /// drag only on a move, and a release without one is a click.
     mutating func up(_ p: CGPoint) -> [Send] {
         guard held else { return [] }
         held = false
         let q = clamp(p)
         var out: [Send] = []
-        if let m = pending, m != q { out.append(.drag(m.x, m.y)) }
+        if let m = pending { out.append(.drag(m.x, m.y)) }
         pending = nil
         out.append(.release(q.x, q.y))
         return out
