@@ -210,25 +210,48 @@ app_name_bad() { [[ $1 == *..* ]]; }
 [[ $VM =~ ^[A-Za-z0-9][A-Za-z0-9\ ._-]*$ ]] || usage "--vm-name: letters, digits, spaces, dots, _ and - only (got '$VM')"
 [[ $VM =~ $NAME_RE ]] || usage "--vm-name: at most 64 characters for OmacVM.app"
 app_name_bad "$VM" && usage "--vm-name: no '..' for OmacVM.app"
-# A name is taken, also by a retired VM: omacvm --vm NAME has to find one VM.
+VM_DIR=$(app_vms_root)
+VMS_LIST=$(vms_list)
+# A name is taken if any VM has it (also a retired VM: omacvm --vm NAME has to
+# find one VM, case-insensitively like VMPick.freeName), or if its folder
+# already exists in VM_DIR (e.g. a half-built VM from a stopped build without
+# disk.img, which app_list skips).
+vm_in_list() {
+  awk -F'\t' -v n="$1" 'tolower($1) == tolower(n) { f = 1 } END { exit !f }' <<<"$VMS_LIST"
+}
 vm_taken() {
-  vms_list | awk -F'\t' -v n="$1" '$1 == n { f = 1 } END { exit !f }'
+  [[ -e $VM_DIR/$1 || -L $VM_DIR/$1 ]] && return 0
+  vm_in_list "$1"
 }
 if vm_taken "$VM"; then
   n=2; while vm_taken "$VM $n"; do n=$((n + 1)); done
   if (( YES )); then
-    [[ -n ${NAME_GIVEN:-} ]] && usage "a VM named '$VM' already exists (choose another --vm-name, e.g. '$VM $n')"
+    if [[ -n ${NAME_GIVEN:-} ]]; then
+      if vm_in_list "$VM"; then
+        usage "a VM named '$VM' already exists (choose another --vm-name, e.g. '$VM $n')"
+      else
+        usage "$VM_DIR/$VM already exists (choose another --vm-name, e.g. '$VM $n')"
+      fi
+    fi
     VM="$VM $n"   # the default name, taken: the next free one
   fi
 fi
 if vm_taken "$VM"; then
-  hd "You already have a VM named '$VM'"
+  if vm_in_list "$VM"; then
+    hd "You already have a VM named '$VM'"
+  elif [[ -f $VM_DIR/$VM/vm.env && ! -f $VM_DIR/$VM/disk.img ]]; then
+    hd "A half-built '$VM' folder is already at $(sed "s|^$HOME|~|" <<<"$VM_DIR/$VM")"
+    say "    Remove it first to reuse '$VM', or pick another name."
+  else
+    hd "$(sed "s|^$HOME|~|" <<<"$VM_DIR/$VM") already exists"
+  fi
   while :; do
     name=$(ask_value "name for the new VM" "$VM $n" "$NAME_RE")
     app_name_bad "$name" && { say "    OmacVM.app takes no '..' in a name"; continue; }
     VM=$name
     vm_taken "$VM" || break
     say "    '$VM' exists too"
+    n=2; while vm_taken "$VM $n"; do n=$((n + 1)); done
   done
 fi
 # ---------- 2. resources ----------
@@ -267,11 +290,10 @@ vm_dir_problem() {   # DIR -> a reason it does not work, or nothing
   local g; g=$(free_gb_at "$1")
   (( g >= SPACE_VM_GB )) || echo "only $g GB free on $(drive_name "$1") (the VM needs about $SPACE_VM_GB)"
 }
-VM_DIR=$(app_vms_root)
 if d=$(app_missing_drive "$VM_DIR"); then
   needs_person "$d is not connected, and OmacVM.app's VMs folder is on it ($VM_DIR): connect it, or pick another folder in the app"
 fi
-[[ ! -e $VM_DIR/$VM ]] || usage "$VM_DIR/$VM already exists (choose another --vm-name)"
+[[ ! -e $VM_DIR/$VM && ! -L $VM_DIR/$VM ]] || usage "$VM_DIR/$VM already exists (choose another --vm-name)"
 if [[ -d $VM_DIR ]]; then p=$(vm_dir_problem "$VM_DIR"); [[ -z $p ]] || needs_person "$VM_DIR (OmacVM.app's VMs): $p"; fi
 # Room to build on the drives the build writes to: the VM's folder, and the
 # downloads folder when it is on another drive (not this Mac's disk when the
