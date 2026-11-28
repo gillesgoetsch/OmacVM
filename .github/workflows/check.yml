@@ -329,6 +329,9 @@ jobs:
       - name: omacvm build checks free space on the drive the VM goes to (every route, no VM)
         run: src/tests/build-space.sh
 
+      - name: omacvm build treats existing VM folders (half-built, symlink, case) as taken
+        run: src/tests/build-name.sh
+
 
       - name: omacvm-netd offline tests
         run: src/net/mac/test.sh
