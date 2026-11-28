@@ -28,6 +28,11 @@ check(d.moved(CGPoint(x: -50, y: -9), now: 3) == .drag(0, 0), "left of and above
 check(d.moved(CGPoint(x: 5000, y: 5), now: 4) == .drag(999, 5), "right of it: clamped")
 check(d.cancel() == .release(-1, -1) && !d.held, "cancel while held: a release off the bar")
 check(d.cancel() == nil, "cancel when not held: nothing")
+_ = d.down(CGPoint(x: 100, y: 10))
+check(d.moved(CGPoint(x: 101, y: 10), now: 5) == .drag(101, 10), "a quick drag: its first move (below the bar's threshold) sent")
+check(d.moved(CGPoint(x: 140, y: 10), now: 5.01) == nil, "a quick drag: the move past it kept")
+check(d.up(CGPoint(x: 140, y: 10)) == [.drag(140, 10), .release(140, 10)],
+      "a quick drag released where its kept move ended: that move still goes first, so the bar drags instead of clicking at 140")
 check(StripDrag.line(.press(1, 2.25)) == "press 1.0 2.2" || StripDrag.line(.press(1, 2.25)) == "press 1.0 2.3", "line: press")
 check(StripDrag.line(.drag(10, 3)) == "drag 10.0 3.0" && StripDrag.line(.release(-1, -1)) == "release -1.0 -1.0", "line: drag, release")
 if fails > 0 { print("\(fails) failed"); exit(1) }
